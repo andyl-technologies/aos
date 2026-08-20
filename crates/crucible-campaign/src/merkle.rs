@@ -23,6 +23,8 @@ const DIGEST_NIBBLES: u8 = 64;
 const MAX_VERIFIED_NODES: usize = 1_000_000;
 const MAX_PAGE_PROOF_NODES: usize = (MAX_PROVEN_PAGE_ITEMS + 2) * DIGEST_NIBBLES as usize + 1;
 const MAX_PAGE_PROOF_BYTES: usize = 60 * 1024 * 1024;
+const MAX_LOOKUP_PROOF_NODES: usize = DIGEST_NIBBLES as usize + 1;
+const MAX_LOOKUP_PROOF_BYTES: usize = MAX_LOOKUP_PROOF_NODES * MAX_MERKLE_NODE_ENVELOPE_BYTES;
 const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
 
 /// Failure while reading or updating an authenticated campaign collection.
@@ -77,6 +79,77 @@ pub struct MerkleMapPage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MerkleMapPageProof {
     nodes: BTreeMap<ContentId, Vec<u8>>,
+}
+
+/// Bounded canonical node bundle proving one exact Merkle lookup result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MerkleMapLookupProof {
+    nodes: BTreeMap<ContentId, Vec<u8>>,
+}
+
+impl MerkleMapLookupProof {
+    /// Returns the number of unique authenticated nodes carried by the proof.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn new(nodes: BTreeMap<ContentId, Vec<u8>>) -> Result<Self, CampaignStoreError> {
+        validate_proof_nodes(
+            &nodes,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "lookup-proof-node-limit",
+            "lookup-proof-byte-limit",
+        )?;
+        Ok(Self { nodes })
+    }
+
+    fn read_node(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+    ) -> Result<MerkleNode, CampaignStoreError> {
+        let bytes = self
+            .nodes
+            .get(&content_id)
+            .ok_or_else(|| invalid("lookup-proof-missing-node"))?;
+        decode_node_bytes(content_id, expected_depth, bytes)
+    }
+}
+
+impl Canonical for MerkleMapLookupProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u64(self.nodes.len() as u64);
+        for (id, bytes) in &self.nodes {
+            Canonical::encode(id, encoder);
+            bytes.encode(encoder);
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let nodes = decode_proof_nodes(
+            decoder,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "merkle-lookup-proof-node-count",
+            "merkle-lookup-proof-node-bytes",
+            "merkle-lookup-proof-total-bytes",
+            "merkle lookup proof contains duplicate nodes",
+        )?;
+        let proof = Self { nodes };
+        validate_proof_nodes(
+            &proof.nodes,
+            MAX_LOOKUP_PROOF_NODES,
+            MAX_LOOKUP_PROOF_BYTES,
+            "lookup-proof-node-limit",
+            "lookup-proof-byte-limit",
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "merkle lookup proof contains invalid nodes",
+        })?;
+        Ok(proof)
+    }
 }
 
 impl MerkleMapPageProof {
@@ -386,6 +459,52 @@ impl MerkleMap {
     ) -> Result<Option<ContentId>, CampaignStoreError> {
         let node = self.read_node(root, 0)?;
         Self::get_from_node(node, key, &mut |id, depth| self.read_node(id, depth))
+    }
+
+    /// Returns one exact lookup result and the minimal authenticated path.
+    ///
+    /// The proof authenticates presence with the exact leaf value and absence
+    /// with the first missing slot or distinct leaf on the requested path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an incomplete, corrupt, wrongly typed, oversized,
+    /// or structurally invalid path.
+    pub fn get_with_proof(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+    ) -> Result<(Option<ContentId>, MerkleMapLookupProof), CampaignStoreError> {
+        let mut proof_nodes = BTreeMap::new();
+        let root_node = self.read_node_recorded(root, 0, &mut proof_nodes)?;
+        let value = Self::get_from_node(root_node, key, &mut |id, depth| {
+            self.read_node_recorded(id, depth, &mut proof_nodes)
+        })?;
+        Ok((value, MerkleMapLookupProof::new(proof_nodes)?))
+    }
+
+    /// Authenticates and exactly replays one proof-bearing lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proof omits or corrupts a path node, carries
+    /// an unused node, exceeds its fixed depth/byte bound, or violates trie
+    /// structure.
+    pub fn verify_lookup_proof(
+        root: ContentId,
+        key: CampaignHash,
+        proof: &MerkleMapLookupProof,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let mut used = BTreeSet::from([root]);
+        let root_node = proof.read_node(root, 0)?;
+        let value = Self::get_from_node(root_node, key, &mut |id, depth| {
+            used.insert(id);
+            proof.read_node(id, depth)
+        })?;
+        if used.len() != proof.nodes.len() || !proof.nodes.keys().all(|id| used.contains(id)) {
+            return Err(invalid("lookup-proof-has-unused-nodes"));
+        }
+        Ok(value)
     }
 
     /// Inserts or replaces one key and returns the new canonical root.
@@ -1040,16 +1159,32 @@ fn decode_node_bytes(
 fn validate_page_proof_nodes(
     nodes: &BTreeMap<ContentId, Vec<u8>>,
 ) -> Result<(), CampaignStoreError> {
-    if nodes.len() > MAX_PAGE_PROOF_NODES {
-        return Err(invalid("page-proof-node-limit"));
+    validate_proof_nodes(
+        nodes,
+        MAX_PAGE_PROOF_NODES,
+        MAX_PAGE_PROOF_BYTES,
+        "page-proof-node-limit",
+        "page-proof-byte-limit",
+    )
+}
+
+fn validate_proof_nodes(
+    nodes: &BTreeMap<ContentId, Vec<u8>>,
+    maximum_nodes: usize,
+    maximum_bytes: usize,
+    node_limit_reason: &'static str,
+    byte_limit_reason: &'static str,
+) -> Result<(), CampaignStoreError> {
+    if nodes.len() > maximum_nodes {
+        return Err(invalid(node_limit_reason));
     }
     let mut bytes = 0_usize;
     for (id, node) in nodes {
         bytes = bytes
             .checked_add(node.len())
-            .ok_or_else(|| invalid("page-proof-byte-limit"))?;
-        if bytes > MAX_PAGE_PROOF_BYTES || node.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
-            return Err(invalid("page-proof-byte-limit"));
+            .ok_or_else(|| invalid(byte_limit_reason))?;
+        if bytes > maximum_bytes || node.len() > MAX_MERKLE_NODE_ENVELOPE_BYTES {
+            return Err(invalid(byte_limit_reason));
         }
         let envelope = ObjectEnvelope::from_canonical_bytes_for_owner(node)?;
         if envelope.record_kind() != CampaignRecordKind::MerkleNode || envelope.content_id() != *id
@@ -1058,6 +1193,47 @@ fn validate_page_proof_nodes(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_proof_nodes(
+    decoder: &mut Decoder<'_>,
+    maximum_nodes: usize,
+    maximum_bytes: usize,
+    count_limit: &'static str,
+    node_bytes_limit: &'static str,
+    total_bytes_limit: &'static str,
+    duplicate_reason: &'static str,
+) -> Result<BTreeMap<ContentId, Vec<u8>>, CampaignCodecError> {
+    let entries = decoder.sequence_bounded(maximum_nodes, count_limit, |decoder| {
+        let id = ContentId::decode(decoder)?;
+        let bytes = decoder.sequence_bounded(
+            MAX_MERKLE_NODE_ENVELOPE_BYTES,
+            node_bytes_limit,
+            u8::decode,
+        )?;
+        Ok((id, bytes))
+    })?;
+    let mut nodes = BTreeMap::new();
+    let mut bytes = 0_usize;
+    for (id, node) in entries {
+        bytes = bytes
+            .checked_add(node.len())
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: total_bytes_limit,
+            })?;
+        if bytes > maximum_bytes {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: total_bytes_limit,
+            });
+        }
+        if nodes.insert(id, node).is_some() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: duplicate_reason,
+            });
+        }
+    }
+    Ok(nodes)
 }
 
 fn calculate_node_id(node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
@@ -1522,6 +1698,75 @@ mod tests {
             MerkleMap::verify_scan_proof(root.content_id(), None, 2, &extra),
             Err(CampaignStoreError::InvalidMerkle {
                 reason: "page-proof-has-unused-nodes"
+            })
+        ));
+    }
+
+    #[test]
+    fn lookup_proofs_authenticate_presence_absence_and_exact_node_set() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty root");
+        let mut root = empty;
+        for key in [0x00, 0x10, 0x11, 0x20] {
+            root = map
+                .insert(root.content_id(), hash(key), value(&format!("value-{key}")))
+                .expect("insert");
+        }
+
+        let expected = value("value-17");
+        let (present, present_proof) = map
+            .get_with_proof(root.content_id(), hash(0x11))
+            .expect("present lookup proof");
+        assert_eq!(present, Some(expected));
+        assert_eq!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x11), &present_proof)
+                .expect("verify present lookup"),
+            Some(expected)
+        );
+        assert_eq!(
+            codec::decode::<MerkleMapLookupProof>(&codec::encode(&present_proof))
+                .expect("round trip lookup proof"),
+            present_proof
+        );
+
+        let (absent, absent_proof) = map
+            .get_with_proof(root.content_id(), hash(0x12))
+            .expect("absent lookup proof");
+        assert_eq!(absent, None);
+        assert_eq!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x12), &absent_proof)
+                .expect("verify absent lookup"),
+            None
+        );
+
+        let mut missing = present_proof.clone();
+        let child = missing
+            .nodes
+            .keys()
+            .copied()
+            .find(|id| *id != root.content_id())
+            .expect("lookup proof child");
+        missing.nodes.remove(&child);
+        assert!(matches!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x11), &missing),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "lookup-proof-missing-node"
+            })
+        ));
+
+        let mut extra = absent_proof;
+        extra.nodes.insert(
+            empty.content_id(),
+            backend
+                .read(empty.content_id(), None)
+                .expect("read empty root")
+                .read_all(MAX_MERKLE_NODE_ENVELOPE_BYTES as u64)
+                .expect("empty root bytes"),
+        );
+        assert!(matches!(
+            MerkleMap::verify_lookup_proof(root.content_id(), hash(0x12), &extra),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "lookup-proof-has-unused-nodes"
             })
         ));
     }

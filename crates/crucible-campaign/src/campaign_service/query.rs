@@ -341,6 +341,248 @@ impl Canonical for QueryCampaignGraphResponse {
     }
 }
 
+/// Strict request for one object named by an exact current graph entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignGraphObjectRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    key: CampaignHash,
+}
+
+impl GetCampaignGraphObjectRequest {
+    /// Builds one snapshot-bound graph-object request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        key: CampaignHash,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            key,
+        };
+        ensure_message_size(&request, "get-campaign-graph-object-request-encoded-bytes")?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors this lookup.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact graph key whose value is requested.
+    #[must_use]
+    pub const fn key(&self) -> CampaignHash {
+        self.key
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("get-campaign-graph-object", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded graph-object request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-graph-object-request-encoded-bytes")
+    }
+}
+
+impl Canonical for GetCampaignGraphObjectRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.key.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            CampaignHash::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound graph object plus exact snapshot-membership proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignGraphObjectResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    object: ObjectEnvelope,
+    proof: MerkleMapLookupProof,
+}
+
+impl GetCampaignGraphObjectResponse {
+    /// Builds one authenticated graph-object response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, proof, object kind,
+    /// key membership, or encoded-size contract is invalid.
+    pub fn new(
+        request: &GetCampaignGraphObjectRequest,
+        snapshot_body: CampaignSnapshot,
+        object: ObjectEnvelope,
+        proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            object,
+            proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(
+            &response,
+            "get-campaign-graph-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including all root IDs.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the strict graph-owned object envelope.
+    #[must_use]
+    pub const fn object(&self) -> &ObjectEnvelope {
+        &self.object
+    }
+
+    /// Validates exact request, snapshot, graph membership, and object identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or its proof and object do not match the requested graph entry.
+    pub fn validate_for(
+        &self,
+        request: &GetCampaignGraphObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded graph-object response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-graph-object-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &GetCampaignGraphObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || !matches!(
+                self.object.record_kind(),
+                CampaignRecordKind::ConfigurationArtifact | CampaignRecordKind::ChoiceOpportunity
+            )
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign graph object response snapshot or record kind mismatch",
+            });
+        }
+        let value = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().graph,
+            request.key(),
+            &self.proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign graph object response Merkle proof is invalid",
+        })?;
+        if value != Some(self.object.content_id()) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign graph object differs from its Merkle proof",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for GetCampaignGraphObjectResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.object.canonical_bytes().encode(encoder);
+        self.proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            object: ObjectEnvelope::from_canonical_bytes(&decoder.sequence_bounded(
+                MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+                "get-campaign-graph-object-envelope-bytes",
+                u8::decode,
+            )?)?,
+            proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(
+            &response,
+            "get-campaign-graph-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -350,6 +592,9 @@ mod tests {
     use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind};
 
     use super::*;
+    use crate::{
+        CampaignRoots, ConfigurationArtifact, ConfigurationId, ScenarioArtifactId, ScenarioDefId,
+    };
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
@@ -365,6 +610,31 @@ mod tests {
             CampaignHash::derive("campaign-query-test-key", label.as_bytes()),
             ContentId::for_bytes(ObjectKind::CampaignFact, 1, label.as_bytes()),
         )
+    }
+
+    fn configuration_envelope(label: &str) -> ObjectEnvelope {
+        let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
+            "campaign-query-test-scenario",
+            label.as_bytes(),
+        ));
+        let scenario_artifact = ScenarioArtifactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Scenario,
+            1,
+            format!("{label}-scenario").as_bytes(),
+        ))
+        .expect("scenario artifact id");
+        let configuration = ConfigurationArtifact::new(
+            scenario,
+            scenario_artifact,
+            ConfigurationId::from_hash(CampaignHash::derive(
+                "campaign-query-test-configuration",
+                label.as_bytes(),
+            )),
+            1,
+            label.as_bytes().to_vec(),
+        )
+        .expect("configuration artifact");
+        ObjectEnvelope::for_configuration_artifact(&configuration).expect("configuration envelope")
     }
 
     #[test]
@@ -576,5 +846,72 @@ mod tests {
             .validate_for_query_campaign_graph(request.snapshot())
             .is_err()
         );
+    }
+
+    #[test]
+    fn graph_object_response_authenticates_snapshot_key_and_exact_envelope() {
+        let backend = Arc::new(MemoryBlobBackend::new("graph-object-query", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty graph");
+        let key = CampaignHash::derive("campaign-query-test-key", b"configuration");
+        let object = configuration_envelope("configuration");
+        let graph = map
+            .insert(empty.content_id(), key, object.content_id())
+            .expect("graph insert");
+        let roots = CampaignRoots {
+            graph: graph.content_id(),
+            exploration: empty.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: empty.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"graph-object-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"graph-object-policy",
+            ))
+            .expect("policy"),
+            roots,
+        )
+        .expect("snapshot");
+        let request = GetCampaignGraphObjectRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot id"),
+            key,
+        )
+        .expect("request");
+        let (_, proof) = map
+            .get_with_proof(graph.content_id(), key)
+            .expect("lookup proof");
+        let response = GetCampaignGraphObjectResponse::new(&request, snapshot_body, object, proof)
+            .expect("response");
+        let decoded =
+            GetCampaignGraphObjectResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode response");
+        decoded.validate_for(&request).expect("verify response");
+
+        let mut substituted = decoded;
+        substituted.object = configuration_envelope("substituted");
+        assert!(substituted.validate_for(&request).is_err());
+        let wrong_key = GetCampaignGraphObjectRequest::new(
+            request.principal().clone(),
+            request.campaign().clone(),
+            request.snapshot(),
+            CampaignHash::derive("campaign-query-test-key", b"other"),
+        )
+        .expect("wrong-key request");
+        assert!(response.validate_for(&wrong_key).is_err());
     }
 }

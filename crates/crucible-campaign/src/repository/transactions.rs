@@ -401,6 +401,18 @@ impl CampaignRepository {
             })
     }
 
+    pub(crate) fn graph_object_with_proof(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+    ) -> Result<(ObjectEnvelope, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (object, proof) = self.merkle.get_with_proof(root, key)?;
+        let object = object.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-graph-object-key-is-not-present",
+        })?;
+        Ok((self.read_envelope(object)?, proof))
+    }
+
     /// Projects durable lifecycle intent from authenticated snapshot ancestry.
     ///
     /// # Errors

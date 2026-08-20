@@ -13,9 +13,9 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignHash,
-    CampaignLineageId, CampaignPolicyId, CampaignRepository, CampaignRepositoryError,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, ControlRequest, MerkleMap,
-    MerkleMapPageProof,
+    CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
+    CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState, ControlRequest,
+    MerkleMap, MerkleMapLookupProof, MerkleMapPageProof, ObjectEnvelope,
 };
 
 mod create;
@@ -31,8 +31,8 @@ pub use create::{
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use query::{
-    CampaignGraphEntry, MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse,
+    CampaignGraphEntry, GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
@@ -133,6 +133,8 @@ pub enum CampaignServiceOperation {
     WatchCampaign,
     /// Read snapshot metadata and one bounded page from its campaign graph.
     QueryCampaignGraph,
+    /// Read one exact object body named by the authenticated campaign graph.
+    GetCampaignGraphObject,
     /// Apply one idempotent lifecycle, budget, or policy command.
     ApplyCampaignCommand,
     /// Submit one additive operator branch request.
@@ -334,6 +336,19 @@ impl CampaignServiceFailure {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Validates a failure for one exact campaign graph-object lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this lookup's exact snapshot.
+    pub fn validate_for_get_campaign_graph_object(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
     }
 
     /// Validates a failure for one exact campaign-command request.
@@ -1272,6 +1287,18 @@ pub trait CampaignService {
         request: &QueryCampaignGraphRequest,
     ) -> Result<QueryCampaignGraphResponse, Self::Error>;
 
+    /// Returns one exact object named by the authenticated current graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, graph membership, repository access, or response
+    /// construction fails.
+    fn get_campaign_graph_object(
+        &self,
+        request: &GetCampaignGraphObjectRequest,
+    ) -> Result<GetCampaignGraphObjectResponse, Self::Error>;
+
     /// Applies one exact idempotent campaign command.
     ///
     /// # Errors
@@ -1466,6 +1493,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_graph(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Gets one snapshot-bound graph object and validates its membership proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, graph key, object, or proof.
+    pub fn get_campaign_graph_object(
+        &self,
+        request: &GetCampaignGraphObjectRequest,
+    ) -> Result<GetCampaignGraphObjectResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_graph_object(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_graph_object(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -1789,6 +1842,35 @@ where
             head.snapshot().clone(),
             entries,
             page.next_after(),
+            proof,
+        )?)
+    }
+
+    fn get_campaign_graph_object(
+        &self,
+        request: &GetCampaignGraphObjectRequest,
+    ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignGraphObject,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (object, proof) = self
+            .repository
+            .graph_object_with_proof(head.snapshot().roots().graph, request.key())?;
+        Ok(GetCampaignGraphObjectResponse::new(
+            request,
+            head.snapshot().clone(),
+            object,
             proof,
         )?)
     }
@@ -2118,6 +2200,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn get_campaign_graph_object(
+            &self,
+            _request: &GetCampaignGraphObjectRequest,
+        ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2205,6 +2294,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn get_campaign_graph_object(
+            &self,
+            _request: &GetCampaignGraphObjectRequest,
+        ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2262,6 +2358,13 @@ mod tests {
             &self,
             _request: &QueryCampaignGraphRequest,
         ) -> Result<QueryCampaignGraphResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn get_campaign_graph_object(
+            &self,
+            _request: &GetCampaignGraphObjectRequest,
+        ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

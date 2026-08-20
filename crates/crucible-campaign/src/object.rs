@@ -356,6 +356,36 @@ impl ObjectEnvelope {
         )
     }
 
+    /// Builds an exact configuration-artifact envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the generated child table or envelope
+    /// is invalid.
+    pub fn for_configuration_artifact(
+        value: &ConfigurationArtifact,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            CampaignRecordKind::ConfigurationArtifact,
+            content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )
+    }
+
+    /// Builds an exact choice-opportunity envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the generated child table or envelope
+    /// is invalid.
+    pub fn for_choice_opportunity(value: &ChoiceOpportunity) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            CampaignRecordKind::ChoiceOpportunity,
+            content_children(value.content_children())?,
+            codec::encode(value),
+        )
+    }
+
     pub(crate) fn for_record(
         record_kind: CampaignRecordKind,
         children: BTreeSet<ContentChild>,
