@@ -10,7 +10,7 @@ impl CampaignRepository {
         self.load_validation_checkpoint(head).map(|_| ())
     }
 
-    fn load_validation_checkpoint(
+    pub(super) fn load_validation_checkpoint(
         &self,
         head: ContentId,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
@@ -19,7 +19,7 @@ impl CampaignRepository {
         }
 
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle) =
+        let (ancestry_depth, lifecycle, genesis) =
             self.validate_snapshot_ancestry(head, &mut choice_cache)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [head],
@@ -30,6 +30,7 @@ impl CampaignRepository {
             ancestry_depth,
             closure_objects,
             lifecycle,
+            genesis,
         };
         self.remember_validation_checkpoint(head, checkpoint);
         Ok(checkpoint)
@@ -88,11 +89,12 @@ impl CampaignRepository {
                 ancestry_depth,
                 closure_objects,
                 lifecycle,
+                genesis: parent_checkpoint.genesis,
             });
         }
 
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle) =
+        let (ancestry_depth, lifecycle, genesis) =
             self.validate_snapshot_ancestry(child, &mut choice_cache)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [child],
@@ -103,6 +105,7 @@ impl CampaignRepository {
             ancestry_depth,
             closure_objects,
             lifecycle,
+            genesis,
         })
     }
 
@@ -148,7 +151,7 @@ impl CampaignRepository {
         &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(usize, ProjectedState), CampaignRepositoryError> {
+    ) -> Result<(usize, ProjectedState, ContentId), CampaignRepositoryError> {
         let mut snapshots = BTreeSet::new();
         let mut verified_roots = BTreeSet::new();
         let mut seen_commands = BTreeSet::new();
@@ -178,7 +181,7 @@ impl CampaignRepository {
                     for action in &actions {
                         projected.apply(action)?;
                     }
-                    return Ok((depth, projected));
+                    return Ok((depth, projected, content_id));
                 }
                 (Some(parent), Some(transition)) => {
                     let transition_fact = self.read_fact(transition.content_id())?;

@@ -167,7 +167,9 @@ use the distinct terms.
 
 - **[CAPI-3]** Every mutating CLI command MUST print the prior and new campaign
   snapshot IDs and emit an equivalent structured result.
-- **[CAPI-4]** Retrying a command with the same command ID MUST be idempotent.
+- **[CAPI-4]** Retrying a mutation of an existing campaign with the same command
+  ID MUST be idempotent. Creation is idempotent by canonical campaign name and
+  an exact lineage/policy basis.
 
 ## 07.4 Inspection
 
@@ -318,12 +320,17 @@ executor services are component seams, not additional user control planes;
 their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
-The initial direct service contract implements strict request-bound
+The direct service contract implements strict request-bound `CreateCampaign`,
 `GetCampaign`, `ApplyCampaignCommand`, and operator `SubmitBranchRequest`
-messages over the semantic repository owner. It is an implementation
-checkpoint, not yet user porcelain: the nested CLI, create/derive operations,
-paged inspection, and watch stream remain required before the service is
-complete. The bounded versioned Unix-stream loopback binding is now
+messages over the semantic repository owner. Creation carries the complete
+bounded lineage/policy basis and exactly replays the authenticated
+genesis for a semantically identical named retry after later mutations. It is
+preceded by a narrow execution-model verifier-backed import of the large
+scenario/configuration artifacts and generator closure named by the request;
+those immutable objects do not travel in the campaign control message. It is
+not yet user porcelain: the nested CLI,
+derive operation, paged inspection, and watch stream remain required before the
+service is complete. The bounded versioned Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
 conflict, transition, resource, availability, and integrity meaning. Nested CLI
 wiring remains open. The daemon's authenticated repository adapter now reads
@@ -333,9 +340,11 @@ before repository access. Production listener configuration must still supply
 that deployment-specific mapping and the ordinary operation policy; framing
 alone is never authentication.
 
-All mutation requests carry command ID, expected snapshot ID, and authenticated
-principal. CAS conflict responses return the current head and enough detail to
-retry or ask the user to resolve a policy conflict.
+All mutation requests carry an authenticated principal. Mutations of an
+existing campaign also carry command ID and expected snapshot ID; creation
+instead carries expected absence of its canonical name. CAS conflict responses
+return the current head and enough detail to retry or ask the user to resolve a
+policy conflict.
 
 `WatchCampaign` uses a resumable event cursor over snapshot advances and
 operational telemetry. Canonical facts are fetched by object ID; the watch

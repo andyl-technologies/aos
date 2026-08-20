@@ -193,16 +193,23 @@ QueryChoices          SubmitBranchRequest  DeriveCampaign
 QueryFindings         ExplainObject        WatchCampaign
 ```
 
-Every mutation carries an idempotent command ID and expected snapshot ID.
+Every mutation of an existing campaign carries an idempotent command ID and its
+expected snapshot ID. Creation instead uses the canonical campaign name as its
+idempotency boundary and carries expected name absence.
 `WatchCampaign` is a resumable convenience stream; the campaign ref and
 immutable objects remain authoritative. A stale or lost watch cursor therefore
 cannot lose campaign state.
 
-The first strict service checkpoint defines principal-aware `GetCampaign`,
-`ApplyCampaignCommand`, and `SubmitBranchRequest` messages. All use canonical
-schema version 1 and a 64 MiB outer bound:
+The strict service checkpoint defines principal-aware `CreateCampaign`,
+`GetCampaign`, `ApplyCampaignCommand`, and `SubmitBranchRequest` messages. All
+use canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
+CreateCampaignRequestV1 = version | principal | campaign |
+                          CampaignLineageV1 | CampaignPolicyV1
+CreateCampaignResponseV1 = version | request_digest | genesis_snapshot |
+                           lineage | active_policy | replayed
+
 GetCampaignRequestV1 = version | principal | campaign
 GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
                         active_policy | lifecycle_state
@@ -265,11 +272,11 @@ profile: slash-separated segments are 1 through 255 bytes, neither `.` nor
 Decoders reject every value outside these exact profiles.
 
 Stable failures are also bound to the semantics of the requested operation.
-Every operation permits the common tags 0, 1, 2, 8, 9, 10, 11, 12, and 13.
-Beyond that common set, `GetCampaign` permits no operation-specific tag;
+Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
+`CreateCampaign` additionally permits 3; `GetCampaign` additionally permits 2;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
-`SubmitCampaignBranch` permits 4, 5, and 6. Tag 3 is create-only and is invalid
-for all three operations in this protocol version. For both mutation methods,
+`SubmitCampaignBranch` permits 4, 5, and 6. For the two snapshot-preconditioned
+mutation methods,
 `Stale.expected_snapshot` MUST equal that exact request's snapshot precondition,
 and `Stale.current_snapshot` MUST differ from `Stale.expected_snapshot`. A tag
 outside the operation's allowed set or an invalid `Stale` basis is
@@ -291,6 +298,8 @@ exact language-neutral derivations are:
 ```text
 get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
+create_request_digest =
+  H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 apply_request_digest =
   H("crucible.campaign-service.apply-campaign-command.v1",
     ApplyCampaignCommandRequestV1)
@@ -311,13 +320,31 @@ authentication is non-conforming. The repository-backed adapter then invokes
 the existing `head`/lifecycle, `apply_control`, and operator-only branch owner
 paths, preserving their idempotence and CAS rules.
 
-The remaining create/derive, snapshot/object queries, paged graph/frontier/
+Creation carries the complete by-value lineage and policy. Large scenario and
+genesis configuration artifacts and the exact transitive generator closure do
+not travel in this control message: a verifier-backed immutable content-import
+capability MUST publish their exact content IDs first. Scenario/configuration
+semantic IDs are re-derived by the execution-model adapter; generator IDs are
+canonical-content-derived. Missing imported input produces `Unavailable`;
+forged or mismatched imported content fails closed. The daemon's narrow Crucible
+importer implements this precondition without exposing campaign refs or
+accepting caller-asserted semantic IDs. Generator traversal is bounded to 4,096
+unique records and 128 MiB of aggregate canonical generator bodies. Validation
+streams one authenticated record at a time and does not republish imported
+generators. The campaign name is the creation idempotency boundary, and the
+complete canonical request binds the individual response digest. An idempotent
+retry is recognized when the authenticated named campaign's retained genesis
+has the same lineage and policy, even after later mutations, and returns the
+original genesis snapshot. A different lineage or policy under an existing name
+returns `AlreadyExists`.
+
+The remaining derive, snapshot/object queries, paged graph/frontier/
 choice/finding inspection, explanation, and resumable watch messages are still
 open. The strict local transport frames exactly one canonical request or
 response as:
 
 ```text
-CampaignLoopbackFrameV2 = "CRUCCS02" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV3 = "CRUCCS03" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -325,7 +352,9 @@ kind = 1 (GetCampaignRequestV1) |
        4 (ApplyCampaignCommandResponseV1) |
        5 (SubmitCampaignBranchRequestV1) |
        6 (SubmitCampaignBranchResponseV1) |
-       7 (CampaignServiceErrorResponseV1)
+       7 (CampaignServiceErrorResponseV1) |
+       8 (CreateCampaignRequestV1) |
+       9 (CreateCampaignResponseV1)
 ```
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

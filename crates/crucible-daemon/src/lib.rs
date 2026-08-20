@@ -63,7 +63,7 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
-    CrucibleArtifactError, decode_crucible_configuration_artifact,
+    CrucibleArtifactError, CrucibleCampaignArtifactStore, decode_crucible_configuration_artifact,
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };

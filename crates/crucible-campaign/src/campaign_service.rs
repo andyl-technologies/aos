@@ -17,6 +17,13 @@ use crate::{
     CampaignSnapshotId, CampaignState, ControlRequest,
 };
 
+mod create;
+
+pub use create::{
+    CreateCampaignRequest, CreateCampaignResponse, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATORS,
+};
+
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum canonical bytes accepted for one campaign-service message.
@@ -102,6 +109,8 @@ impl Canonical for CampaignName {
 /// Closed authorization operation presented to a campaign principal policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CampaignServiceOperation {
+    /// Create one named campaign at its canonical genesis snapshot.
+    CreateCampaign,
     /// Read the authenticated current campaign head and lifecycle state.
     GetCampaign,
     /// Apply one idempotent lifecycle, budget, or policy command.
@@ -212,6 +221,24 @@ impl CampaignServiceFailure {
             | Self::InvalidRequest
             | Self::IntegrityFailure
             | Self::ProtocolViolation => CampaignServiceRetryDisposition::DoNotRetry,
+        }
+    }
+
+    /// Validates that this failure is meaningful for `CreateCampaign`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a read- or mutation-only failure.
+    pub fn validate_for_create_campaign(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::NotFound
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::ConcurrentUpdate
+            | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for create campaign",
+            }),
+            _ => Ok(()),
         }
     }
 
@@ -1097,6 +1124,21 @@ pub trait CampaignService {
     /// Implementation-specific operational failure.
     type Error;
 
+    /// Creates one canonical named campaign or replays its exact genesis.
+    ///
+    /// The lineage's scenario and genesis artifacts must first be present in
+    /// the repository through an execution-model verifier-backed importer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// required artifact availability, semantic validation, publication, or
+    /// response construction fails.
+    fn create_campaign(
+        &self,
+        request: &CreateCampaignRequest,
+    ) -> Result<CreateCampaignResponse, Self::Error>;
+
     /// Returns the authenticated current campaign description.
     ///
     /// # Errors
@@ -1153,6 +1195,32 @@ where
     #[must_use]
     pub const fn new(service: S) -> Self {
         Self { service }
+    }
+
+    /// Creates one campaign and validates exact response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request.
+    pub fn create_campaign(
+        &self,
+        request: &CreateCampaignRequest,
+    ) -> Result<CreateCampaignResponse, CampaignClientError> {
+        let response = match self.service.create_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_create_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
     }
 
     /// Gets one campaign and validates exact response binding.
@@ -1336,6 +1404,43 @@ where
     A: CampaignPrincipalAuthorizer,
 {
     type Error = RepositoryCampaignServiceError;
+
+    fn create_campaign(
+        &self,
+        request: &CreateCampaignRequest,
+    ) -> Result<CreateCampaignResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::CreateCampaign,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        match self.repository.create_from_stored(
+            request.campaign().as_str(),
+            request.lineage(),
+            request.policy(),
+        ) {
+            Ok(head) => Ok(CreateCampaignResponse::new(
+                request,
+                head.snapshot_id(),
+                false,
+            )?),
+            Err(CampaignRepositoryError::AlreadyExists) => {
+                let genesis = self.repository.genesis(request.campaign().as_str())?;
+                if genesis.snapshot().lineage() != request.lineage().id()?
+                    || genesis.snapshot().active_policy() != request.policy().id()?
+                {
+                    return Err(CampaignRepositoryError::AlreadyExists.into());
+                }
+                Ok(CreateCampaignResponse::new(
+                    request,
+                    genesis.snapshot_id(),
+                    true,
+                )?)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
 
     fn get_campaign(
         &self,
@@ -1642,6 +1747,13 @@ mod tests {
     impl CampaignService for WrongGetService {
         type Error = Infallible;
 
+        fn create_campaign(
+            &self,
+            _request: &CreateCampaignRequest,
+        ) -> Result<CreateCampaignResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign(
             &self,
             _request: &GetCampaignRequest,
@@ -1694,6 +1806,13 @@ mod tests {
     impl CampaignService for FixedFailureService {
         type Error = CampaignServiceFailure;
 
+        fn create_campaign(
+            &self,
+            _request: &CreateCampaignRequest,
+        ) -> Result<CreateCampaignResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign(
             &self,
             _request: &GetCampaignRequest,
@@ -1718,6 +1837,13 @@ mod tests {
 
     impl CampaignService for WrongApplyService {
         type Error = Infallible;
+
+        fn create_campaign(
+            &self,
+            _request: &CreateCampaignRequest,
+        ) -> Result<CreateCampaignResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
 
         fn get_campaign(
             &self,

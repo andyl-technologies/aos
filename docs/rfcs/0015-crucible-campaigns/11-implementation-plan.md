@@ -281,14 +281,25 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and concrete closed planner remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
-  authenticated current-head reads, lifecycle/budget/policy control, and
-  additive operator branch submission, exact response-digest binding, a
+  bounded by-value creation, authenticated current-head reads,
+  lifecycle/budget/policy control, and additive operator branch submission,
+  exact response-digest binding, a
   checked direct client, raw golden vectors, and a repository adapter that
   requires exact-request authentication/authorization before repository
-  access. Create/derive, paged snapshot/graph/frontier/choice/finding queries,
+  access. Creation loads and validates an exact imported transitive generator
+  closure and replays
+  the authenticated genesis for a semantically identical named retry in
+  constant time from validation checkpoints after later mutations. The daemon
+  now provides a narrow Crucible verifier-backed immutable artifact importer;
+  large scenario/configuration bytes remain outside the campaign control
+  message and are re-derived before publication. Stored generator closure
+  validation streams within 4,096-record and 128-MiB aggregate-body bounds and
+  does not rewrite imported records. Derive,
+  paged snapshot/graph/frontier/choice/finding queries,
   explanation/watch, and CLI wiring remain open. The local Unix-stream binding
-  now dispatches all six initial success messages plus one stable request-bound
-  error envelope under a version-2, 64-MiB-body, absolute-deadline frame.
+  now dispatches all eight initial success messages plus one stable request-bound
+  error envelope under a version-3, 64-MiB-body,
+  absolute-deadline frame.
   Protocol, canonical, I/O, and poisoned-lock failures shut down the connection;
   semantic failures keep it reusable, and concurrent exchanges receive a
   retryable busy error instead of queuing outside those deadlines. Direct and
