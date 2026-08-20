@@ -445,7 +445,7 @@ impl Drop for ActiveConnection {
     }
 }
 
-fn spawn_connection_worker<R: ?Sized, A: ?Sized>(
+fn spawn_connection_worker<R, A>(
     slot: usize,
     connections: Arc<ConnectionQueue>,
     repository: Arc<CampaignRepository>,
@@ -455,8 +455,8 @@ fn spawn_connection_worker<R: ?Sized, A: ?Sized>(
     state: Arc<CampaignLoopbackServerState>,
 ) -> io::Result<JoinHandle<Result<(), ()>>>
 where
-    R: UnixPeerCampaignPrincipalResolver + Send + Sync + 'static,
-    A: CampaignPrincipalAuthorizer + Send + Sync + 'static,
+    R: UnixPeerCampaignPrincipalResolver + Send + Sync + 'static + ?Sized,
+    A: CampaignPrincipalAuthorizer + Send + Sync + 'static + ?Sized,
 {
     thread::Builder::new()
         .name(format!("crucible-campaign-{slot}"))

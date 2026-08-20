@@ -688,11 +688,23 @@ listener owner. The accept loop observes shutdown at a configured interval from
 peer-rejected, and protocol-failed connection counts are operational telemetry
 and never enter campaign identity.
 
+The initial immutable local policy maps at most 4,096 exact effective
+`(uid,gid)` pairs to canonical campaign principals and retains at most 65,536
+principal/operation/scope grants. PID is diagnostic only and MUST NOT select a
+principal because process IDs are reusable. A grant scope is either one exact
+canonical campaign name or all campaign names; there are no string globs or
+implicit operation groups. Duplicate identity selectors, duplicate grants, and
+grants naming an unbound principal reject the complete policy. An empty policy
+is an explicit deny-all value. Missing peer bindings and missing grants return
+`Unauthorized`; the in-memory policy performs no external lookup and therefore
+cannot turn a denial into an availability result.
+
 The listener deliberately accepts a pre-bound descriptor. Daemon bootstrap
 still owns socket-path creation, stale-path handling, filesystem ownership and
-mode, deployment-specific principal/operation policy loading, and operational
-diagnostic routing. Constructing the bounded listener without those controls
-does not make the endpoint production-authorized.
+mode, parsing the typed principal/operation policy from deployment
+configuration, and operational diagnostic routing. Constructing the bounded
+listener without those controls does not make the endpoint
+production-authorized.
 
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and

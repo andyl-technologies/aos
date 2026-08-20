@@ -16,7 +16,9 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    LoopbackCampaignService, UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver,
+    CampaignAccessGrant, CampaignAccessScope, LoopbackCampaignService, UnixPeerCampaignBinding,
+    UnixPeerCampaignCredentials, UnixPeerCampaignIdentity, UnixPeerCampaignPolicy,
+    UnixPeerCampaignPrincipalResolver,
 };
 
 struct AllowAll;
@@ -283,6 +285,81 @@ fn listener_rejects_denied_peers_before_reading_a_request() {
     assert_eq!(report.capacity_rejections(), 0);
     assert_eq!(report.completed_connections(), 0);
     assert_eq!(report.peer_rejections(), 1);
+    assert_eq!(report.protocol_failures(), 0);
+}
+
+#[test]
+fn listener_enforces_the_immutable_unix_peer_policy_end_to_end() {
+    let (_directory, listener, socket) = listener();
+    let operator = CampaignPrincipal::new("operator:alice").expect("operator");
+    let policy = Arc::new(
+        UnixPeerCampaignPolicy::new(
+            [UnixPeerCampaignBinding::new(
+                UnixPeerCampaignIdentity::new(
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw(),
+                ),
+                operator.clone(),
+            )],
+            [CampaignAccessGrant::new(
+                operator,
+                CampaignServiceOperation::GetCampaign,
+                CampaignAccessScope::Campaign(
+                    CampaignName::new("absent").expect("granted campaign"),
+                ),
+            )],
+        )
+        .expect("peer policy"),
+    );
+    let server = CampaignLoopbackServer::new(
+        listener,
+        repository("campaign-listener-policy"),
+        Arc::clone(&policy),
+        policy,
+        CampaignLoopbackServerConfig::default(),
+    )
+    .expect("campaign server");
+    let shutdown = server.shutdown_handle();
+    let server_thread = thread::spawn(move || server.serve().expect("serve campaign listener"));
+
+    let stream = UnixStream::connect(socket).expect("connect campaign client");
+    let client = CampaignClient::new(LoopbackCampaignService::new(stream).expect("loopback"));
+    assert!(matches!(
+        client.get_campaign(&request()),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::NotFound
+        ))
+    ));
+    let ungranted = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("operator"),
+        CampaignName::new("other").expect("campaign name"),
+    )
+    .expect("ungranted request");
+    assert!(matches!(
+        client.get_campaign(&ungranted),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    let mismatched = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator:bob").expect("mismatched principal"),
+        CampaignName::new("absent").expect("campaign name"),
+    )
+    .expect("mismatched request");
+    assert!(matches!(
+        client.get_campaign(&mismatched),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::Unauthorized
+        ))
+    ));
+
+    drop(client);
+    wait_for_no_active_connections(&shutdown);
+    shutdown.shutdown();
+    let report = server_thread.join().expect("server thread");
+    assert_eq!(report.accepted_connections(), 1);
+    assert_eq!(report.completed_connections(), 1);
+    assert_eq!(report.peer_rejections(), 0);
     assert_eq!(report.protocol_failures(), 0);
 }
 

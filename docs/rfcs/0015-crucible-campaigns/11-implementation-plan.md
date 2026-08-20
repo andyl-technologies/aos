@@ -399,9 +399,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   pending queue at 1,024, caps one connection at 65,536 requests, resolves peer
   identity once per connection, rejects excess sockets, interrupts active
   streams on sticky shutdown, and joins every worker before returning
-  operational counters. Socket-path ownership,
-  deployment policy configuration, diagnostic routing, and CLI wiring remain
-  open; message framing or listener construction alone is not authentication.
+  operational counters. An immutable local policy now maps at most 4,096 exact
+  effective UID/GID pairs (never PID) to principals and retains at most 65,536
+  exact operation plus campaign/all-campaign grants, rejecting ambiguity and
+  unreachable grants. Socket-path ownership, deployment policy parsing,
+  diagnostic routing, and CLI wiring remain open; message framing or listener
+  construction alone is not authentication.
   Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529

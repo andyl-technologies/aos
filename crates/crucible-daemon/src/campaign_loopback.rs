@@ -498,6 +498,15 @@ pub struct UnixPeerCampaignCredentials {
 }
 
 impl UnixPeerCampaignCredentials {
+    #[cfg(test)]
+    pub(crate) const fn for_test(process_id: i32, user_id: u32, group_id: u32) -> Self {
+        Self {
+            process_id,
+            user_id,
+            group_id,
+        }
+    }
+
     /// Returns the peer process ID captured by `SO_PEERCRED`.
     #[must_use]
     pub const fn process_id(self) -> i32 {

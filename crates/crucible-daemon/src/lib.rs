@@ -11,6 +11,7 @@
 //! runtime-state records; [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
+//! [`campaign_policy`] owns its immutable Unix identity and operation grants;
 //! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
@@ -35,6 +36,7 @@
 
 pub mod assignment_ledger;
 pub mod campaign_loopback;
+pub mod campaign_policy;
 pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
@@ -63,6 +65,11 @@ pub use campaign_loopback::{
     serve_authenticated_repository_campaign_once,
     serve_authenticated_repository_campaign_once_with_timeouts, serve_loopback_campaign_once,
     serve_loopback_campaign_once_with_timeouts,
+};
+pub use campaign_policy::{
+    CampaignAccessGrant, CampaignAccessScope, MAX_CAMPAIGN_ACCESS_GRANTS,
+    MAX_CAMPAIGN_PEER_BINDINGS, UnixPeerCampaignBinding, UnixPeerCampaignIdentity,
+    UnixPeerCampaignPolicy, UnixPeerCampaignPolicyError,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
