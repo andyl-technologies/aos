@@ -566,52 +566,24 @@ async fn r2_get_range(
     }
 }
 
-/// Adapt an R2 object's `body` ([`web_sys::ReadableStream`]-shaped `JsValue`)
-/// into a byte-chunk stream by driving its default reader.
+/// Adapts an R2 object's raw `ReadableStream` body into Rust byte chunks.
 ///
-/// Mirrors what worker-rs `ByteStream` does internally, but over the raw
-/// `JsValue` body of the object [`r2_get`] returns (worker-rs `ObjectBody` is
-/// only reachable from a `worker::Object`, which has no public constructor). Each
-/// `reader.read()` yields `{ done, value: Uint8Array }`; `done` ends the stream.
+/// The raw reflected object cannot be converted into worker-rs's private
+/// `ObjectBody`, but its public [`worker::ByteStream`] accepts the same
+/// `ReadableStream`. Reusing that adapter keeps stream locking, promise
+/// polling, cancellation, and JavaScript exception handling aligned with the
+/// Workers runtime instead of maintaining a second hand-written reader.
 fn r2_body_stream(
     body: wasm_bindgen::JsValue,
-) -> impl futures_util::Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> {
-    use js_sys::{Function, Promise, Reflect, Uint8Array};
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
+) -> Result<impl futures_util::Stream<Item = std::result::Result<Vec<u8>, std::io::Error>>> {
+    use futures_util::TryStreamExt as _;
+    use wasm_bindgen::JsCast as _;
 
-    let reader = Reflect::get(&body, &JsValue::from_str("getReader"))
-        .ok()
-        .and_then(|f| f.dyn_into::<Function>().ok())
-        .and_then(|f| f.call0(&body).ok());
-    futures_util::stream::try_unfold(reader, move |reader| async move {
-        let Some(reader) = reader else {
-            return Err(std::io::Error::other("R2 body: getReader unavailable"));
-        };
-        let read_fn: Function = Reflect::get(&reader, &JsValue::from_str("read"))
-            .map_err(|e| std::io::Error::other(format!("R2 read method: {e:?}")))?
-            .dyn_into()
-            .map_err(|e| std::io::Error::other(format!("R2 read not a function: {e:?}")))?;
-        let promise: Promise = read_fn
-            .call0(&reader)
-            .map_err(|e| std::io::Error::other(format!("R2 read call: {e:?}")))?
-            .dyn_into()
-            .map_err(|e| std::io::Error::other(format!("R2 read not a promise: {e:?}")))?;
-        let result = JsFuture::from(promise)
-            .await
-            .map_err(|e| std::io::Error::other(format!("R2 read: {e:?}")))?;
-        let done = Reflect::get(&result, &JsValue::from_str("done"))
-            .ok()
-            .map(|value| value.is_truthy())
-            .unwrap_or(true);
-        if done {
-            return Ok(None);
-        }
-        let value = Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|e| std::io::Error::other(format!("R2 read value: {e:?}")))?;
-        let chunk = value.unchecked_into::<Uint8Array>().to_vec();
-        Ok(Some((chunk, Some(reader))))
-    })
+    let stream = body
+        .dyn_into::<worker::web_sys::ReadableStream>()
+        .map_err(|value| anyhow::anyhow!("R2 body is not a ReadableStream: {value:?}"))?;
+    Ok(worker::ByteStream::from(stream)
+        .map_err(|error| std::io::Error::other(format!("R2 body stream: {error}"))))
 }
 
 /// A [`SurfaceProvider`] that serves every registry from one R2 bucket, or from
@@ -872,7 +844,7 @@ impl SurfaceFetch for R2SurfaceFetch {
                 snapshot_lease_id: None,
             }));
         }
-        let stream = r2_body_stream(body_js);
+        let stream = r2_body_stream(body_js)?;
         // Bound a ranged R2 body to the exact requested length. The R2 read
         // already starts at `start`, so no leading bytes are discarded.
         let (skip, remaining) = match served {
@@ -1516,6 +1488,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use futures_util::TryStreamExt as _;
     use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsValue;
@@ -1703,7 +1676,13 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
         complete_calls
             .borrow_mut()
             .push(format!("complete:[{rendered}]"));
-        Promise::resolve(&JsValue::UNDEFINED).into()
+        let object = Object::new();
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str("\"completed-etag\""),
+        );
+        Promise::resolve(&object).into()
     }) as Box<dyn FnMut(JsValue) -> JsValue>);
 
     let abort_calls = Rc::clone(&calls);
@@ -1769,6 +1748,15 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             .await?
             .is_some(),
         "R2 ranged get response shape did not round-trip"
+    );
+    let response: worker::web_sys::Response = worker::Response::from_bytes(vec![7, 8, 9])?.into();
+    let body = response
+        .body()
+        .context("workerd fixture response returned no ReadableStream")?;
+    let streamed = r2_body_stream(body.into())?.try_concat().await?;
+    anyhow::ensure!(
+        streamed == vec![7, 8, 9],
+        "R2 ReadableStream body did not round-trip through worker-rs"
     );
     anyhow::ensure!(
         contract.create_multipart("fixture/object").await? == "upload-1",
