@@ -231,26 +231,42 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     prepare_partial_identity(&output, &image, args.no_resume, printer)?;
     let mut transfer = printer.transfer("Checking partial download", image.byte_size);
     let mut destination = SecureDestination::open(&output, args.no_resume, Some(&transfer))?;
-    let existing = destination.existing_len();
-    if existing > image.byte_size {
-        bail!("existing output is larger than the signed image size");
-    }
-    if existing < image.byte_size {
-        transfer.phase("Downloading image");
-        transfer.set_position(existing);
-        download_image_bytes(args, &image, &output, &mut destination, &transfer).await?;
-        destination.sync_all()?;
-    }
-    transfer.phase("Verifying SHA-256");
-    let size = destination.current_len()?;
-    if size != image.byte_size {
-        bail!(
-            "downloaded image size {size} does not match signed size {}",
-            image.byte_size
-        );
-    }
-    let actual = destination.final_sha256()?;
-    if actual != image.sha256 {
+    let mut resumed_from = destination.existing_len();
+    let mut may_retry_without_partial = resumed_from > 0 && !args.no_resume;
+    loop {
+        let existing = destination.existing_len();
+        if existing > image.byte_size {
+            bail!("existing output is larger than the signed image size");
+        }
+        if existing < image.byte_size {
+            transfer.phase("Downloading image");
+            transfer.set_position(existing);
+            download_image_bytes(args, &image, &output, &mut destination, &transfer).await?;
+            destination.sync_all()?;
+        }
+        transfer.phase("Verifying SHA-256");
+        let size = destination.current_len()?;
+        if size != image.byte_size {
+            bail!(
+                "downloaded image size {size} does not match signed size {}",
+                image.byte_size
+            );
+        }
+        let actual = destination.final_sha256()?;
+        if actual == image.sha256 {
+            break;
+        }
+
+        destination.restart()?;
+        if may_retry_without_partial {
+            printer.warning(
+                "resumed image failed SHA-256 verification; restarting the download from zero",
+            );
+            transfer.set_position(0);
+            resumed_from = 0;
+            may_retry_without_partial = false;
+            continue;
+        }
         bail!(
             "downloaded image SHA-256 mismatch: expected {}, got {actual}",
             image.sha256
@@ -259,7 +275,7 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     destination.commit()?;
     let elapsed = transfer.elapsed();
     transfer.finish();
-    print_download_result(&output, &image, existing, elapsed, false, printer)
+    print_download_result(&output, &image, resumed_from, elapsed, false, printer)
 }
 
 async fn download_image_bytes(
@@ -859,6 +875,27 @@ impl SecureDestination {
         Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
+    /// Clears invalid bytes through the retained descriptor for a clean retry.
+    fn restart(&mut self) -> Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .context("image destination descriptor is unavailable")?;
+        let retained = destination_identity(&file.metadata()?)?;
+        if retained.device_inode() != self.partial_identity.device_inode()
+            || !retained.single_link()
+        {
+            bail!("resumable image output identity changed before restart");
+        }
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.sync_data()?;
+        self.hasher = Some(Sha256::new());
+        self.existing = 0;
+        self.partial_identity = destination_identity(&file.metadata()?)?;
+        Ok(())
+    }
+
     fn commit(self) -> Result<()> {
         self.commit_with_hook(|| {})
     }
@@ -1407,6 +1444,28 @@ mod tests {
         assert_eq!(std::fs::read(&output).unwrap(), b"disk");
         assert!(!temp.path().join(".disk.img.aos-part").exists());
         assert_eq!(std::fs::metadata(&output).unwrap().nlink(), 1);
+    }
+
+    #[test]
+    fn secure_destination_restart_clears_bytes_and_hash_state() {
+        use std::io::Write as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("disk.img");
+        let mut destination = SecureDestination::open(&output, true, None).unwrap();
+        destination
+            .file
+            .as_mut()
+            .unwrap()
+            .write_all(b"corrupt prefix")
+            .unwrap();
+        destination.hasher.as_mut().unwrap().update(b"corrupt prefix");
+
+        destination.restart().unwrap();
+
+        assert_eq!(destination.existing_len(), 0);
+        assert_eq!(destination.current_len().unwrap(), 0);
+        assert_eq!(destination.final_sha256().unwrap(), format!("{:x}", Sha256::digest([])));
     }
 
     #[cfg(target_os = "linux")]
