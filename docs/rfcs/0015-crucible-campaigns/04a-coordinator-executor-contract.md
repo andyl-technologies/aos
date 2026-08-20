@@ -196,12 +196,12 @@ QueryFindings         ExplainObject        WatchCampaign
 Every mutation of an existing campaign carries an idempotent command ID and its
 expected snapshot ID. Creation instead uses the canonical campaign name as its
 idempotency boundary and carries expected name absence.
-`WatchCampaign` is a resumable convenience stream; the campaign ref and
-immutable objects remain authoritative. A stale or lost watch cursor therefore
-cannot lose campaign state.
+Repeated `WatchCampaign` calls form a resumable coalesced watch; the campaign
+ref and immutable objects remain authoritative. A stale or lost watch cursor
+therefore cannot lose campaign state.
 
 The strict service checkpoint defines principal-aware `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, `ApplyCampaignCommand`, and
+`DeriveCampaign`, `GetCampaign`, `WatchCampaign`, `ApplyCampaignCommand`, and
 `SubmitBranchRequest` messages. All use canonical schema version 1 and a 64 MiB
 outer bound:
 
@@ -220,6 +220,11 @@ DeriveCampaignResponseV1 = version | request_digest | source_snapshot |
 GetCampaignRequestV1 = version | principal | campaign
 GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
                         active_policy | lifecycle_state
+
+WatchCampaignRequestV1 = version | principal | campaign |
+                         optional after_snapshot
+WatchCampaignResponseV1 = version | request_digest | snapshot | lineage |
+                          active_policy | lifecycle_state | advanced
 
 ApplyCampaignCommandRequestV1 = version | principal | campaign |
                                 ControlRequestV1
@@ -281,7 +286,7 @@ Decoders reject every value outside these exact profiles.
 Stable failures are also bound to the semantics of the requested operation.
 Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
-2, 3, and 6; `GetCampaign` additionally permits 2;
+2, 3, and 6; `GetCampaign` and `WatchCampaign` additionally permit 2;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For the two snapshot-preconditioned
 mutation methods,
@@ -306,6 +311,8 @@ exact language-neutral derivations are:
 ```text
 get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
+watch_request_digest =
+  H("crucible.campaign-service.watch-campaign.v1", WatchCampaignRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 derive_request_digest =
@@ -365,13 +372,21 @@ within one ancestry pass. Immutable source authentication and generator
 preflight occur before acquiring the repository mutation lock; target absence
 is rechecked under that lock before publication.
 
-The remaining snapshot/object queries, paged graph/frontier/
-choice/finding inspection, explanation, and resumable watch messages are still
-open. The strict local transport frames exactly one canonical request or
-response as:
+`WatchCampaign.after_snapshot` is an advisory, coalesced cursor. The response
+always describes one authenticated current head and its lifecycle projection.
+`advanced` is true exactly when `after_snapshot` is absent or differs from that
+head; the returned snapshot becomes the next cursor. An unknown, stale, or
+skipped cursor therefore returns the current head without an ancestry scan, and
+losing intermediate watch responses loses no authoritative campaign state.
+Repeated bounded calls form the initial resumable watch; a blocking streaming
+adapter may layer over the same messages later.
+
+The remaining snapshot/object queries, paged graph/frontier/choice/finding
+inspection, and explanation messages are still open. The strict local
+transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV4 = "CRUCCS04" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV5 = "CRUCCS05" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -383,10 +398,12 @@ kind = 1 (GetCampaignRequestV1) |
        8 (CreateCampaignRequestV1) |
        9 (CreateCampaignResponseV1) |
       10 (DeriveCampaignRequestV1) |
-      11 (DeriveCampaignResponseV1)
+      11 (DeriveCampaignResponseV1) |
+      12 (WatchCampaignRequestV1) |
+      13 (WatchCampaignResponseV1)
 ```
 
-Loopback frame versions 1 through 3 are rejected rather than reinterpreted
+Loopback frame versions 1 through 4 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

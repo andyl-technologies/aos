@@ -19,12 +19,14 @@ use crate::{
 
 mod create;
 mod derive;
+mod watch;
 
 pub use create::{
     CreateCampaignRequest, CreateCampaignResponse, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
     MAX_CREATE_CAMPAIGN_GENERATORS,
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
+pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
 
@@ -117,6 +119,8 @@ pub enum CampaignServiceOperation {
     DeriveCampaign,
     /// Read the authenticated current campaign head and lifecycle state.
     GetCampaign,
+    /// Read the latest coalesced campaign head after an optional snapshot cursor.
+    WatchCampaign,
     /// Apply one idempotent lifecycle, budget, or policy command.
     ApplyCampaignCommand,
     /// Submit one additive operator branch request.
@@ -280,6 +284,16 @@ impl CampaignServiceFailure {
             }),
             _ => Ok(()),
         }
+    }
+
+    /// Validates that this failure is meaningful for `WatchCampaign`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create-only or mutation-only
+    /// failure that a coalesced current-head read cannot produce.
+    pub fn validate_for_watch_campaign(self) -> Result<(), CampaignCodecError> {
+        self.validate_for_get_campaign()
     }
 
     /// Validates a failure for one exact campaign-command request.
@@ -1183,6 +1197,17 @@ pub trait CampaignService {
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error>;
 
+    /// Returns the latest coalesced campaign head after an optional cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// repository access, or response construction fails.
+    fn watch_campaign(
+        &self,
+        request: &WatchCampaignRequest,
+    ) -> Result<WatchCampaignResponse, Self::Error>;
+
     /// Applies one exact idempotent campaign command.
     ///
     /// # Errors
@@ -1298,6 +1323,33 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Watches one campaign through a coalesced snapshot cursor and validates
+    /// exact response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request or cursor relation.
+    pub fn watch_campaign(
+        &self,
+        request: &WatchCampaignRequest,
+    ) -> Result<WatchCampaignResponse, CampaignClientError> {
+        let response = match self.service.watch_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_watch_campaign()
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -1537,6 +1589,28 @@ where
             .repository
             .head_with_state(request.campaign().as_str())?;
         Ok(GetCampaignResponse::new(
+            request,
+            head.snapshot_id(),
+            head.snapshot().lineage(),
+            head.snapshot().active_policy(),
+            state,
+        )?)
+    }
+
+    fn watch_campaign(
+        &self,
+        request: &WatchCampaignRequest,
+    ) -> Result<WatchCampaignResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::WatchCampaign,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let (head, state) = self
+            .repository
+            .head_with_state(request.campaign().as_str())?;
+        Ok(WatchCampaignResponse::new(
             request,
             head.snapshot_id(),
             head.snapshot().lineage(),
@@ -1849,6 +1923,13 @@ mod tests {
             Ok(self.response.clone())
         }
 
+        fn watch_campaign(
+            &self,
+            _request: &WatchCampaignRequest,
+        ) -> Result<WatchCampaignResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -1915,6 +1996,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn watch_campaign(
+            &self,
+            _request: &WatchCampaignRequest,
+        ) -> Result<WatchCampaignResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -1951,6 +2039,13 @@ mod tests {
             &self,
             _request: &GetCampaignRequest,
         ) -> Result<GetCampaignResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn watch_campaign(
+            &self,
+            _request: &WatchCampaignRequest,
+        ) -> Result<WatchCampaignResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

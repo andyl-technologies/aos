@@ -40,7 +40,8 @@ pub use campaign_service::{
     DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest, GetCampaignResponse,
     MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
     MAX_CREATE_CAMPAIGN_GENERATORS, RepositoryCampaignService, RepositoryCampaignServiceError,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
