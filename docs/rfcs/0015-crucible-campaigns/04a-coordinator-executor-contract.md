@@ -778,6 +778,14 @@ quota, execution-quantum charging backend, launch-command resource-profile
 admission, pinned run-directory ownership, and concrete session wiring remain
 mandatory before the guarded path may launch a campaign QEMU.
 
+Every validated `QemuLaunchCommand` also exposes a stable operational resource
+baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,
+and root-overlay presence. Executor admission MUST reject before spawn when the
+admitted vCPU, resident-memory, or aggregate writable-byte ceiling is below
+that baseline. Guest RAM is only the minimum resident baseline; the concrete
+guard MUST retain QEMU/plugin overhead within the same admitted maximum, and a
+root overlay consumes only the quota remaining after the VMState minimum.
+
 The realization executor owns one unified event log resumed from the realized
 runtime offset. Replay requires the caller's runtime offset to equal that
 installed offset before any backend work; the modeled driver receives only a

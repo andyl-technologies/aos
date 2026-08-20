@@ -188,9 +188,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   refuses implicit image-tool provisioning on the guarded spawn path.
   Campaign-level supervisor ownership, the concrete cgroup factory and
   persistent reaper, aggregate filesystem quota, execution-quantum charging,
-  launch-profile admission, pinned run-directory ownership, the modeled attempt
-  driver, concrete session wiring, and responsive multi-slot scheduling remain
-  open.
+  pinned run-directory ownership, the modeled attempt driver, concrete session
+  wiring, and responsive multi-slot scheduling remain open. Validated launch
+  commands now expose and exact-check their fixed vCPU, guest-memory,
+  exact-VMState writable minimum, and root-overlay requirements against an
+  admitted resource ceiling; the concrete session must invoke that check before
+  spawn.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
   projection rebuilding; implement snapshot-bound paged planner scans whose
