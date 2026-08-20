@@ -24,8 +24,8 @@ pub use snapshot_codec::QemuVmSnapshotCodecError;
 mod node_executor;
 #[cfg(target_os = "linux")]
 pub use node_executor::{
-    QemuNodeRealizationExecutor, QemuNodeRealizationLauncher, QemuRealizedNodeBackend,
-    QemuWarmRestoreNodeLauncher,
+    QemuLiveAttemptBackend, QemuNodeRealizationExecutor, QemuNodeRealizationLauncher,
+    QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
@@ -1144,6 +1144,14 @@ pub enum QemuVmRealizationError {
     Canceled {
         /// Operation that was prevented by cancellation.
         operation: &'static str,
+    },
+    /// A failed reap transferred the live process and limits to quarantine.
+    #[error("{operation} could not attest process reap; enforcement is quarantined: {message}")]
+    ReapQuarantined {
+        /// Cleanup operation that could not prove reap.
+        operation: &'static str,
+        /// Diagnostic from the failed kill-and-reap ladder.
+        message: String,
     },
     /// A checkpoint-store operation failed.
     #[error("{operation} store operation failed: {message}")]

@@ -745,9 +745,32 @@ execution-quantum ceilings plus the cancellation signal. That session owns the
 live backend capability used by the typed post-materialization driver, checks
 cancellation during blocking operations and between bounded quanta, and runs a
 mandatory kill-and-reap cleanup path after success, failure, or cancellation.
+The realization executor owns replacement and VMState authority; the driver
+receives a narrow mutable live-backend facade that excludes generic snapshot,
+restore, shutdown, and process-replacement operations. The driver also receives
+only an operational-boundary view of the resource guard, never its release or
+quarantine authority. Every blocking launch, restore, and replay call receives
+the exact guard so cancellation can be observed while the call is in progress,
+not only before and after it. The session exact-binds the originating resource,
+retention, and cancellation context, shuts down the backend before releasing
+that guard, and repeats each incomplete cleanup phase from its drop backstop. A
+failed reap transfers the guard to supervisor-owned quarantine; the limits stay
+active and another attempt cannot use that executor until reap is attested.
+An error from a guarded realization call triggers a separate failed-realization
+reap attestation that covers children launched before active-backend
+installation; absent that attestation, the session quarantines the guard and
+poisons the executor. Cleanup failure takes precedence over an earlier modeled
+failure so the supervisor cannot mistake quarantined capacity for a normally
+finished slot.
 Checkpoint-store lookups receive the same cancellation signal, must bound their
 blocking work, and are cancellation-checked before, during, and after each
 call.
+
+Coverage-enabled live advancement, final coverage drain, and construction of
+the corresponding canonical observation evidence remain part of the concrete
+modeled-driver/full-flight gate. The current narrow QEMU-node facade fails
+closed when coverage requires the unified event-log path; this contract slice
+does not claim complete campaign coverage evidence.
 Only errors explicitly classified as store or executor unavailability are
 retryable; coarse store/executor failures and invalid checkpoints, ancestry,
 authorization, replay-oracle evidence, or ready-point policy fail terminally.
