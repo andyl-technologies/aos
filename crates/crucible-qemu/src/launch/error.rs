@@ -4,6 +4,35 @@ use thiserror::Error;
 
 use super::QemuPreSpawnLaunchValidationError;
 
+/// Reports an admitted executor ceiling below a QEMU launch requirement.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchResourceError {
+    /// The command's fixed vCPU topology exceeds the admitted ceiling.
+    #[error("QEMU launch requires {required} vCPUs but executor admitted {admitted}")]
+    VirtualCpus {
+        /// Fixed `-smp` vCPU count.
+        required: u32,
+        /// Admitted executor vCPU ceiling.
+        admitted: u32,
+    },
+    /// The command's guest RAM alone exceeds the admitted resident ceiling.
+    #[error("QEMU launch requires {required} guest-memory bytes but executor admitted {admitted}")]
+    ResidentBytes {
+        /// Fixed guest RAM baseline.
+        required: u64,
+        /// Admitted resident-memory ceiling.
+        admitted: u64,
+    },
+    /// The exact-VMState container cannot fit below the admitted disk ceiling.
+    #[error("QEMU launch requires {required} writable bytes but executor admitted {admitted}")]
+    WritableBytes {
+        /// Minimum writable VMState/container bytes.
+        required: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        admitted: u64,
+    },
+}
+
 /// Reports an invalid QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {

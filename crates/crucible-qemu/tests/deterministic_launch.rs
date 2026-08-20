@@ -12,8 +12,8 @@ use crucible_qemu::{
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
     NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
     QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
-    validate_x86_whitebox_hmp_mtree,
+    QemuLaunchResourceError, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
+    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -94,6 +94,50 @@ fn default_launch_command() -> QemuLaunchCommand {
             &default_fault_node(),
         )
         .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
+}
+
+#[test]
+fn launch_command_exposes_and_validates_its_static_resource_baseline() {
+    let profile = deterministic(
+        LaunchProfileCandidate::default()
+            .with_memory_mib(768)
+            .with_smp_vcpus(4),
+    );
+    let command = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &default_fault_node(),
+        )
+        .unwrap_or_else(|error| panic!("resource-profile launch should build: {error}"));
+    let requirements = command.resource_requirements();
+    let mebibyte = 1024_u64 * 1024;
+
+    assert_eq!(requirements.virtual_cpus(), 4);
+    assert_eq!(requirements.guest_memory_bytes(), 768 * mebibyte);
+    assert_eq!(requirements.minimum_writable_bytes(), 1280 * mebibyte);
+    assert!(requirements.has_root_overlay());
+    assert!(
+        requirements
+            .validate_ceiling(4, 768 * mebibyte, 1280 * mebibyte)
+            .is_ok()
+    );
+    assert!(matches!(
+        requirements.validate_ceiling(3, u64::MAX, u64::MAX),
+        Err(QemuLaunchResourceError::VirtualCpus {
+            required: 4,
+            admitted: 3
+        })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, 767 * mebibyte, u64::MAX),
+        Err(QemuLaunchResourceError::ResidentBytes { .. })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, u64::MAX, 1279 * mebibyte),
+        Err(QemuLaunchResourceError::WritableBytes { .. })
+    ));
 }
 
 fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfile {

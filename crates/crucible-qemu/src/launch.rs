@@ -40,7 +40,7 @@ pub use crucible_shmem_network::{
 };
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
-pub use error::QemuLaunchCommandError;
+pub use error::{QemuLaunchCommandError, QemuLaunchResourceError};
 use helpers::{
     content_hash_hex, validate_fd, validate_launch_text, validate_node_icount_shifts,
     validate_overlay_file_name, validate_store_path,
@@ -451,6 +451,80 @@ pub struct QemuLaunchCommand {
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    resource_requirements: QemuLaunchResourceRequirements,
+}
+
+/// Static host-resource baseline derived from one validated launch command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLaunchResourceRequirements {
+    virtual_cpus: u32,
+    guest_memory_bytes: u64,
+    minimum_writable_bytes: u64,
+    root_overlay: bool,
+}
+
+impl QemuLaunchResourceRequirements {
+    /// Returns the exact fixed virtual-CPU count.
+    #[must_use]
+    pub const fn virtual_cpus(self) -> u32 {
+        self.virtual_cpus
+    }
+
+    /// Returns the fixed guest-RAM baseline in bytes.
+    #[must_use]
+    pub const fn guest_memory_bytes(self) -> u64 {
+        self.guest_memory_bytes
+    }
+
+    /// Returns the minimum writable bytes needed by the VMState container.
+    #[must_use]
+    pub const fn minimum_writable_bytes(self) -> u64 {
+        self.minimum_writable_bytes
+    }
+
+    /// Returns whether the launch also uses a writable root overlay.
+    #[must_use]
+    pub const fn has_root_overlay(self) -> bool {
+        self.root_overlay
+    }
+
+    /// Validates this fixed baseline against admitted executor ceilings.
+    ///
+    /// The resident value is only the guest-RAM baseline; the concrete host
+    /// guard must still reserve QEMU/plugin overhead within the admitted
+    /// ceiling. Likewise, a root overlay consumes the remaining aggregate
+    /// writable quota after the VMState minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchResourceError`] when vCPU, resident-memory, or
+    /// writable-byte admission is below the command's fixed baseline.
+    pub const fn validate_ceiling(
+        self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Result<(), QemuLaunchResourceError> {
+        if self.virtual_cpus > maximum_vcpus {
+            return Err(QemuLaunchResourceError::VirtualCpus {
+                required: self.virtual_cpus,
+                admitted: maximum_vcpus,
+            });
+        }
+        if self.guest_memory_bytes > maximum_resident_bytes {
+            return Err(QemuLaunchResourceError::ResidentBytes {
+                required: self.guest_memory_bytes,
+                admitted: maximum_resident_bytes,
+            });
+        }
+        if self.minimum_writable_bytes > maximum_writable_bytes {
+            return Err(QemuLaunchResourceError::WritableBytes {
+                required: self.minimum_writable_bytes,
+                admitted: maximum_writable_bytes,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl QemuLaunchCommand {
@@ -506,6 +580,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
         &self.fault_capability_requirement
+    }
+
+    /// Returns the static resource baseline authenticated by this command.
+    #[must_use]
+    pub const fn resource_requirements(&self) -> QemuLaunchResourceRequirements {
+        self.resource_requirements
     }
 
     /// Appends one content-addressed observation-only QEMU plugin.
@@ -773,6 +853,13 @@ impl QemuLaunchCommandBuilder {
         }
 
         let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
+        let mebibyte = 1024_u64 * 1024;
+        let resource_requirements = QemuLaunchResourceRequirements {
+            virtual_cpus: u32::from(self.profile.smp_vcpus),
+            guest_memory_bytes: u64::from(self.profile.memory_mib) * mebibyte,
+            minimum_writable_bytes: vmstate_size_mib * mebibyte,
+            root_overlay: self.vm.root_image().is_some(),
+        };
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
@@ -843,6 +930,7 @@ impl QemuLaunchCommandBuilder {
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
             fault_capability_requirement,
+            resource_requirements,
         })
     }
 }
