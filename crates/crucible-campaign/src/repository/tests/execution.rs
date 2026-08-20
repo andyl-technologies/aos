@@ -1569,6 +1569,99 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     );
     assert_eq!(ready.statistics().admitted_children, 1);
 
+    let child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test-observation-child",
+        b"finite-expansion-static-observation",
+    ));
+    let child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            b"finite expansion child".to_vec(),
+        )
+        .expect("publish finite expansion child");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("empty measurements"))
+        .expect("publish finite expansion measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("empty properties"),
+        )
+        .expect("publish finite expansion properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("empty coverage"),
+        )
+        .expect("publish finite expansion coverage");
+    let observation = Observation::new(
+        first_admitted.attempt,
+        child,
+        child_content,
+        path.id().expect("first path id"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([first_request.opportunity()]),
+    )
+    .expect("finite expansion observation");
+    let observed = repository
+        .publish_observation(
+            "finite-expansion",
+            first_admitted.new_snapshot,
+            &observation,
+        )
+        .expect("publish finite expansion observation");
+    let observed_id = repository
+        .project_finite_expansion(
+            observed.new_snapshot,
+            first_request.branch_point(),
+            None,
+            10,
+        )
+        .expect("observation-bearing static projection");
+    let observed_state = repository
+        .load_expansion_state(observed_id)
+        .expect("load observation-bearing static projection");
+    assert_eq!(
+        observed_state
+            .continuations()
+            .get(&first_request.id().expect("first request id")),
+        Some(&ContinuationState::Ready)
+    );
+    assert_eq!(observed_state.statistics().admitted_children, 1);
+    assert_eq!(observed_state.statistics().completed_visits, 0);
+    assert_eq!(
+        observed_state.observation_root(),
+        repository
+            .head("finite-expansion")
+            .expect("observed head")
+            .snapshot()
+            .roots()
+            .observations
+    );
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .load_expansion_state(observed_id)
+            .expect("restart-load observation-bearing static projection"),
+        observed_state
+    );
+    assert_eq!(
+        restarted
+            .project_finite_expansion(
+                observed.new_snapshot,
+                first_request.branch_point(),
+                None,
+                10,
+            )
+            .expect("restart-project observation-bearing static projection"),
+        observed_id
+    );
+
     let admitted_head = repository.head("finite-expansion").expect("admitted head");
     let second_proposal = finite_proposal(
         &first_request,
@@ -1697,6 +1790,34 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     assert!(matches!(
         repository.load_expansion_state(
             ExpansionStateId::from_content_id(forged_content).expect("forged expansion id")
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "expansion-state-owner-recomputation-mismatch"
+        })
+    ));
+
+    let forged_observation = ExpansionState::new(
+        observed_state.source_snapshot(),
+        observed_state.input_view(),
+        observed_state.branch_point(),
+        observed_state.request_root(),
+        observed_state.proposal_root(),
+        observed_state.admission_root(),
+        empty,
+        observed_state.statistics(),
+        observed_state.page_after(),
+        observed_state.page_size(),
+        observed_state.next_after(),
+        observed_state.continuations().clone(),
+    )
+    .expect("structurally valid forged observation root");
+    let forged_observation_content = repository
+        .put_expansion_state(&forged_observation)
+        .expect("put forged observation projection");
+    assert!(matches!(
+        repository.load_expansion_state(
+            ExpansionStateId::from_content_id(forged_observation_content)
+                .expect("forged observation expansion id")
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "expansion-state-owner-recomputation-mismatch"
