@@ -9,7 +9,7 @@ use crate::cli::{Cli, Commands};
 use crate::commands;
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
-use aos_core::output::Printer;
+use aos_core::output::{Printer, ProgressMode};
 
 /// Installs process hooks, parses the multicall command line, and exits.
 pub(crate) async fn main() {
@@ -70,7 +70,21 @@ pub(crate) async fn main() {
 /// they work even when `nix` is absent or the working directory is not a repo
 /// root.
 async fn run(cli: &Cli) -> Result<()> {
-    let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
+    match cli.color {
+        crate::cli::ColorChoice::Auto if std::env::var_os("NO_COLOR").is_some() => {
+            console::set_colors_enabled_stderr(false);
+        }
+        crate::cli::ColorChoice::Auto => {}
+        crate::cli::ColorChoice::Always => console::set_colors_enabled_stderr(true),
+        crate::cli::ColorChoice::Never => console::set_colors_enabled_stderr(false),
+    }
+    let progress_mode = match cli.progress {
+        crate::cli::ProgressChoice::Auto => ProgressMode::Auto,
+        crate::cli::ProgressChoice::Tty => ProgressMode::Tty,
+        crate::cli::ProgressChoice::Plain => ProgressMode::Plain,
+        crate::cli::ProgressChoice::Off => ProgressMode::Off,
+    };
+    let printer = Printer::new(cli.verbose, cli.quiet, cli.json).with_progress_mode(progress_mode);
 
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
@@ -113,6 +127,11 @@ async fn run(cli: &Cli) -> Result<()> {
     // Signed image discovery and downloads use only the Hub API.
     if let Commands::Image { command } = &cli.command {
         return commands::image::run(command, &printer).await;
+    }
+
+    // Local VM runs use downloaded artifacts and host-side QEMU tools.
+    if let Commands::Vm { command } = &cli.command {
+        return commands::vm::run(command, &printer);
     }
 
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
@@ -216,6 +235,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
+        Commands::Vm { .. } => unreachable!(),
     }
 }
 

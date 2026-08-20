@@ -29,4 +29,5 @@ pub mod show;
 pub mod system;
 pub mod test;
 pub mod token;
+pub mod vm;
 pub mod why_depends;

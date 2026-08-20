@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::cli::SystemCmd;
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// `aos system <build|image|eval>` — dispatch to the system operation.
 ///
@@ -34,7 +34,7 @@ fn build(nix: &NixRunner, printer: &Printer) -> Result<()> {
 
     printer.info("Building system...");
 
-    let spinner = create_spinner("building system");
+    let spinner = printer.activity("building system");
     let store_path = nix.build(attr, None).with_context(|| "building system")?;
     spinner.finish_and_clear();
 
@@ -57,7 +57,7 @@ fn image(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Building image...");
     printer.info(&format!("Output: {out_link}"));
 
-    let spinner = create_spinner("building image");
+    let spinner = printer.activity("building image");
     let store_path = nix
         .build(attr, Some(out_link))
         .with_context(|| "building image")?;
@@ -81,7 +81,7 @@ fn eval(nix: &NixRunner, printer: &Printer) -> Result<()> {
 
     printer.info("Evaluating system...");
 
-    let spinner = create_spinner("evaluating system");
+    let spinner = printer.activity("evaluating system");
     let value = nix.eval_json(attr).with_context(|| "evaluating system")?;
     spinner.finish_and_clear();
 
