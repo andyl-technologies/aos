@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crucible::ContentHash;
+
 use super::*;
 
 const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
@@ -205,8 +207,14 @@ fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn E
     let temporary = tempfile::tempfile()?;
     let duplicate = duplicate_cloexec_fd(temporary.as_raw_fd(), "duplicate forged contract fd")?;
     let credentials = valid_distinct_credentials()?;
-    let error = match QemuChildProcessContract::new(temporary.into(), duplicate, 4096, credentials)
-    {
+    let error = match QemuChildProcessContract::new(
+        temporary.into(),
+        duplicate,
+        1,
+        4096,
+        4096,
+        credentials,
+    ) {
         Err(error) => error,
         Ok(_) => panic!("regular files must not construct a containment contract"),
     };
@@ -277,6 +285,45 @@ fn prepared_vmstate_container_rejects_symlinks() -> Result<(), Box<dyn Error>> {
         Ok(()) => panic!("prepared VMState path must not follow a symlink"),
     };
     assert!(matches!(error, QemuSpawnError::Io { .. }));
+    Ok(())
+}
+
+#[test]
+fn guarded_spawn_rejects_underprovisioned_launch_before_run_directory_access()
+-> Result<(), Box<dyn Error>> {
+    let (_cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let contract = QemuChildProcessContract::for_test_with_resources(
+        cgroup_write,
+        cancellation,
+        u32::MAX,
+        1,
+        u64::MAX,
+    );
+    let command = guarded_resource_test_command()?;
+    let missing_run_directory = std::env::temp_dir().join(format!(
+        "crucible-missing-guarded-run-directory-{}-{}",
+        std::process::id(),
+        unique_temp_suffix()
+    ));
+
+    let error = match spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+        &command,
+        &missing_run_directory,
+        4096,
+        &contract,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("underprovisioned guarded launch must fail before spawn"),
+    };
+
+    assert!(matches!(
+        error,
+        QemuSpawnError::LaunchResources {
+            source: crate::QemuLaunchResourceError::ResidentBytes { admitted: 1, .. }
+        }
+    ));
+    assert!(!missing_run_directory.exists());
     Ok(())
 }
 
@@ -528,6 +575,34 @@ fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
     ));
     std::fs::create_dir(&path)?;
     Ok(path)
+}
+
+fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> {
+    let profile = crate::DeterministicLaunchProfile::conservative_default()?;
+    let vm = crate::QemuVmLaunchConfig::new(
+        "vm-a",
+        crate::QemuLaunchArtifact::new(
+            ContentHash::from_canonical_material("kernel", "guarded-spawn-test"),
+            "/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
+        ),
+        crate::QemuLaunchArtifact::new(
+            ContentHash::from_canonical_material("root-image", "guarded-spawn-test"),
+            "/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2",
+        ),
+    );
+    let plugin = crate::QemuLaunchPluginConfig::new(
+        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+        0,
+    )
+    .with_fault_target_node("vm-a");
+    Ok(crate::QemuLaunchCommandBuilder::new_for_live_gate(
+        profile,
+        vm,
+        "/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
+        plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
+    )
+    .build()?)
 }
 
 fn unique_temp_suffix() -> u64 {

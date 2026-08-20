@@ -1029,7 +1029,7 @@ pub struct LinuxQemuCgroup {
     path: PathBuf,
     parent_directory: OwnedFd,
     name: String,
-    maximum_tasks: u32,
+    limits: LinuxQemuCgroupLimits,
     control: LinuxQemuCgroupControl,
 }
 
@@ -1098,7 +1098,7 @@ impl LinuxQemuCgroup {
             path: cleanup.path.clone(),
             parent_directory: cleanup.parent_directory,
             name: name.clone(),
-            maximum_tasks: limits.maximum_tasks,
+            limits,
             control: LinuxQemuCgroupControl {
                 parent_directory: control_parent_directory,
                 name,
@@ -1147,8 +1147,10 @@ impl LinuxQemuCgroup {
 
     /// Mints one unforgeable child-side containment contract.
     ///
-    /// `maximum_file_bytes` is defense-in-depth only; the concrete attempt
-    /// store must also enforce its aggregate filesystem quota.
+    /// `maximum_writable_bytes` is both the admitted aggregate writable-byte
+    /// ceiling checked against the launch profile and a conservative per-file
+    /// `RLIMIT_FSIZE` backstop. The concrete attempt store must still enforce
+    /// that aggregate filesystem quota across every writable artifact.
     /// `child_user_id` and `child_group_id` must be non-root and distinct from
     /// every real, effective, saved, or supplementary supervisor identity.
     /// Guarded pre-exec clears supplementary groups and switches all real,
@@ -1161,7 +1163,7 @@ impl LinuxQemuCgroup {
     /// duplicated, or the sealed contract rejects their provenance.
     pub fn child_process_contract(
         &self,
-        maximum_file_bytes: u64,
+        maximum_writable_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
     ) -> Result<QemuChildProcessContract, LinuxQemuCgroupError> {
@@ -1198,7 +1200,9 @@ impl LinuxQemuCgroup {
         QemuChildProcessContract::new(
             cgroup_procs,
             cancellation_event,
-            maximum_file_bytes,
+            self.limits.maximum_vcpus,
+            self.limits.maximum_resident_bytes,
+            maximum_writable_bytes,
             credentials,
         )
         .map_err(|source| LinuxQemuCgroupError::Io {
@@ -1233,7 +1237,7 @@ impl LinuxQemuCgroup {
             &mut cgroup_procs,
             &self.path,
             process.process_id,
-            self.maximum_tasks,
+            self.limits.maximum_tasks,
         )? {
             return Err(LinuxQemuCgroupError::ProcessMembership {
                 path: self.path.clone(),
@@ -2288,7 +2292,7 @@ mod tests {
             path: directory.path().to_owned(),
             parent_directory: open_directory(directory.path(), "open watcher parent fixture")?,
             name: String::from("watcher-fixture"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control,
         };
 
@@ -2347,7 +2351,7 @@ mod tests {
             path: directory.path().to_owned(),
             parent_directory: open_directory(directory.path(), "open closed parent fixture")?,
             name: String::from("closed"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control,
         };
 
@@ -2458,7 +2462,7 @@ mod tests {
                 &cgroup_path,
             )?,
             name: String::from("attempt"),
-            maximum_tasks: 16,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 16)?,
             control: LinuxQemuCgroupControl {
                 parent_directory,
                 name: String::from("attempt"),
@@ -2608,7 +2612,7 @@ mod tests {
                 "open direct-child identity parent fixture",
             )?,
             name: String::from("direct-child-identity"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control,
         };
 
@@ -2646,7 +2650,7 @@ mod tests {
                 "open direct-child handoff parent fixture",
             )?,
             name: String::from("direct-child-handoff"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control,
         };
 
@@ -2680,7 +2684,7 @@ mod tests {
                 "open first lifecycle parent fixture",
             )?,
             name: String::from("same-path"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control: first_control,
         };
         let child = first
@@ -2696,7 +2700,7 @@ mod tests {
                 "open second lifecycle parent fixture",
             )?,
             name: String::from("same-path"),
-            maximum_tasks: 1,
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
             control: second_control,
         };
         assert!(!second.owns_child_authority(&child));

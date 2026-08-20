@@ -810,9 +810,14 @@ to configured non-root values. Admission requires both IDs to differ from every
 real, effective, and saved supervisor user/group identity and its bounded
 supplementary-group set. `no_new_privs` is set before the credential switch so a
 later `exec` cannot regain privilege. Guarded spawn refuses implicit `qemu-img`
-work and requires an already-provisioned non-symlink VMState container. The
-delegated hierarchy MUST NOT grant those child credentials an independent write
-path back to its controls.
+work and requires an already-provisioned non-symlink VMState container. Before
+accessing that directory or allocating child descriptors, it checks the launch
+command's exact vCPU, guest-memory, and minimum writable-byte baseline against
+the ceilings sealed into the child contract. The writable ceiling also supplies
+a conservative per-file `RLIMIT_FSIZE`; a separate attempt-owned filesystem
+quota remains required to enforce the aggregate. The delegated hierarchy MUST
+NOT grant those child credentials an independent write path back to its
+controls.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
@@ -831,10 +836,9 @@ and leaves its worker retaining authority until empty, fail-closed.
 This authority is not yet the production guard. A nondroppable daemon owner
 that preserves the lifecycle-bound child/cgroup/watcher quarantine, aggregate
 filesystem quota, concrete guard composition of the execution-quantum counter,
-invocation of launch-command resource-profile admission, pinned run-directory
-ownership, and concrete session wiring remain mandatory before the guarded path
-may launch a campaign QEMU. Until then the cgroup authority remains
-crate-internal.
+pinned run-directory ownership, and concrete session wiring remain mandatory
+before the guarded path may launch a campaign QEMU. Until then the cgroup
+authority remains crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

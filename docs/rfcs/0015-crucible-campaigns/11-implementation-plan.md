@@ -217,6 +217,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
+  Guarded spawn now rejects before run-directory access or descriptor
+  allocation unless the command's fixed vCPU, guest-memory, and minimum
+  writable-byte requirements fit the exact ceilings sealed into the child
+  contract. The writable ceiling also supplies a conservative per-file limit;
+  aggregate enforcement remains the responsibility of the open filesystem
+  quota composition.
   A nondroppable daemon owner preserving the lifecycle-bound combined
   child/cgroup/watcher process quarantine, aggregate
   filesystem quota, execution-quantum counter composition, pinned run-directory
