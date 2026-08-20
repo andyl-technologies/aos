@@ -216,7 +216,46 @@ SubmitCampaignBranchRequestV1 = version | principal | campaign |
                                 expected_snapshot | BranchRequestV1
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
+
+CampaignServiceErrorResponseV1 = version | request_digest | failure
 ```
+
+The closed `failure` encoding is:
+
+```text
+0 Unauthorized
+1 AuthorizationUnavailable
+2 NotFound
+3 AlreadyExists
+4 Stale(expected_snapshot, current_snapshot)
+5 CommandReuse
+6 ConcurrentUpdate
+7 InvalidTransition(CampaignState)
+8 InvalidRequest
+9 BackendUnauthorized
+10 ResourceExhausted
+11 Unavailable
+12 IntegrityFailure
+13 ProtocolViolation
+```
+
+Every implementation derives the same closed retry disposition:
+
+| Disposition | Failure tags | Required caller action |
+|---|---|---|
+| `RetryAfterBackoff` | 1, 10, 11 | Retry the same canonical request only after authorization/backend/capacity recovery and bounded backoff. |
+| `RefreshCampaign` | 4, 6 | Read the authoritative head, reconcile the returned state, and construct a new request; do not blindly replay changed intent. |
+| `Reauthenticate` | 0, 9 | Refresh or correct caller/storage credentials before retrying. |
+| `OperatorAction` | 2, 3, 7 | Require explicit user/operator resolution of the missing/existing campaign or illegal lifecycle action. |
+| `DoNotRetry` | 5, 8, 12, 13 | Do not repeat the request; correct the idempotency conflict, invalid data/software, repository integrity failure, or framing/canonical/response-contract violation. |
+
+The Rust contract exposes this derivation as
+`CampaignServiceFailure::retry_disposition`; other-language implementations
+MUST produce the same result. Internal canonical or authenticated repository
+failures map to `IntegrityFailure`, never `InvalidRequest`, because all service
+methods receive already-decoded strict request values. `ProtocolViolation` is
+reserved for a peer's framing, canonical-body, or response-contract failure and
+never reports repository corruption.
 
 `principal` is a nonempty UTF-8 string of at most 512 bytes whose bytes are
 ASCII alphanumeric or one of `.`, `_`, `-`, `/`, and `:`. `campaign` is a
@@ -224,6 +263,18 @@ nonempty UTF-8 string of at most 512 bytes in the repository reference-name
 profile: slash-separated segments are 1 through 255 bytes, neither `.` nor
 `..`, and contain only ASCII alphanumeric bytes or `.`, `_`, and `-`.
 Decoders reject every value outside these exact profiles.
+
+Stable failures are also bound to the semantics of the requested operation.
+Every operation permits the common tags 0, 1, 2, 8, 9, 10, 11, 12, and 13.
+Beyond that common set, `GetCampaign` permits no operation-specific tag;
+`ApplyCampaignCommand` permits 4, 5, 6, and 7; and
+`SubmitCampaignBranch` permits 4, 5, and 6. Tag 3 is create-only and is invalid
+for all three operations in this protocol version. For both mutation methods,
+`Stale.expected_snapshot` MUST equal that exact request's snapshot precondition,
+and `Stale.current_snapshot` MUST differ from `Stale.expected_snapshot`. A tag
+outside the operation's allowed set or an invalid `Stale` basis is
+`ProtocolViolation`; a loopback client rejects the response and poisons the
+connection.
 
 For command responses, `prior_snapshot` is the accepted command's precondition.
 For branch responses, it is the snapshot that first accepted the immutable
@@ -266,27 +317,29 @@ open. The strict local transport frames exactly one canonical request or
 response as:
 
 ```text
-CampaignLoopbackFrameV1 = "CRUCCS01" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV2 = "CRUCCS02" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
        3 (ApplyCampaignCommandRequestV1) |
        4 (ApplyCampaignCommandResponseV1) |
        5 (SubmitCampaignBranchRequestV1) |
-       6 (SubmitCampaignBranchResponseV1)
+       6 (SubmitCampaignBranchResponseV1) |
+       7 (CampaignServiceErrorResponseV1)
 ```
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
 plus its 16-byte header. Both peers enforce nonzero finite absolute read/write
 deadlines, reject unknown kinds, nonzero reserved bytes, trailing/noncanonical
 bodies, and cross-request responses, and shut down both stream directions after
-any framing, service, or I/O error. One
+any framing, canonical, or I/O error. A request-bound semantic service failure
+uses kind 7 and leaves the connection reusable. One
 connection serializes complete exchanges so concurrent local callers cannot
 interleave frames; a concurrent caller receives an immediate retryable
 connection-busy transport error rather than waiting outside the operation
 deadline. The loopback binding is not an alternate control plane: it invokes
 the same authorized `CampaignService`, and the checked client performs the same
-successful-response validation as direct calls.
+response binding and stable failure mapping as direct calls.
 
 The frame itself does not authenticate a Unix peer. Before dispatch, the
 listener MUST authenticate the connected peer (for example with an exact local
@@ -294,12 +347,10 @@ peer credential) and bind that capability, or an exact-request proof, into the
 per-connection `CampaignService` authorizer. A raw connected stream plus the
 self-asserted `principal` field is insufficient and non-conforming.
 
-This checkpoint carries successful service responses only. A service error
-closes the stream and reaches the client as a transport failure; the versioned
-canonical error envelope that preserves authorization, stale/conflict, and
-retry taxonomy across direct and loopback calls remains required before this
-binding satisfies full CCOMP-7/CCOMP-10 equivalence. The nested CLI and
-remaining service operations are also still open.
+The stable error envelope preserves authorization, stale/conflict, invalid
+transition, resource, availability, and integrity meaning across direct and
+loopback calls without exposing backend paths or private diagnostics. The
+nested CLI and remaining service operations are still open.
 
 - **[CCOMP-10]** The CLI MUST target `CampaignService` through a client
   abstraction and MUST behave identically whether the endpoint is embedded,

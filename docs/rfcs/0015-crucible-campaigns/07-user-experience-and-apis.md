@@ -324,11 +324,12 @@ messages over the semantic repository owner. It is an implementation
 checkpoint, not yet user porcelain: the nested CLI, create/derive operations,
 paged inspection, and watch stream remain required before the service is
 complete. The bounded versioned Unix-stream loopback binding is now
-implemented for successful responses. Canonical service-error envelopes that
-preserve authorization/conflict/retry meaning and nested CLI wiring remain
-open. Listener-side Unix-peer authentication and binding that credential into
-the per-connection principal authorizer are mandatory production wiring; the
-frame never treats its self-asserted principal field as authentication.
+implemented with a request-bound stable error envelope preserving authorization,
+conflict, transition, resource, availability, and integrity meaning. Nested CLI
+wiring remains open. Listener-side Unix-peer authentication and binding that
+credential into the per-connection principal authorizer are mandatory
+production wiring; the frame never treats its self-asserted principal field as
+authentication.
 
 All mutation requests carry command ID, expected snapshot ID, and authenticated
 principal. CAS conflict responses return the current head and enough detail to

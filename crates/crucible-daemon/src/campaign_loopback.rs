@@ -3,22 +3,24 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV2 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
 //!        3 (ApplyCampaignCommandRequestV1) |
 //!        4 (ApplyCampaignCommandResponseV1) |
 //!        5 (SubmitCampaignBranchRequestV1) |
-//!        6 (SubmitCampaignBranchResponseV1)
-//! magic = "CRUCCS01"
+//!        6 (SubmitCampaignBranchResponseV1) |
+//!        7 (CampaignServiceErrorResponseV1)
+//! magic = "CRUCCS02"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
 //! local callers cannot interleave frames; a competing caller receives an
 //! immediate connection-busy error. Absolute read and write deadlines reject
-//! partial or drip-fed frames, and every protocol, I/O, canonical, or service
-//! error poisons the connection by shutting down both stream directions.
+//! partial or drip-fed frames, and every protocol, I/O, or canonical error
+//! poisons the connection by shutting down both stream directions. A valid
+//! request-bound service error leaves the connection reusable.
 //!
 //! Framing does not authenticate the connected peer. A listener must bind the
 //! stream's authenticated peer credential or an exact-request proof into the
@@ -28,16 +30,18 @@
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignCodecError, CampaignService,
+    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureSource,
     GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
     SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS01";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS02";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -45,6 +49,7 @@ const APPLY_COMMAND_REQUEST_KIND: u8 = 3;
 const APPLY_COMMAND_RESPONSE_KIND: u8 = 4;
 const SUBMIT_BRANCH_REQUEST_KIND: u8 = 5;
 const SUBMIT_BRANCH_RESPONSE_KIND: u8 = 6;
+const SERVICE_ERROR_RESPONSE_KIND: u8 = 7;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -93,6 +98,7 @@ impl Default for LoopbackCampaignTimeouts {
 pub struct LoopbackCampaignService {
     stream: Mutex<UnixStream>,
     timeouts: LoopbackCampaignTimeouts,
+    poisoned: AtomicBool,
 }
 
 impl LoopbackCampaignService {
@@ -119,6 +125,7 @@ impl LoopbackCampaignService {
         Ok(Self {
             stream: Mutex::new(stream),
             timeouts,
+            poisoned: AtomicBool::new(false),
         })
     }
 
@@ -138,26 +145,52 @@ impl LoopbackCampaignService {
         &self,
         request_kind: u8,
         response_kind: u8,
+        request_digest: crucible_campaign::CampaignHash,
         request: &[u8],
-        decode_response: impl FnOnce(&[u8]) -> Result<T, LoopbackCampaignProtocolError>,
-    ) -> Result<T, LoopbackCampaignProtocolError> {
+        decode_response: impl FnOnce(&[u8]) -> Result<T, LoopbackCampaignServiceError>,
+        validate_failure: impl FnOnce(CampaignServiceFailure) -> Result<(), CampaignCodecError>,
+    ) -> Result<T, LoopbackCampaignServiceError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(LoopbackCampaignProtocolError::ConnectionPoisoned.into());
+        }
         let mut stream = match self.stream.try_lock() {
             Ok(stream) => stream,
             Err(TryLockError::WouldBlock) => {
-                return Err(LoopbackCampaignProtocolError::ConnectionBusy);
+                return Err(LoopbackCampaignProtocolError::ConnectionBusy.into());
             }
             Err(TryLockError::Poisoned(poisoned)) => {
                 let stream = poisoned.into_inner();
+                self.poisoned.store(true, Ordering::Release);
                 let _ = stream.shutdown(Shutdown::Both);
-                return Err(LoopbackCampaignProtocolError::ConnectionPoisoned);
+                return Err(LoopbackCampaignProtocolError::ConnectionPoisoned.into());
             }
         };
         let result = (|| {
             write_frame(&mut stream, request_kind, request, self.timeouts.write)?;
-            let response = read_frame(&mut stream, response_kind, self.timeouts.read)?;
-            decode_response(&response)
+            let (kind, response) = read_frame_any(&mut stream, self.timeouts.read)?;
+            match kind {
+                kind if kind == response_kind => decode_response(&response),
+                SERVICE_ERROR_RESPONSE_KIND => {
+                    let response = CampaignServiceErrorResponse::from_canonical_bytes(&response)?;
+                    response.validate_for_digest(request_digest)?;
+                    let failure = response.failure();
+                    validate_failure(failure)?;
+                    Err(LoopbackCampaignServiceError::Remote(failure))
+                }
+                _ => Err(LoopbackCampaignProtocolError::InvalidFrame {
+                    reason: "unexpected-message-kind",
+                }
+                .into()),
+            }
         })();
-        if result.is_err() {
+        if matches!(
+            result,
+            Err(LoopbackCampaignServiceError::Protocol(_))
+                | Err(LoopbackCampaignServiceError::Remote(
+                    CampaignServiceFailure::ProtocolViolation
+                ))
+        ) {
+            self.poisoned.store(true, Ordering::Release);
             let _ = stream.shutdown(Shutdown::Both);
         }
         result
@@ -165,7 +198,7 @@ impl LoopbackCampaignService {
 }
 
 impl CampaignService for LoopbackCampaignService {
-    type Error = LoopbackCampaignProtocolError;
+    type Error = LoopbackCampaignServiceError;
 
     fn get_campaign(
         &self,
@@ -174,12 +207,14 @@ impl CampaignService for LoopbackCampaignService {
         self.exchange(
             GET_CAMPAIGN_REQUEST_KIND,
             GET_CAMPAIGN_RESPONSE_KIND,
+            request.request_digest(),
             &request.canonical_bytes(),
             |response| {
                 let response = GetCampaignResponse::from_canonical_bytes(response)?;
                 response.validate_for(request)?;
                 Ok(response)
             },
+            CampaignServiceFailure::validate_for_get_campaign,
         )
     }
 
@@ -190,11 +225,15 @@ impl CampaignService for LoopbackCampaignService {
         self.exchange(
             APPLY_COMMAND_REQUEST_KIND,
             APPLY_COMMAND_RESPONSE_KIND,
+            request.request_digest(),
             &request.canonical_bytes(),
             |response| {
                 let response = ApplyCampaignCommandResponse::from_canonical_bytes(response)?;
                 response.validate_for(request)?;
                 Ok(response)
+            },
+            |failure| {
+                failure.validate_for_apply_campaign_command(request.command().expected_snapshot)
             },
         )
     }
@@ -206,32 +245,38 @@ impl CampaignService for LoopbackCampaignService {
         self.exchange(
             SUBMIT_BRANCH_REQUEST_KIND,
             SUBMIT_BRANCH_RESPONSE_KIND,
+            request.request_digest(),
             &request.canonical_bytes(),
             |response| {
                 let response = SubmitCampaignBranchResponse::from_canonical_bytes(response)?;
                 response.validate_for(request)?;
                 Ok(response)
             },
+            |failure| failure.validate_for_submit_branch_request(request.expected_snapshot()),
         )
     }
 }
 
 /// Serves one strict campaign-service request/response exchange.
 ///
-/// The stream is shut down in both directions before any error is returned.
-/// Service failures are never converted into semantic campaign responses.
+/// The stream is shut down in both directions before any protocol error is
+/// returned. Service failures become exact request-bound error responses and
+/// leave the connection reusable.
 /// The caller remains responsible for authenticating the connected peer and
 /// binding that evidence into the supplied service's principal authorizer.
 ///
 /// # Errors
 ///
 /// Returns [`LoopbackCampaignServerError::Protocol`] for malformed framing,
-/// canonical input, invalid response binding, or bounded socket I/O. Returns
-/// [`LoopbackCampaignServerError::Service`] when the campaign service fails.
-pub fn serve_loopback_campaign_once<S: CampaignService>(
+/// canonical input, invalid response binding, or bounded socket I/O.
+pub fn serve_loopback_campaign_once<S>(
     stream: &mut UnixStream,
     service: &S,
-) -> Result<(), LoopbackCampaignServerError<S::Error>> {
+) -> Result<(), LoopbackCampaignServerError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
     serve_loopback_campaign_once_with_timeouts(stream, service, LoopbackCampaignTimeouts::default())
 }
 
@@ -240,11 +285,15 @@ pub fn serve_loopback_campaign_once<S: CampaignService>(
 /// # Errors
 ///
 /// Returns the same failures as [`serve_loopback_campaign_once`].
-pub fn serve_loopback_campaign_once_with_timeouts<S: CampaignService>(
+pub fn serve_loopback_campaign_once_with_timeouts<S>(
     stream: &mut UnixStream,
     service: &S,
     timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignServerError<S::Error>> {
+) -> Result<(), LoopbackCampaignServerError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
     let result = serve_loopback_campaign_inner(stream, service, timeouts);
     if result.is_err() {
         let _ = stream.shutdown(Shutdown::Both);
@@ -252,37 +301,105 @@ pub fn serve_loopback_campaign_once_with_timeouts<S: CampaignService>(
     result
 }
 
-fn serve_loopback_campaign_inner<S: CampaignService>(
+fn serve_loopback_campaign_inner<S>(
     stream: &mut UnixStream,
     service: &S,
     timeouts: LoopbackCampaignTimeouts,
-) -> Result<(), LoopbackCampaignServerError<S::Error>> {
+) -> Result<(), LoopbackCampaignServerError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
     let (response_kind, response) = match kind {
         GET_CAMPAIGN_REQUEST_KIND => {
             let request = GetCampaignRequest::from_canonical_bytes(&body)?;
-            let response = service
-                .get_campaign(&request)
-                .map_err(LoopbackCampaignServerError::Service)?;
-            response.validate_for(&request)?;
-            (GET_CAMPAIGN_RESPONSE_KIND, response.canonical_bytes())
+            match service.get_campaign(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (GET_CAMPAIGN_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure.validate_for_get_campaign() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
         }
         APPLY_COMMAND_REQUEST_KIND => {
             let request = ApplyCampaignCommandRequest::from_canonical_bytes(&body)?;
-            let response = service
-                .apply_campaign_command(&request)
-                .map_err(LoopbackCampaignServerError::Service)?;
-            response.validate_for(&request)?;
-            (APPLY_COMMAND_RESPONSE_KIND, response.canonical_bytes())
+            match service.apply_campaign_command(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (APPLY_COMMAND_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure
+                        .validate_for_apply_campaign_command(request.command().expected_snapshot)
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
         }
         SUBMIT_BRANCH_REQUEST_KIND => {
             let request = SubmitCampaignBranchRequest::from_canonical_bytes(&body)?;
-            let response = service
-                .submit_branch_request(&request)
-                .map_err(LoopbackCampaignServerError::Service)?;
-            response.validate_for(&request)?;
-            (SUBMIT_BRANCH_RESPONSE_KIND, response.canonical_bytes())
+            match service.submit_branch_request(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (SUBMIT_BRANCH_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_submit_branch_request(request.expected_snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
         }
         _ => {
             return Err(LoopbackCampaignProtocolError::InvalidFrame {
@@ -293,6 +410,73 @@ fn serve_loopback_campaign_inner<S: CampaignService>(
     };
     write_frame(stream, response_kind, &response, timeouts.write)?;
     Ok(())
+}
+
+fn service_error_response(
+    request_digest: crucible_campaign::CampaignHash,
+    error: &impl CampaignServiceFailureSource,
+) -> Result<(u8, Vec<u8>), LoopbackCampaignServerError> {
+    let response =
+        CampaignServiceErrorResponse::new(request_digest, error.campaign_service_failure())?;
+    Ok((SERVICE_ERROR_RESPONSE_KIND, response.canonical_bytes()))
+}
+
+fn reject_invalid_service_response(
+    stream: &mut UnixStream,
+    request_digest: crucible_campaign::CampaignHash,
+    source: CampaignCodecError,
+    write_timeout: Duration,
+) -> Result<(), LoopbackCampaignServerError> {
+    let response = CampaignServiceErrorResponse::new(
+        request_digest,
+        CampaignServiceFailure::ProtocolViolation,
+    )?;
+    write_frame(
+        stream,
+        SERVICE_ERROR_RESPONSE_KIND,
+        &response.canonical_bytes(),
+        write_timeout,
+    )?;
+    Err(source.into())
+}
+
+/// Failure observed by a loopback campaign-service caller.
+#[derive(Debug, thiserror::Error)]
+pub enum LoopbackCampaignServiceError {
+    /// Framing, canonical validation, connection state, or socket I/O failed.
+    #[error(transparent)]
+    Protocol(#[from] LoopbackCampaignProtocolError),
+    /// The remote service returned one authenticated stable failure.
+    #[error(transparent)]
+    Remote(CampaignServiceFailure),
+}
+
+impl From<CampaignCodecError> for LoopbackCampaignServiceError {
+    fn from(error: CampaignCodecError) -> Self {
+        Self::Protocol(LoopbackCampaignProtocolError::Codec(error))
+    }
+}
+
+impl CampaignServiceFailureSource for LoopbackCampaignServiceError {
+    fn campaign_service_failure(&self) -> CampaignServiceFailure {
+        match self {
+            Self::Remote(failure) => *failure,
+            Self::Protocol(LoopbackCampaignProtocolError::InvalidTimeout) => {
+                CampaignServiceFailure::InvalidRequest
+            }
+            Self::Protocol(
+                LoopbackCampaignProtocolError::Codec(_)
+                | LoopbackCampaignProtocolError::InvalidFrame { .. },
+            ) => CampaignServiceFailure::ProtocolViolation,
+            Self::Protocol(
+                LoopbackCampaignProtocolError::Io(_)
+                | LoopbackCampaignProtocolError::ConnectionBusy,
+            ) => CampaignServiceFailure::Unavailable,
+            Self::Protocol(LoopbackCampaignProtocolError::ConnectionPoisoned) => {
+                CampaignServiceFailure::ProtocolViolation
+            }
+        }
+    }
 }
 
 /// Malformed, oversized, or unavailable campaign loopback transport data.
@@ -323,16 +507,13 @@ pub enum LoopbackCampaignProtocolError {
 
 /// Failure while serving one loopback campaign-service exchange.
 #[derive(Debug, thiserror::Error)]
-pub enum LoopbackCampaignServerError<E> {
+pub enum LoopbackCampaignServerError {
     /// Framing, canonical validation, or bounded socket I/O failed.
     #[error(transparent)]
     Protocol(#[from] LoopbackCampaignProtocolError),
-    /// The underlying campaign service failed.
-    #[error("campaign service failed")]
-    Service(E),
 }
 
-impl<E> From<CampaignCodecError> for LoopbackCampaignServerError<E> {
+impl From<CampaignCodecError> for LoopbackCampaignServerError {
     fn from(error: CampaignCodecError) -> Self {
         Self::Protocol(LoopbackCampaignProtocolError::Codec(error))
     }
@@ -385,6 +566,7 @@ fn write_frame(
     Ok(())
 }
 
+#[cfg(test)]
 fn read_frame(
     stream: &mut UnixStream,
     expected_kind: u8,

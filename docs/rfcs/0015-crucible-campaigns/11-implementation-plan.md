@@ -287,12 +287,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   requires exact-request authentication/authorization before repository
   access. Create/derive, paged snapshot/graph/frontier/choice/finding queries,
   explanation/watch, and CLI wiring remain open. The local Unix-stream binding
-  now dispatches all six initial request/response messages under one versioned,
-  64-MiB-body, absolute-deadline frame. Protocol, canonical, service, I/O, and
-  poisoned-lock failures shut down the connection; concurrent exchanges receive
-  a retryable busy error instead of queuing outside those deadlines. Canonical
-  service-error envelopes preserving authorization/conflict/retry taxonomy and
-  full direct/RPC error equivalence remain open with CLI wiring. Production
+  now dispatches all six initial success messages plus one stable request-bound
+  error envelope under a version-2, 64-MiB-body, absolute-deadline frame.
+  Protocol, canonical, I/O, and poisoned-lock failures shut down the connection;
+  semantic failures keep it reusable, and concurrent exchanges receive a
+  retryable busy error instead of queuing outside those deadlines. Direct and
+  loopback clients now expose the same closed authorization/conflict/transition/
+  resource/availability/integrity failure vocabulary. CLI wiring remains open.
+  Production
   listener wiring must also authenticate the Unix peer and bind that capability
   into the per-connection principal authorizer; message framing alone is not
   authentication. Checked

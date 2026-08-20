@@ -15,8 +15,8 @@ use crucible_campaign::{
     CampaignService, CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource,
     ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ControlRequest,
     GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    RepositoryCampaignService, RepositoryCampaignServiceError, StopCondition,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    RepositoryCampaignService, StopCondition, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -151,7 +151,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS01\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS02\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -185,6 +185,25 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         client.write_all(&header).expect("malformed header");
         server_thread.join().expect("server thread");
     }
+
+    let (mut legacy_client, mut legacy_server) = UnixStream::pair().expect("legacy stream pair");
+    let legacy_thread = thread::spawn(move || {
+        assert!(matches!(
+            serve_loopback_campaign_once(&mut legacy_server, &FixedCampaignService),
+            Err(LoopbackCampaignServerError::Protocol(
+                LoopbackCampaignProtocolError::InvalidFrame {
+                    reason: "unsupported-frame-version"
+                }
+            ))
+        ));
+    });
+    let mut legacy_header = [0_u8; FRAME_HEADER_BYTES];
+    legacy_header[..8].copy_from_slice(b"CRUCCS01");
+    legacy_header[8] = GET_CAMPAIGN_REQUEST_KIND;
+    legacy_client
+        .write_all(&legacy_header)
+        .expect("legacy frame");
+    legacy_thread.join().expect("legacy server thread");
 }
 
 #[test]
@@ -231,7 +250,9 @@ fn campaign_loopback_rejects_concurrent_exchange_without_waiting() {
         second_rx
             .recv_timeout(std::time::Duration::from_millis(100))
             .expect("bounded busy response"),
-        Err(LoopbackCampaignProtocolError::ConnectionBusy)
+        Err(LoopbackCampaignServiceError::Protocol(
+            LoopbackCampaignProtocolError::ConnectionBusy
+        ))
     ));
     second_thread
         .join()
@@ -301,7 +322,18 @@ fn campaign_loopback_server_rejects_cross_request_responses() {
     let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
     let client = CampaignClient::new(loopback);
 
-    assert!(client.get_campaign(&served).is_err());
+    assert!(matches!(
+        client.get_campaign(&served),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::ProtocolViolation
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign(&served),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::ProtocolViolation
+        ))
+    ));
     server.join().expect("server thread");
 }
 
@@ -340,7 +372,93 @@ fn campaign_loopback_client_closes_after_a_cross_request_response() {
     let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
     let client = CampaignClient::new(loopback);
 
-    assert!(client.get_campaign(&served).is_err());
+    assert!(matches!(
+        client.get_campaign(&served),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::ProtocolViolation
+        ))
+    ));
+    peer_thread.join().expect("peer thread");
+}
+
+#[test]
+fn campaign_loopback_client_rejects_and_closes_on_wrong_error_request_digest() {
+    let served = get_request("served-error");
+    let wrong_error = crucible_campaign::CampaignServiceErrorResponse::new(
+        get_request("other-error").request_digest(),
+        crucible_campaign::CampaignServiceFailure::Unavailable,
+    )
+    .expect("wrong error response");
+    let (client_stream, mut peer) = UnixStream::pair().expect("stream pair");
+    let peer_thread = thread::spawn(move || {
+        read_frame(
+            &mut peer,
+            GET_CAMPAIGN_REQUEST_KIND,
+            std::time::Duration::from_secs(1),
+        )
+        .expect("read request");
+        write_frame(
+            &mut peer,
+            SERVICE_ERROR_RESPONSE_KIND,
+            &wrong_error.canonical_bytes(),
+            std::time::Duration::from_secs(1),
+        )
+        .expect("write wrong error");
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout");
+        let mut byte = [0_u8; 1];
+        assert_eq!(peer.read(&mut byte).expect("client close"), 0);
+    });
+    let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
+
+    assert!(matches!(
+        loopback.get_campaign(&served),
+        Err(LoopbackCampaignServiceError::Protocol(
+            LoopbackCampaignProtocolError::Codec(_)
+        ))
+    ));
+    peer_thread.join().expect("peer thread");
+}
+
+#[test]
+fn campaign_loopback_client_rejects_same_digest_stale_with_wrong_basis() {
+    let request = apply_request("stale-basis");
+    let wrong_error = crucible_campaign::CampaignServiceErrorResponse::new(
+        request.request_digest(),
+        crucible_campaign::CampaignServiceFailure::Stale {
+            expected: snapshot("wrong-prior"),
+            current: snapshot("current"),
+        },
+    )
+    .expect("wrong stale response");
+    let (client_stream, mut peer) = UnixStream::pair().expect("stream pair");
+    let peer_thread = thread::spawn(move || {
+        read_frame(
+            &mut peer,
+            APPLY_COMMAND_REQUEST_KIND,
+            std::time::Duration::from_secs(1),
+        )
+        .expect("read request");
+        write_frame(
+            &mut peer,
+            SERVICE_ERROR_RESPONSE_KIND,
+            &wrong_error.canonical_bytes(),
+            std::time::Duration::from_secs(1),
+        )
+        .expect("write wrong stale response");
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout");
+        let mut byte = [0_u8; 1];
+        assert_eq!(peer.read(&mut byte).expect("client close"), 0);
+    });
+    let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
+
+    assert!(matches!(
+        loopback.apply_campaign_command(&request),
+        Err(LoopbackCampaignServiceError::Protocol(
+            LoopbackCampaignProtocolError::Codec(_)
+        ))
+    ));
     peer_thread.join().expect("peer thread");
 }
 
@@ -361,6 +479,21 @@ impl CampaignPrincipalAuthorizer for DenyAll {
 #[test]
 fn campaign_loopback_preserves_authorization_before_repository_access() {
     let request = get_request("absent");
+    let direct_repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "campaign-loopback-direct-auth",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let direct = CampaignClient::new(RepositoryCampaignService::new(&direct_repository, DenyAll));
+    assert!(matches!(
+        direct.get_campaign(&request),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
         let repository = CampaignRepository::new(
@@ -368,19 +501,22 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        assert!(matches!(
-            serve_loopback_campaign_once(&mut server_stream, &service),
-            Err(LoopbackCampaignServerError::Service(
-                RepositoryCampaignServiceError::Authorization(
-                    crucible_campaign::CampaignAuthorizationError::Unauthorized
-                )
-            ))
-        ));
+        for _ in 0..2 {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve denied request");
+        }
     });
     let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
     let client = CampaignClient::new(loopback);
 
-    assert!(client.get_campaign(&request).is_err());
+    for _ in 0..2 {
+        assert!(matches!(
+            client.get_campaign(&request),
+            Err(crucible_campaign::CampaignClientError::Service(
+                crucible_campaign::CampaignServiceFailure::Unauthorized
+            ))
+        ));
+    }
     server.join().expect("server thread");
 }
 

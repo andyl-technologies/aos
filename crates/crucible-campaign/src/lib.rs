@@ -34,9 +34,11 @@ pub use authority::{
 pub use campaign_service::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
     CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignService, CampaignServiceOperation, GetCampaignRequest,
-    GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService,
-    RepositoryCampaignServiceError, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
+    CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
+    CampaignServiceRetryDisposition, GetCampaignRequest, GetCampaignResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService, RepositoryCampaignServiceError,
+    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,

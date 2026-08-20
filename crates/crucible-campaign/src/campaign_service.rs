@@ -6,7 +6,7 @@
 //! owner. Principal identity and authorization decisions remain operational:
 //! neither enters immutable campaign facts or content identities.
 
-use crucible_cas::content_store::RefName;
+use crucible_cas::content_store::{RefName, StoreError};
 use thiserror::Error;
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
@@ -119,6 +119,248 @@ pub enum CampaignAuthorizationError {
     /// The authorization backend could not make a definitive decision.
     #[error("campaign service authorization is unavailable")]
     Unavailable,
+}
+
+/// Stable language-neutral failure returned by a campaign service.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CampaignServiceFailure {
+    /// The authenticated principal lacks the requested capability.
+    #[error("campaign service principal is not authorized")]
+    Unauthorized,
+    /// The authorization backend could not make a definitive decision.
+    #[error("campaign service authorization is unavailable")]
+    AuthorizationUnavailable,
+    /// The named campaign does not exist.
+    #[error("campaign was not found")]
+    NotFound,
+    /// The requested create operation names an existing campaign.
+    #[error("campaign already exists")]
+    AlreadyExists,
+    /// The supplied semantic snapshot is not the current head.
+    #[error("campaign request used stale snapshot {expected}; current snapshot is {current}")]
+    Stale {
+        /// Snapshot supplied by the caller.
+        expected: CampaignSnapshotId,
+        /// Current authoritative snapshot.
+        current: CampaignSnapshotId,
+    },
+    /// An idempotency key was reused for different canonical input.
+    #[error("campaign command id was reused with another request")]
+    CommandReuse,
+    /// A concurrent transaction changed the authoritative campaign ref.
+    #[error("campaign changed during the request")]
+    ConcurrentUpdate,
+    /// The requested lifecycle action is illegal from the current state.
+    #[error("campaign action is invalid from state {state:?}")]
+    InvalidTransition {
+        /// State that rejected the lifecycle action.
+        state: CampaignState,
+    },
+    /// Canonical request bytes or semantic input were invalid.
+    #[error("campaign request is invalid")]
+    InvalidRequest,
+    /// A required storage tier denied access.
+    #[error("campaign storage access is unauthorized")]
+    BackendUnauthorized,
+    /// A configured storage or service resource ceiling was exhausted.
+    #[error("campaign service resource capacity is exhausted")]
+    ResourceExhausted,
+    /// Required campaign data or an operational backend is temporarily unavailable.
+    #[error("campaign service is temporarily unavailable")]
+    Unavailable,
+    /// Authenticated repository state violated an internal invariant.
+    #[error("campaign repository integrity validation failed")]
+    IntegrityFailure,
+    /// A service peer violated the versioned framing or response contract.
+    #[error("campaign service protocol or response validation failed")]
+    ProtocolViolation,
+}
+
+/// Closed caller action derived from one stable campaign-service failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignServiceRetryDisposition {
+    /// Retry the same canonical request after bounded backoff or capacity recovery.
+    RetryAfterBackoff,
+    /// Refresh the authoritative campaign head before constructing a new request.
+    RefreshCampaign,
+    /// Refresh or correct caller/storage credentials before retrying.
+    Reauthenticate,
+    /// User or operator intent must resolve the reported state conflict.
+    OperatorAction,
+    /// Repeating the request cannot succeed without correcting data or software.
+    DoNotRetry,
+}
+
+impl CampaignServiceFailure {
+    /// Returns the language-neutral caller action for this failure.
+    #[must_use]
+    pub const fn retry_disposition(self) -> CampaignServiceRetryDisposition {
+        match self {
+            Self::AuthorizationUnavailable | Self::ResourceExhausted | Self::Unavailable => {
+                CampaignServiceRetryDisposition::RetryAfterBackoff
+            }
+            Self::Stale { .. } | Self::ConcurrentUpdate => {
+                CampaignServiceRetryDisposition::RefreshCampaign
+            }
+            Self::Unauthorized | Self::BackendUnauthorized => {
+                CampaignServiceRetryDisposition::Reauthenticate
+            }
+            Self::NotFound | Self::AlreadyExists | Self::InvalidTransition { .. } => {
+                CampaignServiceRetryDisposition::OperatorAction
+            }
+            Self::CommandReuse
+            | Self::InvalidRequest
+            | Self::IntegrityFailure
+            | Self::ProtocolViolation => CampaignServiceRetryDisposition::DoNotRetry,
+        }
+    }
+
+    /// Validates that this failure is meaningful for `GetCampaign`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create-only or mutation-only
+    /// failure because a current-head read cannot produce that outcome.
+    pub fn validate_for_get_campaign(self) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::ConcurrentUpdate
+            | Self::InvalidTransition { .. } => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for get campaign",
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one exact campaign-command request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create-only failure, or when a
+    /// stale failure does not describe this request's exact precondition.
+    pub fn validate_for_apply_campaign_command(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists => Err(CampaignCodecError::InvalidValue {
+                reason: "campaign service failure is invalid for apply campaign command",
+            }),
+            Self::Stale { expected, current }
+                if expected != expected_snapshot || current == expected =>
+            {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service stale failure snapshot mismatch",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one exact branch-submission request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or lifecycle-only failure,
+    /// or when a stale failure does not describe this request's exact
+    /// precondition.
+    pub fn validate_for_submit_branch_request(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists | Self::InvalidTransition { .. } => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service failure is invalid for submit branch request",
+                })
+            }
+            Self::Stale { expected, current }
+                if expected != expected_snapshot || current == expected =>
+            {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service stale failure snapshot mismatch",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Canonical for CampaignServiceFailure {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Unauthorized => encoder.u8(0),
+            Self::AuthorizationUnavailable => encoder.u8(1),
+            Self::NotFound => encoder.u8(2),
+            Self::AlreadyExists => encoder.u8(3),
+            Self::Stale { expected, current } => {
+                encoder.u8(4);
+                expected.encode(encoder);
+                current.encode(encoder);
+            }
+            Self::CommandReuse => encoder.u8(5),
+            Self::ConcurrentUpdate => encoder.u8(6),
+            Self::InvalidTransition { state } => {
+                encoder.u8(7);
+                state.encode(encoder);
+            }
+            Self::InvalidRequest => encoder.u8(8),
+            Self::BackendUnauthorized => encoder.u8(9),
+            Self::ResourceExhausted => encoder.u8(10),
+            Self::Unavailable => encoder.u8(11),
+            Self::IntegrityFailure => encoder.u8(12),
+            Self::ProtocolViolation => encoder.u8(13),
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Unauthorized),
+            1 => Ok(Self::AuthorizationUnavailable),
+            2 => Ok(Self::NotFound),
+            3 => Ok(Self::AlreadyExists),
+            4 => Ok(Self::Stale {
+                expected: CampaignSnapshotId::decode(decoder)?,
+                current: CampaignSnapshotId::decode(decoder)?,
+            }),
+            5 => Ok(Self::CommandReuse),
+            6 => Ok(Self::ConcurrentUpdate),
+            7 => Ok(Self::InvalidTransition {
+                state: CampaignState::decode(decoder)?,
+            }),
+            8 => Ok(Self::InvalidRequest),
+            9 => Ok(Self::BackendUnauthorized),
+            10 => Ok(Self::ResourceExhausted),
+            11 => Ok(Self::Unavailable),
+            12 => Ok(Self::IntegrityFailure),
+            13 => Ok(Self::ProtocolViolation),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-service-failure",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Maps implementation-specific failures into the stable service vocabulary.
+pub trait CampaignServiceFailureSource {
+    /// Returns the failure safe to expose across a campaign-service boundary.
+    #[must_use]
+    fn campaign_service_failure(&self) -> CampaignServiceFailure;
+}
+
+impl CampaignServiceFailureSource for CampaignServiceFailure {
+    fn campaign_service_failure(&self) -> CampaignServiceFailure {
+        *self
+    }
+}
+
+impl CampaignServiceFailureSource for std::convert::Infallible {
+    fn campaign_service_failure(&self) -> CampaignServiceFailure {
+        match *self {}
+    }
 }
 
 /// Principal policy required by the repository-backed campaign adapter.
@@ -767,6 +1009,89 @@ impl Canonical for SubmitCampaignBranchResponse {
     }
 }
 
+/// Request-bound stable failure response shared by every service operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignServiceErrorResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    failure: CampaignServiceFailure,
+}
+
+impl CampaignServiceErrorResponse {
+    /// Builds a bounded error response for one exact canonical request digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the encoded response exceeds the
+    /// campaign-service message bound.
+    pub fn new(
+        request_digest: CampaignHash,
+        failure: CampaignServiceFailure,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest,
+            failure,
+        };
+        ensure_message_size(&response, "campaign-service-error-response-encoded-bytes")?;
+        Ok(response)
+    }
+
+    /// Returns the stable semantic failure.
+    #[must_use]
+    pub const fn failure(self) -> CampaignServiceFailure {
+        self.failure
+    }
+
+    /// Validates exact request-digest binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// canonical request.
+    pub fn validate_for_digest(
+        &self,
+        request_digest: CampaignHash,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request_digest)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded error response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical, unsupported,
+    /// or oversized input. Exact request validation remains required.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "campaign-service-error-response-encoded-bytes")
+    }
+}
+
+impl Canonical for CampaignServiceErrorResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.failure.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            failure: CampaignServiceFailure::decode(decoder)?,
+        };
+        ensure_message_size(&response, "campaign-service-error-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
+
 /// Initial user-facing campaign service implemented by direct and RPC adapters.
 pub trait CampaignService {
     /// Implementation-specific operational failure.
@@ -808,13 +1133,10 @@ pub trait CampaignService {
 
 /// Failure from the checked campaign-service client.
 #[derive(Debug, Error)]
-pub enum CampaignClientError<E> {
-    /// The service implementation failed.
-    #[error("campaign service failed")]
-    Service(#[source] E),
-    /// A response did not match the exact request.
-    #[error("campaign service response validation failed: {0}")]
-    InvalidResponse(#[from] CampaignCodecError),
+pub enum CampaignClientError {
+    /// The service returned a stable semantic or operational failure.
+    #[error(transparent)]
+    Service(#[from] CampaignServiceFailure),
 }
 
 /// Checked direct/RPC client that enforces exact response binding.
@@ -825,6 +1147,7 @@ pub struct CampaignClient<S> {
 impl<S> CampaignClient<S>
 where
     S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
 {
     /// Creates a checked client over one service adapter.
     #[must_use]
@@ -841,12 +1164,20 @@ where
     pub fn get_campaign(
         &self,
         request: &GetCampaignRequest,
-    ) -> Result<GetCampaignResponse, CampaignClientError<S::Error>> {
-        let response = self
-            .service
-            .get_campaign(request)
-            .map_err(CampaignClientError::Service)?;
-        response.validate_for(request)?;
+    ) -> Result<GetCampaignResponse, CampaignClientError> {
+        let response = match self.service.get_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
         Ok(response)
     }
 
@@ -859,12 +1190,20 @@ where
     pub fn apply_campaign_command(
         &self,
         request: &ApplyCampaignCommandRequest,
-    ) -> Result<ApplyCampaignCommandResponse, CampaignClientError<S::Error>> {
-        let response = self
-            .service
-            .apply_campaign_command(request)
-            .map_err(CampaignClientError::Service)?;
-        response.validate_for(request)?;
+    ) -> Result<ApplyCampaignCommandResponse, CampaignClientError> {
+        let response = match self.service.apply_campaign_command(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_apply_campaign_command(request.command.expected_snapshot)
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
         Ok(response)
     }
 
@@ -877,12 +1216,20 @@ where
     pub fn submit_branch_request(
         &self,
         request: &SubmitCampaignBranchRequest,
-    ) -> Result<SubmitCampaignBranchResponse, CampaignClientError<S::Error>> {
-        let response = self
-            .service
-            .submit_branch_request(request)
-            .map_err(CampaignClientError::Service)?;
-        response.validate_for(request)?;
+    ) -> Result<SubmitCampaignBranchResponse, CampaignClientError> {
+        let response = match self.service.submit_branch_request(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_submit_branch_request(request.expected_snapshot)
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
         Ok(response)
     }
 
@@ -905,6 +1252,66 @@ pub enum RepositoryCampaignServiceError {
     /// Response construction or binding failed.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),
+}
+
+impl CampaignServiceFailureSource for RepositoryCampaignServiceError {
+    fn campaign_service_failure(&self) -> CampaignServiceFailure {
+        match self {
+            Self::Authorization(CampaignAuthorizationError::Unauthorized) => {
+                CampaignServiceFailure::Unauthorized
+            }
+            Self::Authorization(CampaignAuthorizationError::Unavailable) => {
+                CampaignServiceFailure::AuthorizationUnavailable
+            }
+            Self::Repository(error) => repository_service_failure(error),
+            Self::Codec(_) => CampaignServiceFailure::IntegrityFailure,
+        }
+    }
+}
+
+fn repository_service_failure(error: &CampaignRepositoryError) -> CampaignServiceFailure {
+    match error {
+        CampaignRepositoryError::Store(error) => store_service_failure(error),
+        CampaignRepositoryError::Codec(_) => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => {
+            store_service_failure(error)
+        }
+        CampaignRepositoryError::Merkle(_) => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::AlreadyExists => CampaignServiceFailure::AlreadyExists,
+        CampaignRepositoryError::NotFound => CampaignServiceFailure::NotFound,
+        CampaignRepositoryError::Stale { expected, current } => CampaignServiceFailure::Stale {
+            expected: *expected,
+            current: *current,
+        },
+        CampaignRepositoryError::CommandReuse => CampaignServiceFailure::CommandReuse,
+        CampaignRepositoryError::RefConflict { .. } => CampaignServiceFailure::ConcurrentUpdate,
+        CampaignRepositoryError::Integrity { .. } => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::InvalidTransition { state } => {
+            CampaignServiceFailure::InvalidTransition { state: *state }
+        }
+        CampaignRepositoryError::Poisoned => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
+    match error {
+        StoreError::Unauthorized => CampaignServiceFailure::BackendUnauthorized,
+        StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+        StoreError::NotFound { .. }
+        | StoreError::Unavailable
+        | StoreError::Io { .. }
+        | StoreError::StreamIo { .. } => CampaignServiceFailure::Unavailable,
+        StoreError::Corrupt { .. }
+        | StoreError::InvalidId
+        | StoreError::InvalidRefName { .. }
+        | StoreError::InvalidRange { .. }
+        | StoreError::InvalidComposition { .. }
+        | StoreError::InvalidGraph { .. }
+        | StoreError::Incompatible
+        | StoreError::InvalidSourceLength { .. }
+        | StoreError::Poisoned { .. }
+        | StoreError::Unsupported { .. } => CampaignServiceFailure::IntegrityFailure,
+    }
 }
 
 /// Principal-aware direct adapter over the semantic campaign repository owner.
@@ -1272,16 +1679,41 @@ mod tests {
 
         assert!(matches!(
             client.get_campaign(&get_request("other")),
-            Err(CampaignClientError::InvalidResponse(
-                CampaignCodecError::InvalidValue {
-                    reason: "campaign service response request digest mismatch"
-                }
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::ProtocolViolation
             ))
         ));
     }
 
     struct WrongApplyService {
         response: ApplyCampaignCommandResponse,
+    }
+
+    struct FixedFailureService(CampaignServiceFailure);
+
+    impl CampaignService for FixedFailureService {
+        type Error = CampaignServiceFailure;
+
+        fn get_campaign(
+            &self,
+            _request: &GetCampaignRequest,
+        ) -> Result<GetCampaignResponse, Self::Error> {
+            Err(self.0)
+        }
+
+        fn apply_campaign_command(
+            &self,
+            _request: &ApplyCampaignCommandRequest,
+        ) -> Result<ApplyCampaignCommandResponse, Self::Error> {
+            Err(self.0)
+        }
+
+        fn submit_branch_request(
+            &self,
+            _request: &SubmitCampaignBranchRequest,
+        ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
+            Err(self.0)
+        }
     }
 
     impl CampaignService for WrongApplyService {
@@ -1347,12 +1779,87 @@ mod tests {
 
         assert!(matches!(
             client.apply_campaign_command(&request),
-            Err(CampaignClientError::InvalidResponse(
-                CampaignCodecError::InvalidValue {
-                    reason: "campaign command response prior snapshot mismatch"
-                }
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::ProtocolViolation
             ))
         ));
+    }
+
+    #[test]
+    fn checked_client_rejects_failures_with_the_wrong_operation_basis() {
+        let get = get_request("network-recovery");
+        for failure in [
+            CampaignServiceFailure::AlreadyExists,
+            CampaignServiceFailure::Stale {
+                expected: snapshot("irrelevant"),
+                current: snapshot("current"),
+            },
+            CampaignServiceFailure::CommandReuse,
+            CampaignServiceFailure::ConcurrentUpdate,
+            CampaignServiceFailure::InvalidTransition {
+                state: CampaignState::Sealed,
+            },
+        ] {
+            let client = CampaignClient::new(FixedFailureService(failure));
+            assert!(matches!(
+                client.get_campaign(&get),
+                Err(CampaignClientError::Service(
+                    CampaignServiceFailure::ProtocolViolation
+                ))
+            ));
+        }
+
+        let apply = ApplyCampaignCommandRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign name"),
+            ControlRequest {
+                command: CampaignCommandId::from_hash(hash("resume")),
+                expected_snapshot: snapshot("expected"),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("apply request");
+        for failure in [
+            CampaignServiceFailure::AlreadyExists,
+            CampaignServiceFailure::Stale {
+                expected: snapshot("wrong"),
+                current: snapshot("current"),
+            },
+            CampaignServiceFailure::Stale {
+                expected: snapshot("expected"),
+                current: snapshot("expected"),
+            },
+        ] {
+            let client = CampaignClient::new(FixedFailureService(failure));
+            assert!(matches!(
+                client.apply_campaign_command(&apply),
+                Err(CampaignClientError::Service(
+                    CampaignServiceFailure::ProtocolViolation
+                ))
+            ));
+        }
+
+        let branch = SubmitCampaignBranchRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign name"),
+            snapshot("expected"),
+            branch_request("wrong-failure-basis"),
+        )
+        .expect("branch request");
+        for failure in [
+            CampaignServiceFailure::AlreadyExists,
+            CampaignServiceFailure::InvalidTransition {
+                state: CampaignState::Sealed,
+            },
+        ] {
+            let client = CampaignClient::new(FixedFailureService(failure));
+            assert!(matches!(
+                client.submit_branch_request(&branch),
+                Err(CampaignClientError::Service(
+                    CampaignServiceFailure::ProtocolViolation
+                ))
+            ));
+        }
     }
 
     #[test]
@@ -1411,6 +1918,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn service_error_responses_are_canonical_and_request_bound() {
+        let request_digest = hash("error-request");
+        let failures = [
+            (
+                CampaignServiceFailure::Unauthorized,
+                CampaignServiceRetryDisposition::Reauthenticate,
+            ),
+            (
+                CampaignServiceFailure::AuthorizationUnavailable,
+                CampaignServiceRetryDisposition::RetryAfterBackoff,
+            ),
+            (
+                CampaignServiceFailure::NotFound,
+                CampaignServiceRetryDisposition::OperatorAction,
+            ),
+            (
+                CampaignServiceFailure::AlreadyExists,
+                CampaignServiceRetryDisposition::OperatorAction,
+            ),
+            (
+                CampaignServiceFailure::Stale {
+                    expected: snapshot("expected"),
+                    current: snapshot("current"),
+                },
+                CampaignServiceRetryDisposition::RefreshCampaign,
+            ),
+            (
+                CampaignServiceFailure::CommandReuse,
+                CampaignServiceRetryDisposition::DoNotRetry,
+            ),
+            (
+                CampaignServiceFailure::ConcurrentUpdate,
+                CampaignServiceRetryDisposition::RefreshCampaign,
+            ),
+            (
+                CampaignServiceFailure::InvalidTransition {
+                    state: CampaignState::Sealed,
+                },
+                CampaignServiceRetryDisposition::OperatorAction,
+            ),
+            (
+                CampaignServiceFailure::InvalidRequest,
+                CampaignServiceRetryDisposition::DoNotRetry,
+            ),
+            (
+                CampaignServiceFailure::BackendUnauthorized,
+                CampaignServiceRetryDisposition::Reauthenticate,
+            ),
+            (
+                CampaignServiceFailure::ResourceExhausted,
+                CampaignServiceRetryDisposition::RetryAfterBackoff,
+            ),
+            (
+                CampaignServiceFailure::Unavailable,
+                CampaignServiceRetryDisposition::RetryAfterBackoff,
+            ),
+            (
+                CampaignServiceFailure::IntegrityFailure,
+                CampaignServiceRetryDisposition::DoNotRetry,
+            ),
+            (
+                CampaignServiceFailure::ProtocolViolation,
+                CampaignServiceRetryDisposition::DoNotRetry,
+            ),
+        ];
+        for (failure, retry_disposition) in failures {
+            let response =
+                CampaignServiceErrorResponse::new(request_digest, failure).expect("error response");
+            assert_eq!(
+                CampaignServiceErrorResponse::from_canonical_bytes(&response.canonical_bytes())
+                    .expect("decode error response"),
+                response
+            );
+            response
+                .validate_for_digest(request_digest)
+                .expect("request binding");
+            assert_eq!(response.failure(), failure);
+            assert!(
+                response
+                    .validate_for_digest(hash("other-error-request"))
+                    .is_err()
+            );
+            assert_eq!(failure.retry_disposition(), retry_disposition);
+        }
+        let golden =
+            CampaignServiceErrorResponse::new(request_digest, CampaignServiceFailure::Unauthorized)
+                .expect("golden error response");
+        assert_eq!(
+            blake3::hash(&golden.canonical_bytes()).to_hex().to_string(),
+            "26766ef9f5cf89d87b0e660c0a498a7dcad09764bd5952d89c82728bd7c34d67"
+        );
+        assert_eq!(
+            repository_service_failure(&CampaignRepositoryError::Poisoned),
+            CampaignServiceFailure::IntegrityFailure
+        );
+        assert_eq!(
+            store_service_failure(&StoreError::Poisoned {
+                operation: "campaign-service-test",
+            }),
+            CampaignServiceFailure::IntegrityFailure
+        );
+    }
+
     struct DenyAll;
 
     impl CampaignPrincipalAuthorizer for DenyAll {
@@ -1436,6 +2047,13 @@ mod tests {
             service.get_campaign(&get_request("absent")),
             Err(RepositoryCampaignServiceError::Authorization(
                 CampaignAuthorizationError::Unauthorized
+            ))
+        ));
+        let client = CampaignClient::new(RepositoryCampaignService::new(&repository, DenyAll));
+        assert!(matches!(
+            client.get_campaign(&get_request("absent")),
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::Unauthorized
             ))
         ));
     }
