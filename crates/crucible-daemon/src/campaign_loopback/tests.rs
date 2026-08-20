@@ -10,23 +10,37 @@ use std::thread;
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BranchBudget, BranchPointId,
     BranchRequest, BranchRequestCause, BranchRequestResult, CampaignClient, CampaignCommandId,
-    CampaignCommandResult, CampaignControlAction, CampaignHash, CampaignLineageId, CampaignName,
-    CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository,
-    CampaignService, CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource,
-    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ControlRequest,
+    CampaignCommandResult, CampaignControlAction, CampaignHash, CampaignLineage, CampaignLineageId,
+    CampaignMode, CampaignName, CampaignPolicy, CampaignPolicyId, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignSeed, CampaignService,
+    CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource, ChoiceDomainId,
+    ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId, ControlRequest,
+    CreateCampaignRequest, CreateCampaignResponse, ExactRational, ExplorerPolicy, FairnessPolicy,
     GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    RepositoryCampaignService, StopCondition, SubmitCampaignBranchRequest,
+    ProgressiveWideningPolicy, PuctPolicy, RepositoryCampaignService, RetentionPolicy,
+    ScenarioArtifactId, ScenarioDefId, StopCondition, SubmitCampaignBranchRequest,
     SubmitCampaignBranchResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
 use super::*;
+use crate::CrucibleCampaignArtifactStore;
 
 #[derive(Clone, Copy)]
 struct FixedCampaignService;
 
 impl CampaignService for FixedCampaignService {
     type Error = Infallible;
+
+    fn create_campaign(
+        &self,
+        request: &CreateCampaignRequest,
+    ) -> Result<CreateCampaignResponse, Self::Error> {
+        Ok(
+            CreateCampaignResponse::new(request, snapshot("created"), false)
+                .expect("create response"),
+        )
+    }
 
     fn get_campaign(
         &self,
@@ -76,10 +90,12 @@ impl CampaignService for FixedCampaignService {
 
 #[test]
 fn direct_and_loopback_campaign_services_are_identical() {
+    let create = create_request("network-recovery-create");
     let get = get_request("network-recovery");
     let apply = apply_request("network-recovery");
     let branch = branch_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
+    let expected_create = direct.create_campaign(&create).expect("direct create");
     let expected_get = direct.get_campaign(&get).expect("direct get");
     let expected_apply = direct.apply_campaign_command(&apply).expect("direct apply");
     let expected_branch = direct
@@ -88,13 +104,18 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..3 {
+        for _ in 0..4 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
     });
     let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
     let client = CampaignClient::new(loopback);
+
+    assert_eq!(
+        client.create_campaign(&create).expect("loopback create"),
+        expected_create
+    );
 
     assert_eq!(
         client.get_campaign(&get).expect("loopback get"),
@@ -151,7 +172,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS02\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS03\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -186,24 +207,27 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         server_thread.join().expect("server thread");
     }
 
-    let (mut legacy_client, mut legacy_server) = UnixStream::pair().expect("legacy stream pair");
-    let legacy_thread = thread::spawn(move || {
-        assert!(matches!(
-            serve_loopback_campaign_once(&mut legacy_server, &FixedCampaignService),
-            Err(LoopbackCampaignServerError::Protocol(
-                LoopbackCampaignProtocolError::InvalidFrame {
-                    reason: "unsupported-frame-version"
-                }
-            ))
-        ));
-    });
-    let mut legacy_header = [0_u8; FRAME_HEADER_BYTES];
-    legacy_header[..8].copy_from_slice(b"CRUCCS01");
-    legacy_header[8] = GET_CAMPAIGN_REQUEST_KIND;
-    legacy_client
-        .write_all(&legacy_header)
-        .expect("legacy frame");
-    legacy_thread.join().expect("legacy server thread");
+    for legacy_magic in [b"CRUCCS01", b"CRUCCS02"] {
+        let (mut legacy_client, mut legacy_server) =
+            UnixStream::pair().expect("legacy stream pair");
+        let legacy_thread = thread::spawn(move || {
+            assert!(matches!(
+                serve_loopback_campaign_once(&mut legacy_server, &FixedCampaignService),
+                Err(LoopbackCampaignServerError::Protocol(
+                    LoopbackCampaignProtocolError::InvalidFrame {
+                        reason: "unsupported-frame-version"
+                    }
+                ))
+            ));
+        });
+        let mut legacy_header = [0_u8; FRAME_HEADER_BYTES];
+        legacy_header[..8].copy_from_slice(legacy_magic);
+        legacy_header[8] = GET_CAMPAIGN_REQUEST_KIND;
+        legacy_client
+            .write_all(&legacy_header)
+            .expect("legacy frame");
+        legacy_thread.join().expect("legacy server thread");
+    }
 }
 
 #[test]
@@ -273,6 +297,13 @@ struct WrongGetService {
 
 impl CampaignService for WrongGetService {
     type Error = Infallible;
+
+    fn create_campaign(
+        &self,
+        _request: &CreateCampaignRequest,
+    ) -> Result<CreateCampaignResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
 
     fn get_campaign(
         &self,
@@ -611,6 +642,58 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     server.join().expect("server thread");
 }
 
+#[test]
+fn verifier_import_then_create_works_on_a_blank_repository() {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new("campaign-create-blank", u64::MAX)),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let schedule = crucible::Schedule::empty();
+    let artifacts = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+    let scenario_id = artifacts
+        .import_scenario(&scenario)
+        .expect("import scenario");
+    let configuration_id = artifacts
+        .import_configuration(&scenario, &schedule)
+        .expect("import configuration");
+    let stored_scenario = repository
+        .load_scenario_artifact(scenario_id)
+        .expect("stored scenario");
+    let stored_configuration = repository
+        .load_configuration_artifact(configuration_id)
+        .expect("stored configuration");
+    let lineage = CampaignLineage::new(
+        stored_scenario.scenario(),
+        scenario_id,
+        stored_configuration.configuration(),
+        configuration_id,
+        "crucible-test",
+        "qemu-test",
+        std::collections::BTreeMap::from([("control".to_owned(), 1)]),
+        stored_scenario.payload_schema(),
+        stored_configuration.payload_schema(),
+    )
+    .expect("lineage");
+    let request = CreateCampaignRequest::new(
+        principal(),
+        CampaignName::new("blank-imported").expect("campaign name"),
+        lineage.clone(),
+        creation_policy(lineage.scenario()),
+    )
+    .expect("create request");
+    let client = CampaignClient::new(RepositoryCampaignService::new(
+        repository.as_ref(),
+        AllowAll,
+    ));
+
+    let created = client.create_campaign(&request).expect("create campaign");
+    assert!(!created.replayed());
+    assert_eq!(created.lineage(), lineage.id().expect("lineage id"));
+}
+
 fn hash(label: &str) -> CampaignHash {
     CampaignHash::derive("campaign-loopback-test", label.as_bytes())
 }
@@ -646,6 +729,68 @@ fn principal() -> CampaignPrincipal {
 fn get_request(name: &str) -> GetCampaignRequest {
     GetCampaignRequest::new(principal(), CampaignName::new(name).expect("campaign name"))
         .expect("get request")
+}
+
+fn create_request(name: &str) -> CreateCampaignRequest {
+    let scenario = ScenarioDefId::from_hash(hash("create-scenario"));
+    let scenario_artifact = ScenarioArtifactId::parse(&format!(
+        "crucible.campaign.scenario-artifact@{}",
+        ContentId::for_bytes(ObjectKind::Scenario, 1, b"create-scenario-artifact").encode()
+    ))
+    .expect("scenario artifact id");
+    let genesis = ConfigurationId::from_hash(hash("create-genesis"));
+    let genesis_artifact = ConfigurationArtifactId::parse(&format!(
+        "crucible.campaign.configuration-artifact@{}",
+        ContentId::for_bytes(ObjectKind::Configuration, 1, b"create-genesis-artifact").encode()
+    ))
+    .expect("genesis artifact id");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_artifact,
+        genesis,
+        genesis_artifact,
+        "crucible-test",
+        "qemu-test",
+        std::collections::BTreeMap::from([("control".to_owned(), 1)]),
+        1,
+        1,
+    )
+    .expect("lineage");
+    CreateCampaignRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        lineage,
+        creation_policy(scenario),
+    )
+    .expect("create request")
+}
+
+fn creation_policy(scenario: ScenarioDefId) -> CampaignPolicy {
+    let widening = ProgressiveWideningPolicy::new(
+        ExactRational::new(1, 1).expect("widening constant"),
+        ExactRational::new(1, 2).expect("widening exponent"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening");
+    CampaignPolicy::new(
+        scenario,
+        CampaignSeed::from_bytes([7; 32]),
+        CampaignMode::Strict,
+        ExplorerPolicy::TreeSearch {
+            widening: Some(widening),
+            puct: PuctPolicy::new(1_000_000, 1, 0),
+        },
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        BTreeSet::new(),
+        FairnessPolicy::new(0, 0).expect("fairness"),
+        RetentionPolicy::new(true, 1, true, true),
+        true,
+    )
+    .expect("policy")
 }
 
 fn apply_request(name: &str) -> ApplyCampaignCommandRequest {

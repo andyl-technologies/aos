@@ -12,10 +12,14 @@
 //! Decoding re-derives both semantic identities before a live session or QEMU
 //! process can consume the values.
 
+use std::sync::Arc;
+
 use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::{
-    CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepositoryError,
-    ConfigurationArtifact, ConfigurationId, ScenarioArtifact, ScenarioDefId, SelectionOrigin,
+    CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
+    CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
@@ -25,6 +29,120 @@ pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
+
+/// Narrow verifier-backed capability for importing Crucible creation objects.
+///
+/// This capability exposes immutable scenario/configuration and closed
+/// generator publication only.
+/// It neither exposes campaign refs nor accepts caller-asserted semantic IDs:
+/// both identities are re-derived from typed Crucible values before storage.
+#[derive(Clone)]
+pub struct CrucibleCampaignArtifactStore {
+    repository: Arc<CampaignRepository>,
+}
+
+impl CrucibleCampaignArtifactStore {
+    /// Creates a narrow artifact-import capability over one repository.
+    #[must_use]
+    pub const fn new(repository: Arc<CampaignRepository>) -> Self {
+        Self { repository }
+    }
+
+    /// Verifies, content-addresses, and publishes one Crucible scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when encoding, semantic verification,
+    /// repository publication, or the resulting identity check fails.
+    pub fn import_scenario(
+        &self,
+        scenario: &ScenarioDefForm,
+    ) -> Result<ScenarioArtifactId, CrucibleArtifactError> {
+        let artifact = encode_crucible_scenario_artifact(scenario)?;
+        decode_crucible_scenario_artifact(&artifact)?;
+        let expected = artifact.id()?;
+        let stored = self
+            .repository
+            .publish_scenario_artifact(
+                artifact.scenario(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            )
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored scenario",
+            });
+        }
+        Ok(stored)
+    }
+
+    /// Verifies and publishes one Crucible scenario plus exact configuration.
+    ///
+    /// The scenario is idempotently imported first, so the configuration's
+    /// closure is complete before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when encoding, semantic verification,
+    /// repository publication, or either resulting identity check fails.
+    pub fn import_configuration(
+        &self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, CrucibleArtifactError> {
+        let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
+        let stored_scenario = self.import_scenario(scenario)?;
+        if stored_scenario != scenario_artifact.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored scenario",
+            });
+        }
+
+        let artifact = encode_crucible_configuration_artifact(&scenario_artifact, schedule)?;
+        decode_crucible_configuration_artifact(scenario, &scenario_artifact, &artifact)?;
+        let expected = artifact.id()?;
+        let stored = self
+            .repository
+            .publish_configuration_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            )
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored configuration",
+            });
+        }
+        Ok(stored)
+    }
+
+    /// Validates and publishes one closed candidate-generator specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when canonical identity derivation or
+    /// immutable repository publication fails.
+    pub fn import_generator(
+        &self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<CandidateGeneratorSpecId, CrucibleArtifactError> {
+        let expected = generator.id()?;
+        let stored = self
+            .repository
+            .publish_generator(generator)
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored candidate generator",
+            });
+        }
+        Ok(stored)
+    }
+}
 
 /// Failure to translate a campaign artifact into the Crucible execution model.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +184,9 @@ pub enum CrucibleArtifactError {
     /// Authenticated campaign selection closure could not be resolved.
     #[error(transparent)]
     SelectionRepository(#[from] CampaignRepositoryError),
+    /// Immutable artifact publication failed after semantic verification.
+    #[error(transparent)]
+    RepositoryPublication(CampaignRepositoryError),
     /// A model-sampled value has no pure model verifier in this executor.
     #[error("Crucible configuration contains a model selection without a registered verifier")]
     UnverifiedModelSelection,
@@ -344,12 +465,15 @@ fn campaign_configuration_id(id: crucible::ContentHash) -> ConfigurationId {
 #[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::Arc;
 
     use crucible::{Decision, DeliveryOrderDecision, SelectionDecision, VirtualTime};
     use crucible_campaign::{
-        BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity,
-        ChoiceSource, ChoiceValue, SelectableDeclaration, Selection, SelectionOrigin,
+        BooleanDomain, CampaignRepository, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+        ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
+        SelectionOrigin,
     };
+    use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
     use super::*;
 
@@ -422,6 +546,45 @@ mod tests {
         assert_eq!(
             configuration_artifact.configuration(),
             campaign_configuration_id(configuration.id())
+        );
+    }
+
+    #[test]
+    fn verifier_backed_store_imports_complete_lineage_artifacts() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty();
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new("crucible-artifact-import", u64::MAX)),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+
+        let scenario_id = store.import_scenario(&scenario).expect("import scenario");
+        let configuration_id = store
+            .import_configuration(&scenario, &schedule)
+            .expect("import configuration");
+        let stored_scenario = repository
+            .load_scenario_artifact(scenario_id)
+            .expect("load scenario");
+        let stored_configuration = repository
+            .load_configuration_artifact(configuration_id)
+            .expect("load configuration");
+
+        assert_eq!(
+            decode_crucible_scenario_artifact(&stored_scenario).expect("verify stored scenario"),
+            scenario
+        );
+        assert_eq!(
+            decode_crucible_configuration_artifact(
+                &scenario,
+                &stored_scenario,
+                &stored_configuration,
+            )
+            .expect("verify stored configuration")
+            .schedule,
+            schedule
         );
     }
 

@@ -452,7 +452,7 @@ fn nonempty_policy_round_trips_and_missing_generator_fails_before_ref_publicatio
 
 #[test]
 fn closure_walker_rejects_missing_generator_grandchildren() {
-    let (repository, lineage, _) = fixture();
+    let (repository, lineage, _, blobs) = counted_fixture();
     let missing = CandidateGeneratorSpecId::from_content_id(ContentId::for_bytes(
         ObjectKind::Policy,
         1,
@@ -468,6 +468,7 @@ fn closure_walker_rejects_missing_generator_grandchildren() {
     .expect("mixture");
     let mixture_id = mixture.id().expect("mixture id");
     let policy = policy_with_generator(lineage.scenario(), mixture_id);
+    let objects_before = blobs.object_count().expect("objects before rejection");
 
     assert!(matches!(
         repository.create(
@@ -476,12 +477,93 @@ fn closure_walker_rejects_missing_generator_grandchildren() {
             &policy,
             &BTreeMap::from([(mixture_id, mixture)]),
         ),
-        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-policy-generator-was-not-supplied"
+        })
     ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "an incomplete generator closure wrote immutable objects"
+    );
     assert!(matches!(
         repository.head("incomplete-closure"),
         Err(CampaignRepositoryError::NotFound)
     ));
+}
+
+#[test]
+fn generator_publication_rejects_missing_children_before_writing() {
+    let (repository, _, _, blobs) = counted_fixture();
+    let missing = CandidateGeneratorSpecId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"missing-published-generator-child",
+    ))
+    .expect("missing child");
+    let generator = CandidateGeneratorSpec::new(
+        1,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![WeightedGenerator::new(missing, 1).expect("weighted child")],
+        },
+    )
+    .expect("generator");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.publish_generator(&generator),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "a generator with a missing child wrote its immutable parent"
+    );
+}
+
+#[test]
+fn creation_rejects_unrelated_generators_before_publication() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let unrelated =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let unrelated_id = unrelated.id().expect("generator id");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.create(
+            "unrelated-generator",
+            &lineage,
+            &policy,
+            &BTreeMap::from([(unrelated_id, unrelated)]),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-map-has-unreachable-record"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "an unrelated generator wrote immutable objects"
+    );
+    assert!(matches!(
+        repository.head("unrelated-generator"),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+}
+
+#[test]
+fn creation_generator_byte_budget_is_checked_at_the_boundary() {
+    let mut bytes = crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES - 1;
+    super::super::transactions::charge_creation_generator_bytes(&mut bytes, 1)
+        .expect("exact generator byte boundary");
+    assert_eq!(bytes, crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES);
+    assert!(matches!(
+        super::super::transactions::charge_creation_generator_bytes(&mut bytes, 1),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-byte-limit"
+        })
+    ));
+    assert_eq!(bytes, crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES);
 }
 
 #[test]

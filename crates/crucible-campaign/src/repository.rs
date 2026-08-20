@@ -632,6 +632,7 @@ struct ValidationCheckpoint {
     ancestry_depth: usize,
     closure_objects: usize,
     lifecycle: ProjectedState,
+    genesis: ContentId,
 }
 
 impl ProjectedState {

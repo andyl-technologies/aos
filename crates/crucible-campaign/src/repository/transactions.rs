@@ -67,26 +67,84 @@ impl CampaignRepository {
             self.read_scenario_artifact(lineage.scenario_content().content_id())?;
         let genesis_artifact =
             self.read_configuration_artifact(lineage.genesis_content().content_id())?;
-        if scenario_artifact.scenario() != lineage.scenario()
-            || scenario_artifact.payload_schema() != lineage.scenario_schema()
-            || genesis_artifact.scenario() != lineage.scenario()
-            || genesis_artifact.scenario_artifact() != lineage.scenario_content()
-            || genesis_artifact.configuration() != lineage.genesis()
-        {
-            return Err(integrity("lineage-execution-model-artifact-mismatch"));
-        }
+        validate_creation_artifact_basis(lineage, &scenario_artifact, &genesis_artifact)?;
+        validate_creation_generator_closure(policy, generators)?;
+        self.publish_genesis_after_preflight(name, campaign_ref, lineage, policy, generators)
+    }
 
-        for (expected, generator) in generators {
-            if generator.id()? != *expected {
-                return Err(integrity("candidate-generator-map-key-mismatch"));
-            }
-            self.put_generator(generator)?;
+    /// Creates a campaign from an already imported immutable creation closure.
+    ///
+    /// Large execution-model artifacts and generator records are loaded by
+    /// their authenticated content IDs. The complete closure is validated
+    /// before any new lineage, policy, Merkle, or snapshot object is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or semantic basis, missing imported
+    /// input, an existing ref, failed publication, or failed ref creation.
+    pub fn create_from_stored(
+        &self,
+        name: &str,
+        lineage: &CampaignLineage,
+        policy: &CampaignPolicy,
+    ) -> Result<CampaignHead, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        if self.refs.read_ref(&campaign_ref)?.is_some() {
+            return Err(CampaignRepositoryError::AlreadyExists);
         }
-        for child in policy.content_children() {
-            let generator = CandidateGeneratorSpecId::from_content_id(child.1)?;
-            if !generators.contains_key(&generator) {
-                return Err(integrity("campaign-policy-generator-was-not-supplied"));
+        if lineage.scenario() != policy.scenario() {
+            return Err(integrity("lineage-policy-scenario-mismatch"));
+        }
+        let scenario_artifact =
+            self.read_scenario_artifact(lineage.scenario_content().content_id())?;
+        let genesis_artifact =
+            self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        validate_creation_artifact_basis(lineage, &scenario_artifact, &genesis_artifact)?;
+        self.validate_stored_creation_generator_closure(policy)?;
+        self.publish_genesis_after_preflight(name, campaign_ref, lineage, policy, &BTreeMap::new())
+    }
+
+    fn validate_stored_creation_generator_closure(
+        &self,
+        policy: &CampaignPolicy,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut pending: Vec<_> = policy
+            .content_children()
+            .into_iter()
+            .map(|(_, child)| CandidateGeneratorSpecId::from_content_id(child))
+            .collect::<Result<_, _>>()?;
+        let mut visited = BTreeSet::new();
+        let mut canonical_bytes = 0_usize;
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
             }
+            if visited.len() > crate::MAX_CREATE_CAMPAIGN_GENERATORS {
+                return Err(integrity("campaign-generator-count-limit"));
+            }
+            let generator = self.read_generator(id.content_id())?;
+            charge_creation_generator_bytes(
+                &mut canonical_bytes,
+                generator.canonical_bytes().len(),
+            )?;
+            for (_, child) in generator.content_children() {
+                pending.push(CandidateGeneratorSpecId::from_content_id(child)?);
+            }
+        }
+        Ok(())
+    }
+
+    fn publish_genesis_after_preflight(
+        &self,
+        name: &str,
+        campaign_ref: RefName,
+        lineage: &CampaignLineage,
+        policy: &CampaignPolicy,
+        generators: &BTreeMap<CandidateGeneratorSpecId, CandidateGeneratorSpec>,
+    ) -> Result<CampaignHead, CampaignRepositoryError> {
+        for generator in generators.values() {
+            self.put_generator(generator)?;
         }
 
         let lineage_content = self.put_lineage(lineage)?;
@@ -128,7 +186,13 @@ impl CampaignRepository {
                 snapshot_id: CampaignSnapshotId::from_content_id(content_id)?,
                 snapshot,
             }),
-            RefCasOutcome::Conflict { .. } => Err(CampaignRepositoryError::AlreadyExists),
+            RefCasOutcome::Conflict { .. } => {
+                self.validated_heads
+                    .lock()
+                    .map_err(|_| CampaignRepositoryError::Poisoned)?
+                    .remove(&content_id);
+                Err(CampaignRepositoryError::AlreadyExists)
+            }
         }
     }
 
@@ -181,6 +245,27 @@ impl CampaignRepository {
         let head = self.head(name)?;
         let state = self.state_at_snapshot(head.snapshot_id())?;
         Ok((head, state))
+    }
+
+    /// Resolves the authenticated genesis snapshot of one named campaign.
+    ///
+    /// The validated-head checkpoint retains the exact genesis content ID, so
+    /// repeated creation replay remains constant-time after ordinary head
+    /// validation instead of walking the complete campaign history again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::NotFound`] for an absent campaign or
+    /// an integrity/store error for an invalid current head or genesis record.
+    pub fn genesis(&self, name: &str) -> Result<CampaignHead, CampaignRepositoryError> {
+        let current = self.head(name)?;
+        let checkpoint = self.load_validation_checkpoint(current.content_id())?;
+        let loaded = self.read_snapshot(checkpoint.genesis)?;
+        Ok(CampaignHead {
+            name: name.to_owned(),
+            snapshot_id: CampaignSnapshotId::from_content_id(checkpoint.genesis)?,
+            snapshot: loaded.snapshot,
+        })
     }
 
     /// Projects lifecycle state from one exact authenticated snapshot.
@@ -1702,9 +1787,43 @@ impl CampaignRepository {
         &self,
         generator: &CandidateGeneratorSpec,
     ) -> Result<CandidateGeneratorSpecId, CampaignRepositoryError> {
+        self.validate_generator_closure_before_publication(generator)?;
         let content = self.put_generator(generator)?;
         self.verify_campaign_closure(content)?;
         CandidateGeneratorSpecId::from_content_id(content).map_err(Into::into)
+    }
+
+    /// Authenticates a generator's complete dependency closure before the
+    /// immutable parent is written. This keeps a rejected import failure-atomic
+    /// while retaining the same count and byte bounds used by campaign creation.
+    fn validate_generator_closure_before_publication(
+        &self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<(), CampaignRepositoryError> {
+        let root = generator.id()?;
+        let mut visited = BTreeSet::from([root]);
+        let mut canonical_bytes = 0_usize;
+        charge_creation_generator_bytes(&mut canonical_bytes, generator.canonical_bytes().len())?;
+        let mut pending: Vec<_> = generator
+            .content_children()
+            .into_iter()
+            .map(|(_, child)| CandidateGeneratorSpecId::from_content_id(child))
+            .collect::<Result<_, _>>()?;
+
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if visited.len() > crate::MAX_CREATE_CAMPAIGN_GENERATORS {
+                return Err(integrity("campaign-generator-count-limit"));
+            }
+            let child = self.read_generator(id.content_id())?;
+            charge_creation_generator_bytes(&mut canonical_bytes, child.canonical_bytes().len())?;
+            for (_, grandchild) in child.content_children() {
+                pending.push(CandidateGeneratorSpecId::from_content_id(grandchild)?);
+            }
+        }
+        Ok(())
     }
 
     /// Publishes exact canonical scenario bytes for use by a lineage.
@@ -1852,4 +1971,72 @@ impl CampaignRepository {
         self.verify_campaign_closure(content)?;
         SelectionId::from_content_id(content).map_err(Into::into)
     }
+}
+
+fn validate_creation_artifact_basis(
+    lineage: &CampaignLineage,
+    scenario: &ScenarioArtifact,
+    genesis: &ConfigurationArtifact,
+) -> Result<(), CampaignRepositoryError> {
+    if scenario.id()? != lineage.scenario_content()
+        || scenario.scenario() != lineage.scenario()
+        || scenario.payload_schema() != lineage.scenario_schema()
+        || genesis.id()? != lineage.genesis_content()
+        || genesis.scenario() != lineage.scenario()
+        || genesis.scenario_artifact() != lineage.scenario_content()
+        || genesis.configuration() != lineage.genesis()
+        || genesis.payload_schema() != lineage.exact_closure_schema()
+    {
+        return Err(integrity("lineage-execution-model-artifact-mismatch"));
+    }
+    Ok(())
+}
+
+pub(super) fn charge_creation_generator_bytes(
+    total: &mut usize,
+    next: usize,
+) -> Result<(), CampaignRepositoryError> {
+    *total = (*total)
+        .checked_add(next)
+        .filter(|bytes| *bytes <= crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES)
+        .ok_or_else(|| integrity("campaign-generator-byte-limit"))?;
+    Ok(())
+}
+
+fn validate_creation_generator_closure(
+    policy: &CampaignPolicy,
+    generators: &BTreeMap<CandidateGeneratorSpecId, CandidateGeneratorSpec>,
+) -> Result<(), CampaignRepositoryError> {
+    if generators.len() > crate::MAX_CREATE_CAMPAIGN_GENERATORS {
+        return Err(integrity("campaign-generator-count-limit"));
+    }
+    let mut canonical_bytes = 0_usize;
+    for (expected, generator) in generators {
+        charge_creation_generator_bytes(&mut canonical_bytes, generator.canonical_bytes().len())?;
+        if generator.id()? != *expected {
+            return Err(integrity("candidate-generator-map-key-mismatch"));
+        }
+    }
+
+    let mut pending: Vec<_> = policy
+        .content_children()
+        .into_iter()
+        .map(|(_, child)| CandidateGeneratorSpecId::from_content_id(child))
+        .collect::<Result<_, _>>()?;
+    let mut reachable = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !reachable.insert(id) {
+            continue;
+        }
+        let generator = generators
+            .get(&id)
+            .ok_or_else(|| integrity("campaign-policy-generator-was-not-supplied"))?;
+        for (_, child) in generator.content_children() {
+            pending.push(CandidateGeneratorSpecId::from_content_id(child)?);
+        }
+    }
+    if reachable.len() != generators.len() {
+        return Err(integrity("campaign-generator-map-has-unreachable-record"));
+    }
+    Ok(())
 }
