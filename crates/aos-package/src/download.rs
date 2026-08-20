@@ -27,10 +27,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 
@@ -552,7 +550,7 @@ async fn download_one(
     engine: &TransferEngine,
     resolved: &ResolvedDownload,
     dest: &Path,
-    _printer: &Printer,
+    printer: &Printer,
 ) -> Result<DownloadResult> {
     // FileHash is authoritative for the compressed stream when the cache
     // emits a compressed NAR. AOS-server populates it unconditionally;
@@ -579,7 +577,16 @@ async fn download_one(
     let mut last_not_found: Option<anyhow::Error> = None;
     for mirror_url in resolved.req.mirror_chain() {
         let url = join_cache_url(mirror_url, &resolved.narinfo.url);
-        match download_nar_from(engine, &url, dest, &expected_hex, &resolved.narinfo, &label).await
+        match download_nar_from(
+            engine,
+            &url,
+            dest,
+            &expected_hex,
+            &resolved.narinfo,
+            &label,
+            printer,
+        )
+        .await
         {
             Ok(()) => {
                 return Ok(DownloadResult {
@@ -611,6 +618,7 @@ async fn download_nar_from(
     expected_hex: &str,
     narinfo: &NarInfo,
     label: &str,
+    printer: &Printer,
 ) -> Result<()> {
     if narinfo
         .file_size
@@ -634,9 +642,19 @@ async fn download_nar_from(
             false
         };
         if supports_ranges {
-            return download_nar_in_ranges(engine, url, dest, expected_hex, narinfo, label).await;
+            return download_nar_in_ranges(
+                engine,
+                url,
+                dest,
+                expected_hex,
+                narinfo,
+                label,
+                printer,
+            )
+            .await;
         }
-        return download_nar_to_tempfile(engine, url, dest, expected_hex, narinfo, label).await;
+        return download_nar_to_tempfile(engine, url, dest, expected_hex, narinfo, label, printer)
+            .await;
     }
 
     let maximum_bytes = narinfo.file_size.unwrap_or(NAR_RANGE_CHUNK_BYTES);
@@ -644,13 +662,9 @@ async fn download_nar_from(
         .with_hash(HashAlgorithm::Sha256, expected_hex)
         .with_maximum_bytes(maximum_bytes);
 
-    let pb_size = narinfo.file_size.unwrap_or(0);
-    let pb = create_download_bar(pb_size, label);
+    let progress = printer.transfer(label, narinfo.file_size.unwrap_or(0));
 
     let result = engine.execute(transfer_req).await;
-
-    pb.finish_and_clear();
-
     let result = result.with_context(|| format!("downloading {url}"))?;
 
     if let Some(body) = &result.body {
@@ -665,6 +679,8 @@ async fn download_nar_from(
         tokio::fs::write(dest, body)
             .await
             .with_context(|| format!("writing to {}", dest.display()))?;
+        progress.set_position(body.len() as u64);
+        progress.finish();
         Ok(())
     } else {
         Err(AosError::DownloadError {
@@ -682,6 +698,7 @@ async fn download_nar_to_tempfile(
     expected_hex: &str,
     narinfo: &NarInfo,
     label: &str,
+    printer: &Printer,
 ) -> Result<()> {
     let expected_size = narinfo
         .file_size
@@ -697,7 +714,7 @@ async fn download_nar_to_tempfile(
     let request = TransferRequest::get_to_file(url, temporary.to_path_buf())
         .with_hash(HashAlgorithm::Sha256, expected_hex)
         .with_maximum_bytes(expected_size);
-    let pb = create_download_bar(expected_size, label);
+    let mut progress = printer.transfer(label, expected_size);
 
     let result = async {
         engine
@@ -711,6 +728,8 @@ async fn download_nar_to_tempfile(
         if actual_size != expected_size {
             bail!("downloaded {actual_size} bytes from {url}, expected {expected_size}");
         }
+        progress.set_position(actual_size);
+        progress.phase("Verifying package download");
         temporary
             .persist(dest)
             .with_context(|| format!("publishing verified NAR at {}", dest.display()))?;
@@ -718,7 +737,7 @@ async fn download_nar_to_tempfile(
     }
     .await;
 
-    pb.finish_and_clear();
+    progress.finish();
     result
 }
 
@@ -730,6 +749,7 @@ async fn download_nar_in_ranges(
     expected_hex: &str,
     narinfo: &NarInfo,
     label: &str,
+    printer: &Printer,
 ) -> Result<()> {
     let expected_size = narinfo
         .file_size
@@ -748,7 +768,7 @@ async fn download_nar_in_ranges(
         .open(&temporary)
         .await
         .with_context(|| format!("opening temporary NAR for {}", dest.display()))?;
-    let pb = create_download_bar(expected_size, label);
+    let mut progress = printer.transfer(label, expected_size);
 
     let result = async {
         let mut start = 0_u64;
@@ -796,7 +816,7 @@ async fn download_nar_in_ranges(
             tokio::io::copy(&mut chunk_file, &mut output)
                 .await
                 .with_context(|| format!("assembling temporary NAR for {}", dest.display()))?;
-            pb.inc(expected_chunk_size);
+            progress.inc(expected_chunk_size);
             start = end + 1;
         }
         output
@@ -807,6 +827,7 @@ async fn download_nar_in_ranges(
 
         let path_for_verify = temporary.to_path_buf();
         let expected_hash = expected_hex.to_string();
+        progress.phase("Verifying package download");
         tokio::task::spawn_blocking(move || {
             verify_download_hash(&path_for_verify, &expected_hash)
         })
@@ -819,7 +840,7 @@ async fn download_nar_in_ranges(
     }
     .await;
 
-    pb.finish_and_clear();
+    progress.finish();
     result
 }
 
@@ -976,20 +997,6 @@ fn short_label(store_path: &str) -> String {
             }
         })
         .unwrap_or_else(|| store_path.to_string())
-}
-
-/// Create an indicatif progress bar for a download.
-fn create_download_bar(total: u64, label: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("  {spinner:.cyan} {msg} [{bar:20.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec})")
-            .expect("valid download bar template")
-            .progress_chars("=> "),
-    );
-    pb.set_message(label.to_string());
-    pb.enable_steady_tick(Duration::from_millis(120));
-    pb
 }
 
 // ---------------------------------------------------------------------------

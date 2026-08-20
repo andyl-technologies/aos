@@ -344,6 +344,10 @@ pub async fn upload_static_origin_to_all(
         bytes,
         skipped_files: 0,
     };
+    let progress_total = bytes
+        .checked_mul(upload_urls.len() as u64)
+        .context("static origin aggregate byte count overflowed")?;
+    let progress = printer.transfer("Uploading static registry origin", progress_total);
     // Connect every destination first; a connect failure is a per-destination
     // failure that excludes that mirror from both phases.
     let mut failures = Vec::new();
@@ -362,8 +366,10 @@ pub async fn upload_static_origin_to_all(
         no_skip,
         all_destinations_connected,
         printer,
+        &progress,
     )
     .await;
+    progress.finish();
     failures.extend(phase_failures);
 
     if !failures.is_empty() {
@@ -403,6 +409,7 @@ async fn upload_phase_major(
     no_skip: bool,
     all_destinations_ready: bool,
     printer: &Printer,
+    progress: &aos_core::output::TransferProgress,
 ) -> (Vec<String>, usize) {
     let mut failures = Vec::new();
     let mut skipped_files = 0usize;
@@ -414,6 +421,7 @@ async fn upload_phase_major(
             files,
             StaticOriginClass::ImageDisk,
             no_skip,
+            progress,
         )
         .await
         {
@@ -436,6 +444,7 @@ async fn upload_phase_major(
             files,
             StaticOriginClass::Immutable,
             no_skip,
+            progress,
         )
         .await
         {
@@ -451,7 +460,15 @@ async fn upload_phase_major(
         if !immutable_ok[index] {
             continue;
         }
-        match upload_class(backend.as_ref(), files, StaticOriginClass::Receipt, no_skip).await {
+        match upload_class(
+            backend.as_ref(),
+            files,
+            StaticOriginClass::Receipt,
+            no_skip,
+            progress,
+        )
+        .await
+        {
             Ok(skipped) => skipped_files += skipped,
             Err(err) => {
                 failures.push(format!("{upload_url}: {err:#}"));
@@ -469,6 +486,7 @@ async fn upload_phase_major(
             files,
             StaticOriginClass::PackIndex,
             no_skip,
+            progress,
         )
         .await
         {
@@ -497,7 +515,15 @@ async fn upload_phase_major(
             ));
             continue;
         }
-        match upload_class(backend.as_ref(), files, StaticOriginClass::Mutable, no_skip).await {
+        match upload_class(
+            backend.as_ref(),
+            files,
+            StaticOriginClass::Mutable,
+            no_skip,
+            progress,
+        )
+        .await
+        {
             Ok(_) => printer.success(&format!(
                 "Uploaded static registry origin files to {upload_url}"
             )),
@@ -519,6 +545,7 @@ async fn upload_class(
     files: &[StaticOriginFile],
     class: StaticOriginClass,
     no_skip: bool,
+    progress: &aos_core::output::TransferProgress,
 ) -> Result<usize> {
     let results = futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
         |file| async move {
@@ -537,6 +564,7 @@ async fn upload_class(
                         identity.byte_size == expected_size && identity.sha256 == expected_sha256
                     })
                 {
+                    progress.inc(upload_progress_bytes(file)?);
                     return Ok::<bool, anyhow::Error>(true);
                 }
                 let snapshot =
@@ -552,6 +580,7 @@ async fn upload_class(
                     )
                     .await
                     .with_context(|| format!("uploading {}", file.relative_path))?;
+                progress.inc(upload_progress_bytes(file)?);
                 return Ok::<bool, anyhow::Error>(false);
             }
             if file.class == StaticOriginClass::PackIndex {
@@ -567,6 +596,7 @@ async fn upload_class(
                     )
                     .await
                     .with_context(|| format!("uploading {}", file.relative_path))?;
+                progress.inc(upload_progress_bytes(file)?);
                 return Ok::<bool, anyhow::Error>(false);
             }
             if aos_registry_surface::keymap::is_git_pack_path(&file.relative_path) {
@@ -582,6 +612,7 @@ async fn upload_class(
                         identity.byte_size == expected_size && identity.sha256 == expected_sha256
                     })
                 {
+                    progress.inc(upload_progress_bytes(file)?);
                     return Ok::<bool, anyhow::Error>(true);
                 }
                 let snapshot = snapshot_git_pack(file, expected_size, expected_sha256)?;
@@ -596,6 +627,7 @@ async fn upload_class(
                     )
                     .await
                     .with_context(|| format!("uploading {}", file.relative_path))?;
+                progress.inc(upload_progress_bytes(file)?);
                 return Ok::<bool, anyhow::Error>(false);
             }
             if !no_skip
@@ -603,6 +635,7 @@ async fn upload_class(
                 && file.sha256.is_none()
                 && backend.exists(&file.relative_path).await?
             {
+                progress.inc(upload_progress_bytes(file)?);
                 return Ok::<bool, anyhow::Error>(true);
             }
             backend
@@ -616,6 +649,7 @@ async fn upload_class(
                 )
                 .await
                 .with_context(|| format!("uploading {}", file.relative_path))?;
+            progress.inc(upload_progress_bytes(file)?);
             Ok::<bool, anyhow::Error>(false)
         },
     ))
@@ -623,6 +657,18 @@ async fn upload_class(
     .try_collect::<Vec<bool>>()
     .await?;
     Ok(results.into_iter().filter(|skipped| *skipped).count())
+}
+
+fn upload_progress_bytes(file: &StaticOriginFile) -> Result<u64> {
+    file.byte_size.map_or_else(
+        || {
+            file.source
+                .metadata()
+                .with_context(|| format!("reading size of {}", file.source.display()))
+                .map(|metadata| metadata.len())
+        },
+        Ok,
+    )
 }
 
 fn snapshot_pack_index(file: &StaticOriginFile) -> Result<tempfile::NamedTempFile> {
@@ -1448,8 +1494,10 @@ mod tests {
             ("dest-b", Box::new(RecordingBackend::new("dest-b", &log))),
         ];
 
+        let progress = printer.transfer("test upload", total_bytes(&files).unwrap() * 2);
         let (failures, _skipped) =
-            upload_phase_major(&files, &destinations, false, true, &printer).await;
+            upload_phase_major(&files, &destinations, false, true, &printer, &progress).await;
+        progress.finish();
         assert!(failures.is_empty(), "{failures:?}");
 
         let class_of = |path: &str| {
@@ -1532,8 +1580,10 @@ mod tests {
             ),
         ];
 
+        let progress = printer.transfer("test upload", total_bytes(&files).unwrap() * 2);
         let (failures, _skipped) =
-            upload_phase_major(&files, &destinations, false, true, &printer).await;
+            upload_phase_major(&files, &destinations, false, true, &printer, &progress).await;
+        progress.finish();
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("broken"), "{failures:?}");
         assert!(failures[0].contains("objects/aa/object"), "{failures:?}");
@@ -1587,8 +1637,10 @@ mod tests {
             ),
         ];
 
+        let progress = printer.transfer("test upload", total_bytes(&files).unwrap() * 2);
         let (failures, _skipped) =
-            upload_phase_major(&files, &destinations, false, true, &printer).await;
+            upload_phase_major(&files, &destinations, false, true, &printer, &progress).await;
+        progress.finish();
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains(&receipt), "{failures:?}");
         let events = log.lock().unwrap();

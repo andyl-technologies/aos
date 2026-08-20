@@ -25,6 +25,7 @@ mod package;
 mod prefetch;
 mod server;
 mod test;
+mod vm;
 
 pub use cache::*;
 pub use hub::*;
@@ -33,10 +34,35 @@ pub use image::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
+pub use vm::*;
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ProgressChoice {
+    /// Select terminal or stable-line rendering automatically.
+    #[default]
+    Auto,
+    /// Always render an updating terminal display.
+    Tty,
+    /// Always emit stable newline-delimited updates.
+    Plain,
+    /// Disable progress updates.
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum ColorChoice {
+    /// Use color only when standard error is an interactive terminal.
+    #[default]
+    Auto,
+    /// Always emit terminal colors.
+    Always,
+    /// Never emit terminal colors.
+    Never,
+}
 
 #[derive(Parser)]
 #[command(name = "aos", about = "AOS build tool", version)]
@@ -55,6 +81,14 @@ pub struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Control progress rendering.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub progress: ProgressChoice,
+
+    /// Control terminal color output.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub color: ColorChoice,
 }
 
 #[derive(Subcommand)]
@@ -218,6 +252,11 @@ pub enum Commands {
     Image {
         #[command(subcommand)]
         command: ImageCommand,
+    },
+    /// Run downloaded AOS images locally with QEMU
+    Vm {
+        #[command(subcommand)]
+        command: VmCommand,
     },
     /// Profile a closure for leaked build/dev artifacts
     Profile {

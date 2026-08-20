@@ -8638,6 +8638,8 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     &pinned.root,
                     &pinned.request.objects,
                     immutable_objects,
+                    printer,
+                    "Uploading immutable publication objects",
                 )
                 .await?;
 
@@ -8651,6 +8653,8 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                     &pinned.root,
                     &pinned.request.objects,
                     pointer_objects,
+                    printer,
+                    "Uploading publication pointers",
                 )
                 .await?;
                 publication_client(access)
@@ -8743,6 +8747,8 @@ async fn upload_publication_object_class(
     root: &std::os::fd::OwnedFd,
     inputs: &[hub_types::RegistryPublicationObjectInput],
     objects: &[&hub_types::RegistryPublicationObject],
+    printer: &Printer,
+    label: &str,
 ) -> Result<()> {
     const CONCURRENT_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
@@ -8754,11 +8760,24 @@ async fn upload_publication_object_class(
     ));
     let multipart_budget =
         std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_MULTIPART_UPLOADS));
+    let total_bytes =
+        objects
+            .iter()
+            .filter(|object| !object.verified)
+            .try_fold(0_u64, |total, object| {
+                let size = u64::try_from(object.byte_size)
+                    .context("Hub publication response returned a negative object size")?;
+                total
+                    .checked_add(size)
+                    .context("publication byte total overflow")
+            })?;
+    let progress = printer.transfer(label, total_bytes);
 
-    stream::iter(objects.iter().copied().map(move |object| {
+    let result = stream::iter(objects.iter().copied().map(|object| {
         let declared = inputs.iter().find(|declared| declared.path == object.path);
         let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
         let multipart_budget = std::sync::Arc::clone(&multipart_budget);
+        let progress = &progress;
         async move {
             let declared =
                 declared.context("Hub publication response introduced an undeclared path")?;
@@ -8810,14 +8829,16 @@ async fn upload_publication_object_class(
                 root,
                 declared,
                 object,
+                progress,
             )
             .await
         }
     }))
     .buffer_unordered(CONCURRENT_UPLOADS)
     .try_collect::<Vec<()>>()
-    .await?;
-    Ok(())
+    .await;
+    progress.finish();
+    result.map(|_| ())
 }
 
 async fn upload_declared_publication_object(
@@ -8827,17 +8848,20 @@ async fn upload_declared_publication_object(
     root: &std::os::fd::OwnedFd,
     declared: &hub_types::RegistryPublicationObjectInput,
     object: &hub_types::RegistryPublicationObject,
+    progress: &aos_core::output::TransferProgress,
 ) -> Result<()> {
     let file = snapshot_publication_object(root, declared)?;
     if object.upload_url.is_empty() {
-        upload_publication_multipart(access, publication_id, object, file)
+        upload_publication_multipart(access, publication_id, object, file, progress)
             .await
             .with_context(|| format!("uploading publication path {}", object.path))
     } else {
         client
             .upload_publication_object(&object.upload_url, file, &object.path)
             .await
-            .with_context(|| format!("uploading publication path {}", object.path))
+            .with_context(|| format!("uploading publication path {}", object.path))?;
+        progress.inc(u64::try_from(object.byte_size)?);
+        Ok(())
     }
 }
 
@@ -8861,6 +8885,7 @@ async fn upload_publication_multipart(
     publication_id: &str,
     object: &hub_types::RegistryPublicationObject,
     mut file: std::fs::File,
+    progress: &aos_core::output::TransferProgress,
 ) -> Result<()> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
@@ -8905,6 +8930,7 @@ async fn upload_publication_multipart(
             )
             .await
             .context("resuming publication multipart completion")?;
+        progress.inc(expected_size);
         return Ok(());
     }
     anyhow::ensure!(
@@ -8920,6 +8946,7 @@ async fn upload_publication_multipart(
             .context("publication multipart resume offset overflowed")?
     };
     file.seek(SeekFrom::Start(offset))?;
+    progress.inc(offset);
 
     let result: Result<()> = async {
         let mut remaining = expected_size - offset;
@@ -8946,6 +8973,7 @@ async fn upload_publication_multipart(
                 "Hub returned a mismatched publication multipart part number"
             );
             remaining -= size;
+            progress.inc(size);
         }
         anyhow::ensure!(remaining == 0, "publication multipart upload is incomplete");
         Ok(())
