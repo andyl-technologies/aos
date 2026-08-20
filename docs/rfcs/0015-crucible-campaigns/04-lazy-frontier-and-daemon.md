@@ -376,9 +376,11 @@ proposal ordinal `n` names exactly value `n` in canonical source order and
 requires ordinal `n - 1` to exist when `n > 1`. This includes finite sources
 and implementation-version 2 `all` generators over Boolean or discrete
 domains. The latter yield `false`, then `true`, or alternatives in stable
-`AlternativeId` order. Proposals from every other generated source require the
-selected deterministic generator owner to reproduce the same value and remain
-fail-closed until that owner is implemented.
+`AlternativeId` order. Implementation-version 3 `boundary_integer` is also
+static and uses the exact boundary/default/landmark/neighbor/power order in
+§03.2. Proposals from every other generated source require the selected
+deterministic generator owner to reproduce the same value and remain fail-closed
+until that owner is implemented.
 
 The transition publishes the immutable `Proposal` and `ProposalIssued` fact,
 then makes an exact three-key delta to the exploration root:
@@ -403,9 +405,10 @@ budget, create a graph child, or count as an admitted continuation value.
   successors MUST reproduce the same delta from their parent.
 - **[LAZY-24]** Static proposal ordinals MUST be gapless and bind to canonical
   source-value order. Implementation-version 2 `all` over Boolean or discrete
-  domains is a static generated source. Other generated proposal issuance MUST
-  fail closed unless the named deterministic generator owner reproduces the
-  value from authenticated campaign facts.
+  domains and implementation-version 3 `boundary_integer` are static generated
+  sources. Other generated proposal issuance MUST fail closed unless the named
+  deterministic generator owner reproduces the value from authenticated
+  campaign facts.
 
 ## 04.13 Atomic attempt admission
 
@@ -492,8 +495,9 @@ same snapshot and branch point. `next_after` is present only when another
 request exists and names the last returned request.
 
 Static continuation state is derived without retaining all request values or
-continuations. A static source is either an explicit finite source or an
-implementation-version 2 `all` generator over a Boolean or discrete domain:
+continuations. A static source is an explicit finite source,
+implementation-version 2 `all` over a Boolean or discrete domain, or
+implementation-version 3 `boundary_integer`:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
   `Ready`;
@@ -533,10 +537,10 @@ admission is rejected.
   `ExecutionBasis` attempts. `AdditionalCause` deduplication MUST NOT create
   another child or consume another attempt.
 - **[LAZY-34]** The static projector MUST fail closed for generated requests
-  other than implementation-version 2 `all` over Boolean or discrete domains,
-  and for observation-bearing views, until their exact owner folds are
-  implemented. It MUST NOT publish approximated readiness, statistics, or
-  exhaustion.
+  other than implementation-version 2 `all` over Boolean or discrete domains
+  and implementation-version 3 `boundary_integer`, and for observation-bearing
+  views, until their exact owner folds are implemented. It MUST NOT publish
+  approximated readiness, statistics, or exhaustion.
 
 ## 04.15 Atomic observation publication
 

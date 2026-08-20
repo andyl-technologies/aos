@@ -1,6 +1,7 @@
 //! Imported-history, closure, identity, and owner-validation repository tests.
 
 use super::*;
+use crate::{ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue};
 
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
@@ -483,6 +484,275 @@ fn generated_all_discrete_uses_stable_alternative_order() {
             reason: "proposal-value-does-not-match-source-order"
         })
     ));
+}
+
+#[test]
+fn boundary_integer_generator_uses_exact_static_order() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-boundary", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(20),
+            2,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(6), IntegerValue::Unsigned(14)],
+        )
+        .expect("integer domain"),
+    );
+    let declaration = SelectableDeclaration::new(
+        "generated.boundary",
+        ChoiceSource::Workload {
+            producer: "generated-boundary".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"generated-boundary"),
+            producer: CampaignHash::derive("test", b"generated-boundary-producer"),
+        },
+        "generated-boundary",
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let generator = CandidateGeneratorSpec::new(
+        crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::BoundaryInteger,
+    )
+    .expect("boundary generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish generator");
+    let oversized_domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(128),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("oversized scale"),
+            (0..=crate::BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS as u64)
+                .map(IntegerValue::Unsigned)
+                .collect(),
+        )
+        .expect("oversized-landmark domain"),
+    );
+    assert!(matches!(
+        repository.validate_generator_for_domain(generator_id, &oversized_domain),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "boundary-generator-landmark-limit"
+        })
+    ));
+    let request = BranchRequest::new(
+        opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::generated(generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"generated-boundary-request",
+        ))),
+        BranchBudget::new(11, 11).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    let legacy_generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::BoundaryInteger,
+    )
+    .expect("legacy boundary generator");
+    let legacy_generator_id = repository
+        .publish_generator(&legacy_generator)
+        .expect("publish legacy boundary generator");
+    let legacy_request = BranchRequest::new(
+        request.branch_point(),
+        request.parent(),
+        request.opportunity(),
+        request.domain(),
+        CandidateSource::generated(legacy_generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"generated-boundary-legacy-request",
+        ))),
+        request.budget(),
+        request.stop().clone(),
+    )
+    .expect("legacy boundary request");
+    assert_eq!(
+        repository
+            .static_candidate_count(&legacy_request, &domain)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+    let expected = [0, 20, 10, 6, 14, 2, 18, 8, 12, 4, 16]
+        .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)));
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &domain)
+            .expect("candidate count"),
+        Some(expected.len() as u64)
+    );
+    for (index, expected) in expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&request, &domain, index as u64 + 1)
+                .expect("candidate ordinal"),
+            Some(expected.clone())
+        );
+    }
+
+    let issued = repository
+        .submit_known_branch_request("generated-boundary", genesis.snapshot_id(), &request)
+        .expect("issue request");
+    let projection_id = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project boundary source");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection_id)
+            .expect("load projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository.head("generated-boundary").expect("request head");
+    let wrong = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(20)),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("generated-boundary", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-boundary", issued.new_snapshot, &first)
+        .expect("issue first boundary proposal");
+
+    let signed_domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(-8),
+            IntegerValue::Signed(8),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("signed scale"),
+            vec![IntegerValue::Signed(0)],
+        )
+        .expect("signed domain"),
+    );
+    let signed_declaration = SelectableDeclaration::new(
+        "generated.boundary.signed",
+        ChoiceSource::Workload {
+            producer: "generated-boundary".to_owned(),
+        },
+        signed_domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Signed(0)),
+        ChoiceClassContext::new(BTreeSet::new()).expect("signed choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("signed declaration");
+    repository
+        .publish_choice_domain(&signed_domain)
+        .expect("publish signed domain");
+    repository
+        .publish_selectable(&signed_declaration)
+        .expect("publish signed declaration");
+    let signed_opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &signed_declaration,
+        &signed_domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"generated-boundary-signed"),
+            producer: CampaignHash::derive("test", b"generated-boundary-producer"),
+        },
+        "generated-boundary-signed",
+        None,
+    )
+    .expect("signed opportunity");
+    repository
+        .publish_choice_opportunity(&signed_opportunity)
+        .expect("publish signed opportunity");
+    let signed_request = BranchRequest::new(
+        signed_opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        signed_opportunity.id().expect("signed opportunity id"),
+        signed_domain.id().expect("signed domain id"),
+        CandidateSource::generated(generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"generated-boundary-signed-request",
+        ))),
+        BranchBudget::new(11, 11).expect("signed budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("signed request");
+    let signed_expected = [-8, 8, 0, -7, 7, -1, 1, 2, -2, 4, -4]
+        .map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)));
+    for (index, expected) in signed_expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&signed_request, &signed_domain, index as u64 + 1)
+                .expect("signed candidate ordinal"),
+            Some(expected.clone())
+        );
+    }
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation cache")
+        .clear();
+    assert_eq!(
+        repository
+            .head("generated-boundary")
+            .expect("rebuild boundary history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
 }
 
 #[test]

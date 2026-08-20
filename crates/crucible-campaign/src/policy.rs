@@ -26,6 +26,19 @@ const MAX_CANDIDATE_GENERATOR_BYTES: usize = 4 * 1024 * 1024;
 /// remain suspended so repository upgrades do not reinterpret persisted work.
 pub const STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION: u32 = 2;
 
+/// Generator implementation version for static boundary-integer enumeration.
+///
+/// This version has a closed ordering over boundaries, the opportunity default,
+/// landmarks, adjacent legal values, and signedness-appropriate powers of two.
+/// Earlier and unknown versions remain suspended.
+pub const BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 3;
+
+/// Maximum landmarks admitted by boundary-integer implementation version 3.
+///
+/// The implementation derives at most 512 candidates including boundaries,
+/// neighbors, and powers of two, keeping restart validation work bounded.
+pub const BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS: usize = 64;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

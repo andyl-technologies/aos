@@ -1159,8 +1159,19 @@ impl CampaignRepository {
                         ));
                     }
                 }
+                CandidateGeneratorAlgorithm::BoundaryInteger => {
+                    let ChoiceDomain::Integer(integer) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if generator.implementation_version()
+                        == crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && integer.landmarks().len()
+                            > crate::BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS
+                    {
+                        return Err(integrity("boundary-generator-landmark-limit"));
+                    }
+                }
                 CandidateGeneratorAlgorithm::StratifiedInteger { .. }
-                | CandidateGeneratorAlgorithm::BoundaryInteger
                 | CandidateGeneratorAlgorithm::LogInteger { .. }
                 | CandidateGeneratorAlgorithm::PermutedInteger
                 | CandidateGeneratorAlgorithm::ProgressiveInteger { .. }
