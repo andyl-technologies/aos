@@ -3,6 +3,7 @@
 use crucible_cas::content_store::ContentId;
 
 use super::*;
+use crate::{ChoiceDomain, ChoiceOpportunity, SelectableDeclaration};
 
 /// Maximum entries returned by one campaign graph page.
 pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u32;
@@ -371,6 +372,348 @@ impl Canonical for QueryCampaignChoicesResponse {
             page_proof: MerkleMapPageProof::decode(decoder)?,
         };
         ensure_message_size(&response, "query-campaign-choices-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
+
+/// Choice-opportunity dependency selected for an authenticated body read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignChoiceObjectKind {
+    /// The reusable selectable declaration named by the opportunity.
+    Declaration,
+    /// The exact effective domain named by the opportunity.
+    Domain,
+}
+
+impl Canonical for CampaignChoiceObjectKind {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Declaration => 0,
+            Self::Domain => 1,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Declaration),
+            1 => Ok(Self::Domain),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-choice-object-kind",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Typed immutable body named by an authenticated choice opportunity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignChoiceObject {
+    /// The opportunity's reusable selectable declaration.
+    Declaration(SelectableDeclaration),
+    /// The opportunity's exact effective domain.
+    Domain(ChoiceDomain),
+}
+
+impl CampaignChoiceObject {
+    /// Returns the closed dependency kind carried by this value.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignChoiceObjectKind {
+        match self {
+            Self::Declaration(_) => CampaignChoiceObjectKind::Declaration,
+            Self::Domain(_) => CampaignChoiceObjectKind::Domain,
+        }
+    }
+}
+
+impl Canonical for CampaignChoiceObject {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Declaration(value) => {
+                CampaignChoiceObjectKind::Declaration.encode(encoder);
+                value.encode(encoder);
+            }
+            Self::Domain(value) => {
+                CampaignChoiceObjectKind::Domain.encode(encoder);
+                value.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match CampaignChoiceObjectKind::decode(decoder)? {
+            CampaignChoiceObjectKind::Declaration => {
+                SelectableDeclaration::decode(decoder).map(Self::Declaration)
+            }
+            CampaignChoiceObjectKind::Domain => ChoiceDomain::decode(decoder).map(Self::Domain),
+        }
+    }
+}
+
+/// Strict request for one dependency of an authenticated choice opportunity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignChoiceObjectRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    opportunity: ChoiceOpportunityId,
+    kind: CampaignChoiceObjectKind,
+}
+
+impl GetCampaignChoiceObjectRequest {
+    /// Builds one snapshot-bound choice-dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        opportunity: ChoiceOpportunityId,
+        kind: CampaignChoiceObjectKind,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            opportunity,
+            kind,
+        };
+        ensure_message_size(&request, "get-campaign-choice-object-request-encoded-bytes")?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors the opportunity.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact opportunity that names the requested body.
+    #[must_use]
+    pub const fn opportunity(&self) -> ChoiceOpportunityId {
+        self.opportunity
+    }
+
+    /// Returns the requested closed dependency kind.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignChoiceObjectKind {
+        self.kind
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("get-campaign-choice-object", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded choice-dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-choice-object-request-encoded-bytes")
+    }
+}
+
+impl Canonical for GetCampaignChoiceObjectRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.opportunity.encode(encoder);
+        self.kind.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            ChoiceOpportunityId::decode(decoder)?,
+            CampaignChoiceObjectKind::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound choice dependency and exact opportunity-membership proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignChoiceObjectResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    opportunity: ChoiceOpportunity,
+    object: CampaignChoiceObject,
+    proof: MerkleMapLookupProof,
+}
+
+impl GetCampaignChoiceObjectResponse {
+    /// Builds one authenticated choice-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, proof, opportunity,
+    /// dependency kind or identity, or encoded-size contract is invalid.
+    pub fn new(
+        request: &GetCampaignChoiceObjectRequest,
+        snapshot_body: CampaignSnapshot,
+        opportunity: ChoiceOpportunity,
+        object: CampaignChoiceObject,
+        proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            opportunity,
+            object,
+            proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(
+            &response,
+            "get-campaign-choice-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including every root ID.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the exact opportunity that names the dependency.
+    #[must_use]
+    pub const fn opportunity(&self) -> &ChoiceOpportunity {
+        &self.opportunity
+    }
+
+    /// Returns the exact typed dependency body.
+    #[must_use]
+    pub const fn object(&self) -> &CampaignChoiceObject {
+        &self.object
+    }
+
+    /// Validates exact request, snapshot, opportunity, proof, and dependency binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or the dependency is not named by the authenticated opportunity.
+    pub fn validate_for(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded choice-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-choice-object-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || self.opportunity.id()? != request.opportunity()
+            || self.object.kind() != request.kind()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign choice object response basis mismatch",
+            });
+        }
+        let value = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().graph,
+            crate::repository::authoritative_choice_key(request.opportunity()),
+            &self.proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign choice object opportunity proof is invalid",
+        })?;
+        if value != Some(request.opportunity().content_id()) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign choice object opportunity is not graph-authenticated",
+            });
+        }
+        let matches_reference = match &self.object {
+            CampaignChoiceObject::Declaration(value) => {
+                self.opportunity.declaration() == value.id()?
+            }
+            CampaignChoiceObject::Domain(value) => self.opportunity.domain() == value.id()?,
+        };
+        if !matches_reference {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign choice object is not named by the opportunity",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for GetCampaignChoiceObjectResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.opportunity.encode(encoder);
+        self.object.encode(encoder);
+        self.proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            opportunity: ChoiceOpportunity::decode(decoder)?,
+            object: CampaignChoiceObject::decode(decoder)?,
+            proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(
+            &response,
+            "get-campaign-choice-object-response-encoded-bytes",
+        )?;
         Ok(response)
     }
 }
@@ -955,13 +1298,15 @@ impl Canonical for GetCampaignGraphObjectResponse {
 mod tests {
     #![allow(clippy::expect_used)]
 
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind};
 
     use super::*;
     use crate::{
-        CampaignRoots, ConfigurationArtifact, ConfigurationId, ScenarioArtifactId, ScenarioDefId,
+        BooleanDomain, CampaignRoots, ChoiceClassContext, ChoiceCoordinate, ChoiceSource,
+        ChoiceValue, ConfigurationArtifact, ConfigurationId, ScenarioArtifactId, ScenarioDefId,
     };
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
@@ -1003,6 +1348,45 @@ mod tests {
         )
         .expect("configuration artifact");
         ObjectEnvelope::for_configuration_artifact(&configuration).expect("configuration envelope")
+    }
+
+    fn choice_objects() -> (SelectableDeclaration, ChoiceDomain, ChoiceOpportunity) {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.network.retry",
+            ChoiceSource::Workload {
+                producer: "network-product".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::from(["network-recovery".to_owned()]))
+                .expect("choice class"),
+            BTreeSet::new(),
+            true,
+        )
+        .expect("declaration");
+        let opportunity = ChoiceOpportunity::new(
+            ScenarioDefId::from_hash(CampaignHash::derive(
+                "campaign-choice-object-test-scenario",
+                b"scenario",
+            )),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::derive(
+                    "campaign-choice-object-test-coordinate",
+                    b"scheduler",
+                ),
+                producer: CampaignHash::derive(
+                    "campaign-choice-object-test-coordinate",
+                    b"producer",
+                ),
+            },
+            "retry-choice",
+            None,
+        )
+        .expect("opportunity");
+        (declaration, domain, opportunity)
     }
 
     #[test]
@@ -1420,5 +1804,125 @@ mod tests {
             .expect("unrelated choice"),
         );
         assert!(substituted.validate_for(&request).is_err());
+    }
+
+    #[test]
+    fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
+        let backend = Arc::new(MemoryBlobBackend::new("choice-object-query", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty root");
+        let (declaration, domain, opportunity) = choice_objects();
+        let opportunity_id = opportunity.id().expect("opportunity id");
+        let graph = map
+            .insert(
+                empty.content_id(),
+                crate::repository::authoritative_choice_key(opportunity_id),
+                opportunity_id.content_id(),
+            )
+            .expect("opportunity membership");
+        let roots = CampaignRoots {
+            graph: graph.content_id(),
+            exploration: empty.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: empty.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"choice-object-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"choice-object-policy",
+            ))
+            .expect("policy"),
+            roots,
+        )
+        .expect("snapshot");
+        let request = GetCampaignChoiceObjectRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot id"),
+            opportunity_id,
+            CampaignChoiceObjectKind::Declaration,
+        )
+        .expect("request");
+        let mut unknown_kind = request.canonical_bytes();
+        let kind = unknown_kind.last_mut().expect("choice object kind byte");
+        *kind = 2;
+        assert!(matches!(
+            GetCampaignChoiceObjectRequest::from_canonical_bytes(&unknown_kind),
+            Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-choice-object-kind",
+                tag: 2,
+            })
+        ));
+        let (_, proof) = map
+            .get_with_proof(
+                graph.content_id(),
+                crate::repository::authoritative_choice_key(opportunity_id),
+            )
+            .expect("opportunity proof");
+        let response = GetCampaignChoiceObjectResponse::new(
+            &request,
+            snapshot_body.clone(),
+            opportunity.clone(),
+            CampaignChoiceObject::Declaration(declaration),
+            proof.clone(),
+        )
+        .expect("declaration response");
+        let decoded =
+            GetCampaignChoiceObjectResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode response");
+        decoded.validate_for(&request).expect("verify response");
+
+        let domain_request = GetCampaignChoiceObjectRequest::new(
+            request.principal().clone(),
+            request.campaign().clone(),
+            request.snapshot(),
+            opportunity_id,
+            CampaignChoiceObjectKind::Domain,
+        )
+        .expect("domain request");
+        let domain_response = GetCampaignChoiceObjectResponse::new(
+            &domain_request,
+            snapshot_body,
+            opportunity,
+            CampaignChoiceObject::Domain(domain),
+            proof,
+        )
+        .expect("domain response");
+        domain_response
+            .validate_for(&domain_request)
+            .expect("verify domain response");
+        assert!(domain_response.validate_for(&request).is_err());
+        let mut substituted = domain_response;
+        substituted.object = CampaignChoiceObject::Domain(ChoiceDomain::Boolean(
+            BooleanDomain::new(2).expect("unrelated domain"),
+        ));
+        assert!(substituted.validate_for(&domain_request).is_err());
+
+        assert_eq!(
+            [
+                blake3::hash(&request.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+                blake3::hash(&response.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+            ],
+            [
+                String::from("b3a99f45d1c4d84be0175b9f4b2408877d93a6ea4796466e48350ae035d6da38"),
+                String::from("74abc6ab91c7dec2cb1cde83dad1afc81e1707bf9f0717ebab4b008792a92286"),
+            ]
+        );
     }
 }

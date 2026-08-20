@@ -189,9 +189,9 @@ the CLI, an in-process caller, and a future external coordinator implementation:
 ```text
 CreateCampaign        GetCampaign          ApplyCampaignCommand
 GetSnapshot           QueryGraph           GetGraphObject
-QueryFrontier          QueryChoices         SubmitBranchRequest
-DeriveCampaign         QueryFindings        ExplainObject
-WatchCampaign
+QueryFrontier          QueryChoices         GetChoiceObject
+SubmitBranchRequest    DeriveCampaign       QueryFindings
+ExplainObject          WatchCampaign
 ```
 
 Every mutation of an existing campaign carries an idempotent command ID and its
@@ -204,8 +204,8 @@ therefore cannot lose campaign state.
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
-`QueryChoices`, and `SubmitBranchRequest` messages. All use canonical schema
-version 1 and a 64 MiB outer bound:
+`QueryChoices`, `GetChoiceObject`, and `SubmitBranchRequest` messages. All use
+canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
@@ -260,6 +260,15 @@ QueryCampaignChoicesResponseV1 = version | request_digest |
                                  optional next_after |
                                  MerkleLookupProofV1 |
                                  MerkleScanProofV1
+
+CampaignChoiceObjectKindV1 = 0 (Declaration) | 1 (Domain)
+CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
+GetCampaignChoiceObjectRequestV1 = version | principal | campaign | snapshot |
+                                   opportunity | CampaignChoiceObjectKindV1
+GetCampaignChoiceObjectResponseV1 = version | request_digest |
+                                    CampaignSnapshotV2 | ChoiceOpportunityV1 |
+                                    CampaignChoiceObjectV1 |
+                                    MerkleLookupProofV1
 
 ApplyCampaignCommandRequestV1 = version | principal | campaign |
                                 ControlRequestV1
@@ -323,7 +332,8 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph`, `GetGraphObject`, and `QueryChoices` additionally permit 2 and 4;
+`QueryGraph`, `GetGraphObject`, `QueryChoices`, and `GetChoiceObject`
+additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
 operation,
@@ -362,6 +372,9 @@ get_graph_object_request_digest =
 query_choices_request_digest =
   H("crucible.campaign-service.query-campaign-choices.v1",
     QueryCampaignChoicesRequestV1)
+get_choice_object_request_digest =
+  H("crucible.campaign-service.get-campaign-choice-object.v1",
+    GetCampaignChoiceObjectRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 derive_request_digest =
@@ -488,9 +501,10 @@ snapshot transition as the authoritative and branch-point-scoped graph keys.
 Imported legacy version-2 snapshots without this optional index remain valid,
 but the query fails closed with `InvalidRequest` until a new discovery upgrades
 the head. The exclusive cursor is a `ChoiceOpportunityId`, `limit` is in
-`1..=8`, and the result contains IDs only. Source, domain, declaration, and
-provenance bodies require the separately authorized `GetGraphObject` call via
-`CampaignChoiceEntryV1`'s deterministic graph key.
+`1..=8`, and the result contains IDs only. The separately authorized
+`GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
+return the strict opportunity envelope. Declaration and domain bodies are not
+flat graph entries and therefore cannot be fetched through that capability.
 
 Like `QueryGraph`, this response carries the complete anchoring snapshot body;
 `QueryCampaignChoices` authorization therefore grants visibility of its parent,
@@ -507,12 +521,24 @@ unused extra nodes. The eight-entry limit bounds the scan proof to at most 641
 64-KiB nodes; together with the 65-node lookup proof and message overhead, the
 complete response remains below the 64-MiB component-message bound.
 
+`GetChoiceObject` is the separately authorized dependency read for one exact
+graph-authenticated opportunity, including opportunities returned by
+`QueryChoices`. Its lookup proof authenticates the opportunity under the
+deterministic authoritative graph key and the response
+reconstructs that opportunity's exact content identity. The closed selector
+then permits only the declaration or effective domain named by that body. The
+checked client reconstructs the returned dependency's typed content ID and
+requires it to equal the corresponding opportunity field. The response carries
+the complete anchoring snapshot body and therefore grants the same full
+snapshot-metadata visibility as the other proof-bearing graph operations, but
+it grants no arbitrary content-store read.
+
 The remaining non-graph object queries, paged frontier/finding inspection, and
 explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV9 = "CRUCCS09" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV10 = "CRUCCS10" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -534,10 +560,12 @@ kind = 1 (GetCampaignRequestV1) |
       18 (GetCampaignGraphObjectRequestV1) |
       19 (GetCampaignGraphObjectResponseV1) |
       20 (QueryCampaignChoicesRequestV1) |
-      21 (QueryCampaignChoicesResponseV1)
+      21 (QueryCampaignChoicesResponseV1) |
+      22 (GetCampaignChoiceObjectRequestV1) |
+      23 (GetCampaignChoiceObjectResponseV1)
 ```
 
-Loopback frame versions 1 through 8 are rejected rather than reinterpreted
+Loopback frame versions 1 through 9 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
