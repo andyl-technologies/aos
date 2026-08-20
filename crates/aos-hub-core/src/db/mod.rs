@@ -384,6 +384,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("portable_recovery_cursor.sql"),
     include_str!("org_usage_backfill.sql"),
     include_str!("cache_multipart_creation.sql"),
+    include_str!("publication_object_evidence.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -6957,6 +6958,44 @@ impl Database {
                     ],
                 )
                 .expecting(1),
+                Statement::new(
+                    "INSERT INTO registry_publication_object_evidence
+                     (publication_id, surface_object_id, placement_id,
+                      observed_hash, observed_size, strong_etag, observed_at)
+                     SELECT pub.publication_id, object.id, placement.id,
+                            ?4, ?5, ?6, ?7
+                     FROM registry_publications pub
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = pub.publication_id
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = pub.registry_id
+                     JOIN registry_publication_placements progress
+                       ON progress.publication_id = pub.publication_id
+                     JOIN surface_placements placement
+                       ON placement.id = progress.placement_id
+                      AND placement.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND object.id = ?2
+                       AND placement.id = ?3
+                       AND pub.state IN ('preparing', 'writing_pointers')
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5
+                     ON CONFLICT(publication_id, surface_object_id, placement_id)
+                     DO UPDATE SET observed_hash = excluded.observed_hash,
+                       observed_size = excluded.observed_size,
+                       strong_etag = excluded.strong_etag,
+                       observed_at = excluded.observed_at",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
             ])
             .await
     }
@@ -7028,6 +7067,50 @@ impl Database {
                        AND publication.state = 'ready'
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO registry_publication_object_evidence
+                     (publication_id, surface_object_id, placement_id,
+                      observed_hash, observed_size, strong_etag, observed_at)
+                     SELECT publication.publication_id, object.id, placement.id,
+                            ?4, ?5, ?6, ?7
+                     FROM registry_publications publication
+                     JOIN registry_publication_state current
+                       ON current.registry_id = publication.registry_id
+                      AND current.current_publication_id = publication.publication_id
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = publication.publication_id
+                      AND declared.surface_object_id = ?2
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = publication.registry_id
+                     JOIN registry_publication_placements required
+                       ON required.publication_id = publication.publication_id
+                      AND required.placement_id = ?3
+                      AND required.required = 1 AND required.state = 'ready'
+                     JOIN surface_placement_effective placement
+                       ON placement.id = required.placement_id
+                      AND placement.registry_id = publication.registry_id
+                      AND placement.mutable_publication_id = publication.publication_id
+                     WHERE publication.publication_id = ?1
+                       AND publication.state = 'ready'
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5
+                     ON CONFLICT(publication_id, surface_object_id, placement_id)
+                     DO UPDATE SET observed_hash = excluded.observed_hash,
+                       observed_size = excluded.observed_size,
+                       strong_etag = excluded.strong_etag,
+                       observed_at = excluded.observed_at",
                     vals![
                         publication_id,
                         surface_object_id,
@@ -13106,7 +13189,7 @@ impl Database {
     ///
     /// The result exists only when the current publication declared the exact
     /// object, the selected required placement reached `ready`, and its
-    /// persisted presence still matches the declaration byte-for-byte.
+    /// durable publication receipt still matches the declaration byte-for-byte.
     ///
     /// # Errors
     ///
@@ -13121,7 +13204,7 @@ impl Database {
         validate_key_bytes(object_key, "surface object key", 512)?;
         self.backend
             .query_opt(
-                "SELECT declared.expected_hash, declared.expected_size, presence.etag
+                "SELECT declared.expected_hash, declared.expected_size, evidence.strong_etag
                  FROM registry_publications publication
                  JOIN registry_publication_objects declared
                    ON declared.publication_id = publication.publication_id
@@ -13132,17 +13215,16 @@ impl Database {
                    ON required.publication_id = publication.publication_id
                   AND required.placement_id = ?2
                   AND required.required = 1 AND required.state = 'ready'
-                 JOIN object_placements presence
-                   ON presence.surface_object_id = object.id
-                  AND presence.placement_id = required.placement_id
-                  AND presence.registry_id = publication.registry_id
+                 JOIN registry_publication_object_evidence evidence
+                   ON evidence.publication_id = publication.publication_id
+                  AND evidence.surface_object_id = object.id
+                  AND evidence.placement_id = required.placement_id
                  WHERE publication.publication_id = ?1
                    AND publication.state = 'ready'
                    AND object.object_key = ?3
-                   AND presence.state = 'present'
-                   AND presence.observed_hash = declared.expected_hash
-                   AND presence.observed_size = declared.expected_size
-                   AND presence.etag IS NOT NULL",
+                   AND evidence.observed_hash = declared.expected_hash
+                   AND evidence.observed_size = declared.expected_size
+                   AND evidence.strong_etag IS NOT NULL",
                 &vals![publication_id, placement_id, object_key],
             )
             .await?
@@ -24878,6 +24960,7 @@ source_nar_hash = ""
             "image_snapshots",
             "image_snapshot_references",
             "image_snapshot_leases",
+            "registry_publication_object_evidence",
         ] {
             let present: i64 = connection
                 .query_row(
@@ -25604,6 +25687,106 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
+
+        let publication_id = "image-evidence-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "image-evidence-generation".into(),
+            manifest_digest: "e".repeat(64),
+            refs_digest: "f".repeat(64),
+            default_commit: Some(snapshot.commit.clone()),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        for identity in &identities {
+            let object = db
+                .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
+                .await
+                .unwrap()
+                .unwrap();
+            db.set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: publication_id.into(),
+                surface_object_id: object.id,
+                object_kind: "immutable".into(),
+                expected_hash: identity.sha256.clone(),
+                expected_size: identity.byte_size,
+            })
+            .await
+            .unwrap();
+            db.record_registry_publication_object_presence(
+                publication_id,
+                object.id,
+                placement.id,
+                &identity.sha256,
+                identity.byte_size,
+                Some(&identity.strong_etag),
+                unix_now(),
+            )
+            .await
+            .unwrap();
+        }
+        db.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registry_publications
+                     SET state = 'ready', completed_at = ?2
+                     WHERE publication_id = ?1",
+                    vals![publication_id, unix_now()],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_placements
+                     SET state = 'ready', observed_at = ?3
+                     WHERE publication_id = ?1 AND placement_id = ?2",
+                    vals![publication_id, placement.id, unix_now()],
+                )
+                .expecting(1),
+            ])
+            .await
+            .unwrap();
+        let verified_before = db
+            .registry_publication_verified_object_at_placement(
+                publication_id,
+                placement.id,
+                &identities[0].object_key,
+            )
+            .await
+            .unwrap();
+        assert!(verified_before.is_some());
+
+        db.apply_snapshot_with_image_presence(
+            registry_id,
+            &snapshot,
+            placement.id,
+            &identities,
+            unix_now(),
+        )
+        .await
+        .unwrap();
+        let verified_after = db
+            .registry_publication_verified_object_at_placement(
+                publication_id,
+                placement.id,
+                &identities[0].object_key,
+            )
+            .await
+            .unwrap();
+        assert!(
+            verified_after.is_some(),
+            "derived image-presence replacement must preserve publication evidence"
+        );
+
         assert_eq!(
             db.channel_floor(registry_id, "stable")
                 .await
