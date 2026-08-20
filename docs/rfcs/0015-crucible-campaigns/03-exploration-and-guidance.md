@@ -83,7 +83,7 @@ campaign when the operator wants an independent future history.
 
 ## 03.2 Built-in generators
 
-The initial implementation provides:
+The closed specification vocabulary provides:
 
 | Generator | Domain | Behavior |
 | --- | --- | --- |
@@ -95,6 +95,16 @@ The initial implementation provides:
 | `permuted_integer` | Finite integer | Walks a keyed permutation without materializing the domain. |
 | `progressive_integer` | Integer | Starts with landmarks/strata and refines intervals from feedback. |
 | `mutate_near_corpus` | Any supported domain | Deterministically mutates retained successful, novel, or failing values. |
+
+The current repository-owned executable checkpoint implements generator
+implementation-version 2 `all` for Boolean and discrete domains. It derives
+`false`, then `true`, or the discrete alternatives in stable `AlternativeId`
+order without storing a cursor. Other algorithms remain valid suspended
+specifications but fail closed at proposal issuance and expansion projection
+until their versioned cursor and feedback owners are implemented. Version 1 and
+unknown implementation versions remain suspended rather than being
+reinterpreted as version 2; this preserves owner validation of histories
+created before executable enumeration landed.
 
 Generators compose as a fixed ordered mixture with integer weights. Duplicate
 values deduplicate by `(BranchPointId, ChoiceDomainId, ChoiceValue)`; the

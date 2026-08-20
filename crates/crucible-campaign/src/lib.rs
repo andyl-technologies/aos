@@ -117,7 +117,7 @@ pub use policy::{
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
     CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
     GuidanceWeight, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, WeightedGenerator,
+    RetentionPolicy, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, WeightedGenerator,
 };
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,

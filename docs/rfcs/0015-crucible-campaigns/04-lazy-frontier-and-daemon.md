@@ -371,9 +371,12 @@ delta and no unrelated root or policy change.
 that advances one request continuation without admitting execution. It first
 authenticates the complete head, returns an exact prior transition before stale
 precondition rejection, and proves that the proposal names an authoritative
-request, the active policy, and the current complete planning view. Finite
+request, the active policy, and the current complete planning view. Static
 proposal ordinal `n` names exactly value `n` in canonical source order and
-requires ordinal `n - 1` to exist when `n > 1`. Generated proposals require the
+requires ordinal `n - 1` to exist when `n > 1`. This includes finite sources
+and implementation-version 2 `all` generators over Boolean or discrete
+domains. The latter yield `false`, then `true`, or alternatives in stable
+`AlternativeId` order. Proposals from every other generated source require the
 selected deterministic generator owner to reproduce the same value and remain
 fail-closed until that owner is implemented.
 
@@ -398,10 +401,11 @@ budget, create a graph child, or count as an admitted continuation value.
 - **[LAZY-23]** Proposal issuance MUST be an exact three-key exploration delta
   and MUST preserve every other root, lineage, and active policy. Imported
   successors MUST reproduce the same delta from their parent.
-- **[LAZY-24]** Finite proposal ordinals MUST be gapless and bind to canonical
-  source-value order. Generated proposal issuance MUST fail closed unless the
-  named deterministic generator owner reproduces the value from authenticated
-  campaign facts.
+- **[LAZY-24]** Static proposal ordinals MUST be gapless and bind to canonical
+  source-value order. Implementation-version 2 `all` over Boolean or discrete
+  domains is a static generated source. Other generated proposal issuance MUST
+  fail closed unless the named deterministic generator owner reproduces the
+  value from authenticated campaign facts.
 
 ## 04.13 Atomic attempt admission
 
@@ -487,13 +491,14 @@ order identical to canonical typed-ID order. The page contains at most
 same snapshot and branch point. `next_after` is present only when another
 request exists and names the last returned request.
 
-Finite continuation state is derived without retaining all request values or
-continuations:
+Static continuation state is derived without retaining all request values or
+continuations. A static source is either an explicit finite source or an
+implementation-version 2 `all` generator over a Boolean or discrete domain:
 
 - no proposal at the next canonical ordinal and remaining proposal budget is
   `Ready`;
 - any issued proposal without its unique admission disposition is `Open`;
-- all finite values proposed and disposed is `Exhausted`;
+- all static values proposed and disposed is `Exhausted`;
 - proposal budget reached before all values are disposed is `Closed`.
 
 `admitted_children` counts only distinct `ExecutionBasis` admissions rooted
@@ -503,9 +508,10 @@ statistic therefore means admitted semantic attempts, not realized temporal
 graph configurations; graph-child accounting begins only after authenticated
 execution results exist.
 
-The current finite owner deliberately rejects any generated request or
-nonempty observation root. Those inputs require generator and observation
-owner folds rather than a permissive approximation. Loading an
+The current static owner deliberately rejects history-dependent generators,
+unknown generator implementation versions, and any nonempty observation root.
+Those inputs require generator and observation owner folds rather than a
+permissive approximation. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.
@@ -520,15 +526,17 @@ admission is rejected.
   The owner MUST reject a cursor absent from the exact branch-point request
   root, and concatenated pages MUST follow canonical `BranchRequestId` order
   independently of page size.
-- **[LAZY-32]** Finite readiness and exhaustion MUST derive from canonical
-  source order and proposal admission dispositions. Proposal existence alone
-  MUST NOT count as an admitted child or prove exhaustion.
+- **[LAZY-32]** Static-source readiness and exhaustion MUST derive from
+  canonical source order and proposal admission dispositions. Proposal
+  existence alone MUST NOT count as an admitted child or prove exhaustion.
 - **[LAZY-33]** Expansion admitted-child statistics MUST count distinct
   `ExecutionBasis` attempts. `AdditionalCause` deduplication MUST NOT create
   another child or consume another attempt.
-- **[LAZY-34]** A finite-only projector MUST fail closed for generated requests
-  and observation-bearing views until their exact owner folds are implemented.
-  It MUST NOT publish approximated readiness, statistics, or exhaustion.
+- **[LAZY-34]** The static projector MUST fail closed for generated requests
+  other than implementation-version 2 `all` over Boolean or discrete domains,
+  and for observation-bearing views, until their exact owner folds are
+  implemented. It MUST NOT publish approximated readiness, statistics, or
+  exhaustion.
 
 ## 04.15 Atomic observation publication
 

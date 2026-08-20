@@ -817,7 +817,7 @@ impl CampaignRepository {
                     &[(
                         request_id,
                         request.branch_point(),
-                        Self::initial_continuation_state(request),
+                        self.initial_continuation_state(request)?,
                     )],
                     true,
                 )?
@@ -1013,7 +1013,7 @@ impl CampaignRepository {
             frontier_index_anchor_key(),
         )? {
             let request = self.read_branch_request(proposal.request().content_id())?;
-            let prior_state = self.finite_continuation_state(
+            let prior_state = self.continuation_state(
                 current.snapshot.roots().exploration,
                 current.snapshot.roots().accounting,
                 proposal.request(),
@@ -1197,7 +1197,7 @@ impl CampaignRepository {
         if let Some(frontier_index) = self.merkle.get(exploration, frontier_index_anchor_key())? {
             let proposal_record = self.read_proposal(proposal.content_id())?;
             let request = self.read_branch_request(proposal_record.request().content_id())?;
-            let prior_state = self.finite_continuation_state(
+            let prior_state = self.continuation_state(
                 exploration,
                 current.snapshot.roots().accounting,
                 proposal_record.request(),
@@ -1209,7 +1209,7 @@ impl CampaignRepository {
                 proposal_record.branch_point(),
                 prior_state,
             )?;
-            let next_state = self.finite_continuation_state(
+            let next_state = self.continuation_state(
                 exploration,
                 accounting,
                 proposal_record.request(),

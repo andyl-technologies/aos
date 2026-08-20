@@ -19,6 +19,13 @@ const MAX_GENERATOR_WEIGHTS: usize = 4096;
 const MAX_GENERATOR_COMPONENTS: usize = 256;
 const MAX_CANDIDATE_GENERATOR_BYTES: usize = 4 * 1024 * 1024;
 
+/// Generator implementation version for static `all` enumeration.
+///
+/// This version enumerates Boolean values as `false`, then `true`, and discrete
+/// alternatives in stable [`AlternativeId`] order. Earlier and unknown versions
+/// remain suspended so repository upgrades do not reinterpret persisted work.
+pub const STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION: u32 = 2;
+
 /// Fixed seed that makes campaign proposal streams reproducible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignSeed([u8; 32]);

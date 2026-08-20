@@ -1280,17 +1280,11 @@ impl CampaignRepository {
             }
         }
 
-        let Some(values) = request.source().finite_values() else {
-            return Err(integrity(
-                "generated-proposal-enumerator-is-not-implemented",
-            ));
-        };
-        let index = usize::try_from(proposal.ordinal() - 1)
-            .map_err(|_| integrity("proposal-ordinal-is-not-canonical"))?;
-        if values.iter().nth(index) != Some(proposal.value()) {
-            return Err(integrity(
-                "proposal-value-does-not-match-finite-source-order",
-            ));
+        let expected = self
+            .static_candidate_at(&request, &domain, proposal.ordinal())?
+            .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
+        if &expected != proposal.value() {
+            return Err(integrity("proposal-value-does-not-match-source-order"));
         }
         Ok(request)
     }

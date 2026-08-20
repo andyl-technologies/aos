@@ -554,7 +554,7 @@ impl CampaignRepository {
                     &[(
                         request,
                         request_record.branch_point(),
-                        Self::initial_continuation_state(&request_record),
+                        self.initial_continuation_state(&request_record)?,
                     )],
                     false,
                 )?
@@ -756,7 +756,7 @@ impl CampaignRepository {
             .get(prior_roots.exploration, frontier_index_anchor_key())?
         {
             let request = self.read_branch_request(proposal_record.request().content_id())?;
-            let prior_state = self.finite_continuation_state(
+            let prior_state = self.continuation_state(
                 prior_roots.exploration,
                 prior_roots.accounting,
                 proposal_record.request(),
@@ -865,7 +865,7 @@ impl CampaignRepository {
             Some(frontier_index) => {
                 let proposal_record = self.read_proposal(proposal.content_id())?;
                 let request = self.read_branch_request(proposal_record.request().content_id())?;
-                let prior_state = self.finite_continuation_state(
+                let prior_state = self.continuation_state(
                     prior_roots.exploration,
                     prior_roots.accounting,
                     proposal_record.request(),
@@ -877,7 +877,7 @@ impl CampaignRepository {
                     proposal_record.branch_point(),
                     prior_state,
                 )?;
-                let next_state = self.finite_continuation_state(
+                let next_state = self.continuation_state(
                     prior_roots.exploration,
                     next_roots.accounting,
                     proposal_record.request(),
