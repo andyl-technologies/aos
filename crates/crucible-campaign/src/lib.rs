@@ -33,13 +33,14 @@ pub use authority::{
 };
 pub use campaign_service::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
-    CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal,
+    CampaignClient, CampaignClientError, CampaignGraphEntry, CampaignName, CampaignPrincipal,
     CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
     CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
     CampaignServiceRetryDisposition, CreateCampaignRequest, CreateCampaignResponse,
     DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest, GetCampaignResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
-    MAX_CREATE_CAMPAIGN_GENERATORS, RepositoryCampaignService, RepositoryCampaignServiceError,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATOR_BYTES, MAX_CREATE_CAMPAIGN_GENERATORS, QueryCampaignGraphRequest,
+    QueryCampaignGraphResponse, RepositoryCampaignService, RepositoryCampaignServiceError,
     SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
     WatchCampaignResponse,
 };
@@ -82,7 +83,10 @@ pub use identity::{
     RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
     SelectableSemanticId, SelectionId,
 };
-pub use merkle::{CampaignStoreError, MerkleMap, MerkleMapPage, MerkleMapRoot};
+pub use merkle::{
+    CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapPage, MerkleMapPageProof,
+    MerkleMapRoot,
+};
 pub use model::{
     ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,
     CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
