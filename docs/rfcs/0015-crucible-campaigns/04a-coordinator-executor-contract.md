@@ -811,13 +811,30 @@ real, effective, and saved supervisor user/group identity and its bounded
 supplementary-group set. `no_new_privs` is set before the credential switch so a
 later `exec` cannot regain privilege. Guarded spawn refuses implicit `qemu-img`
 work and requires an already-provisioned non-symlink VMState container. Before
-accessing that directory or allocating child descriptors, it checks the launch
-command's exact vCPU, guest-memory, and minimum writable-byte baseline against
-the ceilings sealed into the child contract. The writable ceiling also supplies
-a conservative per-file `RLIMIT_FSIZE`; a separate attempt-owned filesystem
-quota remains required to enforce the aggregate. The delegated hierarchy MUST
-NOT grant those child credentials an independent write path back to its
-controls.
+revalidating the prepared authority or allocating child descriptors, it checks
+the launch command's exact vCPU, guest-memory, and minimum writable-byte
+baseline against the ceilings sealed into the child contract. The writable
+ceiling also supplies a conservative per-file `RLIMIT_FSIZE`; a separate
+attempt-owned filesystem quota remains required to enforce the aggregate. The
+delegated hierarchy MUST NOT grant those child credentials an independent write
+path back to its controls.
+
+Public prepared-run-directory construction first admits the command's exact
+resource profile against the sealed child contract, then opens the directory
+without following its final path component, retains the exact regular VMState
+inode, and treats the original path as diagnostic only. The authority stores
+that resource basis;
+guarded spawn requires an exact match before revalidation or descriptor
+allocation, preventing a directory admitted for one ceiling from being reused
+under another. Guarded spawn requires that pinned authority,
+reauthenticates the named VMState entry before allocating child descriptors, and
+then, after cgroup placement and sticky-cancellation admission, uses `fchdir`
+plus a second `openat`/`fstat` identity check immediately before dropping child
+credentials and executing QEMU. Renaming or replacing the external diagnostic
+path therefore cannot redirect the child. The descriptor does not make the
+directory namespace immutable after that check; the production quota/run-
+directory owner MUST exclude concurrent namespace mutators until QEMU has
+opened every relative artifact.
 
 Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
 contracts cannot be minted before that watcher is live. Terminal cancellation
@@ -836,9 +853,9 @@ and leaves its worker retaining authority until empty, fail-closed.
 This authority is not yet the production guard. A nondroppable daemon owner
 that preserves the lifecycle-bound child/cgroup/watcher quarantine, aggregate
 filesystem quota, concrete guard composition of the execution-quantum counter,
-pinned run-directory ownership, and concrete session wiring remain mandatory
-before the guarded path may launch a campaign QEMU. Until then the cgroup
-authority remains crate-internal.
+exclusive run-directory namespace ownership through QEMU artifact open, and
+concrete session wiring remain mandatory before the guarded path may launch a
+campaign QEMU. Until then the cgroup authority remains crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

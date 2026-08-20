@@ -15,6 +15,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use thiserror::Error;
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
+const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
 
 /// Owned pre-exec contract for one attempt-contained child process.
 ///
@@ -47,6 +49,196 @@ pub struct QemuChildProcessContract {
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
     credentials: Option<QemuChildCredentials>,
+}
+
+/// Pinned authority over one pre-provisioned QEMU run directory.
+///
+/// The authority opens the directory without following a final symlink and
+/// retains the exact regular VMState file named inside it. Guarded spawn uses
+/// the directory descriptor for `fchdir` and reauthenticates the named VMState
+/// inode immediately before `exec`. It also retains the exact admitted command
+/// resource profile and contract ceiling. Replacement of the diagnostic path,
+/// replacement of its VMState entry before that boundary, or reuse under a
+/// different resource admission therefore fails closed. This authority does
+/// not make the directory namespace immutable: the production supervisor must
+/// exclude concurrent mutators until QEMU has opened every relative launch
+/// artifact and must enforce the separate aggregate quota.
+#[derive(Debug)]
+#[must_use = "guarded QEMU launch requires the pinned run-directory authority"]
+pub struct QemuPreparedRunDirectory {
+    path: PathBuf,
+    directory: OwnedFd,
+    directory_identity: PinnedFileIdentity,
+    vmstate: OwnedFd,
+    vmstate_identity: PinnedFileIdentity,
+    launch_resources: crate::QemuLaunchResourceRequirements,
+    admitted_ceiling: (u32, u64, u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PinnedFileIdentity {
+    device: u128,
+    inode: u128,
+}
+
+impl PinnedFileIdentity {
+    fn from_stat(metadata: &rustix::fs::Stat) -> Self {
+        Self {
+            device: u128::from(metadata.st_dev),
+            inode: u128::from(metadata.st_ino),
+        }
+    }
+
+    fn matches(self, metadata: &rustix::fs::Stat) -> bool {
+        self == Self::from_stat(metadata)
+    }
+}
+
+impl QemuPreparedRunDirectory {
+    /// Admits and opens one pre-provisioned run directory for a launch profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] before path access when the command exceeds
+    /// the contract's admitted resources. Otherwise returns an error when the
+    /// path cannot be opened without following a final symlink, does not name
+    /// a directory, or lacks the required regular non-symlink VMState file.
+    pub fn open_for_launch(
+        command: &QemuLaunchCommand,
+        path: impl AsRef<Path>,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_guarded_launch_resources(command, contract)?;
+        Self::open_admitted(command, path.as_ref(), contract)
+    }
+
+    fn open_admitted(
+        command: &QemuLaunchCommand,
+        path: &Path,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        let path = path.to_owned();
+        let directory = open(
+            &path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "pin prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory {
+            return Err(invalid_input(
+                "validate prepared QEMU run directory",
+                "prepared QEMU run path is not a directory",
+            ));
+        }
+        let vmstate = open_prepared_vmstate(&directory, &path)?;
+        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect prepared exact-VMState container",
+            source: source.into(),
+        })?;
+        if FileType::from_raw_mode(vmstate_metadata.st_mode) != FileType::RegularFile {
+            return Err(invalid_input(
+                "validate prepared exact-VMState container",
+                "exact-VMState container path is not a regular file",
+            ));
+        }
+
+        Ok(Self {
+            path,
+            directory_identity: PinnedFileIdentity::from_stat(&directory_metadata),
+            directory,
+            vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
+            vmstate,
+            launch_resources: command.resource_requirements(),
+            admitted_ceiling: contract.admitted_resource_ceiling(),
+        })
+    }
+
+    /// Returns the original run-directory path for diagnostics only.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn revalidate(&self) -> Result<(), QemuSpawnError> {
+        let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect prepared QEMU run directory",
+            source: source.into(),
+        })?;
+        if !self.directory_identity.matches(&directory_metadata) {
+            return Err(QemuSpawnError::PreparedRunDirectoryChanged {
+                path: self.path.clone(),
+            });
+        }
+        let retained_vmstate = fstat(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect retained exact-VMState container",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&retained_vmstate) {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let named_vmstate = open_prepared_vmstate(&self.directory, &self.path)?;
+        let named_metadata = fstat(&named_vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect named exact-VMState container",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&named_metadata) {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_launch_basis(
+        &self,
+        command: &QemuLaunchCommand,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        if self.launch_resources != command.resource_requirements()
+            || self.admitted_ceiling != contract.admitted_resource_ceiling()
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_resources(command, contract)
+    }
+}
+
+fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
+    openat(
+        directory,
+        crate::DEFAULT_VMSTATE_FILE_NAME,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| {
+        let source: io::Error = source.into();
+        if source.kind() == io::ErrorKind::NotFound {
+            QemuSpawnError::MissingPreparedVmState {
+                path: path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            }
+        } else {
+            QemuSpawnError::Io {
+                operation: "open prepared exact-VMState container",
+                source,
+            }
+        }
+    })
+}
+
+fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
+    QemuSpawnError::Io {
+        operation,
+        source: io::Error::new(io::ErrorKind::InvalidInput, message),
+    }
 }
 
 /// Distinct unprivileged credentials installed in a guarded QEMU child.
@@ -168,6 +360,14 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
 }
 
 impl QemuChildProcessContract {
+    fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
+        (
+            self.maximum_vcpus,
+            self.maximum_resident_bytes,
+            self.maximum_writable_bytes,
+        )
+    }
+
     /// Builds one child-side containment and credential contract.
     ///
     /// # Errors
@@ -380,6 +580,21 @@ pub enum QemuSpawnError {
         /// Required exact-VMState container path.
         path: PathBuf,
     },
+    /// The retained run-directory descriptor no longer names its opened inode.
+    #[error("prepared QEMU run-directory identity changed: {path}")]
+    PreparedRunDirectoryChanged {
+        /// Original diagnostic path of the pinned directory.
+        path: PathBuf,
+    },
+    /// The VMState name no longer resolves to the retained regular file.
+    #[error("prepared exact-VMState identity changed: {path}")]
+    PreparedVmStateChanged {
+        /// Original diagnostic path of the VMState container.
+        path: PathBuf,
+    },
+    /// The command or admitted ceiling differs from directory preparation.
+    #[error("prepared QEMU run directory is bound to a different launch admission")]
+    PreparedLaunchAdmissionChanged,
     /// The guarded child would retain root or a supervisor credential.
     #[error(
         "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"
@@ -424,7 +639,7 @@ pub fn spawn_qemu_child_with_fds_in_directory(
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        Some(run_directory),
+        QemuSpawnWorkingDirectory::Path(run_directory),
         child_resources,
         &[],
         "spawn QEMU child",
@@ -441,10 +656,10 @@ pub fn spawn_qemu_child_with_fds_in_directory(
 /// Unlike [`spawn_qemu_child_with_fds_in_directory`], this operation never
 /// invokes `qemu-img` or creates the exact-VMState container. The supervisor
 /// must provision and validate that container under its own bounded service
-/// policy before admitting the attempt. Before accessing that directory, this
-/// path validates the command's fixed resource baseline against the ceilings
-/// sealed into `contract`. The child writes itself into the attempt cgroup and
-/// checks cancellation in `pre_exec`, before QEMU executes.
+/// policy before admitting the attempt. Before revalidating that authority,
+/// this path validates the command's fixed resource baseline against the
+/// ceilings sealed into `contract`. The child writes itself into the attempt
+/// cgroup and checks cancellation in `pre_exec`, before QEMU executes.
 ///
 /// # Errors
 ///
@@ -454,26 +669,18 @@ pub fn spawn_qemu_child_with_fds_in_directory(
 /// QEMU cannot be spawned.
 pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     command: &QemuLaunchCommand,
-    run_directory: impl AsRef<Path>,
+    run_directory: &QemuPreparedRunDirectory,
     region_len: u64,
     contract: &QemuChildProcessContract,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    let run_directory = run_directory.as_ref();
-    command
-        .resource_requirements()
-        .validate_ceiling(
-            contract.maximum_vcpus,
-            contract.maximum_resident_bytes,
-            contract.maximum_writable_bytes,
-        )
-        .map_err(|source| QemuSpawnError::LaunchResources { source })?;
-    validate_prepared_vmstate_container(run_directory)?;
+    run_directory.validate_launch_basis(command, contract)?;
+    run_directory.revalidate()?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
-        Some(run_directory),
+        QemuSpawnWorkingDirectory::Pinned(run_directory),
         child_resources,
         &[],
         "spawn guarded QEMU child",
@@ -485,25 +692,18 @@ pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     })
 }
 
-fn validate_prepared_vmstate_container(run_directory: &Path) -> Result<(), QemuSpawnError> {
-    let path = run_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_file() => Ok(()),
-        Ok(_) => Err(QemuSpawnError::Io {
-            operation: "validate prepared exact-VMState container",
-            source: io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "exact-VMState container path is not a regular file",
-            ),
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Err(QemuSpawnError::MissingPreparedVmState { path })
-        }
-        Err(source) => Err(QemuSpawnError::Io {
-            operation: "inspect prepared exact-VMState container",
-            source,
-        }),
-    }
+fn validate_guarded_launch_resources(
+    command: &QemuLaunchCommand,
+    contract: &QemuChildProcessContract,
+) -> Result<(), QemuSpawnError> {
+    command
+        .resource_requirements()
+        .validate_ceiling(
+            contract.maximum_vcpus,
+            contract.maximum_resident_bytes,
+            contract.maximum_writable_bytes,
+        )
+        .map_err(|source| QemuSpawnError::LaunchResources { source })
 }
 
 fn prepare_vmstate_container(
@@ -610,6 +810,14 @@ struct QemuSpawnChildResources {
     wake_fd: OwnedFd,
 }
 
+#[derive(Clone, Copy)]
+enum QemuSpawnWorkingDirectory<'a> {
+    #[cfg(test)]
+    Inherit,
+    Path(&'a Path),
+    Pinned(&'a QemuPreparedRunDirectory),
+}
+
 fn create_spawn_resources(
     region_len: u64,
 ) -> Result<(QemuSpawnHostResources, QemuSpawnChildResources), QemuSpawnError> {
@@ -662,7 +870,7 @@ pub(crate) fn create_test_spawn_resource_pair(
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
-    run_directory: Option<&Path>,
+    run_directory: QemuSpawnWorkingDirectory<'_>,
     child_resources: QemuSpawnChildResources,
     envs: &[(&str, &str)],
     operation: &'static str,
@@ -681,6 +889,16 @@ fn spawn_process_with_resources(
         maximum_file_bytes: contract.maximum_writable_bytes,
         credentials: contract.credentials,
     });
+    let pinned_run_directory = match run_directory {
+        QemuSpawnWorkingDirectory::Pinned(directory) => Some(PreparedRunDirectoryRaw {
+            directory: directory.directory.as_raw_fd(),
+            vmstate_device: directory.vmstate_identity.device,
+            vmstate_inode: directory.vmstate_identity.inode,
+        }),
+        #[cfg(test)]
+        QemuSpawnWorkingDirectory::Inherit => None,
+        QemuSpawnWorkingDirectory::Path(_) => None,
+    };
 
     let mut command = Command::new(executable);
     command
@@ -689,7 +907,7 @@ fn spawn_process_with_resources(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let Some(run_directory) = run_directory {
+    if let QemuSpawnWorkingDirectory::Path(run_directory) = run_directory {
         command.current_dir(run_directory);
     }
     for (key, value) in envs {
@@ -697,13 +915,19 @@ fn spawn_process_with_resources(
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
-    // and exec: `write`, `poll`, `setrlimit`, raw credential syscalls, `prctl`,
-    // `getppid`, `dup2`, and `close`. It captures only integers and raw
-    // descriptor numbers, not heap-owning Rust values.
+    // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw
+    // credential syscalls, `prctl`, `getppid`, `dup2`, and `close`. It captures
+    // only integers and raw descriptor numbers, not heap-owning Rust values.
     unsafe {
         command.pre_exec(move || {
             if let Some(contract) = process_contract {
                 install_attempt_process_contract(contract)?;
+            }
+            if let Some(directory) = pinned_run_directory {
+                install_prepared_run_directory(directory)?;
+            }
+            if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
+                install_child_credentials(credentials)?;
             }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)
         });
@@ -720,6 +944,65 @@ struct ChildProcessContractRaw {
     cancellation_event: RawFd,
     maximum_file_bytes: u64,
     credentials: Option<QemuChildCredentials>,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedRunDirectoryRaw {
+    directory: RawFd,
+    vmstate_device: u128,
+    vmstate_inode: u128,
+}
+
+fn install_prepared_run_directory(directory: PreparedRunDirectoryRaw) -> io::Result<()> {
+    let changed = || io::Error::from_raw_os_error(libc::ESTALE);
+    let changed_directory = unsafe {
+        // SAFETY: `directory` is the live retained directory descriptor
+        // captured by the parent. `fchdir` copies no Rust-owned memory.
+        libc::fchdir(directory.directory)
+    };
+    if changed_directory != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let vmstate = unsafe {
+        // SAFETY: the static filename is NUL-terminated and `directory` names
+        // the retained run directory. `openat` returns a new child-owned fd.
+        libc::openat(
+            directory.directory,
+            VMSTATE_FILE_NAME_C.as_ptr().cast(),
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if vmstate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let inspected = unsafe {
+        // SAFETY: `metadata` points to writable storage for one stat and
+        // `vmstate` is the live descriptor returned above.
+        libc::fstat(vmstate, metadata.as_mut_ptr())
+    };
+    let inspect_error = (inspected != 0).then(io::Error::last_os_error);
+    let close_result = unsafe {
+        // SAFETY: `vmstate` is owned by this child-side function.
+        libc::close(vmstate)
+    };
+    if let Some(error) = inspect_error {
+        return Err(error);
+    }
+    if close_result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let metadata = unsafe {
+        // SAFETY: successful fstat initialized the complete structure.
+        metadata.assume_init()
+    };
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFREG
+        || u128::from(metadata.st_dev) != directory.vmstate_device
+        || u128::from(metadata.st_ino) != directory.vmstate_inode
+    {
+        return Err(changed());
+    }
+    Ok(())
 }
 
 fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Result<()> {
@@ -778,9 +1061,6 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
     };
     if no_new_privileges != 0 {
         return Err(io::Error::last_os_error());
-    }
-    if let Some(credentials) = contract.credentials {
-        install_child_credentials(credentials)?;
     }
     Ok(())
 }

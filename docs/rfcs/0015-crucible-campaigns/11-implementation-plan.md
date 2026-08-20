@@ -217,17 +217,27 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
-  Guarded spawn now rejects before run-directory access or descriptor
-  allocation unless the command's fixed vCPU, guest-memory, and minimum
-  writable-byte requirements fit the exact ceilings sealed into the child
-  contract. The writable ceiling also supplies a conservative per-file limit;
-  aggregate enforcement remains the responsibility of the open filesystem
-  quota composition.
+  Public guarded preparation now rejects before run-directory access unless the
+  command's fixed vCPU, guest-memory, and minimum writable-byte requirements fit
+  the exact ceilings sealed into the child contract. The resulting pinned
+  authority retains that basis, and guarded spawn rejects a changed command
+  resource profile or ceiling before revalidation or descriptor allocation.
+  The writable ceiling also supplies a conservative per-file limit; aggregate
+  enforcement remains the responsibility of the open filesystem quota
+  composition.
+  A prepared run-directory authority now pins the directory and exact regular
+  VMState inode without following final symlinks. Guarded spawn reauthenticates
+  the entry before allocation, changes directory by descriptor after cgroup and
+  cancellation admission, and repeats the inode check immediately before
+  credential drop and `exec`; replacement of the diagnostic path therefore
+  cannot redirect launch. The production owner must still exclude concurrent
+  namespace mutation until QEMU has opened every relative artifact.
   A nondroppable daemon owner preserving the lifecycle-bound combined
   child/cgroup/watcher process quarantine, aggregate
-  filesystem quota, execution-quantum counter composition, pinned run-directory
-  ownership, the modeled attempt driver, concrete session wiring, and responsive
-  multi-slot scheduling remain open.
+  filesystem quota, execution-quantum counter composition, exclusive run-
+  directory namespace ownership through artifact open, the modeled attempt
+  driver, concrete session wiring, and responsive multi-slot scheduling remain
+  open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable

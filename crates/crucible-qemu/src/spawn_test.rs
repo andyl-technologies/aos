@@ -18,6 +18,7 @@ use super::*;
 const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
 const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
 const CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CWD_PROBE";
+const PINNED_CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_CWD_PROBE";
 const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
 const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
 const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
@@ -151,7 +152,7 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
     let mut child = spawn_process_with_resources(
         &current_exe,
         &args,
-        None,
+        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PROBE_ENV, "1")],
         "spawn guarded pre-exec probe",
@@ -180,7 +181,7 @@ fn canceled_pre_exec_contract_stays_canceled_across_spawns() -> Result<(), Box<d
         let error = match spawn_process_with_resources(
             &current_exe,
             &[],
-            None,
+            QemuSpawnWorkingDirectory::Inherit,
             child_resources,
             &[],
             "spawn canceled pre-exec probe",
@@ -280,16 +281,141 @@ fn prepared_vmstate_container_rejects_symlinks() -> Result<(), Box<dyn Error>> {
         directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
     )?;
 
-    let error = match validate_prepared_vmstate_container(directory.path()) {
+    let error = match open_prepared_run_directory_for_test(directory.path()) {
         Err(error) => error,
-        Ok(()) => panic!("prepared VMState path must not follow a symlink"),
+        Ok(_) => panic!("prepared VMState path must not follow a symlink"),
     };
-    assert!(matches!(error, QemuSpawnError::Io { .. }));
+    assert!(error.to_string().contains("VMState"));
     Ok(())
 }
 
 #[test]
-fn guarded_spawn_rejects_underprovisioned_launch_before_run_directory_access()
+fn prepared_run_directory_rejects_a_final_symlink() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let actual = root.path().join("actual");
+    let linked = root.path().join("linked");
+    std::fs::create_dir(&actual)?;
+    std::fs::File::create(actual.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    symlink(&actual, &linked)?;
+
+    assert!(open_prepared_run_directory_for_test(&linked).is_err());
+    Ok(())
+}
+
+#[test]
+fn pre_exec_vmstate_name_matches_the_launch_contract() {
+    assert_eq!(
+        &VMSTATE_FILE_NAME_C[..VMSTATE_FILE_NAME_C.len() - 1],
+        crate::DEFAULT_VMSTATE_FILE_NAME.as_bytes()
+    );
+    assert_eq!(VMSTATE_FILE_NAME_C.last(), Some(&0));
+}
+
+#[test]
+fn prepared_run_directory_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+
+    std::fs::remove_file(&vmstate_path)?;
+    std::fs::File::create(&vmstate_path)?;
+
+    assert!(matches!(
+        prepared.revalidate(),
+        Err(QemuSpawnError::PreparedVmStateChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    std::fs::remove_file(&vmstate_path)?;
+    std::fs::File::create(&vmstate_path)?;
+
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let current_exe = env::current_exe()?;
+    let current_exe = current_exe.to_string_lossy().into_owned();
+    let error = match spawn_process_with_resources(
+        &current_exe,
+        &[],
+        QemuSpawnWorkingDirectory::Pinned(&prepared),
+        child_resources,
+        &[],
+        "spawn replaced pinned VMState probe",
+        None,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("pre-exec must reject a replaced VMState inode"),
+    };
+
+    assert!(matches!(
+        error,
+        QemuSpawnError::Io { source, .. }
+            if source.raw_os_error() == Some(libc::ESTALE)
+    ));
+    Ok(())
+}
+
+#[test]
+fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box<dyn Error>> {
+    if let Some(expected) = env::var_os(PINNED_CWD_PROBE_ENV) {
+        child_probe_cwd(Path::new(&expected))?;
+        return Ok(());
+    }
+
+    let root = tempfile::tempdir()?;
+    let diagnostic_path = root.path().join("attempt");
+    let retained_path = root.path().join("retained-attempt");
+    std::fs::create_dir(&diagnostic_path)?;
+    std::fs::File::create(diagnostic_path.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared = open_prepared_run_directory_for_test(&diagnostic_path)?;
+
+    std::fs::rename(&diagnostic_path, &retained_path)?;
+    std::fs::create_dir(&diagnostic_path)?;
+    std::fs::File::create(diagnostic_path.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    prepared.revalidate()?;
+
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let source_fds = format!(
+        "{},{},{}",
+        child_resources.control_socket.as_raw_fd(),
+        child_resources.shmem_fd.as_raw_fd(),
+        child_resources.wake_fd.as_raw_fd()
+    );
+    let current_exe = env::current_exe()?;
+    let current_exe = current_exe.to_string_lossy().into_owned();
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::pinned_run_directory_survives_diagnostic_path_replacement"),
+    ];
+    let expected = retained_path.canonicalize()?;
+    let mut child = spawn_process_with_resources(
+        &current_exe,
+        &args,
+        QemuSpawnWorkingDirectory::Pinned(&prepared),
+        child_resources,
+        &[
+            (
+                PINNED_CWD_PROBE_ENV,
+                expected.as_os_str().to_string_lossy().as_ref(),
+            ),
+            (SOURCE_FDS_ENV, &source_fds),
+        ],
+        "spawn pinned child cwd probe",
+        None,
+    )?;
+
+    assert!(child.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn guarded_preparation_rejects_underprovisioned_launch_before_run_directory_access()
 -> Result<(), Box<dyn Error>> {
     let (_cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
@@ -307,14 +433,13 @@ fn guarded_spawn_rejects_underprovisioned_launch_before_run_directory_access()
         unique_temp_suffix()
     ));
 
-    let error = match spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+    let error = match QemuPreparedRunDirectory::open_for_launch(
         &command,
         &missing_run_directory,
-        4096,
         &contract,
     ) {
         Err(error) => error,
-        Ok(_) => panic!("underprovisioned guarded launch must fail before spawn"),
+        Ok(_) => panic!("underprovisioned guarded preparation must fail before path access"),
     };
 
     assert!(matches!(
@@ -324,6 +449,39 @@ fn guarded_spawn_rejects_underprovisioned_launch_before_run_directory_access()
         }
     ));
     assert!(!missing_run_directory.exists());
+    Ok(())
+}
+
+#[test]
+fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let wide_contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &wide_contract)?;
+    std::fs::remove_file(&vmstate_path)?;
+    std::fs::File::create(&vmstate_path)?;
+
+    let (_cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let changed_contract = QemuChildProcessContract::for_test_with_resources(
+        cgroup_write,
+        cancellation,
+        u32::MAX,
+        u64::MAX - 1,
+        u64::MAX,
+    );
+    assert!(matches!(
+        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+            &command,
+            &prepared,
+            4096,
+            &changed_contract,
+        ),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
     Ok(())
 }
 
@@ -358,7 +516,7 @@ fn qemu_spawn_maps_fixed_child_fds_after_pre_exec() -> Result<(), Box<dyn Error>
     let mut child = spawn_process_with_resources(
         &current_exe,
         &args,
-        None,
+        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PROBE_ENV, "1"), (SOURCE_FDS_ENV, &source_fds)],
         "spawn child fd probe",
@@ -396,7 +554,7 @@ fn qemu_spawn_run_directory_sets_child_cwd() -> Result<(), Box<dyn Error>> {
     let mut child = spawn_process_with_resources(
         &current_exe,
         &args,
-        Some(&run_directory),
+        QemuSpawnWorkingDirectory::Path(&run_directory),
         child_resources,
         &[
             (
@@ -446,7 +604,7 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
         let mut child = spawn_process_with_resources(
             &current_exe,
             &args,
-            None,
+            QemuSpawnWorkingDirectory::Inherit,
             child_resources,
             &[
                 (ENV_CLEAR_CHILD_PROBE, "1"),
@@ -537,7 +695,7 @@ fn parent_probe_spawn_pdeath_child() -> Result<(), Box<dyn Error>> {
     let child = spawn_process_with_resources(
         &current_exe,
         &args,
-        None,
+        QemuSpawnWorkingDirectory::Inherit,
         child_resources,
         &[(PDEATH_CHILD_ENV, "1")],
         "spawn parent-death probe child",
@@ -575,6 +733,28 @@ fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
     ));
     std::fs::create_dir(&path)?;
     Ok(path)
+}
+
+fn wide_test_process_contract() -> Result<QemuChildProcessContract, Box<dyn Error>> {
+    let (_cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    Ok(QemuChildProcessContract::for_test_with_resources(
+        cgroup_write,
+        cancellation,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    ))
+}
+
+fn open_prepared_run_directory_for_test(
+    path: &Path,
+) -> Result<QemuPreparedRunDirectory, Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    Ok(QemuPreparedRunDirectory::open_for_launch(
+        &command, path, &contract,
+    )?)
 }
 
 fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> {
