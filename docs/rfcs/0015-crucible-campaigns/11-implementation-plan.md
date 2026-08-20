@@ -299,13 +299,24 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged
-  snapshot/graph/frontier/choice/finding queries,
+  snapshot/frontier/choice/finding queries,
   explanation, and CLI wiring remain open. A bounded coalesced `WatchCampaign`
   operation returns one exact current-head cursor and lifecycle projection,
-  including stale/unknown-cursor recovery without ancestry work. The local
-  Unix-stream binding now dispatches all twelve initial success messages plus
-  one stable request-bound error envelope under a version-5, 64-MiB-body,
+  including stale/unknown-cursor recovery without ancestry work. A bounded
+  `QueryGraph` page exact-binds the current snapshot and one authenticated
+  graph-root key cursor, rejects a changed head, and returns at most 256 content
+  IDs with the exact snapshot body and a minimal bounded Merkle proof. Checked
+  clients replay the cursor, complete ancestor prefixes, range, and one-entry
+  lookahead to authenticate exact continuation or EOF without fetching object
+  bodies or scanning ancestry for cursor/page resolution beyond the
+  repository's required authenticated-head checkpoint rebuild. The local
+  Unix-stream binding
+  now dispatches all fourteen initial success messages plus one stable
+  request-bound error envelope under a version-6, 64-MiB-body,
   absolute-deadline frame.
+  `QueryCampaignGraph` authorization covers the complete anchoring snapshot
+  metadata and all root IDs; bodies named by those IDs retain separate access
+  control.
   Protocol, canonical, I/O, and poisoned-lock failures shut down the connection;
   semantic failures keep it reusable, and concurrent exchanges receive a
   retryable busy error instead of queuing outside those deadlines. Direct and

@@ -325,7 +325,8 @@ their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
 The direct service contract implements strict request-bound `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, coalesced `WatchCampaign`,
+`DeriveCampaign`, `GetCampaign`, coalesced `WatchCampaign`, snapshot-bound
+`QueryGraph`,
 `ApplyCampaignCommand`, and operator
 `SubmitBranchRequest`
 messages over the semantic repository owner. Creation carries the complete
@@ -337,7 +338,7 @@ those immutable objects do not travel in the campaign control message.
 Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. It
-is not yet user porcelain: the nested CLI and paged inspection remain required
+is not yet user porcelain: the nested CLI and remaining paged inspection remain required
 before the service is complete. Repeated bounded `WatchCampaign` calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now
@@ -362,6 +363,18 @@ and whether that snapshot differs from the cursor. Unknown or stale cursors
 return the current head, so implementations may coalesce intermediate advances.
 Canonical facts are fetched by object ID; the watch stream itself is not
 authoritative and may coalesce status updates.
+
+`QueryGraph` pages only the graph root of one exact current snapshot. Its
+exclusive key cursor is valid only when it names an entry in that root, and a
+head advance returns `Stale` so callers restart from the newly observed
+snapshot. Pages carry at most 256 key/content-ID pairs plus the exact snapshot
+body and a bounded, minimal Merkle scan proof. The client authenticates the
+snapshot identity, complete ancestor prefixes, cursor, range, one-entry
+lookahead, and exact EOF/continuation before exposing any entry. This operation
+authorizes the complete snapshot metadata, including all root IDs, because the
+flat snapshot identity cannot selectively prove only the graph root. Object
+bodies remain separate; later explanation or object-read operations apply
+their own authorization.
 
 - **[CAPI-8]** Losing a watch stream MUST lose no campaign state. Reconnecting
   from a stale cursor returns the current snapshot and subsequent events. Graph,

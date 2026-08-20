@@ -362,6 +362,24 @@ impl CampaignRepository {
         })
     }
 
+    pub(crate) fn scan_graph_page(
+        &self,
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapPageProof), CampaignRepositoryError> {
+        self.merkle
+            .scan_with_proof(root, after, limit)
+            .map_err(|error| match error {
+                CampaignStoreError::InvalidMerkle {
+                    reason: "page-cursor-not-in-root",
+                } => CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-query-cursor-is-not-in-graph",
+                },
+                error => error.into(),
+            })
+    }
+
     /// Projects durable lifecycle intent from authenticated snapshot ancestry.
     ///
     /// # Errors

@@ -202,8 +202,8 @@ therefore cannot lose campaign state.
 
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `WatchCampaign`, `ApplyCampaignCommand`, and
-`SubmitBranchRequest` messages. All use canonical schema version 1 and a 64 MiB
-outer bound:
+`QueryGraph` and `SubmitBranchRequest` messages. All use canonical schema
+version 1 and a 64 MiB outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
@@ -225,6 +225,16 @@ WatchCampaignRequestV1 = version | principal | campaign |
                          optional after_snapshot
 WatchCampaignResponseV1 = version | request_digest | snapshot | lineage |
                           active_policy | lifecycle_state | advanced
+
+CampaignGraphEntryV1 = key | object
+MerkleScanProofV1 = node_count:u64 |
+                    nodes[node_id | canonical MerkleNodeV1 envelope bytes]
+QueryCampaignGraphRequestV1 = version | principal | campaign | snapshot |
+                              optional after_key | limit
+QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
+                               CampaignSnapshotV2 |
+                               entries[CampaignGraphEntryV1] |
+                               optional next_after | MerkleScanProofV1
 
 ApplyCampaignCommandRequestV1 = version | principal | campaign |
                                 ControlRequestV1
@@ -287,9 +297,10 @@ Stable failures are also bound to the semantics of the requested operation.
 Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign` and `WatchCampaign` additionally permit 2;
+`QueryGraph` additionally permits 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
-`SubmitCampaignBranch` permits 4, 5, and 6. For the two snapshot-preconditioned
-mutation methods,
+`SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
+operation,
 `Stale.expected_snapshot` MUST equal that exact request's snapshot precondition,
 and `Stale.current_snapshot` MUST differ from `Stale.expected_snapshot`. A tag
 outside the operation's allowed set or an invalid `Stale` basis is
@@ -313,6 +324,9 @@ get_request_digest =
   H("crucible.campaign-service.get-campaign.v1", GetCampaignRequestV1)
 watch_request_digest =
   H("crucible.campaign-service.watch-campaign.v1", WatchCampaignRequestV1)
+query_graph_request_digest =
+  H("crucible.campaign-service.query-campaign-graph.v1",
+    QueryCampaignGraphRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 derive_request_digest =
@@ -381,12 +395,45 @@ losing intermediate watch responses loses no authoritative campaign state.
 Repeated bounded calls form the initial resumable watch; a blocking streaming
 adapter may layer over the same messages later.
 
-The remaining snapshot/object queries, paged graph/frontier/choice/finding
+`QueryGraph` reads one ascending page from the graph Merkle root of the exact
+current snapshot named by the request. `limit` is in `1..=256`. The optional
+exclusive `after_key` MUST be an entry in that same root; arbitrary or
+cross-root cursors are `InvalidRequest`. Each response contains at most `limit`
+fixed-size key/content-ID pairs. A non-EOF `next_after` equals the last returned
+key and is valid only for the same snapshot. If the named campaign head differs
+from `snapshot`, the service returns a request-bound `Stale`; cursor resolution
+and page traversal do not scan ancestry or mix entries from another root. The
+repository may still rebuild its required authenticated-head validation
+checkpoint after restart or cache eviction before serving the page.
+
+The response carries the exact canonical snapshot body. A checked client
+reconstructs its snapshot envelope, requires that identity to equal the
+request's `snapshot`, and derives the graph root only from that authenticated
+body. `MerkleScanProofV1` contains every and only Merkle-node envelope visited
+while authenticating the optional cursor and scanning `limit + 1` entries. The
+lookahead proves both a continuation and EOF. The verifier checks content IDs,
+record kinds, child tables, depths, complete ancestor prefixes, subtree counts,
+strict order, the exact returned entries, and the exact `next_after`; it rejects
+missing, corrupt, duplicate, or unvisited extra nodes. A proof carries at most
+16,513 unique nodes, each envelope is at most 64 KiB, and their aggregate bytes
+are at most 60 MiB. These bounds also keep the complete response within the
+64-MiB component-message limit.
+
+Because snapshot identity is a flat content hash, authenticating `roots.graph`
+also discloses the complete snapshot body: parent, lineage, active policy,
+transition, and all nine root IDs. `QueryCampaignGraph` authorization therefore
+MUST grant that complete snapshot metadata capability as well as the returned
+graph object IDs and Merkle-node envelopes. An authorizer that may not disclose
+any other root ID MUST deny this operation. The operation does not grant any
+object body named by those IDs; object reads remain separately authorized, so
+sensitive checkpoint content is not carried in this response.
+
+The remaining snapshot/object queries, paged frontier/choice/finding
 inspection, and explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV5 = "CRUCCS05" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV6 = "CRUCCS06" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -400,10 +447,12 @@ kind = 1 (GetCampaignRequestV1) |
       10 (DeriveCampaignRequestV1) |
       11 (DeriveCampaignResponseV1) |
       12 (WatchCampaignRequestV1) |
-      13 (WatchCampaignResponseV1)
+      13 (WatchCampaignResponseV1) |
+      14 (QueryCampaignGraphRequestV1) |
+      15 (QueryCampaignGraphResponseV1)
 ```
 
-Loopback frame versions 1 through 4 are rejected rather than reinterpreted
+Loopback frame versions 1 through 5 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
