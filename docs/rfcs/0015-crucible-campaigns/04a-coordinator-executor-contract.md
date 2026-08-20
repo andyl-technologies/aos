@@ -750,7 +750,8 @@ separable capabilities. A session-owned facade charges exactly one admitted
 execution quantum before each realization-replay or live-backend advance; an
 exhausted or canceled charge prevents guest progress and remains an operational
 failure even when the narrow backend method reports through its backend-error
-channel.
+channel. The reusable counter charges exactly through the admitted nonzero
+ceiling and leaves its state unchanged on exhaustion.
 The realization executor owns replacement and VMState authority; the driver
 receives a narrow mutable live-backend facade that excludes generic snapshot,
 restore, shutdown, and process-replacement operations. The driver also receives
@@ -821,7 +822,8 @@ and leaves its worker retaining authority until empty, fail-closed.
 
 This authority is not yet the production guard. Direct-child
 identity-preserving reap/quarantine composition, aggregate filesystem quota,
-the concrete execution-quantum counter, invocation of launch-command
+concrete guard composition of the execution-quantum counter, invocation of
+launch-command
 resource-profile admission, pinned run-directory ownership, and concrete
 session wiring remain mandatory before the guarded path may launch a campaign
 QEMU. Until then the cgroup authority remains crate-internal.

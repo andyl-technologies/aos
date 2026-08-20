@@ -345,7 +345,7 @@ impl QemuAttemptResourceGuardFactory for TrackingGuardFactory {
             },
             counters: self.counters.clone(),
             fail_on_check: self.fail_on_check,
-            quanta_remaining: self.installed.maximum_execution_quanta(),
+            quantum_counter: QemuExecutionQuantumCounter::new(self.installed),
             finished: false,
         })
     }
@@ -356,7 +356,7 @@ struct TrackingGuard {
     cancellation: ExecutionCancellation,
     counters: TestCounters,
     fail_on_check: Option<usize>,
-    quanta_remaining: u64,
+    quantum_counter: QemuExecutionQuantumCounter,
     finished: bool,
 }
 
@@ -380,13 +380,7 @@ impl QemuAttemptOperationalBoundary for TrackingGuard {
     }
 
     fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.quanta_remaining == 0 {
-            return Err(QemuVmRealizationError::Executor {
-                operation: "charge fake QEMU execution quantum",
-                message: String::from("execution quantum ceiling exhausted"),
-            });
-        }
-        self.quanta_remaining -= 1;
+        self.quantum_counter.charge()?;
         self.counters.quanta.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -407,6 +401,23 @@ impl QemuAttemptResourceGuard for TrackingGuard {
             self.finished = true;
         }
     }
+}
+
+#[test]
+fn execution_quantum_counter_is_exact_and_failure_atomic() {
+    let resources = AttemptResourceLimits::new(1, 4096, 8192, 2).expect("resource limits");
+    let mut counter = QemuExecutionQuantumCounter::new(resources);
+
+    assert_eq!(counter.ceiling(), 2);
+    assert_eq!(counter.charged(), 0);
+    assert!(counter.charge().is_ok());
+    assert!(counter.charge().is_ok());
+    assert_eq!(counter.charged(), 2);
+    assert!(matches!(
+        counter.charge(),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counter.charged(), 2);
 }
 
 #[test]
