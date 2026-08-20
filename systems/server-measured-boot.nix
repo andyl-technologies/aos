@@ -24,9 +24,4 @@
     pcrPrivateKey = "${pkgs.secure-boot-test-keys}/pcr.key";
     pcrPublicKey = "${pkgs.secure-boot-test-keys}/pcr.pem";
   };
-
-  # aos-var-crypt is the SOLE /var unlocker — disable the initrd's
-  # automatic LUKS handling (systemd-cryptsetup-generator / gpt-auto) so
-  # systemd doesn't race to auto-activate the sealed /var.
-  aos.boot.kernelParams = ["rd.luks=0"];
 }
