@@ -325,7 +325,8 @@ their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
 
 The direct service contract implements strict request-bound `CreateCampaign`,
-`DeriveCampaign`, `GetCampaign`, `ApplyCampaignCommand`, and operator
+`DeriveCampaign`, `GetCampaign`, coalesced `WatchCampaign`,
+`ApplyCampaignCommand`, and operator
 `SubmitBranchRequest`
 messages over the semantic repository owner. Creation carries the complete
 bounded lineage/policy basis and exactly replays the authenticated
@@ -336,8 +337,10 @@ those immutable objects do not travel in the campaign control message.
 Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. It
-is not yet user porcelain: the nested CLI, paged inspection, and watch stream remain required before the
-service is complete. The bounded versioned Unix-stream loopback binding is now
+is not yet user porcelain: the nested CLI and paged inspection remain required
+before the service is complete. Repeated bounded `WatchCampaign` calls provide
+the initial resumable, coalesced current-head stream. The bounded versioned
+Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
 conflict, transition, resource, availability, and integrity meaning. Nested CLI
 wiring remains open. The daemon's authenticated repository adapter now reads
@@ -353,9 +356,12 @@ instead carries expected absence of its canonical name. CAS conflict responses
 return the current head and enough detail to retry or ask the user to resolve a
 policy conflict.
 
-`WatchCampaign` uses a resumable event cursor over snapshot advances and
-operational telemetry. Canonical facts are fetched by object ID; the watch
-stream itself is not authoritative and may coalesce status updates.
+`WatchCampaign` uses an optional last-seen snapshot cursor. Each response
+returns the current authenticated snapshot, lineage, policy, lifecycle state,
+and whether that snapshot differs from the cursor. Unknown or stale cursors
+return the current head, so implementations may coalesce intermediate advances.
+Canonical facts are fetched by object ID; the watch stream itself is not
+authoritative and may coalesce status updates.
 
 - **[CAPI-8]** Losing a watch stream MUST lose no campaign state. Reconnecting
   from a stale cursor returns the current snapshot and subsequent events. Graph,

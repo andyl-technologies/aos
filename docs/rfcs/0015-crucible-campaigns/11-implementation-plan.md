@@ -300,9 +300,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged
   snapshot/graph/frontier/choice/finding queries,
-  explanation/watch, and CLI wiring remain open. The local Unix-stream binding
-  now dispatches all ten initial success messages plus one stable request-bound
-  error envelope under a version-4, 64-MiB-body,
+  explanation, and CLI wiring remain open. A bounded coalesced `WatchCampaign`
+  operation returns one exact current-head cursor and lifecycle projection,
+  including stale/unknown-cursor recovery without ancestry work. The local
+  Unix-stream binding now dispatches all twelve initial success messages plus
+  one stable request-bound error envelope under a version-5, 64-MiB-body,
   absolute-deadline frame.
   Protocol, canonical, I/O, and poisoned-lock failures shut down the connection;
   semantic failures keep it reusable, and concurrent exchanges receive a
