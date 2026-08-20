@@ -25,11 +25,12 @@ crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:l
 crucible.campaign.branch-path	1	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
-crucible.campaign.planner-step	3	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
+crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
 crucible.campaign.planner-step-proposal	1	crucible-campaign::exploration	component-message	gate:component-contract
 crucible.campaign.planner-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.planner-request	1	crucible-campaign::planner_service	component-message	gate:component-contract
 crucible.campaign.planner-response	1	crucible-campaign::planner_service	component-message	gate:component-contract
+crucible.campaign.retained-planner-request	1	crucible-campaign::object	policy	gate:component-contract,gate:content-address
 crucible.campaign.debugger-submission	1	crucible-campaign::authority	component-message	gate:component-contract
 crucible.campaign.submit-attempt-request	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.submit-attempt-response	1	crucible-campaign::execution	component-message	gate:component-contract

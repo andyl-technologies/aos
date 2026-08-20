@@ -172,7 +172,7 @@ fn planner_no_work_is_owned_replayable_and_state_continuous() {
         .expect("accept planner step");
     assert!(!accepted.replayed);
     let step = repository
-        .load_planner_step(accepted.step)
+        .load_planner_step_at(accepted.new_snapshot, accepted.step)
         .expect("load accepted step");
     assert_eq!(step.parent(), None);
     assert_eq!(step.usage_claim(), proposal.usage_claim());
@@ -312,7 +312,7 @@ fn planner_no_work_is_owned_replayable_and_state_continuous() {
         .expect("second planner step");
     assert_eq!(
         repository
-            .load_planner_step(second.step)
+            .load_planner_step_at(second.new_snapshot, second.step)
             .expect("second step")
             .parent(),
         Some(accepted.step)
@@ -336,6 +336,13 @@ fn planner_no_work_is_owned_replayable_and_state_continuous() {
     let incomplete_parent = PlannerStep::new(
         None,
         missing_invocation,
+        RetainedPlannerRequestId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            1,
+            b"missing parent request",
+        ))
+        .expect("missing request id"),
+        test_planner_request_digest(missing_invocation),
         next_invocation.policy(),
         next_invocation.engine(),
         next_invocation.policy_artifact(),
@@ -352,9 +359,14 @@ fn planner_no_work_is_owned_replayable_and_state_continuous() {
         .expect("put incomplete parent");
     let incomplete_parent_id =
         PlannerStepId::from_content_id(incomplete_parent_content).expect("parent id");
+    let accepted_second = repository
+        .load_planner_step_at(second.new_snapshot, second.step)
+        .expect("accepted second step");
     let child = PlannerStep::new(
         Some(incomplete_parent_id),
         next_invocation.id().expect("next invocation id"),
+        accepted_second.request(),
+        accepted_second.request_digest(),
         next_invocation.policy(),
         next_invocation.engine(),
         next_invocation.policy_artifact(),
@@ -483,6 +495,29 @@ fn planner_scan_results_are_bound_to_exact_served_pages() {
     repository
         .put_planner_invocation(&false_eof_invocation)
         .expect("put false EOF invocation");
+    let false_eof_request = PlannerRequest::new(
+        second.new_snapshot,
+        false_eof_invocation.clone(),
+        engine.clone(),
+        artifact.clone(),
+        policy.clone(),
+        initial_state,
+        repository
+            .head("planner-pages")
+            .expect("planner head")
+            .snapshot()
+            .planning_view(),
+        CampaignPlanningBundle::new(vec![
+            repository
+                .read_envelope(invocation.scan_page().positions()[0].source().content_id())
+                .expect("served request envelope"),
+        ])
+        .expect("false EOF bundle"),
+    )
+    .expect("false EOF request");
+    repository
+        .put_planner_request(&false_eof_request)
+        .expect("put false EOF request");
     let false_eof_accounting = PlanningAccounting {
         branch_requests: 0,
         proposals: 0,
@@ -495,6 +530,8 @@ fn planner_scan_results_are_bound_to_exact_served_pages() {
     let false_eof_step = PlannerStep::new(
         None,
         false_eof_invocation.id().expect("false EOF invocation id"),
+        false_eof_request.id().expect("false EOF request id"),
+        false_eof_request.request_digest(),
         false_eof_invocation.policy(),
         false_eof_invocation.engine(),
         false_eof_invocation.policy_artifact(),
@@ -894,9 +931,17 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
         input_bytes: second_invocation.scan_page().input_bytes(),
         fuel: 1,
     };
+    let ancestry_request = repository
+        .build_planner_request(first.new_snapshot, second_invocation.id().expect("id"))
+        .expect("ancestry request");
+    repository
+        .put_planner_request(&ancestry_request)
+        .expect("put ancestry request");
     let ancestry_child = PlannerStep::new(
         Some(first.step),
         second_invocation.id().expect("second invocation id"),
+        ancestry_request.id().expect("ancestry request id"),
+        ancestry_request.request_digest(),
         second_invocation.policy(),
         second_invocation.engine(),
         second_invocation.policy_artifact(),
@@ -1424,12 +1469,27 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         vec![0],
     )
     .expect("initial state");
-    let (engine, _artifact, invocation) = planner_basis(
+    let (engine, artifact, invocation) = planner_basis(
         &repository,
         "planner-authority",
         planner_genesis.snapshot_id(),
-        initial_state,
+        initial_state.clone(),
     );
+    let planner_request = PlannerRequest::new(
+        planner_genesis.snapshot_id(),
+        invocation.clone(),
+        engine.clone(),
+        artifact,
+        policy.clone(),
+        initial_state,
+        repository
+            .head("planner-authority")
+            .expect("planner head")
+            .snapshot()
+            .planning_view(),
+        CampaignPlanningBundle::new(Vec::new()).expect("empty planner bundle"),
+    )
+    .expect("planner request");
     let next_state = PlannerState::new(
         engine.id().expect("engine id"),
         "closed-rust-state",
@@ -1453,13 +1513,16 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         measured,
     )
     .expect("wrong planner submission");
+    let wrong_response =
+        PlannerResponse::authorize(&wrong_planner_key, &planner_request, wrong_planner)
+            .expect("wrong planner response");
     let objects_before_planner_rejection = blobs
         .object_count()
         .expect("planner objects before rejection");
     assert!(matches!(
-        repository.accept_planner_submission("planner-authority", &wrong_planner),
+        repository.accept_planner_response("planner-authority", &planner_request, &wrong_response,),
         Err(CampaignRepositoryError::Integrity {
-            reason: "planner-submission-authentication-failed"
+            reason: "planner-response-authentication-failed"
         })
     ));
     assert_eq!(
@@ -1479,7 +1542,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     let planner_submission = PlannerSubmission::authorize(
         &planner_key,
         planner_genesis.snapshot_id(),
-        proposal,
+        proposal.clone(),
         measured,
     )
     .expect("authorize planner submission");
@@ -1494,12 +1557,160 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(decoded_planner, planner_submission);
     assert!(decoded_planner.verify(&planner_key));
     assert!(!decoded_planner.verify(&wrong_planner_key));
+    let planner_response =
+        PlannerResponse::authorize(&planner_key, &planner_request, decoded_planner)
+            .expect("planner response");
+    let different_request = PlannerRequest::new(
+        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            2,
+            b"different planner request snapshot",
+        ))
+        .expect("different snapshot"),
+        planner_request.invocation().clone(),
+        planner_request.engine().clone(),
+        planner_request.policy_artifact().clone(),
+        planner_request.policy().clone(),
+        planner_request.planner_state().clone(),
+        *planner_request.input_view(),
+        planner_request.input_bundle().clone(),
+    )
+    .expect("different planner request");
+    let objects_before_request_mismatch = blobs
+        .object_count()
+        .expect("objects before planner request mismatch");
+    assert!(matches!(
+        repository.accept_planner_response(
+            "planner-authority",
+            &different_request,
+            &planner_response,
+        ),
+        Err(CampaignRepositoryError::Codec(
+            CampaignCodecError::InvalidValue {
+                reason: "planner response request digest mismatch"
+            }
+        ))
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after planner request mismatch"),
+        objects_before_request_mismatch
+    );
     let accepted_planner = repository
-        .accept_planner_submission("planner-authority", &decoded_planner)
+        .accept_planner_response("planner-authority", &planner_request, &planner_response)
         .expect("accept planner submission");
     assert_eq!(
         accepted_planner.prior_snapshot,
         planner_genesis.snapshot_id()
+    );
+    let accepted_step = repository
+        .load_planner_step_at(accepted_planner.new_snapshot, accepted_planner.step)
+        .expect("accepted request-bound step");
+    assert_eq!(
+        accepted_step.request_digest(),
+        planner_request.request_digest()
+    );
+    assert_eq!(
+        repository
+            .load_planner_request(accepted_step.request())
+            .expect("retained planner request"),
+        planner_request
+    );
+    assert!(matches!(
+        repository.load_planner_step(accepted_planner.step),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-step-requires-snapshot-owner"
+        })
+    ));
+
+    let replay_request = PlannerRequest::new(
+        accepted_planner.new_snapshot,
+        planner_request.invocation().clone(),
+        planner_request.engine().clone(),
+        planner_request.policy_artifact().clone(),
+        planner_request.policy().clone(),
+        planner_request.planner_state().clone(),
+        *planner_request.input_view(),
+        planner_request.input_bundle().clone(),
+    )
+    .expect("byte-distinct valid replay request");
+    let replay_submission = PlannerSubmission::authorize(
+        &planner_key,
+        accepted_planner.new_snapshot,
+        proposal,
+        measured,
+    )
+    .expect("authorize replay submission");
+    let replay_response =
+        PlannerResponse::authorize(&planner_key, &replay_request, replay_submission)
+            .expect("authorize replay response");
+    let objects_before_replay_conflict = blobs.object_count().expect("objects before conflict");
+    assert!(matches!(
+        repository.accept_planner_response("planner-authority", &replay_request, &replay_response,),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-invocation-result-conflict"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after conflict"),
+        objects_before_replay_conflict
+    );
+    assert_eq!(
+        repository
+            .head("planner-authority")
+            .expect("head after replay conflict")
+            .snapshot_id(),
+        accepted_planner.new_snapshot
+    );
+
+    let forged_step = PlannerStep::new(
+        None,
+        accepted_step.invocation(),
+        accepted_step.request(),
+        accepted_step.request_digest(),
+        accepted_step.policy(),
+        accepted_step.engine(),
+        accepted_step.policy_artifact(),
+        accepted_step.input_view(),
+        PlannerDisposition::NoWork,
+        accepted_step.next_state(),
+        accepted_step.usage_claim(),
+        accepted_step.accounting(),
+        accepted_step.evidence().clone(),
+    )
+    .expect("forged wrong-parent-request step");
+    let forged_step_content = repository
+        .put_planner_step(&forged_step)
+        .expect("put forged planner step");
+    let forged_fact = repository
+        .put_fact(&CampaignFact::PlannerAdvanced(
+            PlannerStepId::from_content_id(forged_step_content).expect("forged step id"),
+        ))
+        .expect("put forged planner fact");
+    let accepted_snapshot = repository
+        .read_snapshot(accepted_planner.new_snapshot.content_id())
+        .expect("accepted snapshot");
+    let forged_snapshot = CampaignSnapshot::successor(
+        accepted_planner.new_snapshot,
+        accepted_snapshot.snapshot.lineage(),
+        accepted_snapshot.snapshot.active_policy(),
+        accepted_snapshot.snapshot.roots(),
+        CampaignFactId::from_content_id(forged_fact).expect("forged fact id"),
+    )
+    .expect("forged successor");
+    let forged_content = repository
+        .put_snapshot(&forged_snapshot)
+        .expect("put forged successor");
+    let forged_validation = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            forged_validation,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "planner-step-transition-request-snapshot-mismatch"
+            })
+        ),
+        "unexpected forged successor result: {forged_validation:?}"
     );
 }
 

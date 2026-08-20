@@ -15,14 +15,24 @@ use crate::{
     BranchRequest, CampaignCodecError, CampaignHash, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshotId, ObjectEnvelope, PlannerAuthorityKey, PlannerEngine, PlannerInvocation,
     PlannerProposalDisposition, PlannerState, PlannerStepProposal, PlannerSubmission,
-    PlanningUsage, PolicyArtifact,
+    PlanningUsage, PolicyArtifact, RetainedPlannerRequestId,
 };
 
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
-/// Maximum canonical request or submission size at the planner boundary.
+/// Maximum canonical request or response size at the planner wire boundary.
 pub const MAX_PLANNER_COMPONENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum canonical request body retained by the initial coordinator store.
+///
+/// This narrower admission bound leaves deterministic room for content-envelope
+/// framing without changing the version-1 component wire contract.
+pub const MAX_RETAINED_PLANNER_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PLANNING_BUNDLE_OBJECTS: usize = 65_536;
+const RETAINED_PLANNER_REQUEST_FIXED_CHILDREN: usize = 7;
+/// Maximum bundle-object count accepted by the initial coordinator store.
+pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
+    MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
+const _: () = assert!(MAX_RETAINED_PLANNER_REQUEST_BYTES < MAX_PLANNER_COMPONENT_MESSAGE_BYTES);
 
 /// Bounded content-addressed interpretation objects supplied to a pure planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -425,6 +435,61 @@ impl PlannerRequest {
     #[must_use]
     pub const fn input_bundle(&self) -> &CampaignPlanningBundle {
         &self.input_bundle
+    }
+
+    /// Returns the domain-separated digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        planner_request_digest(self)
+    }
+
+    /// Returns the exact content-derived retained-request identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if content-envelope construction fails.
+    pub fn id(&self) -> Result<RetainedPlannerRequestId, CampaignCodecError> {
+        let bytes = self.canonical_bytes();
+        ensure_retained_planner_request_shape(self.input_bundle.len(), bytes.len())?;
+        RetainedPlannerRequestId::from_content_id(
+            ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::RetainedPlannerRequest,
+                crate::object::content_children(self.content_children()?)?,
+                bytes,
+            )?
+            .content_id(),
+        )
+    }
+
+    pub(crate) fn content_children(&self) -> Result<Vec<(String, ContentId)>, CampaignCodecError> {
+        let mut children = vec![
+            (
+                "expected-snapshot".to_owned(),
+                self.expected_snapshot.content_id(),
+            ),
+            ("invocation".to_owned(), self.invocation.id()?.content_id()),
+            ("engine".to_owned(), self.invocation.engine().content_id()),
+            (
+                "policy-artifact".to_owned(),
+                self.invocation.policy_artifact().content_id(),
+            ),
+            ("policy".to_owned(), self.invocation.policy().content_id()),
+            (
+                "planner-state".to_owned(),
+                self.invocation.planner_state().content_id(),
+            ),
+            (
+                "input-view".to_owned(),
+                self.invocation.input_view().content_id(),
+            ),
+        ];
+        children.extend(
+            self.input_bundle
+                .object_ids()
+                .enumerate()
+                .map(|(index, id)| (format!("input-bundle.{index:04x}"), id)),
+        );
+        Ok(children)
     }
 
     /// Returns strict canonical component-message bytes.
@@ -968,6 +1033,23 @@ fn planner_request_digest(request: &PlannerRequest) -> CampaignHash {
     )
 }
 
+fn ensure_retained_planner_request_shape(
+    bundle_objects: usize,
+    encoded_bytes: usize,
+) -> Result<(), CampaignCodecError> {
+    if bundle_objects > MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "retained-planner-request-bundle-object-count",
+        });
+    }
+    if encoded_bytes > MAX_RETAINED_PLANNER_REQUEST_BYTES {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "retained-planner-request-encoded-bytes",
+        });
+    }
+    Ok(())
+}
+
 fn planner_response_basis(request_digest: CampaignHash, submission: &PlannerSubmission) -> Vec<u8> {
     let mut encoder = Encoder::new();
     PLANNER_RESPONSE_SCHEMA_VERSION.encode(&mut encoder);
@@ -991,6 +1073,24 @@ mod tests {
         PlanningBudget, PlanningScanPage, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
         ScenarioDefId,
     };
+
+    #[test]
+    fn retained_request_profile_has_distinct_wire_and_child_bounds() {
+        assert_eq!(MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, 65_529);
+        assert!(ensure_retained_planner_request_shape(65_529, 32 * 1024 * 1024).is_ok());
+        assert!(matches!(
+            ensure_retained_planner_request_shape(65_530, 1),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "retained-planner-request-bundle-object-count"
+            })
+        ));
+        assert!(matches!(
+            ensure_retained_planner_request_shape(0, 32 * 1024 * 1024 + 1),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "retained-planner-request-encoded-bytes"
+            })
+        ));
+    }
 
     #[derive(Clone, Copy)]
     struct FixedExecutionSupervisor(u64);
@@ -1021,6 +1121,26 @@ mod tests {
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
             "448d0678beaeb238107a6c4584cda2b5604150556a4b0eac42a720faf372ec66"
+        );
+        let retained = ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::RetainedPlannerRequest,
+            crate::object::content_children(
+                request
+                    .content_children()
+                    .expect("retained request children"),
+            )
+            .expect("canonical retained request children"),
+            bytes.clone(),
+        )
+        .expect("retained request envelope");
+        assert_eq!(
+            request.id().expect("retained request id").content_id(),
+            retained.content_id()
+        );
+        assert_eq!(
+            ObjectEnvelope::from_canonical_bytes(&retained.canonical_bytes())
+                .expect("retained request decode"),
+            retained
         );
 
         let output = no_work_output(&request);

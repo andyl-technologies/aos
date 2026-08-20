@@ -7,11 +7,12 @@ use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
 use crate::{
     AlternativeId, AssignmentId, AttemptResourceLimits, BooleanDomain, BranchBudget, BudgetGrant,
-    CampaignFactId, CampaignMode, CampaignPlanningView, CampaignSeed, CandidateGeneratorAlgorithm,
-    ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
-    ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExecutionId,
-    ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy, GuidanceEvidence, MeasurementSeries,
-    MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerState, PlannerStepProposal,
+    CampaignFactId, CampaignMode, CampaignPlanningBundle, CampaignPlanningView, CampaignSeed,
+    CandidateGeneratorAlgorithm, ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource,
+    ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId, DiscreteAlternative,
+    DiscreteDomain, ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy,
+    GuidanceEvidence, MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition,
+    PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission,
     PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence,
     PuctPolicy, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
@@ -603,6 +604,13 @@ fn no_work_proposal(
         PlannerProposalDisposition::NoWork,
     )
     .expect("no-work proposal")
+}
+
+fn test_planner_request_digest(invocation: PlannerInvocationId) -> CampaignHash {
+    CampaignHash::derive(
+        "crucible.test.planner-request-digest.v1",
+        invocation.content_id().encode().as_bytes(),
+    )
 }
 
 mod coordination;

@@ -1190,6 +1190,12 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             2,
             "planner-invocation"
         ),
+        stored_id!(
+            RetainedPlannerRequestId,
+            ObjectKind::Policy,
+            "retained-planner-request"
+        ),
+        CampaignHash::derive("crucible.test.planner-request-digest.v1", b"planner-step"),
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
         stored_id!(PlannerEngineId, ObjectKind::Policy, "planner-engine"),
         stored_id!(PolicyArtifactId, ObjectKind::Policy, "policy-artifact"),
@@ -1226,7 +1232,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     );
     assert_eq!(
         &planner_step.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &3_u32.to_be_bytes()
+        &4_u32.to_be_bytes()
     );
     let planner_step_children =
         super::object::content_children(planner_step.content_children()).expect("step children");
@@ -1241,19 +1247,33 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
             &planner_step_envelope.canonical_bytes(),
         )
         .expect("stored planner step envelope");
-    assert_eq!(stored_planner_step.schema_version(), 3);
-    let legacy_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
+    assert_eq!(stored_planner_step.schema_version(), 4);
+    let prior_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
         CampaignRecordKind::PlannerStep.schema_name(),
-        2,
+        3,
         planner_step_children,
         planner_step.canonical_bytes(),
     )
-    .expect("legacy planner step envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes()).is_err());
+    .expect("prior planner step envelope");
+    assert!(ObjectEnvelope::from_canonical_bytes(&prior_envelope.canonical_bytes()).is_err());
+    let legacy_step_id = PlannerStepId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        3,
+        b"legacy planner step",
+    ))
+    .expect("legacy planner step id");
+    let legacy_fact = CampaignFact::PlannerAdvanced(legacy_step_id);
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(&legacy_fact.canonical_bytes())
+            .expect("legacy planner fact remains readable"),
+        legacy_fact
+    );
 
     let continue_scan = PlannerStep::new(
         Some(planner_step.id().expect("parent planner step")),
         planner_step.invocation(),
+        planner_step.request(),
+        planner_step.request_digest(),
         planner_step.policy(),
         planner_step.engine(),
         planner_step.policy_artifact(),
@@ -1297,6 +1317,8 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let no_work = PlannerStep::new(
         Some(continue_scan.id().expect("continue-scan step id")),
         planner_step.invocation(),
+        planner_step.request(),
+        planner_step.request_digest(),
         planner_step.policy(),
         planner_step.engine(),
         planner_step.policy_artifact(),
@@ -1341,6 +1363,8 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         PlannerStep::new(
             None,
             planner_step.invocation(),
+            planner_step.request(),
+            planner_step.request_digest(),
             planner_step.policy(),
             planner_step.engine(),
             planner_step.policy_artifact(),

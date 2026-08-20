@@ -18,8 +18,8 @@ use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshot, ConfigurationArtifact, CoverageProjection, ExpansionState, MeasurementSet,
-    Observation, PlannerEngine, PlannerInvocation, PlannerState, PlannerStep, PolicyArtifact,
-    PropertyVerdictSet, Proposal, ScenarioArtifact,
+    Observation, PlannerEngine, PlannerInvocation, PlannerRequest, PlannerState, PlannerStep,
+    PolicyArtifact, PropertyVerdictSet, Proposal, ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -87,11 +87,13 @@ pub enum CampaignRecordKind {
     CoverageProjection,
     /// Canonical modeled result of one admitted attempt.
     Observation,
+    /// Retained canonical pure-planner component request.
+    RetainedPlannerRequest,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -121,6 +123,7 @@ impl CampaignRecordKind {
         Self::PropertyVerdictSet,
         Self::CoverageProjection,
         Self::Observation,
+        Self::RetainedPlannerRequest,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -156,6 +159,7 @@ impl CampaignRecordKind {
             Self::PropertyVerdictSet => "crucible.campaign.property-verdict-set",
             Self::CoverageProjection => "crucible.campaign.coverage-projection",
             Self::Observation => "crucible.campaign.observation",
+            Self::RetainedPlannerRequest => "crucible.campaign.retained-planner-request",
         }
     }
 
@@ -166,7 +170,7 @@ impl CampaignRecordKind {
             Self::Snapshot => 2,
             Self::Fact => 2,
             Self::PlannerInvocation => 2,
-            Self::PlannerStep => 3,
+            Self::PlannerStep => 4,
             Self::ExpansionState => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
@@ -210,6 +214,7 @@ impl CampaignRecordKind {
             | Self::Attempt
             | Self::AttemptAdmission
             | Self::PlannerStep => ObjectKind::CampaignFact,
+            Self::RetainedPlannerRequest => ObjectKind::Policy,
         }
     }
 }
@@ -246,6 +251,7 @@ impl Canonical for CampaignRecordKind {
             Self::PropertyVerdictSet => 26,
             Self::CoverageProjection => 27,
             Self::Observation => 28,
+            Self::RetainedPlannerRequest => 29,
         });
     }
 
@@ -280,6 +286,7 @@ impl Canonical for CampaignRecordKind {
             26 => Ok(Self::PropertyVerdictSet),
             27 => Ok(Self::CoverageProjection),
             28 => Ok(Self::Observation),
+            29 => Ok(Self::RetainedPlannerRequest),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -571,6 +578,10 @@ fn expected_children(
         CampaignRecordKind::Observation => {
             let value = Observation::from_canonical_bytes(body)?;
             content_children(value.content_children())
+        }
+        CampaignRecordKind::RetainedPlannerRequest => {
+            let value = PlannerRequest::from_canonical_bytes(body)?;
+            content_children(value.content_children()?)
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {
             reason: "opaque campaign record requires its owning validator",

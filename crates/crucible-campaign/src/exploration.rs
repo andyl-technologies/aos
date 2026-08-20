@@ -12,15 +12,16 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     AdmissionOrdinal, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
-    BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignPolicyId, CampaignSnapshotId,
-    CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
-    ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    DebugSessionId, ExpansionStateId, PlannerEngineId, PlannerInvocationId, PlannerState,
-    PlannerStateId, PlannerStepId, PolicyArtifactId, ProposalId, SelectionId,
+    BranchRequestId, CampaignCodecError, CampaignCommandId, CampaignHash, CampaignPolicyId,
+    CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceDomain, ChoiceDomainId,
+    ChoiceOpportunity, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifact,
+    ConfigurationArtifactId, DebugSessionId, ExpansionStateId, PlannerEngineId,
+    PlannerInvocationId, PlannerState, PlannerStateId, PlannerStepId, PolicyArtifactId, ProposalId,
+    RetainedPlannerRequestId, SelectionId,
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const PLANNER_STEP_SCHEMA_VERSION: u32 = 3;
+const PLANNER_STEP_SCHEMA_VERSION: u32 = 4;
 const EXPANSION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_FINITE_VALUES: usize = 4096;
 const MAX_BRANCH_PATH_EDGES: usize = 65_536;

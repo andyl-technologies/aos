@@ -963,13 +963,16 @@ impl CampaignRepository {
     /// Returns an error for stale or mismatched invocation input, an invalid
     /// scan cursor, output or resource-budget overflow, conflicting replay,
     /// issuing output, invalid state continuity, or failed ref advancement.
-    pub(crate) fn accept_planner_step(
+    fn accept_request_bound_planner_step(
         &self,
         name: &str,
-        expected_snapshot: CampaignSnapshotId,
+        request: &PlannerRequest,
         proposal: &PlannerStepProposal,
         measured_usage: PlanningUsage,
     ) -> Result<PlannerStepResult, CampaignRepositoryError> {
+        let expected_snapshot = request.expected_snapshot();
+        let request_id = request.id()?;
+        let request_digest = request.request_digest();
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
         let current_content = self
@@ -980,6 +983,11 @@ impl CampaignRepository {
         self.validate_complete_head(current_content)?;
 
         let invocation = self.load_planner_invocation(proposal.invocation())?;
+        if request.invocation_id()? != proposal.invocation() || *request.invocation() != invocation
+        {
+            return Err(integrity("planner-request-invocation-mismatch"));
+        }
+        self.validate_planner_request_inputs(request)?;
         let next_state_id = proposal.next_state().id()?;
         let disposition = match proposal.disposition() {
             PlannerProposalDisposition::ContinueScan { cursor } => {
@@ -1019,6 +1027,8 @@ impl CampaignRepository {
             let expected = PlannerStep::new(
                 existing.parent(),
                 proposal.invocation(),
+                request_id,
+                request_digest,
                 invocation.policy(),
                 invocation.engine(),
                 invocation.policy_artifact(),
@@ -1104,6 +1114,8 @@ impl CampaignRepository {
         let step = PlannerStep::new(
             parent,
             proposal.invocation(),
+            request_id,
+            request_digest,
             invocation.policy(),
             invocation.engine(),
             invocation.policy_artifact(),
@@ -1150,6 +1162,10 @@ impl CampaignRepository {
         let next_state_content = self.put_planner_state(proposal.next_state())?;
         if next_state_content != next_state_id.content_id() {
             return Err(integrity("planner-next-state-publication-id-mismatch"));
+        }
+        let request_content = self.put_planner_request(request)?;
+        if request_content != request_id.content_id() {
+            return Err(integrity("planner-request-publication-id-mismatch"));
         }
         let step_content = self.put_planner_step(&step)?;
         if step_content != step_id.content_id() {
@@ -1212,7 +1228,7 @@ impl CampaignRepository {
         }
     }
 
-    /// Accepts one authenticated pure-planner component submission.
+    /// Accepts one checked, exactly request-bound planner response.
     ///
     /// Authentication proves which supervised component produced the exact
     /// bytes; the coordinator still independently validates every semantic
@@ -1220,26 +1236,116 @@ impl CampaignRepository {
     ///
     /// # Errors
     ///
-    /// Returns an error when component authority is not configured, the
-    /// authenticator is invalid, or ordinary planner acceptance fails.
-    pub fn accept_planner_submission(
+    /// Returns an error when component authority is not configured, either
+    /// authenticator is invalid, the response names another request, or
+    /// ordinary planner acceptance fails.
+    pub fn accept_planner_response(
         &self,
         name: &str,
-        submission: &PlannerSubmission,
+        request: &crate::PlannerRequest,
+        response: &crate::PlannerResponse,
     ) -> Result<PlannerStepResult, CampaignRepositoryError> {
         let authority = self
             .planner_authority
             .as_ref()
             .ok_or_else(|| integrity("planner-authority-is-not-configured"))?;
-        if !submission.verify(authority) {
-            return Err(integrity("planner-submission-authentication-failed"));
+        if !response.verify(authority) || !response.submission().verify(authority) {
+            return Err(integrity("planner-response-authentication-failed"));
         }
-        self.accept_planner_step(
+        response.validate_for(request)?;
+        let submission = response.submission();
+        self.accept_request_bound_planner_step(
             name,
-            submission.expected_snapshot(),
+            request,
             submission.proposal(),
             submission.measured_usage(),
         )
+    }
+
+    /// Builds the exact store-backed input for one prepared planner invocation.
+    ///
+    /// The returned request embeds the direct invocation basis by value and
+    /// carries every served branch-request envelope. Additional interpretation
+    /// dependencies and Merkle proof guidance remain a later integration gate.
+    /// This method performs no writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the expected snapshot,
+    /// invocation basis, served source closure, or retained-request bounds are
+    /// missing or invalid.
+    pub fn build_planner_request(
+        &self,
+        expected_snapshot: CampaignSnapshotId,
+        invocation_id: PlannerInvocationId,
+    ) -> Result<PlannerRequest, CampaignRepositoryError> {
+        let snapshot = self.read_snapshot(expected_snapshot.content_id())?;
+        self.validate_complete_head(expected_snapshot.content_id())?;
+        let invocation = self.load_planner_invocation(invocation_id)?;
+        let expected_view = snapshot.snapshot.planning_view();
+        if invocation.policy() != snapshot.snapshot.active_policy()
+            || invocation.input_view() != expected_view.id()?
+        {
+            return Err(integrity("planner-request-basis-is-not-snapshot-current"));
+        }
+        self.validate_planner_page(&expected_view, &invocation)?;
+        self.validate_planner_invocation_start(
+            snapshot.snapshot.roots().coordination,
+            &invocation,
+        )?;
+
+        let engine_envelope = self.require_record_kind(
+            invocation.engine().content_id(),
+            crate::CampaignRecordKind::PlannerEngine,
+        )?;
+        let artifact_envelope = self.require_record_kind(
+            invocation.policy_artifact().content_id(),
+            crate::CampaignRecordKind::PolicyArtifact,
+        )?;
+        let policy_envelope = self.require_record_kind(
+            invocation.policy().content_id(),
+            crate::CampaignRecordKind::Policy,
+        )?;
+        let state_envelope = self.require_record_kind(
+            invocation.planner_state().content_id(),
+            crate::CampaignRecordKind::PlannerState,
+        )?;
+        let view_envelope = self.require_record_kind(
+            invocation.input_view().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+
+        let retained = invocation
+            .scan_page()
+            .positions()
+            .iter()
+            .map(|position| self.read_envelope(position.source().content_id()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let request = PlannerRequest::new(
+            expected_snapshot,
+            invocation,
+            crate::codec::decode(engine_envelope.body())?,
+            crate::codec::decode(artifact_envelope.body())?,
+            self.read_policy(policy_envelope.content_id())?,
+            crate::codec::decode(state_envelope.body())?,
+            crate::codec::decode(view_envelope.body())?,
+            crate::CampaignPlanningBundle::new(retained)?,
+        )?;
+        request.id()?;
+        Ok(request)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accept_planner_step(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        proposal: &PlannerStepProposal,
+        measured_usage: PlanningUsage,
+    ) -> Result<PlannerStepResult, CampaignRepositoryError> {
+        let request = self.build_planner_request(expected_snapshot, proposal.invocation())?;
+        self.accept_request_bound_planner_step(name, &request, proposal, measured_usage)
     }
 
     fn validate_planner_usage(

@@ -29,13 +29,13 @@ use crate::{
     DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionState,
     ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapRoot, ObjectEnvelope,
     Observation, ObservationId, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
-    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerState, PlannerStep,
-    PlannerStepId, PlannerStepProposal, PlannerSubmission, PlanningAccounting, PlanningBudget,
-    PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact,
-    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId,
-    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId,
-    Selection, SelectionId, StopCondition, StopOutcome, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
