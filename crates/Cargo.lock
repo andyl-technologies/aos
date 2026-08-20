@@ -162,6 +162,7 @@ dependencies = [
  "aos-profile",
  "aos-remote",
  "aos-server",
+ "async-trait",
  "atty",
  "axum",
  "base64 0.22.1",

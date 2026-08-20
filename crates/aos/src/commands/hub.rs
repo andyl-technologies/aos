@@ -12,6 +12,11 @@ use anyhow::{Context as _, Result};
 use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
 use aos_core::output::{OutputMode, Printer};
+use aos_net::{
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
+    MultipartSource, MultipartUploadRequest, TransferEvent, TransferManager, TransferManagerConfig,
+    TransferObserver,
+};
 use aos_remote::hub_rpc as HubTopologyMethod;
 use aos_remote::{HubClient, HubRpc, HubSurfaceRef, Placement, hub_types};
 use serde::de::DeserializeOwned;
@@ -8772,12 +8777,15 @@ async fn upload_publication_object_class(
                     .context("publication byte total overflow")
             })?;
     let progress = printer.transfer(label, total_bytes);
+    let transfer_manager =
+        std::sync::Arc::new(TransferManager::new(TransferManagerConfig::default()));
 
     let result = stream::iter(objects.iter().copied().map(|object| {
         let declared = inputs.iter().find(|declared| declared.path == object.path);
         let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
         let multipart_budget = std::sync::Arc::clone(&multipart_budget);
         let progress = &progress;
+        let transfer_manager = std::sync::Arc::clone(&transfer_manager);
         async move {
             let declared =
                 declared.context("Hub publication response introduced an undeclared path")?;
@@ -8830,6 +8838,7 @@ async fn upload_publication_object_class(
                 declared,
                 object,
                 progress,
+                transfer_manager.as_ref(),
             )
             .await
         }
@@ -8849,12 +8858,20 @@ async fn upload_declared_publication_object(
     declared: &hub_types::RegistryPublicationObjectInput,
     object: &hub_types::RegistryPublicationObject,
     progress: &aos_core::output::TransferProgress,
+    transfer_manager: &TransferManager,
 ) -> Result<()> {
     let file = snapshot_publication_object(root, declared)?;
     if object.upload_url.is_empty() {
-        upload_publication_multipart(access, publication_id, object, file, progress)
-            .await
-            .with_context(|| format!("uploading publication path {}", object.path))
+        upload_publication_multipart(
+            transfer_manager,
+            access,
+            publication_id,
+            object,
+            file,
+            progress,
+        )
+        .await
+        .with_context(|| format!("uploading publication path {}", object.path))
     } else {
         client
             .upload_publication_object(&object.upload_url, file, &object.path)
@@ -8880,116 +8897,171 @@ fn publication_objects_in_upload_order(
     objects
 }
 
+struct PublicationMultipartSession {
+    upload_id: String,
+    part_upload_url: String,
+}
+
+struct PublicationMultipartAdapter<'a> {
+    access: &'a HubAccessArgs,
+    publication_id: &'a str,
+    object: &'a hub_types::RegistryPublicationObject,
+}
+
+#[async_trait::async_trait]
+impl MultipartBackend for PublicationMultipartAdapter<'_> {
+    type Session = PublicationMultipartSession;
+    type Part = ();
+
+    async fn begin(&self, size: u64) -> Result<MultipartAdmission<Self::Session>> {
+        anyhow::ensure!(
+            u64::try_from(self.object.byte_size)? == size,
+            "publication snapshot size changed before multipart admission"
+        );
+        let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse =
+            publication_client(self.access)
+                .await?
+                .call_topology(
+                    HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
+                    &hub_types::BeginRegistryPublicationMultipartUploadRequest {
+                        publication_id: self.publication_id.into(),
+                        object_id: self.object.object_id,
+                    },
+                )
+                .await?;
+        let state = match admission.state.as_str() {
+            "active" => MultipartSessionState::Active,
+            "completing" => MultipartSessionState::Completing,
+            _ => anyhow::bail!("Hub returned an invalid publication multipart state"),
+        };
+        Ok(MultipartAdmission {
+            session: PublicationMultipartSession {
+                upload_id: admission.upload_id,
+                part_upload_url: admission.part_upload_url,
+            },
+            part_size: admission.part_size,
+            next_part_number: admission.next_part_number,
+            state,
+        })
+    }
+
+    async fn upload_part(
+        &self,
+        session: &Self::Session,
+        part_number: u32,
+        _offset: u64,
+        bytes: aos_net::Bytes,
+    ) -> Result<Self::Part> {
+        let part = publication_client(self.access)
+            .await?
+            .upload_publication_part(
+                &session.part_upload_url,
+                &session.upload_id,
+                part_number,
+                bytes.to_vec(),
+            )
+            .await?;
+        anyhow::ensure!(
+            part.part_number == part_number,
+            "Hub returned a mismatched publication multipart part number"
+        );
+        Ok(())
+    }
+
+    async fn complete(&self, session: &Self::Session, _parts: &[Self::Part]) -> Result<()> {
+        let _: hub_types::RegistryPublicationMultipartUploadResponse =
+            publication_client(self.access)
+                .await?
+                .complete_registry_publication_multipart_upload(
+                    &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
+                        upload_id: session.upload_id.clone(),
+                        parts: Vec::new(),
+                    },
+                )
+                .await
+                .context("completing publication multipart upload")?;
+        Ok(())
+    }
+
+    async fn abort(&self, session: &Self::Session) -> Result<()> {
+        let _: hub_types::RegistryPublicationMultipartUploadResponse =
+            publication_client(self.access)
+                .await?
+                .call_topology(
+                    HubTopologyMethod::AbortRegistryPublicationMultipartUpload,
+                    &hub_types::AbortRegistryPublicationMultipartUploadRequest {
+                        upload_id: session.upload_id.clone(),
+                    },
+                )
+                .await?;
+        Ok(())
+    }
+}
+
+struct PublicationMultipartObserver<'a> {
+    progress: &'a aos_core::output::TransferProgress,
+    position: std::sync::atomic::AtomicU64,
+}
+
+impl PublicationMultipartObserver<'_> {
+    fn advance_to(&self, position: u64) {
+        let previous = self
+            .position
+            .swap(position, std::sync::atomic::Ordering::Relaxed);
+        self.progress.inc(position.saturating_sub(previous));
+    }
+}
+
+impl TransferObserver for PublicationMultipartObserver<'_> {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started { resumed_bytes, .. } => self.advance_to(resumed_bytes),
+            TransferEvent::Progress {
+                transferred_bytes, ..
+            }
+            | TransferEvent::Completed {
+                transferred_bytes, ..
+            } => self.advance_to(transferred_bytes),
+            TransferEvent::Retrying { delay, error, .. } => self.progress.warning(&format!(
+                "publication transfer interrupted ({error:#}); retrying in {}s",
+                delay.as_secs()
+            )),
+            TransferEvent::Verifying { .. } | TransferEvent::Failed { .. } => {}
+        }
+    }
+}
+
 async fn upload_publication_multipart(
+    manager: &TransferManager,
     access: &HubAccessArgs,
     publication_id: &str,
     object: &hub_types::RegistryPublicationObject,
-    mut file: std::fs::File,
+    file: std::fs::File,
     progress: &aos_core::output::TransferProgress,
 ) -> Result<()> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
-
     const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
-    const MAX_CLIENT_PARTS: u64 = 10_000;
+    const MAX_CLIENT_PARTS: u32 = 10_000;
 
-    let admission: hub_types::BeginRegistryPublicationMultipartUploadResponse =
-        publication_client(access)
-            .await?
-            .call_topology(
-                HubTopologyMethod::BeginRegistryPublicationMultipartUpload,
-                &hub_types::BeginRegistryPublicationMultipartUploadRequest {
-                    publication_id: publication_id.into(),
-                    object_id: object.object_id,
-                },
-            )
-            .await?;
-    anyhow::ensure!(
-        admission.part_size > 0 && admission.part_size <= MAX_CLIENT_PART_BYTES,
-        "Hub returned an invalid publication multipart part size"
-    );
-    let expected_size = u64::try_from(object.byte_size)
-        .context("publication object has a negative declared size")?;
-    let part_count = expected_size.div_ceil(admission.part_size);
-    anyhow::ensure!(
-        part_count > 0 && part_count <= MAX_CLIENT_PARTS,
-        "publication object exceeds the client multipart part-count limit"
-    );
-    anyhow::ensure!(
-        matches!(admission.state.as_str(), "active" | "completing"),
-        "Hub returned an invalid publication multipart state"
-    );
-
-    if admission.state == "completing" {
-        let _: hub_types::RegistryPublicationMultipartUploadResponse = publication_client(access)
-            .await?
-            .complete_registry_publication_multipart_upload(
-                &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
-                    upload_id: admission.upload_id,
-                    parts: Vec::new(),
-                },
-            )
-            .await
-            .context("resuming publication multipart completion")?;
-        progress.inc(expected_size);
-        return Ok(());
-    }
-    anyhow::ensure!(
-        admission.next_part_number > 0 && u64::from(admission.next_part_number) <= part_count + 1,
-        "Hub returned invalid multipart progress"
-    );
-    let first_part = admission.next_part_number;
-    let offset = if u64::from(first_part) == part_count + 1 {
-        expected_size
-    } else {
-        u64::from(first_part - 1)
-            .checked_mul(admission.part_size)
-            .context("publication multipart resume offset overflowed")?
+    let adapter = PublicationMultipartAdapter {
+        access,
+        publication_id,
+        object,
     };
-    file.seek(SeekFrom::Start(offset))?;
-    progress.inc(offset);
-
-    let result: Result<()> = async {
-        let mut remaining = expected_size - offset;
-        for part_number in first_part..=u32::try_from(part_count)? {
-            let size = remaining.min(admission.part_size);
-            let mut bytes = vec![0_u8; usize::try_from(size)?];
-            file.read_exact(&mut bytes).with_context(|| {
-                format!(
-                    "reading publication multipart part {part_number} for {}",
-                    object.path
-                )
-            })?;
-            let part = publication_client(access)
-                .await?
-                .upload_publication_part(
-                    &admission.part_upload_url,
-                    &admission.upload_id,
-                    part_number,
-                    bytes,
-                )
-                .await?;
-            anyhow::ensure!(
-                part.part_number == part_number,
-                "Hub returned a mismatched publication multipart part number"
-            );
-            remaining -= size;
-            progress.inc(size);
-        }
-        anyhow::ensure!(remaining == 0, "publication multipart upload is incomplete");
-        Ok(())
-    }
-    .await;
-    result.context("multipart progress remains resumable")?;
-    publication_client(access)
-        .await?
-        .complete_registry_publication_multipart_upload(
-            &hub_types::CompleteRegistryPublicationMultipartUploadRequest {
-                upload_id: admission.upload_id.clone(),
-                parts: Vec::new(),
-            },
-        )
-        .await
-        .context("completing publication multipart upload")?;
+    let request = MultipartUploadRequest::new(
+        format!("hub-publication:{}", object.path),
+        MultipartSource::file(file),
+    )
+    .with_concurrency(1)
+    .with_maximum_in_flight_bytes(MAX_CLIENT_PART_BYTES)
+    .with_part_limits(1, MAX_CLIENT_PART_BYTES, MAX_CLIENT_PARTS)
+    .with_failure_policy(MultipartFailurePolicy::Preserve);
+    let observer = PublicationMultipartObserver {
+        progress,
+        position: std::sync::atomic::AtomicU64::new(0),
+    };
+    manager
+        .upload_multipart_observed(request, &adapter, &observer)
+        .await?;
     Ok(())
 }
 

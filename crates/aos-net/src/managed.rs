@@ -290,7 +290,9 @@ impl TransferEngine {
             let mut transfer = TransferRequest::get_to_file(source, partial.clone()).with_resume();
             transfer.headers.clone_from(&request.headers);
             if let Some(expected_size) = request.expected_size {
-                transfer = transfer.with_maximum_bytes(expected_size);
+                transfer = transfer
+                    .with_maximum_bytes(expected_size)
+                    .with_expected_size(expected_size);
             }
             if let Some(hash) = request.hash.as_ref() {
                 transfer = transfer.with_hash(hash.algorithm, &hash.expected);

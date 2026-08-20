@@ -40,12 +40,19 @@ impl HttpProtocol {
 
     /// Creates a handler whose HTTP pool follows the transfer pool policy.
     pub fn with_pool_config(config: &PoolConfig) -> Self {
-        let client = match Client::builder()
+        Self::with_pool_config_and_redirects(config, true)
+    }
+
+    /// Creates a handler with explicit connection-pool and redirect policy.
+    pub fn with_pool_config_and_redirects(config: &PoolConfig, follow_redirects: bool) -> Self {
+        let mut builder = Client::builder()
             .pool_max_idle_per_host(config.max_connections_per_host)
             .pool_idle_timeout(config.idle_timeout)
-            .connect_timeout(config.connect_timeout)
-            .build()
-        {
+            .connect_timeout(config.connect_timeout);
+        if !follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+        let client = match builder.build() {
             Ok(client) => client,
             Err(error) => {
                 tracing::warn!(%error, "falling back to the default HTTP client");
@@ -203,15 +210,11 @@ impl HttpProtocol {
         let mut resumed = false;
 
         if request.resume {
-            if let TransferOutput::File(ref path) = request.output {
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
-                    let existing_size = metadata.len();
-                    if existing_size > 0 {
-                        builder = builder.header("Range", format!("bytes={}-", existing_size));
-                        resume_offset = existing_size;
-                        resumed = true;
-                    }
-                }
+            let existing_size = committed_position(&request.output).await?;
+            if existing_size > 0 {
+                builder = builder.header("Range", format!("bytes={existing_size}-"));
+                resume_offset = existing_size;
+                resumed = true;
             }
         }
 
@@ -227,11 +230,18 @@ impl HttpProtocol {
             anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
         }
 
-        if resumed && status == 200 {
+        if resumed && status == 200 && matches!(request.output, TransferOutput::Sink(_)) {
+            anyhow::bail!("server ignored the resume range for {}", request.url);
+        } else if resumed && status == 200 {
             resume_offset = 0;
             resumed = false;
         } else if resumed {
-            validate_resumed_response(&response, resume_offset, &request.url)?;
+            validate_resumed_response(
+                &response,
+                resume_offset,
+                request.expected_size,
+                &request.url,
+            )?;
         }
 
         let content_length = response.content_length();
@@ -278,15 +288,11 @@ impl HttpProtocol {
         let mut resumed = false;
 
         if request.resume {
-            if let TransferOutput::File(ref path) = request.output {
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
-                    let existing_size = metadata.len();
-                    if existing_size > 0 {
-                        builder = builder.header("Range", format!("bytes={}-", existing_size));
-                        resume_offset = existing_size;
-                        resumed = true;
-                    }
-                }
+            let existing_size = committed_position(&request.output).await?;
+            if existing_size > 0 {
+                builder = builder.header("Range", format!("bytes={existing_size}-"));
+                resume_offset = existing_size;
+                resumed = true;
             }
         }
 
@@ -306,11 +312,18 @@ impl HttpProtocol {
         // A full response safely restarts the destination. A partial response
         // must prove that it begins at the existing file boundary; blindly
         // appending a mismatched range would create a corrupt object.
-        if resumed && status == 200 {
+        if resumed && status == 200 && matches!(request.output, TransferOutput::Sink(_)) {
+            anyhow::bail!("server ignored the resume range for {}", request.url);
+        } else if resumed && status == 200 {
             resume_offset = 0;
             resumed = false;
         } else if resumed {
-            validate_resumed_response(&response, resume_offset, &request.url)?;
+            validate_resumed_response(
+                &response,
+                resume_offset,
+                request.expected_size,
+                &request.url,
+            )?;
         }
 
         let content_length = response.content_length();
@@ -357,6 +370,29 @@ impl HttpProtocol {
                     cb(&chunk)?;
                     bytes_transferred += chunk.len() as u64;
                 }
+
+                Ok(TransferResult {
+                    status,
+                    headers: response_headers,
+                    bytes_transferred,
+                    content_length,
+                    body: None,
+                    hash: None,
+                    resumed,
+                })
+            }
+            TransferOutput::Sink(sink) => {
+                let mut bytes_transferred = resume_offset;
+                let mut stream = response.bytes_stream();
+
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.with_context(|| "reading response chunk")?;
+                    sink.write(&chunk)?;
+                    bytes_transferred = bytes_transferred
+                        .checked_add(chunk.len() as u64)
+                        .context("HTTP sink byte count overflow")?;
+                }
+                sink.flush()?;
 
                 Ok(TransferResult {
                     status,
@@ -577,10 +613,24 @@ impl HttpProtocol {
     }
 }
 
+/// Returns the committed resume position for a path or replayable sink.
+async fn committed_position(output: &TransferOutput) -> Result<u64> {
+    match output {
+        TransferOutput::File(path) => match tokio::fs::metadata(path).await {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error.into()),
+        },
+        TransferOutput::Sink(sink) => sink.position(),
+        TransferOutput::Memory | TransferOutput::Callback(_) => Ok(0),
+    }
+}
+
 /// Verifies that a ranged response is safe to append to a partial file.
 fn validate_resumed_response(
     response: &reqwest::Response,
     expected_start: u64,
+    expected_size: Option<u64>,
     url: &str,
 ) -> Result<()> {
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -595,15 +645,17 @@ fn validate_resumed_response(
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| anyhow::anyhow!("resumed response for {url} omitted Content-Range"))?;
-    let range = content_range
+    let (range, total) = content_range
         .strip_prefix("bytes ")
-        .and_then(|value| value.split_once('/').map(|(range, _)| range))
-        .and_then(|range| range.split_once('-'))
+        .and_then(|value| value.split_once('/'))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "resumed response for {url} has invalid Content-Range {content_range:?}"
             )
         })?;
+    let range = range.split_once('-').ok_or_else(|| {
+        anyhow::anyhow!("resumed response for {url} has invalid Content-Range {content_range:?}")
+    })?;
     let actual_start = range.0.parse::<u64>().with_context(|| {
         format!("resumed response for {url} has invalid Content-Range {content_range:?}")
     })?;
@@ -611,6 +663,19 @@ fn validate_resumed_response(
         anyhow::bail!(
             "resumed response for {url} starts at byte {actual_start}, expected {expected_start}"
         );
+    }
+    if let Some(expected_size) = expected_size {
+        let actual_end = range.1.parse::<u64>().with_context(|| {
+            format!("resumed response for {url} has invalid Content-Range {content_range:?}")
+        })?;
+        let actual_total = total.parse::<u64>().with_context(|| {
+            format!("resumed response for {url} has invalid Content-Range {content_range:?}")
+        })?;
+        if actual_total != expected_size || actual_end.checked_add(1) != Some(expected_size) {
+            anyhow::bail!(
+                "resumed response for {url} has inconsistent Content-Range {content_range:?}"
+            );
+        }
     }
     Ok(())
 }

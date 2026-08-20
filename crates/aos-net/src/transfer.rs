@@ -41,6 +41,11 @@ pub struct TransferEngineConfig {
     /// since the start of the transfer is checked only after this much
     /// time has elapsed.
     pub min_speed_duration: Duration,
+    /// Whether HTTP downloads may follow redirects.
+    ///
+    /// Disable this for signed URLs whose origin and redirect policy are part
+    /// of the caller's security boundary.
+    pub follow_http_redirects: bool,
 }
 
 impl Default for TransferEngineConfig {
@@ -51,6 +56,7 @@ impl Default for TransferEngineConfig {
             max_bandwidth: None,
             min_speed: None,
             min_speed_duration: Duration::from_secs(30),
+            follow_http_redirects: true,
         }
     }
 }
@@ -72,6 +78,11 @@ pub struct TransferEngine {
 }
 
 impl TransferEngine {
+    /// Returns retry policy to sibling manager layers.
+    pub(crate) fn retry_config(&self) -> &RetryConfig {
+        &self.retry
+    }
+
     /// Create a new transfer engine with the given configuration.
     ///
     /// The engine starts with an empty [`AuthStore`] (add credentials
@@ -80,7 +91,12 @@ impl TransferEngine {
     /// [`set_progress`](TransferEngine::set_progress)).
     pub fn new(config: TransferEngineConfig) -> Self {
         let bandwidth = config.max_bandwidth.map(BandwidthLimiter::new);
-        let http = Arc::new(protocol::http::HttpProtocol::with_pool_config(&config.pool));
+        let http = Arc::new(
+            protocol::http::HttpProtocol::with_pool_config_and_redirects(
+                &config.pool,
+                config.follow_http_redirects,
+            ),
+        );
 
         Self {
             pool: ConnectionPool::new(config.pool),
@@ -171,6 +187,17 @@ impl TransferEngine {
                 return Err(error);
             }
         };
+        if request.resume
+            && matches!(request.output, TransferOutput::Sink(_))
+            && !proto.supports_resume()
+        {
+            let error = anyhow::anyhow!("protocol does not support replayable sink continuation");
+            observer.observe(TransferEvent::Failed {
+                url: &url,
+                error: &error,
+            });
+            return Err(error);
+        }
 
         let mut last_err: Option<anyhow::Error> = None;
         let mut token_refreshed = false;
@@ -318,6 +345,9 @@ impl TransferEngine {
                         TransferOutput::Callback(_) => {
                             // Callback is handled inline below.
                         }
+                        TransferOutput::Sink(_) => {
+                            // Replayable sinks are handled inline below.
+                        }
                     }
 
                     // Stream chunks with per-chunk hash/bandwidth/progress.
@@ -365,6 +395,8 @@ impl TransferEngine {
                             buf.extend_from_slice(&chunk);
                         } else if let TransferOutput::Callback(ref cb) = request.output {
                             cb(&chunk)?;
+                        } else if let TransferOutput::Sink(ref sink) = request.output {
+                            sink.write(&chunk)?;
                         }
 
                         // Track progress.
@@ -402,6 +434,17 @@ impl TransferEngine {
                         }
                     }
 
+                    if stream_failure.is_none()
+                        && request
+                            .expected_size
+                            .is_some_and(|expected| bytes_transferred != expected)
+                    {
+                        let expected = request.expected_size.unwrap_or_default();
+                        stream_failure = Some(anyhow::anyhow!(
+                            "response from {url} ended at {bytes_transferred} bytes, expected {expected}"
+                        ));
+                    }
+
                     if let Some(error) = stream_failure {
                         if matches!(request.output, TransferOutput::Callback(_)) {
                             observer.observe(TransferEvent::Failed {
@@ -414,6 +457,10 @@ impl TransferEngine {
                         }
                         last_err = Some(error);
                         continue;
+                    }
+
+                    if let TransferOutput::Sink(ref sink) = request.output {
+                        sink.flush()?;
                     }
 
                     // Flush file output.
@@ -763,6 +810,26 @@ fn extract_host(url: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct MemorySink {
+        bytes: std::sync::Mutex<Vec<u8>>,
+    }
+
+    impl crate::types::TransferSink for MemorySink {
+        fn position(&self) -> Result<u64> {
+            Ok(self.bytes.lock().unwrap().len() as u64)
+        }
+
+        fn write(&self, bytes: &[u8]) -> Result<()> {
+            self.bytes.lock().unwrap().extend_from_slice(bytes);
+            Ok(())
+        }
+
+        fn flush(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_default_config() {
         let config = TransferEngineConfig::default();
@@ -776,6 +843,58 @@ mod tests {
         let engine = TransferEngine::new(TransferEngineConfig::default());
         let stats = engine.pool().stats();
         assert_eq!(stats.total_active, 0);
+    }
+
+    #[tokio::test]
+    async fn replayable_sink_retries_from_its_committed_position() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 2048];
+            let count = first.read(&mut request).await.unwrap();
+            assert!(!String::from_utf8_lossy(&request[..count]).contains("Range:"));
+            first
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello",
+                )
+                .await
+                .unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            let count = second.read(&mut request).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..count]).contains("range: bytes=5-")
+                    || String::from_utf8_lossy(&request[..count]).contains("Range: bytes=5-")
+            );
+            second
+                .write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 5-10/11\r\nConnection: close\r\n\r\n world",
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut config = TransferEngineConfig::default();
+        config.retry.max_attempts = 2;
+        config.retry.initial_delay = Duration::ZERO;
+        config.retry.jitter = false;
+        let engine = TransferEngine::new(config);
+        let sink = Arc::new(MemorySink::default());
+        let output: Arc<dyn crate::types::TransferSink> = sink.clone();
+        let mut request = TransferRequest::get(&format!("http://{address}/image"))
+            .with_resume()
+            .with_expected_size(11)
+            .with_maximum_bytes(11);
+        request.output = TransferOutput::Sink(output);
+
+        let result = engine.execute(request).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(result.bytes_transferred, 11);
+        assert_eq!(sink.bytes.lock().unwrap().as_slice(), b"hello world");
     }
 
     #[test]
@@ -1027,6 +1146,7 @@ mod tests {
             body: None,
             hash: None,
             maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Callback(Box::new(move |data| {
                 received_clone.lock().unwrap().extend_from_slice(data);
