@@ -245,7 +245,7 @@ impl CampaignRepository {
             current = parent.content_id();
         }
         Err(CampaignRepositoryError::InvalidRequest {
-            reason: "derived snapshot is not in the named source campaign",
+            reason: "campaign snapshot is not in the named history",
         })
     }
 
@@ -360,6 +360,27 @@ impl CampaignRepository {
             snapshot_id: CampaignSnapshotId::from_content_id(content_id)?,
             snapshot: loaded.snapshot,
         })
+    }
+
+    /// Loads one exact snapshot from the authenticated history of `name`.
+    ///
+    /// The lookup validates the named current head before walking immutable
+    /// parent links. A snapshot from another campaign is rejected even when its
+    /// object is present in the same store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the campaign is absent, its head is invalid, the
+    /// snapshot is not in that history, the ancestry bound is exceeded, or an
+    /// immutable object cannot be read.
+    pub fn snapshot_in_campaign(
+        &self,
+        name: &str,
+        snapshot: CampaignSnapshotId,
+    ) -> Result<CampaignSnapshot, CampaignRepositoryError> {
+        let head = self.head(name)?;
+        self.load_named_ancestor_snapshot(head.snapshot_id().content_id(), snapshot)
+            .map(|loaded| loaded.snapshot)
     }
 
     pub(crate) fn scan_graph_page(

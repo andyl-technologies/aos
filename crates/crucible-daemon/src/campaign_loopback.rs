@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV6 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV7 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -19,8 +19,10 @@
 //!       12 (WatchCampaignRequestV1) |
 //!       13 (WatchCampaignResponseV1) |
 //!       14 (QueryCampaignGraphRequestV1) |
-//!       15 (QueryCampaignGraphResponseV1)
-//! magic = "CRUCCS06"
+//!       15 (QueryCampaignGraphResponseV1) |
+//!       16 (GetCampaignSnapshotRequestV1) |
+//!       17 (GetCampaignSnapshotResponseV1)
+//! magic = "CRUCCS07"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -48,12 +50,13 @@ use crucible_campaign::{
     CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
     CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
     CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest,
-    GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS06";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS07";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -70,6 +73,8 @@ const WATCH_CAMPAIGN_REQUEST_KIND: u8 = 12;
 const WATCH_CAMPAIGN_RESPONSE_KIND: u8 = 13;
 const QUERY_CAMPAIGN_GRAPH_REQUEST_KIND: u8 = 14;
 const QUERY_CAMPAIGN_GRAPH_RESPONSE_KIND: u8 = 15;
+const GET_CAMPAIGN_SNAPSHOT_REQUEST_KIND: u8 = 16;
+const GET_CAMPAIGN_SNAPSHOT_RESPONSE_KIND: u8 = 17;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -267,6 +272,24 @@ impl CampaignService for LoopbackCampaignService {
             &request.canonical_bytes(),
             |response| {
                 let response = GetCampaignResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            CampaignServiceFailure::validate_for_get_campaign,
+        )
+    }
+
+    fn get_campaign_snapshot(
+        &self,
+        request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_SNAPSHOT_REQUEST_KIND,
+            GET_CAMPAIGN_SNAPSHOT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = GetCampaignSnapshotResponse::from_canonical_bytes(response)?;
                 response.validate_for(request)?;
                 Ok(response)
             },
@@ -626,6 +649,37 @@ where
                         );
                     }
                     (GET_CAMPAIGN_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) = failure.validate_for_get_campaign() {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        GET_CAMPAIGN_SNAPSHOT_REQUEST_KIND => {
+            let request = GetCampaignSnapshotRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_snapshot(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_SNAPSHOT_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
                 }
                 Err(error) => {
                     let failure = error.campaign_service_failure();

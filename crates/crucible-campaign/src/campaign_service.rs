@@ -20,6 +20,7 @@ use crate::{
 
 mod create;
 mod derive;
+mod get_snapshot;
 mod query;
 mod watch;
 
@@ -28,6 +29,7 @@ pub use create::{
     MAX_CREATE_CAMPAIGN_GENERATORS,
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
+pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use query::{
     CampaignGraphEntry, MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignGraphRequest,
     QueryCampaignGraphResponse,
@@ -125,6 +127,8 @@ pub enum CampaignServiceOperation {
     DeriveCampaign,
     /// Read the authenticated current campaign head and lifecycle state.
     GetCampaign,
+    /// Read one authenticated snapshot from a named campaign history.
+    GetCampaignSnapshot,
     /// Read the latest coalesced campaign head after an optional snapshot cursor.
     WatchCampaign,
     /// Read snapshot metadata and one bounded page from its campaign graph.
@@ -1233,6 +1237,18 @@ pub trait CampaignService {
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error>;
 
+    /// Returns one exact snapshot from the named campaign's authenticated history.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// campaign-history membership, repository access, or response
+    /// construction fails.
+    fn get_campaign_snapshot(
+        &self,
+        request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, Self::Error>;
+
     /// Returns the latest coalesced campaign head after an optional cursor.
     ///
     /// # Errors
@@ -1366,6 +1382,32 @@ where
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, CampaignClientError> {
         let response = match self.service.get_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign()
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Loads one exact named-history snapshot and validates response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request or snapshot identity.
+    pub fn get_campaign_snapshot(
+        &self,
+        request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_snapshot(request) {
             Ok(response) => response,
             Err(error) => {
                 let failure = error.campaign_service_failure();
@@ -1669,6 +1711,22 @@ where
             head.snapshot().active_policy(),
             state,
         )?)
+    }
+
+    fn get_campaign_snapshot(
+        &self,
+        request: &GetCampaignSnapshotRequest,
+    ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignSnapshot,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let snapshot = self
+            .repository
+            .snapshot_in_campaign(request.campaign().as_str(), request.snapshot())?;
+        Ok(GetCampaignSnapshotResponse::new(request, snapshot)?)
     }
 
     fn watch_campaign(
@@ -2039,6 +2097,13 @@ mod tests {
             Ok(self.response.clone())
         }
 
+        fn get_campaign_snapshot(
+            &self,
+            _request: &GetCampaignSnapshotRequest,
+        ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn watch_campaign(
             &self,
             _request: &WatchCampaignRequest,
@@ -2119,6 +2184,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn get_campaign_snapshot(
+            &self,
+            _request: &GetCampaignSnapshotRequest,
+        ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn watch_campaign(
             &self,
             _request: &WatchCampaignRequest,
@@ -2169,6 +2241,13 @@ mod tests {
             &self,
             _request: &GetCampaignRequest,
         ) -> Result<GetCampaignResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn get_campaign_snapshot(
+            &self,
+            _request: &GetCampaignSnapshotRequest,
+        ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 
