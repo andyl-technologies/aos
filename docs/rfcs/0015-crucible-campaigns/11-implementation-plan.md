@@ -164,7 +164,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   through a fresh repository. Its bounded process-local reservation table is
   idempotent per worker slot, rejects stale epoch/generation releases, and
   restarts empty under a fresh daemon epoch. Generated source continuations and
-  supervisor integration remain open.
+  supervisor integration remain open. The repository now also maintains a
+  compact snapshot-authenticated continuation projection for each request and
+  serves bounded proof-bearing frontier pages. Finite request/proposal/admission
+  transitions are owner-recomputed during import; generated requests remain
+  conservatively `Open`. Legacy snapshots remain unindexed and queries fail
+  closed rather than constructing a partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   The standalone bounded `AttemptQueue` reservation primitive and the daemon's
@@ -298,8 +303,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   an audited successor of an exact authenticated source snapshot, optionally
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
-  cache eviction, restart, or a same-basis CAS race. Paged
-  frontier/finding queries, explanation, and CLI wiring remain open. A bounded
+  cache eviction, restart, or a same-basis CAS race. Paged finding queries,
+  rich frontier explanation, and CLI wiring remain open. A bounded
   coalesced `WatchCampaign`
   operation returns one exact current-head cursor and lifecycle projection,
   including stale/unknown-cursor recovery without ancestry work. A bounded
@@ -312,7 +317,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   repository's required authenticated-head checkpoint rebuild. The local
   graph-object read separately authorizes one exact graph key, authenticates
   its value with a fixed-depth minimal Merkle lookup proof, and exposes only
-  strict configuration-artifact or choice-opportunity envelopes.
+  strict configuration-artifact or choice-opportunity envelopes. A bounded
+  `QueryFrontier` page authenticates a fixed exploration-root index anchor,
+  exact request-ordered continuation projection bodies, continuation or EOF,
+  and full snapshot metadata within the same proof/message bounds as the
+  choice-index query.
   A nested choice index is anchored in the graph root and updated atomically by
   explicit and observation-driven discovery. `QueryChoices` pages at most eight
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;

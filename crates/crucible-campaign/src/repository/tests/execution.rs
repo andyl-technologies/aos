@@ -1614,6 +1614,31 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         Some(&ContinuationState::Exhausted)
     );
     assert_eq!(exhausted.statistics().admitted_children, 2);
+    let frontier_head = repository.head("finite-expansion").expect("frontier head");
+    let frontier_request = QueryCampaignFrontierRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("finite-expansion").expect("campaign"),
+        frontier_head.snapshot_id(),
+        None,
+        8,
+    )
+    .expect("frontier request");
+    let frontier = crate::CampaignClient::new(RepositoryCampaignService::new(
+        &repository,
+        AllowCampaignQueries,
+    ))
+    .query_campaign_frontier(&frontier_request)
+    .expect("authenticated frontier page");
+    assert_eq!(frontier.entries().len(), 2);
+    assert_eq!(
+        frontier
+            .entries()
+            .iter()
+            .find(|entry| entry.request() == first_request.id().expect("first request"))
+            .map(|entry| entry.state()),
+        Some(ContinuationState::Exhausted)
+    );
+    assert_eq!(frontier.next_after(), None);
     assert_eq!(
         repository
             .merkle

@@ -211,12 +211,16 @@ cause association, branch edge, selection, execution evidence, and reward
 credit.
 
 The current service checkpoint implements the first authenticated `choices`
-page: it returns discovered opportunity IDs from a snapshot-bound nested Merkle
-index and separately authorizes each requested opportunity body. A distinct
-choice-object operation returns only the exact declaration or effective domain
-named by an authenticated opportunity. Rich admitted-value, visit, reward, and
-readiness projection remains part of the open frontier view; the CLI rendering
-remains open.
+and `frontier` pages. `choices` returns discovered opportunity IDs from a
+snapshot-bound nested Merkle index and separately authorizes each requested
+opportunity body. A distinct choice-object operation returns only the exact
+declaration or effective domain named by an authenticated opportunity.
+`frontier` returns each request's exact branch point and owner-projected
+`ContinuationState` from an independently verified exploration-root index.
+Finite readiness, open proposal, exhaustion, and closure are represented;
+generated sources remain conservatively `Open` until their deterministic
+enumerator and feedback owner land. Rich admitted-value, visit, reward,
+interval, and explanation views and CLI rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,

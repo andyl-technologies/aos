@@ -188,7 +188,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             | CampaignRecordKind::Attempt
             | CampaignRecordKind::AttemptAdmission
             | CampaignRecordKind::PlannerStep
-            | CampaignRecordKind::ExpansionState => "crucible-campaign::exploration",
+            | CampaignRecordKind::ExpansionState
+            | CampaignRecordKind::ContinuationProjection => "crucible-campaign::exploration",
             CampaignRecordKind::MeasurementSet
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
@@ -276,6 +277,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.get-campaign-graph-object-response",
         "crucible.campaign.query-campaign-choices-request",
         "crucible.campaign.query-campaign-choices-response",
+        "crucible.campaign.query-campaign-frontier-request",
+        "crucible.campaign.query-campaign-frontier-response",
         "crucible.campaign.get-campaign-choice-object-request",
         "crucible.campaign.get-campaign-choice-object-response",
         "crucible.campaign.apply-campaign-command-request",
@@ -318,7 +321,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_loopback = rows
         .get("crucible.campaign.loopback-frame")
         .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));
-    assert_eq!(campaign_loopback[1], "10");
+    assert_eq!(campaign_loopback[1], "11");
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");

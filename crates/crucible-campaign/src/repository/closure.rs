@@ -338,8 +338,19 @@ impl CampaignRepository {
             _ => return Err(integrity("genesis-choice-index-root-mismatch")),
         }
 
+        let frontier_index = self
+            .merkle
+            .get(roots.exploration, frontier_index_anchor_key())?;
+        let exploration = self.merkle.inspect_shallow(roots.exploration)?;
+        match frontier_index {
+            Some(index)
+                if exploration.entry_count() == 1
+                    && self.merkle.inspect_shallow(index)?.entry_count() == 0 => {}
+            None if exploration.entry_count() == 0 => {}
+            _ => return Err(integrity("genesis-frontier-index-root-mismatch")),
+        }
+
         let empty_roots = [
-            roots.exploration,
             roots.observations,
             roots.coverage,
             roots.findings,
@@ -387,7 +398,6 @@ impl CampaignRepository {
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
         if prior_roots.graph != next_roots.graph
-            || prior_roots.exploration != next_roots.exploration
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
             || prior_roots.coverage != next_roots.coverage
@@ -463,7 +473,6 @@ impl CampaignRepository {
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
         if prior_roots.graph != next_roots.graph
-            || prior_roots.exploration != next_roots.exploration
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
             || prior_roots.coverage != next_roots.coverage
@@ -527,7 +536,31 @@ impl CampaignRepository {
         {
             return Err(integrity("branch-request-transition-reused-request"));
         }
-        let upserts = BTreeMap::from([(request_key, request_content)]);
+        let mut upserts = BTreeMap::from([(request_key, request_content)]);
+        if let Some(frontier_index) = self
+            .merkle
+            .get(prior_roots.exploration, frontier_index_anchor_key())?
+        {
+            if self
+                .merkle
+                .get(frontier_index, frontier_index_order_key(request))?
+                .is_some()
+            {
+                return Err(integrity("branch-request-transition-reused-frontier-slot"));
+            }
+            let next_frontier = self
+                .frontier_index_after(
+                    prior_roots.exploration,
+                    &[(
+                        request,
+                        request_record.branch_point(),
+                        Self::initial_continuation_state(&request_record),
+                    )],
+                    false,
+                )?
+                .ok_or_else(|| integrity("branch-request-frontier-index-disappeared"))?;
+            upserts.insert(frontier_index_anchor_key(), next_frontier);
+        }
         if !self.merkle.equals_after_upserts(
             prior_roots.exploration,
             next_roots.exploration,
@@ -713,11 +746,41 @@ impl CampaignRepository {
             }
         }
 
-        let upserts = BTreeMap::from([
+        let mut upserts = BTreeMap::from([
             (proposal_key, proposal_content),
             (ordinal_key, proposal_content),
             (value_key, proposal_content),
         ]);
+        if let Some(frontier_index) = self
+            .merkle
+            .get(prior_roots.exploration, frontier_index_anchor_key())?
+        {
+            let request = self.read_branch_request(proposal_record.request().content_id())?;
+            let prior_state = self.finite_continuation_state(
+                prior_roots.exploration,
+                prior_roots.accounting,
+                proposal_record.request(),
+                &request,
+            )?;
+            self.validate_frontier_projection(
+                frontier_index,
+                proposal_record.request(),
+                proposal_record.branch_point(),
+                prior_state,
+            )?;
+            let next_frontier = self
+                .frontier_index_after(
+                    prior_roots.exploration,
+                    &[(
+                        proposal_record.request(),
+                        proposal_record.branch_point(),
+                        crate::ContinuationState::Open,
+                    )],
+                    false,
+                )?
+                .ok_or_else(|| integrity("proposal-frontier-index-disappeared"))?;
+            upserts.insert(frontier_index_anchor_key(), next_frontier);
+        }
         if !self.merkle.equals_after_upserts(
             prior_roots.exploration,
             next_roots.exploration,
@@ -747,7 +810,6 @@ impl CampaignRepository {
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
         if prior_roots.graph != next_roots.graph
-            || prior_roots.exploration != next_roots.exploration
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus
             || prior_roots.coverage != next_roots.coverage
@@ -795,6 +857,59 @@ impl CampaignRepository {
             return Err(integrity(
                 "attempt-admission-transition-accounting-root-mismatch",
             ));
+        }
+        match self
+            .merkle
+            .get(prior_roots.exploration, frontier_index_anchor_key())?
+        {
+            Some(frontier_index) => {
+                let proposal_record = self.read_proposal(proposal.content_id())?;
+                let request = self.read_branch_request(proposal_record.request().content_id())?;
+                let prior_state = self.finite_continuation_state(
+                    prior_roots.exploration,
+                    prior_roots.accounting,
+                    proposal_record.request(),
+                    &request,
+                )?;
+                self.validate_frontier_projection(
+                    frontier_index,
+                    proposal_record.request(),
+                    proposal_record.branch_point(),
+                    prior_state,
+                )?;
+                let next_state = self.finite_continuation_state(
+                    prior_roots.exploration,
+                    next_roots.accounting,
+                    proposal_record.request(),
+                    &request,
+                )?;
+                let next_frontier = self
+                    .frontier_index_after(
+                        prior_roots.exploration,
+                        &[(
+                            proposal_record.request(),
+                            proposal_record.branch_point(),
+                            next_state,
+                        )],
+                        false,
+                    )?
+                    .ok_or_else(|| integrity("attempt-admission-frontier-index-disappeared"))?;
+                if !self.merkle.equals_after_upserts(
+                    prior_roots.exploration,
+                    next_roots.exploration,
+                    &BTreeMap::from([(frontier_index_anchor_key(), next_frontier)]),
+                )? {
+                    return Err(integrity(
+                        "attempt-admission-transition-frontier-root-mismatch",
+                    ));
+                }
+            }
+            None if prior_roots.exploration != next_roots.exploration => {
+                return Err(integrity(
+                    "attempt-admission-transition-changed-exploration-root",
+                ));
+            }
+            None => {}
         }
         if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
             return Err(integrity(
@@ -1186,6 +1301,9 @@ impl CampaignRepository {
                 }
                 crate::CampaignRecordKind::ExpansionState => {
                     self.read_expansion_state(id)?;
+                }
+                crate::CampaignRecordKind::ContinuationProjection => {
+                    self.read_continuation_projection(id)?;
                 }
                 crate::CampaignRecordKind::MeasurementSet => {
                     self.read_measurement_set(id)?;

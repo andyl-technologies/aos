@@ -17,9 +17,9 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
-    CampaignSnapshot, ConfigurationArtifact, CoverageProjection, ExpansionState, MeasurementSet,
-    Observation, PlannerEngine, PlannerInvocation, PlannerRequest, PlannerState, PlannerStep,
-    PolicyArtifact, PropertyVerdictSet, Proposal, ScenarioArtifact,
+    CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
+    ExpansionState, MeasurementSet, Observation, PlannerEngine, PlannerInvocation, PlannerRequest,
+    PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal, ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -89,11 +89,13 @@ pub enum CampaignRecordKind {
     Observation,
     /// Retained canonical pure-planner component request.
     RetainedPlannerRequest,
+    /// Authenticated per-request continuation projection.
+    ContinuationProjection,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -124,6 +126,7 @@ impl CampaignRecordKind {
         Self::CoverageProjection,
         Self::Observation,
         Self::RetainedPlannerRequest,
+        Self::ContinuationProjection,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -160,6 +163,7 @@ impl CampaignRecordKind {
             Self::CoverageProjection => "crucible.campaign.coverage-projection",
             Self::Observation => "crucible.campaign.observation",
             Self::RetainedPlannerRequest => "crucible.campaign.retained-planner-request",
+            Self::ContinuationProjection => "crucible.campaign.continuation-projection",
         }
     }
 
@@ -196,7 +200,9 @@ impl CampaignRecordKind {
             Self::MerkleNode => ObjectKind::MerkleNode,
             Self::ScenarioArtifact => ObjectKind::Scenario,
             Self::ConfigurationArtifact => ObjectKind::Configuration,
-            Self::ExpansionState | Self::CoverageProjection => ObjectKind::Projection,
+            Self::ExpansionState | Self::ContinuationProjection | Self::CoverageProjection => {
+                ObjectKind::Projection
+            }
             Self::MeasurementSet | Self::PropertyVerdictSet | Self::Observation => {
                 ObjectKind::Observation
             }
@@ -252,6 +258,7 @@ impl Canonical for CampaignRecordKind {
             Self::CoverageProjection => 27,
             Self::Observation => 28,
             Self::RetainedPlannerRequest => 29,
+            Self::ContinuationProjection => 30,
         });
     }
 
@@ -287,6 +294,7 @@ impl Canonical for CampaignRecordKind {
             27 => Ok(Self::CoverageProjection),
             28 => Ok(Self::Observation),
             29 => Ok(Self::RetainedPlannerRequest),
+            30 => Ok(Self::ContinuationProjection),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -613,6 +621,10 @@ fn expected_children(
         }
         CampaignRecordKind::ExpansionState => {
             let value = codec::decode::<ExpansionState>(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::ContinuationProjection => {
+            let value = ContinuationProjection::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::MeasurementSet => {

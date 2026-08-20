@@ -204,7 +204,8 @@ therefore cannot lose campaign state.
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
-`QueryChoices`, `GetChoiceObject`, and `SubmitBranchRequest` messages. All use
+`QueryChoices`, `QueryFrontier`, `GetChoiceObject`, and `SubmitBranchRequest`
+messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -260,6 +261,21 @@ QueryCampaignChoicesResponseV1 = version | request_digest |
                                  optional next_after |
                                  MerkleLookupProofV1 |
                                  MerkleScanProofV1
+
+ContinuationStateV1 = 0 Ready |
+                      1 WaitingForFeedback(completed_visits:u64 |
+                                           required_visits:u64) |
+                      2 Open | 3 Exhausted | 4 Closed
+ContinuationProjectionV1 = version | BranchRequestId | BranchPointId |
+                           ContinuationStateV1
+QueryCampaignFrontierRequestV1 = version | principal | campaign | snapshot |
+                                 optional after_request | limit
+QueryCampaignFrontierResponseV1 = version | request_digest |
+                                  CampaignSnapshotV2 |
+                                  projections[ContinuationProjectionV1] |
+                                  optional next_after |
+                                  MerkleLookupProofV1 |
+                                  MerkleScanProofV1
 
 CampaignChoiceObjectKindV1 = 0 (Declaration) | 1 (Domain)
 CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
@@ -332,7 +348,8 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph`, `GetGraphObject`, `QueryChoices`, and `GetChoiceObject`
+`QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`, and
+`GetChoiceObject`
 additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
@@ -372,6 +389,9 @@ get_graph_object_request_digest =
 query_choices_request_digest =
   H("crucible.campaign-service.query-campaign-choices.v1",
     QueryCampaignChoicesRequestV1)
+query_frontier_request_digest =
+  H("crucible.campaign-service.query-campaign-frontier.v1",
+    QueryCampaignFrontierRequestV1)
 get_choice_object_request_digest =
   H("crucible.campaign-service.get-campaign-choice-object.v1",
     GetCampaignChoiceObjectRequestV1)
@@ -523,6 +543,33 @@ unused extra nodes. The eight-entry limit bounds the scan proof to at most 641
 64-KiB nodes; together with the 65-node lookup proof and message overhead, the
 complete response remains below the 64-MiB component-message bound.
 
+`QueryFrontier` reads the snapshot exploration root's nested continuation
+index. New genesis snapshots anchor one canonical empty index, and the owner
+updates it atomically with request issue, proposal, disposition admission, and
+atomic planner-issue transitions. Imported validation recomputes each exact
+state change from the authoritative request, proposal, and accounting roots.
+Legacy snapshots without the anchor remain readable, but this query returns
+`InvalidRequest`; ordinary mutations never create a partial legacy index.
+
+The exclusive cursor is a `BranchRequestId` and `limit` is in `1..=8`. The
+response carries the complete anchoring snapshot body, so authorization grants
+visibility of the parent, lineage, policy, transition, and every root ID. It
+also grants the returned `ContinuationProjectionV1` bodies and the minimal
+Merkle metadata for a fixed-anchor lookup plus exact nested page proof. It does
+not grant branch-request or other object bodies, which remain separately
+authorized. Each nested key is the request content digest and each value is the
+exact typed projection ID. Checked clients reconstruct every projection ID,
+require its body request to match that key, and replay the cursor, `limit + 1`
+lookahead, and exact used-node sets to reject substitution or false EOF. The
+same 65-node lookup and 641-node page-proof bounds as `QueryChoices` keep the
+complete message below 64 MiB.
+
+Finite requests are reported as `Ready`, `Open`, `Exhausted`, or `Closed` from
+their owner-projected source and disposition state. Generated requests are
+reported `Open` at this checkpoint; deterministic generated enumeration and
+feedback-driven readiness remain open and MUST replace that conservative state
+before generated work is advertised as executable.
+
 `GetChoiceObject` is the separately authorized dependency read for one exact
 graph-authenticated opportunity, including opportunities returned by
 `QueryChoices`. Its lookup proof authenticates the opportunity under the
@@ -535,12 +582,12 @@ the complete anchoring snapshot body and therefore grants the same full
 snapshot-metadata visibility as the other proof-bearing graph operations, but
 it grants no arbitrary content-store read.
 
-The remaining non-graph object queries, paged frontier/finding inspection, and
-explanation messages are still open. The strict local
+The remaining non-graph object reads, paged finding inspection, rich frontier
+details, and explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV10 = "CRUCCS10" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV11 = "CRUCCS11" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -564,10 +611,12 @@ kind = 1 (GetCampaignRequestV1) |
       20 (QueryCampaignChoicesRequestV1) |
       21 (QueryCampaignChoicesResponseV1) |
       22 (GetCampaignChoiceObjectRequestV1) |
-      23 (GetCampaignChoiceObjectResponseV1)
+      23 (GetCampaignChoiceObjectResponseV1) |
+      24 (QueryCampaignFrontierRequestV1) |
+      25 (QueryCampaignFrontierResponseV1)
 ```
 
-Loopback frame versions 1 through 9 are rejected rather than reinterpreted
+Loopback frame versions 1 through 10 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

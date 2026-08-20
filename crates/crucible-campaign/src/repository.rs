@@ -25,11 +25,11 @@ use crate::{
     CampaignStoreError, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
     CandidateGeneratorSpecId, CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceGroup,
     ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationArtifactId, ConfigurationId, ControlRequest, CoverageProjection,
-    CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey, DebuggerSubmission,
-    ExecutorCompatibilityProfile, ExecutorRejection, ExpansionState, ExpansionStateId,
-    MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
-    MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId,
+    ConfigurationArtifactId, ConfigurationId, ContinuationProjection, ControlRequest,
+    CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
+    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionState,
+    ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
+    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope, Observation, ObservationId,
     PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
     PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
     PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
@@ -798,6 +798,14 @@ pub(crate) fn choice_index_anchor_key() -> CampaignHash {
 
 pub(crate) fn choice_index_order_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
     CampaignHash::from_bytes(opportunity.content_id().digest())
+}
+
+pub(crate) fn frontier_index_anchor_key() -> CampaignHash {
+    CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b"")
+}
+
+pub(crate) fn frontier_index_order_key(request: BranchRequestId) -> CampaignHash {
+    CampaignHash::from_bytes(request.content_id().digest())
 }
 
 fn choice_discovery_result_key(
