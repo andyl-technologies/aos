@@ -216,8 +216,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
-  Campaign-level supervisor ownership of the extracted
-  child/cgroup/watcher quarantine, aggregate
+  A lifecycle-bound, nondroppable daemon owner for the combined
+  child/cgroup/watcher process quarantine, aggregate
   filesystem quota, execution-quantum counter composition, pinned run-directory
   ownership, the modeled attempt driver, concrete session wiring, and responsive
   multi-slot scheduling remain open.
