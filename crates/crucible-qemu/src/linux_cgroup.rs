@@ -4,10 +4,12 @@
 //! delegated cgroup directory into the sealed pre-exec contract consumed by
 //! [`crate::spawn_prepared_qemu_child_with_fds_in_directory_guarded`]. It does
 //! so through pinned parent/child directory descriptors rather than trusting a
-//! mutable path after creation. This staged authority remains crate-internal
-//! until guarded spawn also drops QEMU to a distinct non-privileged credential
-//! that cannot mutate the delegated hierarchy. It does not own campaign
-//! semantics, VMState, or QEMU/plugin code.
+//! mutable path after creation. Every production child contract also requires
+//! a non-root user and group distinct from every supervisor credential; the
+//! pre-exec path clears supplementary groups and installs those IDs after
+//! cgroup attachment. This staged authority remains crate-internal until its
+//! persistent reaper, aggregate quota, quantum charger, and session composition
+//! land. It does not own campaign semantics, VMState, or QEMU/plugin code.
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -22,7 +24,7 @@ use rustix::fs::{
 };
 use thiserror::Error;
 
-use crate::spawn::QemuChildProcessContract;
+use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuProcessIdentity, linux_process_identity};
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
@@ -667,14 +669,21 @@ impl LinuxQemuCgroup {
     ///
     /// `maximum_file_bytes` is defense-in-depth only; the concrete attempt
     /// store must also enforce its aggregate filesystem quota.
+    /// `child_user_id` and `child_group_id` must be non-root and distinct from
+    /// every real, effective, saved, or supplementary supervisor identity.
+    /// Guarded pre-exec clears supplementary groups and switches all real,
+    /// effective, and saved IDs after cgroup attachment.
     ///
     /// # Errors
     ///
-    /// Returns [`LinuxQemuCgroupError`] when descriptors cannot be duplicated
-    /// or the sealed contract rejects their provenance.
+    /// Returns [`LinuxQemuCgroupError`] when the child credentials overlap the
+    /// supervisor, descriptors cannot be duplicated, or the sealed contract
+    /// rejects their provenance.
     pub fn child_process_contract(
         &self,
         maximum_file_bytes: u64,
+        child_user_id: libc::uid_t,
+        child_group_id: libc::gid_t,
     ) -> Result<QemuChildProcessContract, LinuxQemuCgroupError> {
         let cgroup_procs = open_control(
             &self.control.directory,
@@ -688,13 +697,25 @@ impl LinuxQemuCgroup {
             "duplicate QEMU cancellation eventfd",
             &self.path,
         )?;
-        QemuChildProcessContract::new(cgroup_procs, cancellation_event, maximum_file_bytes).map_err(
-            |source| LinuxQemuCgroupError::Io {
-                operation: "seal QEMU child process contract",
-                path: self.path.clone(),
-                source: io::Error::new(io::ErrorKind::InvalidInput, source),
-            },
+        let credentials =
+            QemuChildCredentials::new(child_user_id, child_group_id).map_err(|source| {
+                LinuxQemuCgroupError::Io {
+                    operation: "validate QEMU child credentials",
+                    path: self.path.clone(),
+                    source: io::Error::new(io::ErrorKind::InvalidInput, source),
+                }
+            })?;
+        QemuChildProcessContract::new(
+            cgroup_procs,
+            cancellation_event,
+            maximum_file_bytes,
+            credentials,
         )
+        .map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "seal QEMU child process contract",
+            path: self.path.clone(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, source),
+        })
     }
 
     /// Proves that `process` is live and is an exact member of this cgroup.

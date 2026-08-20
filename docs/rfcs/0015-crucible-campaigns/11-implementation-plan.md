@@ -197,13 +197,18 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   authority instead of dropping it. Process membership is fixed-memory and
   bounded to 65,536 tasks, with process-generation identity checked on both
   sides of the scan, and all other cgroup pseudo-file reads are byte-bounded.
+  Production child contracts require a configured non-root user and group
+  distinct from every real, effective, saved, or supplementary supervisor
+  credential; the pre-exec path clears supplementary groups and installs all
+  real, effective, and saved IDs after cgroup attachment, with `no_new_privs`
+  set first. The delegated hierarchy must not grant those child credentials a
+  separate write path to its controls.
   Campaign-level supervisor ownership, the persistent cancellation watcher and
   identity-preserving reaper/quarantine, aggregate filesystem quota,
   execution-quantum charging, pinned run-directory ownership, the modeled
-  attempt driver, distinct unprivileged QEMU credentials that cannot mutate the
-  delegated cgroup hierarchy, concrete session wiring, and responsive
-  multi-slot scheduling remain open. The authority remains crate-internal until
-  those security boundaries are composed. Validated launch commands now
+  attempt driver, concrete session wiring, and responsive multi-slot scheduling
+  remain open. The authority remains crate-internal until those security
+  boundaries are composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
   minimum, and root-overlay requirements against an admitted resource ceiling;
   the concrete session must invoke that check before spawn.

@@ -127,6 +127,11 @@ fn qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies() -> Result<
 #[test]
 fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
     if env::var_os(PROBE_ENV).is_some() {
+        let no_new_privileges = unsafe {
+            // SAFETY: PR_GET_NO_NEW_PRIVS reads one scalar process attribute.
+            libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)
+        };
+        assert_eq!(no_new_privileges, 1);
         return Ok(());
     }
     let (cgroup_read, cgroup_write) = pipe_pair()?;
@@ -199,12 +204,51 @@ fn canceled_pre_exec_contract_stays_canceled_across_spawns() -> Result<(), Box<d
 fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn Error>> {
     let temporary = tempfile::tempfile()?;
     let duplicate = duplicate_cloexec_fd(temporary.as_raw_fd(), "duplicate forged contract fd")?;
-    let error = match QemuChildProcessContract::new(temporary.into(), duplicate, 4096) {
+    let credentials = valid_distinct_credentials()?;
+    let error = match QemuChildProcessContract::new(temporary.into(), duplicate, 4096, credentials)
+    {
         Err(error) => error,
         Ok(_) => panic!("regular files must not construct a containment contract"),
     };
     assert!(matches!(error, QemuSpawnError::Io { .. }));
     Ok(())
+}
+
+#[test]
+fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<dyn Error>> {
+    let supervisor = current_supervisor_credentials()?;
+    let distinct_user_id = distinct_nonzero_id(&supervisor.user_ids);
+    let mut supervisor_groups = supervisor.supplementary_group_ids.clone();
+    supervisor_groups.extend(supervisor.group_ids);
+    let distinct_group_id = distinct_nonzero_id(&supervisor_groups);
+
+    assert!(QemuChildCredentials::new(0, distinct_group_id).is_err());
+    assert!(QemuChildCredentials::new(distinct_user_id, 0).is_err());
+    for user_id in supervisor.user_ids {
+        assert!(QemuChildCredentials::new(user_id, distinct_group_id).is_err());
+    }
+    for group_id in supervisor_groups {
+        assert!(QemuChildCredentials::new(distinct_user_id, group_id).is_err());
+    }
+    assert!(QemuChildCredentials::new(distinct_user_id, distinct_group_id).is_ok());
+    Ok(())
+}
+
+fn valid_distinct_credentials() -> Result<QemuChildCredentials, QemuSpawnError> {
+    let supervisor = current_supervisor_credentials()?;
+    let mut supervisor_groups = supervisor.supplementary_group_ids;
+    supervisor_groups.extend(supervisor.group_ids);
+    QemuChildCredentials::new(
+        distinct_nonzero_id(&supervisor.user_ids),
+        distinct_nonzero_id(&supervisor_groups),
+    )
+}
+
+fn distinct_nonzero_id(excluded: &[u32]) -> u32 {
+    (1..=65_534)
+        .rev()
+        .find(|candidate| !excluded.contains(candidate))
+        .unwrap_or(65_535)
 }
 
 #[test]
