@@ -121,24 +121,173 @@ struct EndpointRevisionDraft {
     probe_ref: String,
 }
 
+#[derive(Clone, Debug)]
+struct EndpointCreateChoices {
+    domains: Vec<aos_proto_types::Domain>,
+    boundaries: Vec<aos_proto_types::NetworkBoundary>,
+}
+
 #[component]
 fn DeliveryEndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+    let choices_client = client.clone();
+    let choices_scope = owner_scope_key.clone();
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let owner_scope_key = choices_scope.clone();
+        async move { load_endpoint_create_choices(&client, owner_scope_key).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading domains and network boundaries…"</p></section> }>
+            {move || {
+                let client = client.clone();
+                let owner_scope_key = owner_scope_key.clone();
+                Suspend::new(async move {
+                    match choices.await.as_ref() {
+                        Ok(choices) => view! {
+                            <DeliveryEndpointCreateForm
+                                client=client
+                                owner_scope_key=owner_scope_key
+                                choices=choices.clone()
+                            />
+                        }.into_any(),
+                        Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+async fn load_endpoint_create_choices(
+    client: &ApiClient,
+    owner_scope_key: String,
+) -> Result<EndpointCreateChoices, String> {
+    let domain_scope = owner_scope_key.clone();
+    let domains = client
+        .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+            aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+            move |page_token| aos_proto_types::ListDomainsRequest {
+                owner_scope_key: domain_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.domains, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let boundaries = client
+        .collect_pages::<_, aos_proto_types::ListNetworkBoundariesResponse, _, _, _>(
+            aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARIES_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.network_boundaries, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+
+    Ok(EndpointCreateChoices {
+        domains,
+        boundaries,
+    })
+}
+
+#[component]
+fn DeliveryEndpointCreateForm(
+    client: ApiClient,
+    owner_scope_key: String,
+    choices: EndpointCreateChoices,
+) -> impl IntoView {
     let stable_id = RwSignal::new(String::new());
     let scheme = RwSignal::new("https".to_string());
     let host_kind = RwSignal::new("domain".to_string());
-    let host = RwSignal::new(String::new());
+    let host = RwSignal::new(
+        choices
+            .domains
+            .first()
+            .map(|domain| domain.stable_id.clone())
+            .unwrap_or_default(),
+    );
     let port = RwSignal::new("443".to_string());
-    let boundary_id = RwSignal::new(String::new());
-    let boundary_revision = RwSignal::new(String::new());
-    let ingress = RwSignal::new("hub".to_string());
-    let listener_ref = RwSignal::new(String::new());
-    let tls_provider = RwSignal::new("hub".to_string());
-    let certificate_ref = RwSignal::new(String::new());
+    let boundary_id = RwSignal::new(
+        choices
+            .boundaries
+            .first()
+            .map(|boundary| boundary.stable_id.clone())
+            .unwrap_or_default(),
+    );
+    let boundary_revision = RwSignal::new(
+        choices
+            .boundaries
+            .first()
+            .map(|boundary| boundary.default_revision.to_string())
+            .unwrap_or_default(),
+    );
+    let ingress = RwSignal::new("external".to_string());
+    let listener_ref = RwSignal::new(host.get_untracked());
+    let (initial_tls_provider, initial_certificate_ref) = choices
+        .domains
+        .first()
+        .map(domain_tls_defaults)
+        .unwrap_or_else(|| ("external".to_string(), String::new()));
+    let tls_provider = RwSignal::new(initial_tls_provider);
+    let certificate_ref = RwSignal::new(initial_certificate_ref);
     let require_client_certificate = RwSignal::new(false);
     let probe_ref = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let domain_choices = choices.domains.clone();
+    let boundary_choices = choices.boundaries.clone();
+    let selected_domains = choices.domains.clone();
+    let host_domains = choices.domains;
+    let selected_boundaries = choices.boundaries;
+    let on_scheme_change = move |event| {
+        let value = event_target_value(&event);
+        port.set(if value == "https" { "443" } else { "80" }.to_string());
+        scheme.set(value);
+    };
+    let on_host_kind_change = move |event| {
+        let value = event_target_value(&event);
+        host_kind.set(value.clone());
+        if value == "domain" {
+            if let Some(domain) = selected_domains.first() {
+                host.set(domain.stable_id.clone());
+                listener_ref.set(domain.stable_id.clone());
+                let (provider, certificate) = domain_tls_defaults(domain);
+                tls_provider.set(provider);
+                certificate_ref.set(certificate);
+            } else {
+                host.set(String::new());
+                listener_ref.set(String::new());
+            }
+        } else {
+            host.set(String::new());
+            listener_ref.set(String::new());
+        }
+    };
+    let on_domain_change = Callback::new(move |value: String| {
+        host.set(value.clone());
+        listener_ref.set(value.clone());
+        if let Some(domain) = host_domains.iter().find(|domain| domain.stable_id == value) {
+            let (provider, certificate) = domain_tls_defaults(domain);
+            tls_provider.set(provider);
+            certificate_ref.set(certificate);
+        }
+    });
+    let on_boundary_change = move |event| {
+        let value = event_target_value(&event);
+        boundary_id.set(value.clone());
+        let revision = selected_boundaries
+            .iter()
+            .find(|boundary| boundary.stable_id == value)
+            .map(|boundary| boundary.default_revision.to_string())
+            .unwrap_or_default();
+        boundary_revision.set(revision);
+    };
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
@@ -159,6 +308,7 @@ fn DeliveryEndpointCreate(client: ApiClient, owner_scope_key: String) -> impl In
             }
         };
         let revision = match endpoint_revision(
+            &scheme.get_untracked(),
             &boundary_revision.get_untracked(),
             &ingress.get_untracked(),
             &listener_ref.get_untracked(),
@@ -226,11 +376,61 @@ fn DeliveryEndpointCreate(client: ApiClient, owner_scope_key: String) -> impl In
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><h2>"Create delivery endpoint"</h2><form class="editor-form" on:submit=on_plan><label><span>"Stable ID"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=move |event| scheme.set(event_target_value(&event))><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label><label><span>"Host kind"</span><select prop:value=move || host_kind.get() on:change=move |event| host_kind.set(event_target_value(&event))><option value="domain">"Managed domain ID"</option><option value="ipv4">"IPv4 address"</option><option value="ipv6">"IPv6 address"</option></select></label><label><span>"Host value"</span><input required prop:value=move || host.get() on:input=move |event| host.set(event_target_value(&event))/></label><label><span>"Port"</span><input required type="number" min="1" max="65535" prop:value=move || port.get() on:input=move |event| port.set(event_target_value(&event))/></label><label><span>"Network boundary stable ID"</span><input required prop:value=move || boundary_id.get() on:input=move |event| boundary_id.set(event_target_value(&event))/></label><EndpointRevisionFields boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref/><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! {
+        <section class="panel editor-panel">
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create delivery endpoint"</h2><p>"Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."</p></div></div>
+            <form class="editor-form" on:submit=on_plan>
+                <label><span>"Stable ID"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
+                <label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=on_scheme_change><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label>
+                <label><span>"Host kind"</span><select prop:value=move || host_kind.get() on:change=on_host_kind_change><option value="domain">"Managed domain"</option><option value="ipv4">"IPv4 address"</option><option value="ipv6">"IPv6 address"</option></select></label>
+                {move || if host_kind.get() == "domain" {
+                    let on_domain_change = on_domain_change.clone();
+                    view! { <label><span>"Domain"</span><select required prop:value=move || host.get() on:change=move |event| on_domain_change.run(event_target_value(&event))>{domain_choices.iter().map(|domain| view! { <option value=domain.stable_id.clone()>{domain.hostname.clone()}</option> }).collect_view()}</select>{domain_choices.is_empty().then(|| view! { <small>"No domains exist in this scope. Add one from Infrastructure → Domains first."</small> })}</label> }.into_any()
+                } else {
+                    view! { <label><span>"IP address"</span><input required prop:value=move || host.get() on:input=move |event| host.set(event_target_value(&event))/></label> }.into_any()
+                }}
+                <label><span>"Port"</span><input readonly aria-readonly="true" prop:value=move || port.get()/><small>"Uses the selected scheme's standard port."</small></label>
+                <label><span>"Network boundary"</span><select required prop:value=move || boundary_id.get() on:change=on_boundary_change>{boundary_choices.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · {}", boundary.name, boundary.kind)}</option> }).collect_view()}</select>{boundary_choices.is_empty().then(|| view! { <small>"No network boundaries exist in this scope. Create one before adding an endpoint."</small> })}</label>
+                <label><span>"Boundary revision"</span><input readonly aria-readonly="true" prop:value=move || boundary_revision.get()/><small>"Pins the boundary's current default revision."</small></label>
+                <label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="external">"External ingress (CDN or object storage)"</option><option value="hub">"AOS Hub"</option><option value="layer7">"Layer 7 provider"</option></select></label>
+                <label><span>"Listener reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>
+                {move || (scheme.get() == "https").then(|| view! {
+                    <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label>
+                    <label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label>
+                    <label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label>
+                })}
+                <label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label>
+                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || host.get().is_empty() || boundary_id.get().is_empty()>"Review creation"</button></div>
+            </form>
+            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+            {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
+        </section>
+    }
+}
+
+fn domain_tls_defaults(domain: &aos_proto_types::Domain) -> (String, String) {
+    use aos_proto_types::certificate_configuration::Configuration;
+
+    match domain
+        .desired
+        .as_ref()
+        .and_then(|desired| desired.certificate_configuration.as_ref())
+        .and_then(|certificate| certificate.configuration.as_ref())
+    {
+        Some(Configuration::HubManaged(configuration)) => {
+            (configuration.issuer.clone(), domain.stable_id.clone())
+        }
+        Some(Configuration::External(configuration)) => (
+            "external".to_string(),
+            configuration.certificate_secret_ref.clone(),
+        ),
+        None => ("external".to_string(), domain.stable_id.clone()),
+    }
 }
 
 #[component]
 fn EndpointRevisionFields(
+    is_https: bool,
     boundary_revision: RwSignal<String>,
     ingress: RwSignal<String>,
     listener_ref: RwSignal<String>,
@@ -239,7 +439,7 @@ fn EndpointRevisionFields(
     require_client_certificate: RwSignal<bool>,
     probe_ref: RwSignal<String>,
 ) -> impl IntoView {
-    view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label><label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label><label><span>"Listener configuration reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label><label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label><label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label> }
+    view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label><label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label><label><span>"Listener configuration reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })}<label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label> }
 }
 
 #[component]
@@ -338,6 +538,8 @@ fn EndpointGenerationRow(
 
 #[component]
 fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint) -> impl IntoView {
+    let scheme = endpoint.scheme.clone();
+    let is_https = scheme == "https";
     let desired = endpoint.desired.clone().unwrap_or_default();
     let boundary_revision = RwSignal::new(desired.boundary_revision.to_string());
     let ingress = RwSignal::new(ingress_name(desired.ingress_kind).to_string());
@@ -356,6 +558,7 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
         let revision = match endpoint_revision(
+            &scheme,
             &boundary_revision.get_untracked(),
             &ingress.get_untracked(),
             &listener_ref.get_untracked(),
@@ -418,7 +621,7 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><EndpointRevisionFields boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><EndpointRevisionFields is_https=is_https boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
@@ -624,6 +827,7 @@ fn endpoint_host(kind: &str, value: &str) -> Result<aos_proto_types::EndpointHos
     Ok(aos_proto_types::EndpointHost { host: Some(host) })
 }
 fn endpoint_revision(
+    scheme: &str,
     boundary_revision: &str,
     ingress: &str,
     listener_ref: &str,
@@ -635,12 +839,16 @@ fn endpoint_revision(
     let boundary_revision = boundary_revision
         .parse::<i64>()
         .map_err(|_| "Boundary revision must be an integer".to_string())?;
-    if boundary_revision <= 0
-        || listener_ref.trim().is_empty()
-        || tls_provider.trim().is_empty()
-        || certificate_ref.trim().is_empty()
-    {
-        return Err("Boundary revision, listener reference, TLS provider, and certificate reference are required".to_string());
+    if boundary_revision <= 0 || listener_ref.trim().is_empty() {
+        return Err("Boundary revision and listener reference are required".to_string());
+    }
+    let is_https = match scheme {
+        "https" => true,
+        "http" => false,
+        _ => return Err("Unsupported endpoint scheme".to_string()),
+    };
+    if is_https && (tls_provider.trim().is_empty() || certificate_ref.trim().is_empty()) {
+        return Err("HTTPS endpoints require a TLS provider and certificate reference".to_string());
     }
     let ingress_kind = match ingress {
         "hub" => aos_proto_types::EndpointIngressKind::Hub as i32,
@@ -653,9 +861,13 @@ fn endpoint_revision(
         ingress_kind,
         listener_ref: listener_ref.trim().to_string(),
         tls: aos_proto_types::TlsConfiguration {
-            provider: tls_provider.trim().to_string(),
-            certificate_ref: certificate_ref.trim().to_string(),
-            require_client_certificate,
+            provider: is_https
+                .then(|| tls_provider.trim().to_string())
+                .unwrap_or_default(),
+            certificate_ref: is_https
+                .then(|| certificate_ref.trim().to_string())
+                .unwrap_or_default(),
+            require_client_certificate: is_https && require_client_certificate,
         },
         probe_ref: probe_ref.trim().to_string(),
     })
@@ -716,5 +928,60 @@ fn grant_request(
 fn reload() {
     if let Some(window) = leptos::web_sys::window() {
         let _ = window.location().reload();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_endpoint_revision_clears_tls_fields() {
+        let revision = endpoint_revision(
+            "http",
+            "3",
+            "external",
+            "listener:cdn",
+            "ignored",
+            "ignored",
+            true,
+            "",
+        )
+        .expect("HTTP endpoint revision");
+        assert_eq!(revision.boundary_revision, 3);
+        assert!(revision.tls.provider.is_empty());
+        assert!(revision.tls.certificate_ref.is_empty());
+        assert!(!revision.tls.require_client_certificate);
+    }
+
+    #[test]
+    fn https_endpoint_revision_requires_tls_identity() {
+        let error = endpoint_revision("https", "1", "external", "listener:cdn", "", "", false, "")
+            .expect_err("missing HTTPS TLS identity must fail");
+        assert!(error.contains("TLS provider"));
+    }
+
+    #[test]
+    fn external_domain_supplies_endpoint_tls_defaults() {
+        let domain = aos_proto_types::Domain {
+            stable_id: "domain:cdn".to_string(),
+            desired: Some(aos_proto_types::DomainDesiredState {
+                certificate_configuration: Some(aos_proto_types::CertificateConfiguration {
+                    configuration: Some(
+                        aos_proto_types::certificate_configuration::Configuration::External(
+                            aos_proto_types::ExternalCertificateConfiguration {
+                                certificate_secret_ref: "secret:cdn-cert".to_string(),
+                            },
+                        ),
+                    ),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            domain_tls_defaults(&domain),
+            ("external".to_string(), "secret:cdn-cert".to_string())
+        );
     }
 }
