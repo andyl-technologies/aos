@@ -1035,7 +1035,7 @@ impl CampaignRepository {
             CampaignFact::AttemptClosed { attempt, .. } => {
                 self.require_record_kind(attempt.content_id(), crate::CampaignRecordKind::Attempt)?;
             }
-            CampaignFact::ObservationPublished(id) => {
+            CampaignFact::ObservationPublished(id) | CampaignFact::ObservationCredited(id) => {
                 self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Observation)?;
             }
             CampaignFact::FindingPublished(_) => {
@@ -1791,16 +1791,7 @@ impl CampaignRepository {
         };
         let path = self.read_branch_path(attempt_record.path().content_id())?;
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        if request.parent() != lineage.genesis_content()
-            || path.edges() != [edge]
-            || path.segments().is_some_and(|segments| {
-                segments != [crate::BranchPathSegment::new(request.branch_point(), edge)]
-            })
-        {
-            return Err(integrity(
-                "proposal-admission-branch-path-owner-is-not-implemented",
-            ));
-        }
+        self.validate_attempt_path_owner(snapshot, &lineage, &request, &path, edge)?;
         let attempt_key = map_key_content("accounting.attempt", attempt.content_id());
         let basis_key = map_key_content("accounting.attempt-execution-basis", attempt.content_id());
         let indexed_attempt = self.merkle.get(accounting_root, attempt_key)?;
@@ -1838,6 +1829,59 @@ impl CampaignRepository {
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
+    }
+
+    fn validate_attempt_path_owner(
+        &self,
+        snapshot: &LoadedSnapshot,
+        lineage: &CampaignLineage,
+        request: &BranchRequest,
+        path: &BranchPath,
+        edge: crate::BranchEdgeId,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(segments) = path.segments() else {
+            if request.parent() == lineage.genesis_content() && path.edges() == [edge] {
+                return Ok(());
+            }
+            return Err(integrity("proposal-admission-requires-scoped-branch-path"));
+        };
+        let Some((terminal, prefix)) = segments.split_last() else {
+            return Err(integrity("proposal-admission-branch-path-is-empty"));
+        };
+        if *terminal != crate::BranchPathSegment::new(request.branch_point(), edge) {
+            return Err(integrity(
+                "proposal-admission-branch-path-terminal-scope-mismatch",
+            ));
+        }
+
+        let prefix = BranchPath::new(prefix.to_vec())?;
+        if request.parent() == lineage.genesis_content() {
+            if !prefix.edges().is_empty() {
+                return Err(integrity(
+                    "proposal-admission-genesis-path-prefix-is-not-empty",
+                ));
+            }
+            return Ok(());
+        }
+
+        let path_index = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().observations,
+                configuration_path_index_key(request.parent()),
+            )?
+            .ok_or_else(|| integrity("proposal-admission-parent-path-index-is-missing"))?;
+        let prefix_id = prefix.id()?;
+        if self
+            .merkle
+            .get(path_index, path_index_order_key(prefix_id))?
+            != Some(prefix_id.content_id())
+        {
+            return Err(integrity(
+                "proposal-admission-path-prefix-is-not-authoritative",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn read_planner_step(

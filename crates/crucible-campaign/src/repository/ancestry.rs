@@ -223,7 +223,9 @@ impl CampaignRepository {
         else {
             return Ok(None);
         };
-        if fact != CampaignFact::ObservationPublished(observation) {
+        if fact != CampaignFact::ObservationPublished(observation)
+            && fact != CampaignFact::ObservationCredited(observation)
+        {
             return Err(integrity("observation-result-index-type-mismatch"));
         }
         let record = self.read_observation(observation.content_id())?;
@@ -355,7 +357,8 @@ impl CampaignRepository {
                 let step = self.read_planner_step(step.content_id())?;
                 mutation_result_content_key("planner", step.invocation().content_id())
             }
-            CampaignFact::ObservationPublished(observation) => {
+            CampaignFact::ObservationPublished(observation)
+            | CampaignFact::ObservationCredited(observation) => {
                 mutation_result_content_key("observation", observation.content_id())
             }
             CampaignFact::ChoiceOpportunityDiscovered {

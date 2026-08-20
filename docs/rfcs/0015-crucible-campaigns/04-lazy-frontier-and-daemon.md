@@ -437,12 +437,15 @@ rejection. The coordinator authenticates the proposal's exploration membership,
 selection, branch path, semantic attempt, request, and stop condition, then
 recomputes the role rather than accepting a caller-supplied role or ordinal.
 
-During the transaction-first implementation stage, only a genesis-parent path
-of exactly one selected edge is admitted. New paths encode that edge together
-with the request's exact branch point and owner validation rejects a mismatching
-terminal scope. Non-genesis branch paths remain fail-closed until observation
-incorporation maintains the authoritative parent configuration-to-path index
-used to authenticate the prefix.
+New paths encode each selected edge together with its exact branch point. Owner
+validation requires the terminal segment to match the request's branch point
+and selected edge. A genesis-parent path has an empty prefix. A non-genesis
+path prefix must be a member of the exact parent configuration's authenticated
+nested path set under
+`observations.configuration-path-index[ConfigurationArtifactId]` in the source
+snapshot. Canonical observation incorporation adds the complete path under the
+exact child configuration; convergence retains all distinct path identities.
+Legacy edge-only paths remain admissible only for one-edge genesis requests.
 
 If no execution basis exists for `AttemptId`, the transition spends one unit of
 the proposal request's `maximum_attempts`, assigns the next one-based global
@@ -540,7 +543,10 @@ unknown generator implementation versions. Static readiness and exhaustion are
 observation-independent, so an observation-bearing source view remains
 admissible and its exact observation root is retained in the page. The owner
 projects `completed_visits` from the authenticated nested credit-set entry
-count. Reward, novelty, and finding statistics remain zero until their richer
+count. The same schema-v4 observation transition maintains a second nested set
+from each exact child configuration artifact to every authenticated cumulative
+path that reached it; direct non-genesis admission checks membership in that
+set. Reward, novelty, and finding statistics remain zero until their richer
 canonical folds land. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
@@ -651,3 +657,8 @@ change.
   credit for each distinct scoped branch point in its path. Exact replay and a
   conflicting completion MUST add no credit, and restart/import validation MUST
   recompute the exact nested credit-root delta.
+- **[LAZY-43]** Canonical completion MUST add the complete scoped path to the
+  exact child configuration's authenticated nested path set. Non-genesis
+  admission MUST require its complete prefix in the exact parent configuration
+  set, MUST retain every convergent path, and MUST reject a missing, foreign,
+  legacy, or terminal-scope-mismatched prefix before advancing the campaign.

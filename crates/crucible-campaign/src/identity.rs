@@ -236,6 +236,9 @@ macro_rules! content_object_id {
             /// # Errors
             ///
             /// Returns [`CampaignCodecError::InvalidValue`] for the wrong kind.
+            // Schema compatibility is an explicit set even when its current
+            // members happen to form a contiguous numeric range.
+            #[allow(clippy::manual_range_patterns)]
             pub(crate) fn from_content_id(value: ContentId) -> Result<Self, CampaignCodecError> {
                 if value.kind() != $kind
                     || !matches!(value.schema_version(), $($schema_version)|+)
@@ -432,9 +435,9 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    [2, 3],
+    [2, 3, 4],
     "crucible.campaign.fact",
-    "Identifies one immutable campaign fact; version 2 IDs remain decodable for history compatibility."
+    "Identifies one immutable campaign fact; versions 2 and 3 remain decodable for history compatibility."
 );
 semantic_id!(
     CampaignCommandId,

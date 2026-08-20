@@ -1107,11 +1107,12 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
         observation_successor_growth(
             crate::observation::MAX_DISCOVERED_CHOICES,
             crate::exploration::MAX_BRANCH_PATH_EDGES,
+            true,
         )
         .expect("maximum observation growth"),
         MAX_OBSERVATION_SUCCESSOR_GROWTH
     );
-    let growth = observation_successor_growth(observation.discovered_choices().len(), 0)
+    let growth = observation_successor_growth(observation.discovered_choices().len(), 0, true)
         .expect("fixture observation growth");
     repository
         .validated_heads
@@ -1655,6 +1656,59 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             &observation,
         )
         .expect("publish finite expansion observation");
+    let observed_snapshot = repository
+        .read_snapshot(observed.new_snapshot.content_id())
+        .expect("observation snapshot");
+    let configuration_path_index = repository
+        .merkle
+        .get(
+            observed_snapshot.snapshot.roots().observations,
+            configuration_path_index_key(child_content),
+        )
+        .expect("configuration path index lookup")
+        .expect("configuration path index");
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                configuration_path_index,
+                path_index_order_key(path.id().expect("first path id")),
+            )
+            .expect("configuration path membership"),
+        Some(path.id().expect("first path id").content_id())
+    );
+
+    let mut forged_path_roots = observed_snapshot.snapshot.roots();
+    forged_path_roots.observations = repository
+        .merkle
+        .insert(
+            forged_path_roots.observations,
+            configuration_path_index_key(child_content),
+            MerkleMap::empty_content_id().expect("empty path index"),
+        )
+        .expect("forge empty configuration path index")
+        .content_id();
+    let forged_path_snapshot = CampaignSnapshot::successor(
+        first_admitted.new_snapshot,
+        observed_snapshot.snapshot.lineage(),
+        observed_snapshot.snapshot.active_policy(),
+        forged_path_roots,
+        observed_snapshot
+            .snapshot
+            .transition()
+            .expect("observation transition"),
+    )
+    .expect("forged path-index successor");
+    let forged_path_content = repository
+        .put_snapshot(&forged_path_snapshot)
+        .expect("put forged path-index successor");
+    assert!(matches!(
+        repository.validate_complete_head(forged_path_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "observation-transition-observations-root"
+        })
+    ));
+
     let replayed_observation = repository
         .publish_observation(
             "finite-expansion",
@@ -1747,6 +1801,193 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         observed_id
     );
 
+    let nested_opportunity = repository
+        .load_choice_opportunity(first_request.opportunity())
+        .expect("nested opportunity");
+    let nested_domain = repository
+        .load_choice_domain(first_request.domain())
+        .expect("nested domain");
+    let nested_branch_point = nested_opportunity.branch_point_id(child);
+    let nested_request = BranchRequest::new(
+        nested_branch_point,
+        child_content,
+        first_request.opportunity(),
+        first_request.domain(),
+        first_request.source().clone(),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test.finite-expansion-nested-request",
+            b"nested",
+        ))),
+        first_request.budget(),
+        first_request.stop().clone(),
+    )
+    .expect("nested branch request");
+    let nested_requested = repository
+        .submit_known_branch_request("finite-expansion", conflict.new_snapshot, &nested_request)
+        .expect("submit nested branch request");
+    let nested_request_head = repository
+        .head("finite-expansion")
+        .expect("nested request head");
+    let nested_proposal = finite_proposal(
+        &nested_request,
+        &policy,
+        &nested_request_head,
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let nested_proposed = repository
+        .issue_proposal(
+            "finite-expansion",
+            nested_requested.new_snapshot,
+            &nested_proposal,
+        )
+        .expect("nested proposal");
+    let nested_selection = Selection::new_campaign_branch(
+        &nested_opportunity,
+        &nested_domain,
+        nested_proposal.value().clone(),
+        nested_branch_point,
+    )
+    .expect("nested branch selection");
+    let crate::SelectionOrigin::CampaignBranch {
+        edge: nested_edge, ..
+    } = nested_selection.origin()
+    else {
+        panic!("nested campaign branch selection")
+    };
+    let unauthenticated_nested_path = BranchPath::new(vec![crate::BranchPathSegment::new(
+        nested_branch_point,
+        nested_edge,
+    )])
+    .expect("unauthenticated nested path");
+    let unauthenticated_nested_attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge: nested_edge,
+            parent: nested_request.parent(),
+            selection: nested_selection.id().expect("nested selection id"),
+        },
+        unauthenticated_nested_path
+            .id()
+            .expect("unauthenticated nested path id"),
+        nested_request.stop().clone(),
+    )
+    .expect("unauthenticated nested attempt");
+    assert!(matches!(
+        repository.admit_proposal(
+            "finite-expansion",
+            nested_proposed.new_snapshot,
+            nested_proposed.proposal,
+            &nested_selection,
+            &unauthenticated_nested_path,
+            &unauthenticated_nested_attempt,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-admission-path-prefix-is-not-authoritative"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("finite-expansion")
+            .expect("head after rejected nested prefix")
+            .snapshot_id(),
+        nested_proposed.new_snapshot
+    );
+
+    let mut nested_segments = path.segments().expect("scoped first path").to_vec();
+    nested_segments.push(crate::BranchPathSegment::new(
+        nested_branch_point,
+        nested_edge,
+    ));
+    let nested_path = BranchPath::new(nested_segments).expect("cumulative nested path");
+    let nested_attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge: nested_edge,
+            parent: nested_request.parent(),
+            selection: nested_selection.id().expect("nested selection id"),
+        },
+        nested_path.id().expect("nested path id"),
+        nested_request.stop().clone(),
+    )
+    .expect("nested attempt");
+    let admission_restarted =
+        CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let nested_admitted = admission_restarted
+        .admit_proposal(
+            "finite-expansion",
+            nested_proposed.new_snapshot,
+            nested_proposed.proposal,
+            &nested_selection,
+            &nested_path,
+            &nested_attempt,
+        )
+        .expect("admit nested proposal");
+    let nested_child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test-observation-child",
+        b"finite-expansion-nested-observation",
+    ));
+    let nested_child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            nested_child,
+            1,
+            b"finite expansion nested child".to_vec(),
+        )
+        .expect("publish nested child");
+    let nested_observation = Observation::new(
+        nested_admitted.attempt,
+        nested_child,
+        nested_child_content,
+        nested_path.id().expect("nested path id"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([first_request.opportunity()]),
+    )
+    .expect("nested observation");
+    let nested_observed = repository
+        .publish_observation(
+            "finite-expansion",
+            nested_admitted.new_snapshot,
+            &nested_observation,
+        )
+        .expect("publish nested observation");
+    let nested_root_id = repository
+        .project_finite_expansion(
+            nested_observed.new_snapshot,
+            first_request.branch_point(),
+            None,
+            10,
+        )
+        .expect("project root after nested observation");
+    let nested_root_state = repository
+        .load_expansion_state(nested_root_id)
+        .expect("load root after nested observation");
+    assert_eq!(nested_root_state.statistics().completed_visits, 2);
+    let nested_id = repository
+        .project_finite_expansion(nested_observed.new_snapshot, nested_branch_point, None, 10)
+        .expect("project nested observation");
+    let nested_state = repository
+        .load_expansion_state(nested_id)
+        .expect("load nested observation projection");
+    assert_eq!(nested_state.statistics().admitted_children, 1);
+    assert_eq!(nested_state.statistics().completed_visits, 1);
+    let nested_restarted =
+        CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        nested_restarted
+            .load_expansion_state(nested_root_id)
+            .expect("restart-load root after nested observation"),
+        nested_root_state
+    );
+    assert_eq!(
+        nested_restarted
+            .project_finite_expansion(nested_observed.new_snapshot, nested_branch_point, None, 10,)
+            .expect("restart-project nested observation"),
+        nested_id
+    );
+
     let admitted_head = repository.head("finite-expansion").expect("admitted head");
     let second_proposal = finite_proposal(
         &first_request,
@@ -1808,7 +2049,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
     let frontier = client
         .query_campaign_frontier(&frontier_request)
         .expect("authenticated frontier page");
-    assert_eq!(frontier.entries().len(), 2);
+    assert_eq!(frontier.entries().len(), 3);
     assert_eq!(
         frontier
             .entries()

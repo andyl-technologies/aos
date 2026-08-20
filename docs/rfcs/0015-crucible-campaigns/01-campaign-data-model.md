@@ -236,6 +236,7 @@ pub enum CampaignFact {
         disposition: NonModeledAttemptDisposition,
     },
     ObservationPublished(ObservationId),
+    ObservationCredited(ObservationId),
     FindingPublished(FindingId),
     PolicyActivated(PolicyActivation),
     BudgetGranted(BudgetGrant),
@@ -266,13 +267,18 @@ creation are one owner transaction. Exact retries resolve the first derived
 snapshot from the target history even after later target mutations. They are
 bound to that target's most recent founding derivation edge; a locator inherited
 from an ancestor derived campaign cannot replay as the child ref's own result.
-Campaign-
-fact schema v3 adds this transition. Every pre-existing variant continues to
-encode as schema v2, preserving its canonical bytes and `CampaignFactId`; only
-`CampaignDerived` encodes as v3. Schema-v2 fact bodies and envelopes remain
-canonically readable for existing history, while a v2 envelope cannot carry the
-new tag, a v3 body cannot carry an old variant, and body/envelope version
-mismatches fail closed.
+Campaign-fact schema v3 adds this transition. Schema v4 adds
+`ObservationCredited`, whose owner recomputes both scoped expansion credits and
+the child configuration-to-path membership described in §01.6. Every variant
+that predates `CampaignDerived` continues to encode as schema v2, preserving
+its canonical bytes and `CampaignFactId`; only `CampaignDerived` encodes as v3,
+and only `ObservationCredited` encodes as v4. Schema-v2 and schema-v3 fact
+bodies and envelopes remain canonically readable for existing history. A body cannot carry
+a variant introduced by another version, and body/envelope version mismatches
+fail closed. Historical schema-v2 `ObservationPublished` successors are
+validated against either their original observation-only delta or the interim
+credit-bearing delta; new publication always uses the unambiguous schema-v4
+owner.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache
@@ -538,9 +544,14 @@ non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
 for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
 Version 1 edge-only paths retain their exact body and envelope identity for
 historical reads, but new writers always produce version 2. The current
-single-edge genesis admission owner can validate a legacy path from its request;
-future non-genesis admission requires scoped version-2 segments for the complete
-prefix.
+admission owner accepts a legacy path only for a single-edge genesis request.
+A version-2 path must end in the exact `(BranchPointId, BranchEdgeId)` selected
+by its request. Its prefix is empty for genesis; for a non-genesis parent, the
+prefix identity must be a member of that exact parent configuration's
+authenticated nested path set in the source snapshot's observation root.
+Canonical `ObservationCredited` incorporation adds the observation's complete
+path to its exact child configuration set. The nested set retains every path to
+a convergent configuration rather than selecting one graph parent.
 
 `BranchPointId` is the semantic digest of `(parent configuration identity,
 opportunity semantics)`. A branch request additionally carries exact parent,
@@ -746,9 +757,10 @@ bounded inputs and fuel, derives the parent from the authenticated planner-head
 index, and validates exact replay and imported-root deltas. `Issue` atomically
 composes the sole-writer request, proposal, deterministic attempt, admission,
 accounting, and coordination projections. Generated proposal enumeration and
-non-genesis branch-path admission remain fail-closed until their dedicated
-owners land. This prevents a structurally valid result from becoming canonical
-evidence before its semantic owner validator exists.
+planner-issued non-genesis path selection remain fail-closed until their
+dedicated owners land; direct `AdmitProposal` already authenticates cumulative
+non-genesis paths. This prevents a structurally valid result from becoming
+canonical evidence before its semantic owner validator exists.
 
 ## 01.7 Lifecycle
 
