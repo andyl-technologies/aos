@@ -326,10 +326,12 @@ paged inspection, and watch stream remain required before the service is
 complete. The bounded versioned Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
 conflict, transition, resource, availability, and integrity meaning. Nested CLI
-wiring remains open. Listener-side Unix-peer authentication and binding that
-credential into the per-connection principal authorizer are mandatory
-production wiring; the frame never treats its self-asserted principal field as
-authentication.
+wiring remains open. The daemon's authenticated repository adapter now reads
+Linux `SO_PEERCRED`, resolves exact PID/UID/GID through a mandatory operational
+principal mapper, and rejects a different self-asserted request principal
+before repository access. Production listener configuration must still supply
+that deployment-specific mapping and the ordinary operation policy; framing
+alone is never authentication.
 
 All mutation requests carry command ID, expected snapshot ID, and authenticated
 principal. CAS conflict responses return the current head and enough detail to

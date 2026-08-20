@@ -52,7 +52,9 @@ pub use assignment_ledger::{
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
-    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, serve_loopback_campaign_once,
+    LoopbackCampaignServiceError, LoopbackCampaignTimeouts, UnixPeerCampaignCredentials,
+    UnixPeerCampaignPrincipalResolver, serve_authenticated_repository_campaign_once,
+    serve_authenticated_repository_campaign_once_with_timeouts, serve_loopback_campaign_once,
     serve_loopback_campaign_once_with_timeouts,
 };
 pub use control_responsiveness::{
