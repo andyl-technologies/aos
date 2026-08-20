@@ -8,16 +8,19 @@
 //! a non-root user and group distinct from every supervisor credential; the
 //! pre-exec path clears supplementary groups and installs those IDs after
 //! cgroup attachment. This staged authority remains crate-internal until its
-//! persistent reaper, aggregate quota, quantum charger, and session composition
-//! land. It does not own campaign semantics, VMState, or QEMU/plugin code.
+//! direct-child reap/quarantine, aggregate quota, quantum charger, and session
+//! composition land. It does not own campaign semantics, VMState, or
+//! QEMU/plugin code.
 
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use rustix::fs::{
     AtFlags, FlockOperation, Mode, OFlags, flock, fstat, fstatfs, mkdirat, open, openat, unlinkat,
@@ -29,6 +32,11 @@ use crate::{QemuProcessIdentity, linux_process_identity};
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
 const MAX_CGROUP_CONTROL_BYTES: u64 = 4096;
+const CGROUP_KILL_INTERVAL: Duration = Duration::from_millis(10);
+const WATCHER_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const WATCHER_NOT_STARTED: u8 = 0;
+const WATCHER_RUNNING: u8 = 1;
+const WATCHER_TERMINAL: u8 = 2;
 const REQUIRED_CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 
 /// Maximum task count accepted by the local QEMU cgroup authority.
@@ -146,6 +154,24 @@ pub enum LinuxQemuCgroupError {
     /// The named child no longer identifies the pinned cgroup directory.
     #[error("QEMU cgroup path no longer names the pinned directory: {path}")]
     DirectoryIdentity {
+        /// Attempt cgroup path.
+        path: PathBuf,
+    },
+    /// Sticky cancellation already closed this attempt to new children.
+    #[error("QEMU cgroup is already canceled: {path}")]
+    Canceled {
+        /// Closed attempt cgroup path.
+        path: PathBuf,
+    },
+    /// This attempt already created its one persistent watcher.
+    #[error("QEMU cgroup watcher is already started: {path}")]
+    WatcherAlreadyStarted {
+        /// Attempt cgroup path.
+        path: PathBuf,
+    },
+    /// This attempt has no live watcher or has already entered terminal closure.
+    #[error("QEMU cgroup watcher is not running: {path}")]
+    WatcherNotRunning {
         /// Attempt cgroup path.
         path: PathBuf,
     },
@@ -382,12 +408,14 @@ impl LinuxQemuCgroupReleaseError {
 /// Shared cancellation and kill authority for one attempt cgroup.
 #[derive(Debug)]
 pub struct LinuxQemuCgroupControl {
+    parent_directory: OwnedFd,
+    name: String,
     directory: OwnedFd,
     cancellation_event: OwnedFd,
     cgroup_kill: File,
     cgroup_events: File,
     path: PathBuf,
-    cancellation_signaled: Arc<AtomicBool>,
+    watcher_state: Arc<AtomicU8>,
 }
 
 impl LinuxQemuCgroupControl {
@@ -404,6 +432,12 @@ impl LinuxQemuCgroupControl {
             &self.path,
         )?;
         Ok(Self {
+            parent_directory: duplicate_fd(
+                self.parent_directory.as_raw_fd(),
+                "retain QEMU cgroup namespace lock",
+                &self.path,
+            )?,
+            name: self.name.clone(),
             cgroup_kill: open_control(&directory, &self.path, "cgroup.kill", ControlAccess::Write)?,
             cgroup_events: open_control(
                 &directory,
@@ -418,7 +452,7 @@ impl LinuxQemuCgroupControl {
                 &self.path,
             )?,
             path: self.path.clone(),
-            cancellation_signaled: Arc::clone(&self.cancellation_signaled),
+            watcher_state: Arc::clone(&self.watcher_state),
         })
     }
 
@@ -428,17 +462,13 @@ impl LinuxQemuCgroupControl {
     ///
     /// Returns [`LinuxQemuCgroupError::Io`] when the eventfd write fails.
     pub fn signal_cancellation(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        if self.cancellation_signaled.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        write_eventfd(self.cancellation_event.as_raw_fd(), 1).map_err(|source| {
-            LinuxQemuCgroupError::Io {
+        signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd()).map_err(
+            |source| LinuxQemuCgroupError::Io {
                 operation: "signal QEMU cancellation eventfd",
                 path: self.path.clone(),
                 source,
-            }
-        })?;
-        self.cancellation_signaled.store(true, Ordering::Release);
+            },
+        )?;
         Ok(())
     }
 
@@ -473,6 +503,330 @@ impl LinuxQemuCgroupControl {
     /// contains a noncanonical `populated` field.
     pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
         read_populated(&mut self.cgroup_events, &self.path)
+    }
+}
+
+/// Terminal outcome of one persistent cgroup cancellation watcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinuxQemuCgroupWatcherOutcome {
+    /// Terminal closure was latched and the cgroup became empty.
+    ClosedAndEmpty,
+}
+
+/// Persistent cancellation and kill owner for one attempt cgroup.
+#[derive(Debug)]
+#[must_use = "the watcher must be joined or transferred to quarantine"]
+pub struct LinuxQemuCgroupWatcher {
+    cancellation_event: OwnedFd,
+    watcher_state: Arc<AtomicU8>,
+    join: Option<JoinHandle<LinuxQemuCgroupWatcherThreadResult>>,
+    path: PathBuf,
+}
+
+#[derive(Debug)]
+struct LinuxQemuCgroupWatcherThreadResult {
+    outcome: LinuxQemuCgroupWatcherOutcome,
+    authority: LinuxQemuCgroupControl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinuxQemuCgroupWatcherAttempt {
+    Closed(LinuxQemuCgroupWatcherOutcome),
+    Retry,
+    Panicked,
+}
+
+impl LinuxQemuCgroupWatcher {
+    fn start(mut control: LinuxQemuCgroupControl) -> Result<Self, LinuxQemuCgroupError> {
+        let path = control.path.clone();
+        control
+            .watcher_state
+            .compare_exchange(
+                WATCHER_NOT_STARTED,
+                WATCHER_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| LinuxQemuCgroupError::WatcherAlreadyStarted { path: path.clone() })?;
+        let watcher_state = Arc::clone(&control.watcher_state);
+        let cancellation_event = duplicate_fd(
+            control.cancellation_event.as_raw_fd(),
+            "retain QEMU watcher cancellation eventfd",
+            &path,
+        )
+        .inspect_err(|_| {
+            let _ = watcher_state.compare_exchange(
+                WATCHER_RUNNING,
+                WATCHER_NOT_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        })?;
+        let thread_state = Arc::clone(&watcher_state);
+        let thread_event = duplicate_fd(
+            control.cancellation_event.as_raw_fd(),
+            "retain QEMU watcher exit eventfd",
+            &path,
+        )
+        .inspect_err(|_| {
+            let _ = watcher_state.compare_exchange(
+                WATCHER_RUNNING,
+                WATCHER_NOT_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        })?;
+        let join = match thread::Builder::new()
+            .name(String::from("crucible-qemu-cgroup"))
+            .spawn(move || {
+                let outcome = loop {
+                    match run_cgroup_watcher_attempt(|| cgroup_watcher_loop(&mut control)) {
+                        LinuxQemuCgroupWatcherAttempt::Closed(outcome) => break outcome,
+                        LinuxQemuCgroupWatcherAttempt::Retry => {
+                            let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                            thread::sleep(CGROUP_KILL_INTERVAL);
+                        }
+                        LinuxQemuCgroupWatcherAttempt::Panicked => {
+                            let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                            // Unwinding invalidates the worker's local
+                            // invariants. Retain every authority descriptor in
+                            // a parked quarantine instead of re-entering the
+                            // panicked body or detaching populated ownership.
+                            loop {
+                                thread::park();
+                            }
+                        }
+                    }
+                };
+                let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                LinuxQemuCgroupWatcherThreadResult {
+                    outcome,
+                    authority: control,
+                }
+            }) {
+            Ok(join) => join,
+            Err(source) => {
+                let _ = watcher_state.compare_exchange(
+                    WATCHER_RUNNING,
+                    WATCHER_NOT_STARTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                return Err(LinuxQemuCgroupError::Io {
+                    operation: "spawn QEMU cgroup cancellation watcher",
+                    path,
+                    source,
+                });
+            }
+        };
+        Ok(Self {
+            cancellation_event,
+            watcher_state,
+            join: Some(join),
+            path,
+        })
+    }
+
+    /// Signals sticky cancellation and waits for an empty cgroup attestation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupWatcherWaitError`] with the live watcher on a
+    /// timeout, or a terminal watcher error after its thread exits.
+    pub fn cancel_and_wait(
+        self,
+        timeout: Duration,
+    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+        self.close_and_wait(timeout)
+    }
+
+    /// Closes the watcher after the caller has independently reaped QEMU.
+    ///
+    /// Ordinary finalization deliberately latches the same sticky event as
+    /// cancellation. That closes child minting and makes any already-minted
+    /// pre-exec contract fail before QEMU code, so no stop race can disarm the
+    /// watcher. Killing an already-empty cgroup is harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupWatcherWaitError`] with the live watcher on a
+    /// signal failure or timeout, or a terminal watcher error after exit.
+    pub fn finish_and_wait(
+        self,
+        timeout: Duration,
+    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+        self.close_and_wait(timeout)
+    }
+
+    fn close_and_wait(
+        self,
+        timeout: Duration,
+    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+        if let Err(source) =
+            signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd())
+        {
+            return Err(LinuxQemuCgroupWatcherWaitError::Signal {
+                watcher: Box::new(self),
+                source,
+            });
+        }
+        self.wait(timeout)
+    }
+
+    /// Waits for a previously requested terminal watcher outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupWatcherWaitError::Timeout`] with this watcher
+    /// when the deadline expires, or a terminal watcher/thread failure.
+    // This clock bounds a host-only join. It never enters modeled or canonical
+    // Crucible state.
+    #[allow(clippy::disallowed_methods)]
+    pub fn wait(
+        mut self,
+        timeout: Duration,
+    ) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupWatcherWaitError> {
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                watcher: Box::new(self),
+            });
+        };
+        loop {
+            let Some(join) = self.join.as_ref() else {
+                return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                });
+            };
+            if join.is_finished() {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                    watcher: Box::new(self),
+                });
+            }
+            thread::sleep(WATCHER_WAIT_POLL_INTERVAL.min(deadline.duration_since(now)));
+        }
+        let Some(join) = self.join.take() else {
+            return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                path: self.path.clone(),
+            });
+        };
+        match join.join() {
+            Ok(result) => {
+                drop(result.authority);
+                Ok(result.outcome)
+            }
+            Err(_) => Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                path: self.path.clone(),
+            }),
+        }
+    }
+}
+
+impl Drop for LinuxQemuCgroupWatcher {
+    fn drop(&mut self) {
+        if self.join.is_some() {
+            let _ = signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd());
+        }
+    }
+}
+
+/// Failed watcher signaling or bounded completion.
+#[derive(Debug, Error)]
+pub enum LinuxQemuCgroupWatcherWaitError {
+    /// A wake event failed while the watcher still owns its thread.
+    #[error("failed to signal QEMU cgroup watcher: {source}")]
+    Signal {
+        /// Watcher retained for retry or quarantine.
+        watcher: Box<LinuxQemuCgroupWatcher>,
+        /// Underlying eventfd failure.
+        source: io::Error,
+    },
+    /// The bounded wait expired while the watcher remained live.
+    #[error("timed out waiting for QEMU cgroup watcher")]
+    Timeout {
+        /// Watcher retained for retry or quarantine.
+        watcher: Box<LinuxQemuCgroupWatcher>,
+    },
+    /// The worker panicked outside the guarded worker body.
+    #[error("QEMU cgroup watcher thread detached during panic for {path}")]
+    DetachedThreadPanicked {
+        /// Affected cgroup path.
+        path: PathBuf,
+    },
+}
+
+impl LinuxQemuCgroupWatcherWaitError {
+    /// Recovers the still-running watcher after a signal failure or timeout.
+    #[must_use]
+    pub fn into_watcher(self) -> Option<LinuxQemuCgroupWatcher> {
+        match self {
+            Self::Signal { watcher, .. } | Self::Timeout { watcher } => Some(*watcher),
+            Self::DetachedThreadPanicked { .. } => None,
+        }
+    }
+}
+
+fn cgroup_watcher_loop(
+    control: &mut LinuxQemuCgroupControl,
+) -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupError> {
+    wait_for_cgroup_watcher_signal(control.cancellation_event.as_raw_fd(), &control.path)?;
+    loop {
+        control.kill_members()?;
+        if !control.is_populated()? {
+            return Ok(LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty);
+        }
+        thread::sleep(CGROUP_KILL_INTERVAL);
+    }
+}
+
+fn run_cgroup_watcher_attempt(
+    attempt: impl FnOnce() -> Result<LinuxQemuCgroupWatcherOutcome, LinuxQemuCgroupError>,
+) -> LinuxQemuCgroupWatcherAttempt {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt)) {
+        Ok(Ok(outcome)) => LinuxQemuCgroupWatcherAttempt::Closed(outcome),
+        Ok(Err(_)) => LinuxQemuCgroupWatcherAttempt::Retry,
+        Err(_) => LinuxQemuCgroupWatcherAttempt::Panicked,
+    }
+}
+
+fn wait_for_cgroup_watcher_signal(
+    cancellation_event: RawFd,
+    path: &Path,
+) -> Result<(), LinuxQemuCgroupError> {
+    let mut signal = libc::pollfd {
+        fd: cancellation_event,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe {
+            // SAFETY: `signal` is one initialized pollfd value.
+            libc::poll(&mut signal, 1, -1)
+        };
+        if ready < 0 {
+            let source = io::Error::last_os_error();
+            if source.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(LinuxQemuCgroupError::Io {
+                operation: "wait for QEMU cgroup watcher signal",
+                path: path.to_owned(),
+                source,
+            });
+        }
+        if signal.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(LinuxQemuCgroupError::Io {
+                operation: "wait for QEMU cgroup watcher signal",
+                path: path.to_owned(),
+                source: io::Error::from_raw_os_error(libc::EBADF),
+            });
+        }
+        if signal.revents & libc::POLLIN != 0 {
+            return Ok(());
+        }
     }
 }
 
@@ -614,12 +968,23 @@ impl LinuxQemuCgroup {
                 open_control(directory, &path, "cgroup.events", ControlAccess::Read)?;
             let cgroup_kill = open_control(directory, &path, "cgroup.kill", ControlAccess::Write)?;
             let cancellation_event = create_cancellation_eventfd(&path)?;
-            Ok((cgroup_events, cgroup_kill, cancellation_event))
+            let control_parent_directory = duplicate_fd(
+                cleanup.parent_directory.as_raw_fd(),
+                "retain QEMU cgroup namespace lock for control",
+                &path,
+            )?;
+            Ok((
+                cgroup_events,
+                cgroup_kill,
+                cancellation_event,
+                control_parent_directory,
+            ))
         })();
-        let (cgroup_events, cgroup_kill, cancellation_event) = match configured {
-            Ok(configured) => configured,
-            Err(source) => return Err((source, Box::new(cleanup))),
-        };
+        let (cgroup_events, cgroup_kill, cancellation_event, control_parent_directory) =
+            match configured {
+                Ok(configured) => configured,
+                Err(source) => return Err((source, Box::new(cleanup))),
+            };
         let directory = match cleanup.directory.take() {
             Some(directory) => directory,
             None => {
@@ -631,18 +996,21 @@ impl LinuxQemuCgroup {
                 ));
             }
         };
+        let name = cleanup.name;
         Ok(Self {
             path: cleanup.path.clone(),
             parent_directory: cleanup.parent_directory,
-            name: cleanup.name,
+            name: name.clone(),
             maximum_tasks: limits.maximum_tasks,
             control: LinuxQemuCgroupControl {
+                parent_directory: control_parent_directory,
+                name,
                 directory,
                 cancellation_event,
                 cgroup_kill,
                 cgroup_events,
                 path: cleanup.path,
-                cancellation_signaled: Arc::new(AtomicBool::new(false)),
+                watcher_state: Arc::new(AtomicU8::new(WATCHER_NOT_STARTED)),
             },
         })
     }
@@ -665,6 +1033,21 @@ impl LinuxQemuCgroup {
         self.control.try_clone()
     }
 
+    /// Starts the one persistent cancellation watcher over duplicated authority.
+    ///
+    /// Child contracts can be minted only while this watcher is running. Its
+    /// worker retries ordinary control failures at the fixed 10 ms kill cadence
+    /// and parks without re-entry after a caught invariant panic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupError::WatcherAlreadyStarted`] after the one
+    /// attempt-owned watcher has been created. Descriptor duplication or worker
+    /// startup failures leave the one-shot capability available for retry.
+    pub fn start_watcher(&mut self) -> Result<LinuxQemuCgroupWatcher, LinuxQemuCgroupError> {
+        LinuxQemuCgroupWatcher::start(self.control()?)
+    }
+
     /// Mints one unforgeable child-side containment contract.
     ///
     /// `maximum_file_bytes` is defense-in-depth only; the concrete attempt
@@ -676,15 +1059,20 @@ impl LinuxQemuCgroup {
     ///
     /// # Errors
     ///
-    /// Returns [`LinuxQemuCgroupError`] when the child credentials overlap the
-    /// supervisor, descriptors cannot be duplicated, or the sealed contract
-    /// rejects their provenance.
+    /// Returns [`LinuxQemuCgroupError`] when the watcher is not running, the
+    /// child credentials overlap the supervisor, descriptors cannot be
+    /// duplicated, or the sealed contract rejects their provenance.
     pub fn child_process_contract(
         &self,
         maximum_file_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
     ) -> Result<QemuChildProcessContract, LinuxQemuCgroupError> {
+        if self.control.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {
+            return Err(LinuxQemuCgroupError::WatcherNotRunning {
+                path: self.path.clone(),
+            });
+        }
         let cgroup_procs = open_control(
             &self.control.directory,
             &self.path,
@@ -705,6 +1093,11 @@ impl LinuxQemuCgroup {
                     source: io::Error::new(io::ErrorKind::InvalidInput, source),
                 }
             })?;
+        if self.control.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {
+            return Err(LinuxQemuCgroupError::WatcherNotRunning {
+                path: self.path.clone(),
+            });
+        }
         QemuChildProcessContract::new(
             cgroup_procs,
             cancellation_event,
@@ -1096,21 +1489,48 @@ fn write_kill(file: &mut File, path: &Path) -> Result<(), LinuxQemuCgroupError> 
 }
 
 fn write_eventfd(descriptor: i32, value: u64) -> io::Result<()> {
-    let written = unsafe {
-        // SAFETY: `value` is a valid u64 input buffer for eventfd.
-        libc::write(
-            descriptor,
-            (&value as *const u64).cast(),
-            std::mem::size_of::<u64>(),
-        )
-    };
-    if written == 8 {
-        Ok(())
-    } else if written < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Err(io::Error::from_raw_os_error(libc::EIO))
+    loop {
+        let written = unsafe {
+            // SAFETY: `value` is a valid u64 input buffer for eventfd.
+            libc::write(
+                descriptor,
+                (&value as *const u64).cast(),
+                std::mem::size_of::<u64>(),
+            )
+        };
+        if written == 8 {
+            return Ok(());
+        }
+        if written >= 0 {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        let source = io::Error::last_os_error();
+        if source.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if source.kind() == io::ErrorKind::WouldBlock {
+            // A saturated nonblocking eventfd is already readable, which is
+            // the sticky wake postcondition required by pre-exec polling.
+            return Ok(());
+        }
+        return Err(source);
     }
+}
+
+fn signal_terminal(watcher_state: &AtomicU8, cancellation_event: RawFd) -> io::Result<()> {
+    signal_terminal_with(watcher_state, || write_eventfd(cancellation_event, 1))
+}
+
+fn signal_terminal_with(
+    watcher_state: &AtomicU8,
+    wake: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let result = wake();
+    // A successful sticky wake precedes publication so an already-minted
+    // child cannot observe a terminal transition without a readable event.
+    // Failure still closes all future minting before control returns.
+    watcher_state.store(WATCHER_TERMINAL, Ordering::Release);
+    result
 }
 
 fn contains_member_pid(
@@ -1289,6 +1709,59 @@ mod tests {
         } else {
             Err(io::Error::from_raw_os_error(libc::EIO))
         }
+    }
+
+    fn watcher_control_fixture(
+        path: &Path,
+        populated: bool,
+    ) -> Result<(LinuxQemuCgroupControl, OwnedFd), LinuxQemuCgroupError> {
+        let kill_path = path.join("cgroup.kill");
+        let events_path = path.join("cgroup.events");
+        fs::write(&kill_path, b"xx").map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "write watcher kill fixture",
+            path: kill_path,
+            source,
+        })?;
+        fs::write(
+            &events_path,
+            if populated {
+                b"populated 1\n".as_slice()
+            } else {
+                b"populated 0\n".as_slice()
+            },
+        )
+        .map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "write watcher events fixture",
+            path: events_path,
+            source,
+        })?;
+        let cancellation_event = create_cancellation_eventfd(path)?;
+        let cancellation_reader = duplicate_fd(
+            cancellation_event.as_raw_fd(),
+            "duplicate watcher cancellation fixture",
+            path,
+        )?;
+        let directory = open_directory(path, "open watcher cgroup fixture")?;
+        let parent_directory = duplicate_fd(
+            directory.as_raw_fd(),
+            "retain watcher fixture namespace lock",
+            path,
+        )?;
+        let cgroup_kill = open_control(&directory, path, "cgroup.kill", ControlAccess::Write)?;
+        let cgroup_events = open_control(&directory, path, "cgroup.events", ControlAccess::Read)?;
+        Ok((
+            LinuxQemuCgroupControl {
+                parent_directory,
+                name: String::from("watcher-fixture"),
+                directory,
+                cancellation_event,
+                cgroup_kill,
+                cgroup_events,
+                path: path.to_owned(),
+                watcher_state: Arc::new(AtomicU8::new(WATCHER_NOT_STARTED)),
+            },
+            cancellation_reader,
+        ))
     }
 
     #[test]
@@ -1471,12 +1944,18 @@ mod tests {
             ControlAccess::Read,
         )?;
         let mut control = LinuxQemuCgroupControl {
+            parent_directory: duplicate_fd(
+                cgroup_directory.as_raw_fd(),
+                "retain control fixture namespace lock",
+                directory.path(),
+            )?,
+            name: String::from("control-fixture"),
             directory: cgroup_directory,
             cancellation_event,
             cgroup_kill,
             cgroup_events,
             path: directory.path().to_owned(),
-            cancellation_signaled: Arc::new(AtomicBool::new(false)),
+            watcher_state: Arc::new(AtomicU8::new(WATCHER_NOT_STARTED)),
         };
         let mut clone = control.try_clone()?;
 
@@ -1490,7 +1969,7 @@ mod tests {
                     source,
                 }
             })?,
-            1
+            2
         );
         assert!(!clone.is_populated()?);
         control.kill_members()?;
@@ -1507,7 +1986,8 @@ mod tests {
     }
 
     #[test]
-    fn failed_cancellation_signal_does_not_latch_success() -> Result<(), LinuxQemuCgroupError> {
+    fn failed_cancellation_signal_still_latches_terminal_state() -> Result<(), LinuxQemuCgroupError>
+    {
         let directory = tempfile::tempdir().map_err(|source| LinuxQemuCgroupError::Io {
             operation: "create failed-signal fixture",
             path: PathBuf::from("fixture"),
@@ -1530,7 +2010,7 @@ mod tests {
             path: directory.path().to_owned(),
             source,
         })?;
-        let signaled = Arc::new(AtomicBool::new(false));
+        let watcher_state = Arc::new(AtomicU8::new(WATCHER_RUNNING));
         let cgroup_directory = open_directory(directory.path(), "open failed-signal fixture")?;
         let cgroup_kill = open_control(
             &cgroup_directory,
@@ -1545,16 +2025,200 @@ mod tests {
             ControlAccess::Read,
         )?;
         let mut control = LinuxQemuCgroupControl {
+            parent_directory: duplicate_fd(
+                cgroup_directory.as_raw_fd(),
+                "retain failed-signal fixture namespace lock",
+                directory.path(),
+            )?,
+            name: String::from("failed-signal-fixture"),
             directory: cgroup_directory,
             cancellation_event: read_end,
             cgroup_kill,
             cgroup_events,
             path: directory.path().to_owned(),
-            cancellation_signaled: Arc::clone(&signaled),
+            watcher_state: Arc::clone(&watcher_state),
         };
 
         assert!(control.signal_cancellation().is_err());
-        assert!(!signaled.load(Ordering::Acquire));
+        assert_eq!(watcher_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_signal_orders_sticky_wake_before_successful_publication() {
+        let successful_state = AtomicU8::new(WATCHER_RUNNING);
+        let result = signal_terminal_with(&successful_state, || {
+            assert_eq!(successful_state.load(Ordering::Acquire), WATCHER_RUNNING);
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(successful_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+
+        let failed_state = AtomicU8::new(WATCHER_RUNNING);
+        let result = signal_terminal_with(&failed_state, || {
+            assert_eq!(failed_state.load(Ordering::Acquire), WATCHER_RUNNING);
+            Err(io::Error::from_raw_os_error(libc::EBADF))
+        });
+        assert!(result.is_err());
+        assert_eq!(failed_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+    }
+
+    #[test]
+    fn watcher_panic_is_classified_once_for_terminal_quarantine() {
+        let calls = std::cell::Cell::new(0_u8);
+        let outcome = run_cgroup_watcher_attempt(|| {
+            calls.set(calls.get() + 1);
+            panic!("forced watcher panic");
+        });
+
+        assert_eq!(outcome, LinuxQemuCgroupWatcherAttempt::Panicked);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn cancellation_watcher_kills_until_the_cgroup_is_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), false)?;
+        let watcher_state = Arc::clone(&control.watcher_state);
+        let watcher = LinuxQemuCgroupWatcher::start(control)?;
+
+        assert_eq!(
+            watcher.cancel_and_wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        assert_eq!(watcher_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+        assert_eq!(fs::read(directory.path().join("cgroup.kill"))?, b"1\n");
+        Ok(())
+    }
+
+    #[test]
+    fn watcher_start_is_one_shot_and_required_for_child_minting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), false)?;
+        let mut group = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(directory.path(), "open watcher parent fixture")?,
+            name: String::from("watcher-fixture"),
+            maximum_tasks: 1,
+            control,
+        };
+
+        assert!(matches!(
+            group.child_process_contract(4096, 65_533, 65_532),
+            Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
+        ));
+        let watcher = group.start_watcher()?;
+        assert!(matches!(
+            group.start_watcher(),
+            Err(LinuxQemuCgroupError::WatcherAlreadyStarted { .. })
+        ));
+        assert_eq!(
+            watcher.finish_and_wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn watcher_signal_failure_still_latches_terminal_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (control, cancellation_event) = watcher_control_fixture(directory.path(), false)?;
+        let watcher_state = Arc::clone(&control.watcher_state);
+        let mut watcher = LinuxQemuCgroupWatcher::start(control)?;
+        let (invalid_writer, _write_end) = pipe_pair()?;
+        watcher.cancellation_event = invalid_writer;
+
+        let error = match watcher.finish_and_wait(Duration::from_secs(1)) {
+            Ok(_) => panic!("invalid watcher signal unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(watcher_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+        let watcher = match error.into_watcher() {
+            Some(watcher) => watcher,
+            None => panic!("signal failure did not retain the watcher"),
+        };
+
+        write_eventfd(cancellation_event.as_raw_fd(), 1)?;
+        assert_eq!(
+            watcher.wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_closure_rejects_new_child_contracts() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), false)?;
+        control
+            .watcher_state
+            .store(WATCHER_TERMINAL, Ordering::Release);
+        let group = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(directory.path(), "open closed parent fixture")?,
+            name: String::from("closed"),
+            maximum_tasks: 1,
+            control,
+        };
+
+        assert!(matches!(
+            group.child_process_contract(4096, 65_533, 65_532),
+            Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn watcher_timeout_retains_the_live_owner_for_retry() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
+        let watcher = LinuxQemuCgroupWatcher::start(control)?;
+        let error = match watcher.cancel_and_wait(Duration::from_millis(20)) {
+            Ok(_) => panic!("populated watcher unexpectedly terminated"),
+            Err(error) => error,
+        };
+        let watcher = match error.into_watcher() {
+            Some(watcher) => watcher,
+            None => panic!("watcher timeout dropped its live owner"),
+        };
+
+        fs::write(directory.path().join("cgroup.events"), b"populated 0\n")?;
+        assert_eq!(
+            watcher.wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_finish_closes_child_minting_and_drop_cancels_fail_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stopped_directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) =
+            watcher_control_fixture(stopped_directory.path(), false)?;
+        let finish_state = Arc::clone(&control.watcher_state);
+        let watcher = LinuxQemuCgroupWatcher::start(control)?;
+        assert_eq!(
+            watcher.finish_and_wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        assert_eq!(finish_state.load(Ordering::Acquire), WATCHER_TERMINAL);
+        assert_eq!(
+            fs::read(stopped_directory.path().join("cgroup.kill"))?,
+            b"1\n"
+        );
+
+        let dropped_directory = tempfile::tempdir()?;
+        let (control, _cancellation_reader) =
+            watcher_control_fixture(dropped_directory.path(), false)?;
+        let drop_state = Arc::clone(&control.watcher_state);
+        let watcher = LinuxQemuCgroupWatcher::start(control)?;
+        drop(watcher);
+        assert_eq!(drop_state.load(Ordering::Acquire), WATCHER_TERMINAL);
         Ok(())
     }
 
@@ -1601,16 +2265,22 @@ mod tests {
         )?;
         let group = LinuxQemuCgroup {
             path: cgroup_path.clone(),
-            parent_directory,
+            parent_directory: duplicate_fd(
+                parent_directory.as_raw_fd(),
+                "retain release fixture namespace lock",
+                &cgroup_path,
+            )?,
             name: String::from("attempt"),
             maximum_tasks: 16,
             control: LinuxQemuCgroupControl {
+                parent_directory,
+                name: String::from("attempt"),
                 directory: child_directory,
                 cancellation_event: create_cancellation_eventfd(&cgroup_path)?,
                 cgroup_kill,
                 cgroup_events,
                 path: cgroup_path.clone(),
-                cancellation_signaled: Arc::new(AtomicBool::new(false)),
+                watcher_state: Arc::new(AtomicU8::new(WATCHER_NOT_STARTED)),
             },
         };
 

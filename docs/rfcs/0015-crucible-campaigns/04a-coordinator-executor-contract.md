@@ -797,9 +797,23 @@ work and requires an already-provisioned non-symlink VMState container. The
 delegated hierarchy MUST NOT grant those child credentials an independent write
 path back to its controls.
 
-This authority is not yet the production guard. The persistent cancellation
-watcher and identity-preserving reap/quarantine owner, aggregate filesystem
-quota, execution-quantum charging backend, invocation of launch-command
+Exactly one attempt-owned watcher blocks on the same sticky eventfd, and child
+contracts cannot be minted before that watcher is live. Terminal cancellation
+and ordinary finalization first make the event readable and then publish the
+terminal lifecycle state; a signal failure still publishes terminal state
+before returning. The watcher closes new child minting and issues `cgroup.kill`
+plus bounded `cgroup.events` checks at one fixed 10 ms cadence until the group is
+empty. This common terminal path prevents a stop request from disarming a
+racing cancellation or pre-exec child. Ordinary control failures retry at that
+bounded cadence while retaining the pinned namespace and control authority. A
+caught invariant panic enters a non-reentrant parked quarantine with the same
+authority. A bounded caller wait returns the still-live watcher on timeout for
+retry or quarantine. Dropping an unjoined watcher also latches terminal closure
+and leaves its worker retaining authority until empty, fail-closed.
+
+This authority is not yet the production guard. Direct-child
+identity-preserving reap/quarantine composition, aggregate filesystem quota,
+execution-quantum charging backend, invocation of launch-command
 resource-profile admission, pinned run-directory ownership, and concrete
 session wiring remain mandatory before the guarded path may launch a campaign
 QEMU. Until then the cgroup authority remains crate-internal.
