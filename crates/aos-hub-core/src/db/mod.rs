@@ -4505,6 +4505,43 @@ impl Database {
         Ok(())
     }
 
+    /// Records an indexing failure only if no newer index generation committed.
+    ///
+    /// A slow verification pass can overlap a later pass that successfully
+    /// publishes a fresh snapshot. Its terminal error must not replace that
+    /// newer success. The generation predicate makes that ordering check part
+    /// of the same database statement as the state transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or while a registry publication is
+    /// active.
+    pub async fn mark_index_failed_if_generation(
+        &self,
+        registry_id: i64,
+        expected_generation: i64,
+        error: &str,
+    ) -> Result<()> {
+        if expected_generation < 0 {
+            bail!("expected registry index generation cannot be negative");
+        }
+        self.backend
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
+             VALUES (?1, 'failed', ?3)
+             ON CONFLICT(registry_id) DO UPDATE SET
+               state = 'failed', error = excluded.error
+             WHERE registry_index.generation = ?2",
+                    vals![registry_id, expected_generation, error],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        Ok(())
+    }
+
     /// Mark a registry's index `pending`: it has no published surface yet (a
     /// freshly-created registry whose `info/refs` does not exist).
     ///
@@ -29722,6 +29759,51 @@ source_nar_hash = ""
             db.index_status(registry_id).await.unwrap().unwrap().state,
             "pending"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_index_failure_cannot_replace_a_newer_success() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("index-failure-generation", &[], false)
+            .await
+            .unwrap();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "generation guard".into(),
+            description: None,
+            readme: None,
+            caches: Vec::new(),
+            cache_stack: None,
+            roster: Vec::new(),
+            packages: Vec::new(),
+            releases: Vec::new(),
+            release_artifact_snapshots: Vec::new(),
+            release_images: Vec::new(),
+            channels: Vec::new(),
+            refs_digest: Some("d".repeat(64)),
+        };
+
+        db.apply_snapshot(registry_id, &snapshot).await.unwrap();
+        let fresh = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(fresh.state, "fresh");
+        assert_eq!(fresh.generation, 1);
+
+        db.mark_index_failed_if_generation(registry_id, 0, "late failure")
+            .await
+            .unwrap();
+        let retained = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(retained.state, "fresh");
+        assert_eq!(retained.generation, 1);
+        assert!(retained.error.is_none());
+
+        db.mark_index_failed_if_generation(registry_id, 1, "current failure")
+            .await
+            .unwrap();
+        let failed = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.error.as_deref(), Some("current failure"));
+        assert_eq!(failed.generation, 1);
     }
 
     #[tokio::test]
