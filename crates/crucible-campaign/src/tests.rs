@@ -1178,10 +1178,41 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         SelectionOrigin::CampaignBranch { edge, .. } => edge,
         _ => panic!("campaign branch selection"),
     };
-    let path = BranchPath::new(vec![edge]).expect("path");
+    let path = BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)]).expect("path");
+    assert_eq!(
+        path.segments(),
+        Some([BranchPathSegment::new(branch_point, edge)].as_slice())
+    );
     assert_eq!(
         BranchPath::from_canonical_bytes(&path.canonical_bytes()).expect("canonical path"),
         path
+    );
+    let path_envelope = super::object::ObjectEnvelope::for_branch_path(&path)
+        .expect("current branch path envelope");
+    assert_eq!(path_envelope.content_id().schema_version(), 2);
+
+    let mut legacy_path_encoder = Encoder::new();
+    1_u32.encode(&mut legacy_path_encoder);
+    vec![edge].encode(&mut legacy_path_encoder);
+    let legacy_path_bytes = legacy_path_encoder.finish();
+    let legacy_path = BranchPath::from_canonical_bytes(&legacy_path_bytes)
+        .expect("legacy branch path remains readable");
+    assert_eq!(legacy_path.edges(), [edge]);
+    assert_eq!(legacy_path.segments(), None);
+    assert_eq!(legacy_path.canonical_bytes(), legacy_path_bytes);
+    let legacy_path_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::BranchPath.schema_name(),
+        1,
+        BTreeSet::new(),
+        legacy_path_bytes,
+    )
+    .expect("legacy branch path envelope");
+    ObjectEnvelope::from_canonical_bytes(&legacy_path_envelope.canonical_bytes())
+        .expect("legacy branch path envelope remains readable");
+    assert_eq!(
+        legacy_path.id().expect("legacy branch path identity"),
+        BranchPathId::from_content_id(legacy_path_envelope.content_id(ObjectKind::CampaignFact))
+            .expect("legacy branch path id")
     );
     let mut trailing_path = path.canonical_bytes();
     trailing_path.push(0);

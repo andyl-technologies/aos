@@ -2,28 +2,76 @@
 
 use super::*;
 
+/// One branch-point-scoped edge in an authenticated execution path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BranchPathSegment {
+    branch_point: BranchPointId,
+    edge: BranchEdgeId,
+}
+
+impl BranchPathSegment {
+    /// Builds one exact branch-point and edge pair.
+    #[must_use]
+    pub const fn new(branch_point: BranchPointId, edge: BranchEdgeId) -> Self {
+        Self { branch_point, edge }
+    }
+
+    /// Returns the semantic branch point receiving descendant credit.
+    #[must_use]
+    pub const fn branch_point(self) -> BranchPointId {
+        self.branch_point
+    }
+
+    /// Returns the selected semantic edge at the branch point.
+    #[must_use]
+    pub const fn edge(self) -> BranchEdgeId {
+        self.edge
+    }
+}
+
+impl Canonical for BranchPathSegment {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.branch_point.encode(encoder);
+        self.edge.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(
+            BranchPointId::decode(decoder)?,
+            BranchEdgeId::decode(decoder)?,
+        ))
+    }
+}
+
 /// Authenticated ordered semantic edge path used for guidance backpropagation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchPath {
     schema_version: u32,
     edges: Vec<BranchEdgeId>,
+    segments: Vec<BranchPathSegment>,
 }
 
 impl BranchPath {
-    /// Builds a bounded branch path; an empty path represents genesis discovery.
+    /// Builds a bounded branch-point-scoped path.
+    ///
+    /// An empty path represents genesis discovery. New paths retain each
+    /// branch point beside its non-invertible edge identity so observation
+    /// credit can be rebuilt without process-local graph state.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the path exceeds 65,536 edges.
-    pub fn new(edges: Vec<BranchEdgeId>) -> Result<Self, CampaignCodecError> {
-        if edges.len() > MAX_BRANCH_PATH_EDGES {
+    pub fn new(segments: Vec<BranchPathSegment>) -> Result<Self, CampaignCodecError> {
+        if segments.len() > MAX_BRANCH_PATH_EDGES {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "branch-path-edge-count",
             });
         }
+        let edges = segments.iter().map(|segment| segment.edge()).collect();
         Ok(Self {
-            schema_version: RECORD_SCHEMA_VERSION,
+            schema_version: BRANCH_PATH_SCHEMA_VERSION,
             edges,
+            segments,
         })
     }
 
@@ -31,6 +79,16 @@ impl BranchPath {
     #[must_use]
     pub fn edges(&self) -> &[BranchEdgeId] {
         &self.edges
+    }
+
+    /// Returns scoped path segments, or `None` for a decoded legacy v1 path.
+    ///
+    /// Version 1 remains readable with its exact historical content identity,
+    /// but its edge hashes cannot be inverted into branch points. New writers
+    /// always produce version 2 scoped segments.
+    #[must_use]
+    pub fn segments(&self) -> Option<&[BranchPathSegment]> {
+        (self.schema_version == BRANCH_PATH_SCHEMA_VERSION).then_some(self.segments.as_slice())
     }
 
     /// Returns strict canonical bytes.
@@ -55,30 +113,44 @@ impl BranchPath {
     ///
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
     pub fn id(&self) -> Result<BranchPathId, CampaignCodecError> {
-        BranchPathId::from_content_id(
-            crate::ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::BranchPath,
-                BTreeSet::new(),
-                self.canonical_bytes(),
-            )?
-            .content_id(),
-        )
+        BranchPathId::from_content_id(crate::ObjectEnvelope::for_branch_path(self)?.content_id())
+    }
+
+    pub(crate) const fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 }
 
 impl Canonical for BranchPath {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
-        self.edges.encode(encoder);
+        if self.schema_version == RECORD_SCHEMA_VERSION {
+            self.edges.encode(encoder);
+        } else {
+            self.segments.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_schema(u32::decode(decoder)?)?;
-        Self::new(decoder.sequence_bounded(
-            MAX_BRANCH_PATH_EDGES,
-            "branch-path-edge-count",
-            BranchEdgeId::decode,
-        )?)
+        match u32::decode(decoder)? {
+            RECORD_SCHEMA_VERSION => Ok(Self {
+                schema_version: RECORD_SCHEMA_VERSION,
+                edges: decoder.sequence_bounded(
+                    MAX_BRANCH_PATH_EDGES,
+                    "branch-path-edge-count",
+                    BranchEdgeId::decode,
+                )?,
+                segments: Vec::new(),
+            }),
+            BRANCH_PATH_SCHEMA_VERSION => Self::new(decoder.sequence_bounded(
+                MAX_BRANCH_PATH_EDGES,
+                "branch-path-edge-count",
+                BranchPathSegment::decode,
+            )?),
+            _ => Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported exploration record schema version",
+            }),
+        }
     }
 }
 

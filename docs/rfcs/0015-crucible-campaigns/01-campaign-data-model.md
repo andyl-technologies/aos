@@ -495,8 +495,13 @@ pub enum AttemptStart {
     },
 }
 
+pub struct BranchPathSegment {
+    pub branch_point: BranchPointId,
+    pub edge: BranchEdgeId,
+}
+
 pub struct BranchPath {
-    pub edges: Vec<BranchEdgeId>,
+    pub segments: Vec<BranchPathSegment>,
 }
 
 pub struct AttemptAdmission {
@@ -527,6 +532,15 @@ pub struct Observation {
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
 }
 ```
+
+`BranchPath` schema version 2 retains each `BranchPointId` beside its
+non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
+for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
+Version 1 edge-only paths retain their exact body and envelope identity for
+historical reads, but new writers always produce version 2. The current
+single-edge genesis admission owner can validate a legacy path from its request;
+future non-genesis admission requires scoped version-2 segments for the complete
+prefix.
 
 `BranchPointId` is the semantic digest of `(parent configuration identity,
 opportunity semantics)`. A branch request additionally carries exact parent,
@@ -580,8 +594,9 @@ and applies exactly one recorded selection. A discovery basis has no proposal
 but still records its command or policy cause and global `AdmissionOrdinal`.
 The ordinal belongs to campaign accounting, not `AttemptId`; strict projection
 uses it to fold completions in a stable order. `BranchPathId` authenticates the
-ordered edge path used for guidance backpropagation. It is never reconstructed
-by choosing an arbitrary parent from a graph with shared descendants.
+ordered branch-point/edge path used for guidance backpropagation. It is never
+reconstructed by choosing an arbitrary parent from a graph with shared
+descendants.
 
 - **[CMOD-17]** A proposal MUST validate its value against the named domain
   before an attempt can be admitted.

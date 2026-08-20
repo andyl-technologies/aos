@@ -363,7 +363,11 @@ fn branch_attempt(
     let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         panic!("campaign branch selection")
     };
-    let path = BranchPath::new(vec![edge]).expect("branch path");
+    let path = BranchPath::new(vec![crate::BranchPathSegment::new(
+        request.branch_point(),
+        edge,
+    )])
+    .expect("branch path");
     let attempt = Attempt::new(
         AttemptStart::Branch {
             edge,

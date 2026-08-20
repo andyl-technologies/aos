@@ -176,6 +176,7 @@ impl CampaignRecordKind {
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
+            Self::BranchPath => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
     }
@@ -364,6 +365,21 @@ impl ObjectEnvelope {
         )
     }
 
+    /// Builds a branch-path envelope preserving its exact body version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the resulting envelope exceeds a
+    /// canonical bound.
+    pub(crate) fn for_branch_path(value: &BranchPath) -> Result<Self, CampaignCodecError> {
+        Self::new_versioned(
+            CampaignRecordKind::BranchPath,
+            value.schema_version(),
+            BTreeSet::new(),
+            value.canonical_bytes(),
+        )
+    }
+
     /// Builds an exact configuration-artifact envelope.
     ///
     /// # Errors
@@ -489,7 +505,8 @@ impl ObjectEnvelope {
             },
         )?;
         let version_supported = envelope.schema_version() == record_kind.schema_version()
-            || record_kind == CampaignRecordKind::Fact && envelope.schema_version() == 2;
+            || record_kind == CampaignRecordKind::Fact && envelope.schema_version() == 2
+            || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1;
         if !version_supported {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
@@ -502,7 +519,10 @@ impl ObjectEnvelope {
     }
 
     fn validate_record_body(&self) -> Result<(), CampaignCodecError> {
-        if self.record_kind == CampaignRecordKind::Fact {
+        if matches!(
+            self.record_kind,
+            CampaignRecordKind::Fact | CampaignRecordKind::BranchPath
+        ) {
             let version = self
                 .envelope
                 .body()

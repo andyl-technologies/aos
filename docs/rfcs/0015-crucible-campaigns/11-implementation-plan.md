@@ -154,7 +154,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `ExpansionState`, and per-source portable continuation state.
 - [ ] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
-  guidance, and path backpropagation.
+  guidance, and path backpropagation. New branch paths now retain exact
+  branch-point/edge segments under schema version 2, while identity-preserving
+  v1 reads remain available; canonical credit records and their adaptive fold
+  remain open.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.

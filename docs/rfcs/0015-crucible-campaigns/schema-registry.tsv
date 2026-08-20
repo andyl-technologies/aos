@@ -22,7 +22,7 @@ crucible.campaign.scenario-artifact	1	crucible-campaign::artifact	scenario	gate:
 crucible.campaign.configuration-artifact	1	crucible-campaign::artifact	configuration	gate:campaign-model,gate:content-address
 crucible.campaign.branch-request	1	crucible-campaign::exploration	campaign-fact	gate:branch-point-model,gate:content-address
 crucible.campaign.proposal	1	crucible-campaign::exploration	campaign-fact	gate:lazy-frontier,gate:content-address
-crucible.campaign.branch-path	1	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
+crucible.campaign.branch-path	2	crucible-campaign::exploration	campaign-fact	gate:campaign-replay,gate:content-address
 crucible.campaign.attempt	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.attempt-admission	1	crucible-campaign::exploration	campaign-fact	gate:attempt-idempotence,gate:content-address
 crucible.campaign.planner-step	4	crucible-campaign::exploration	campaign-fact	gate:component-contract,gate:content-address
