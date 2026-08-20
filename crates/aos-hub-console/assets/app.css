@@ -340,6 +340,14 @@
   font-size: 0.85rem;
 }
 
+.editor-form input[readonly],
+.stacked-form input[readonly],
+.compact-form input[readonly] {
+  color: var(--dim);
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
 .checkbox-field,
 .checkbox-row,
 .inline-check {
