@@ -24104,6 +24104,13 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?;
             }
+            self.db
+                .inherit_registry_publication_object_evidence(
+                    &publication_id,
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(RpcError::internal)?;
             Ok(())
         }
         .await;

@@ -7000,6 +7000,65 @@ impl Database {
             .await
     }
 
+    /// Binds reusable placement evidence to a newly admitted publication.
+    ///
+    /// Immutable objects may already be present with an exact digest, size, and
+    /// backend version from an earlier publication. This snapshots that evidence
+    /// into the new publication receipt so deduplication does not weaken the
+    /// publication-scoped image verification performed by the indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id or database failure.
+    pub async fn inherit_registry_publication_object_evidence(
+        &self,
+        publication_id: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if observed_at < 0 {
+            bail!("publication evidence observation time cannot be negative");
+        }
+        self.backend
+            .execute(
+                "INSERT INTO registry_publication_object_evidence
+                   (publication_id, surface_object_id, placement_id,
+                    observed_hash, observed_size, strong_etag, observed_at)
+                 SELECT publication.publication_id, object.id, placement.id,
+                        presence.observed_hash, presence.observed_size,
+                        presence.etag, ?2
+                 FROM registry_publications publication
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                  AND object.lifecycle_state = 'active'
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.required = 1
+                 JOIN surface_placements placement
+                   ON placement.id = required.placement_id
+                  AND placement.registry_id = publication.registry_id
+                 JOIN object_placements presence
+                   ON presence.surface_object_id = object.id
+                  AND presence.placement_id = placement.id
+                  AND presence.registry_id = publication.registry_id
+                  AND presence.cache_id IS NULL
+                  AND presence.state = 'present'
+                  AND presence.observed_hash = declared.expected_hash
+                  AND presence.observed_size = declared.expected_size
+                  AND presence.catalog_object_resource_version = object.resource_version
+                 WHERE publication.publication_id = ?1
+                   AND publication.state IN ('preparing', 'writing_pointers')
+                 ON CONFLICT(publication_id, surface_object_id, placement_id)
+                 DO NOTHING",
+                &vals![publication_id, observed_at],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Refreshes exact placement evidence for an object in the current ready publication.
     ///
     /// This is the bounded repair counterpart to upload-time evidence recording.
@@ -30060,6 +30119,129 @@ source_nar_hash = ""
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_inherits_exact_reusable_evidence() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("reuse", "Reuse").await.unwrap();
+        let binding_id = create_test_binding(&db, org_id, "reuse", "/tmp/reuse").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(registry_id), "primary", "reuse", 0);
+        placement.storage_binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+
+        let first_publication = "reusepublication000000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: first_publication.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/sha256/aa/system.qcow2".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: first_publication.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: first_publication.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        db.record_registry_publication_object_presence(
+            first_publication,
+            object.id,
+            placement.id,
+            &"d".repeat(64),
+            91,
+            Some("\"r2-version-1\""),
+            2,
+        )
+        .await
+        .unwrap();
+        db.fail_registry_publication(first_publication, 3)
+            .await
+            .unwrap();
+
+        let second_publication = "reusepublication000000000000000002";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: second_publication.into(),
+            registry_id,
+            generation: "generation-2".into(),
+            manifest_digest: "e".repeat(64),
+            refs_digest: "f".repeat(64),
+            default_commit: Some("0".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: second_publication.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: second_publication.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 4,
+        })
+        .await
+        .unwrap();
+
+        db.inherit_registry_publication_object_evidence(second_publication, 5)
+            .await
+            .unwrap();
+
+        let evidence = db
+            .backend
+            .query_opt(
+                "SELECT observed_hash, observed_size, strong_etag, observed_at
+                 FROM registry_publication_object_evidence
+                 WHERE publication_id = ?1 AND surface_object_id = ?2
+                   AND placement_id = ?3",
+                &vals![second_publication, object.id, placement.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.get::<String>(0).unwrap(), "d".repeat(64));
+        assert_eq!(evidence.get::<i64>(1).unwrap(), 91);
+        assert_eq!(evidence.get::<String>(2).unwrap(), "\"r2-version-1\"");
+        assert_eq!(evidence.get::<i64>(3).unwrap(), 5);
     }
 
     #[tokio::test]
