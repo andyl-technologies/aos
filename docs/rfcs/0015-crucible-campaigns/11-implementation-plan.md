@@ -212,8 +212,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   latches closure while its worker retains authority until empty.
   Campaign-level supervisor ownership, direct-child identity-preserving
   reaper/quarantine composition, aggregate filesystem quota, execution-quantum
-  charging, pinned run-directory ownership, the modeled attempt driver,
-  concrete session wiring, and responsive multi-slot scheduling remain open.
+  counter implementation, pinned run-directory ownership, the modeled attempt
+  driver, concrete session wiring, and responsive multi-slot scheduling remain
+  open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -300,7 +301,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and tears the session down on every exit. The live-node composition now
   installs and verifies the exact guard before launch authority is returned,
   exact-binds the cancellation incarnation, lends the driver only narrow live
-  operations, a read-only unified event log, and a non-releasing boundary view.
+  operations and a read-only unified event log through a session-owned facade
+  that charges one guard quantum before every realization-replay or live
+  advance. Backend-shaped charge errors retain their operational
+  cancellation/resource classification.
   Replay exact-binds the caller's offset to that single log before backend
   work; candidate acceptance binds the driver's exact log offset and requires
   an unchanged paused-boundary seal plus an unchanged final shutdown drain. The
@@ -315,9 +319,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard and modeled driver, the versioned paused-restore reset of the
-  plugin coverage novelty bitmap/ring plus host consumer state, coverage-aware
-  live advancement and canonical coverage projection, hot-fork realization,
+  resource guard and quantum counter, modeled driver, the versioned
+  paused-restore reset of the plugin coverage novelty bitmap/ring plus host
+  consumer state, coverage-aware live advancement and canonical coverage
+  projection, hot-fork realization,
   full out-of-process campaign flight, and complete component conformance gate
   remain open. Until that reset exists, real-node coverage-enabled warm restore
   fails closed rather than retaining priming events or suppressing post-restore
