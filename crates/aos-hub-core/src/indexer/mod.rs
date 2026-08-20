@@ -1077,8 +1077,10 @@ async fn verify_published_system_image_object(
         .with_context(|| {
             format!("signed image object '{object_key}' backend does not expose a strong version")
         })?;
+    let current_etag = crate::surface_write::strong_if_match_etag(&current_etag)?;
+    let published_etag = crate::surface_write::strong_if_match_etag(&evidence.strong_etag)?;
     anyhow::ensure!(
-        current_etag == evidence.strong_etag,
+        current_etag == published_etag,
         "signed image object '{object_key}' changed after publication verification"
     );
     Ok(evidence)
