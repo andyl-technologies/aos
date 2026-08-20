@@ -1459,13 +1459,20 @@ mod tests {
             .unwrap()
             .write_all(b"corrupt prefix")
             .unwrap();
-        destination.hasher.as_mut().unwrap().update(b"corrupt prefix");
+        destination
+            .hasher
+            .as_mut()
+            .unwrap()
+            .update(b"corrupt prefix");
 
         destination.restart().unwrap();
 
         assert_eq!(destination.existing_len(), 0);
         assert_eq!(destination.current_len().unwrap(), 0);
-        assert_eq!(destination.final_sha256().unwrap(), format!("{:x}", Sha256::digest([])));
+        assert_eq!(
+            destination.final_sha256().unwrap(),
+            format!("{:x}", Sha256::digest([]))
+        );
     }
 
     #[cfg(target_os = "linux")]
