@@ -8,10 +8,12 @@
 //! deterministic decision stream.
 //!
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
-//! runtime-state records; [`control_responsiveness`] forwards daemon-routed
-//! acknowledgement evidence to the API's quantum-counted control-responsive
-//! contract; [`executor_loopback`] provides the strict Unix-stream component
-//! transport; [`executor_supervisor`] owns bounded single-host admission,
+//! runtime-state records; [`campaign_loopback`] provides the strict local
+//! user-facing service transport; [`control_responsiveness`] forwards
+//! daemon-routed acknowledgement evidence to the API's quantum-counted
+//! control-responsive contract; [`executor_loopback`] provides the strict
+//! Unix-stream component transport; [`executor_supervisor`] owns bounded
+//! single-host admission,
 //! idempotent scheduling, completion, and cancellation;
 //! [`repository_admission`] is its read-only production semantic boundary.
 //! [`executor_worker`] resolves accepted assignments, delegates execution, and
@@ -30,6 +32,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod campaign_loopback;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -46,6 +49,11 @@ pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
     AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger,
     MemoryAssignmentLedger,
+};
+pub use campaign_loopback::{
+    LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
+    LoopbackCampaignTimeouts, serve_loopback_campaign_once,
+    serve_loopback_campaign_once_with_timeouts,
 };
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,

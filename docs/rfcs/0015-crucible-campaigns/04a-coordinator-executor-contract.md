@@ -262,8 +262,44 @@ paths, preserving their idempotence and CAS rules.
 
 The remaining create/derive, snapshot/object queries, paged graph/frontier/
 choice/finding inspection, explanation, and resumable watch messages are still
-open. The direct checkpoint does not create an alternate control plane and is
-not yet the CLI endpoint or loopback RPC.
+open. The strict local transport frames exactly one canonical request or
+response as:
+
+```text
+CampaignLoopbackFrameV1 = "CRUCCS01" | kind:u8 | reserved[3] |
+                          body_length:u32be | canonical_body[body_length]
+kind = 1 (GetCampaignRequestV1) |
+       2 (GetCampaignResponseV1) |
+       3 (ApplyCampaignCommandRequestV1) |
+       4 (ApplyCampaignCommandResponseV1) |
+       5 (SubmitCampaignBranchRequestV1) |
+       6 (SubmitCampaignBranchResponseV1)
+```
+
+The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
+plus its 16-byte header. Both peers enforce nonzero finite absolute read/write
+deadlines, reject unknown kinds, nonzero reserved bytes, trailing/noncanonical
+bodies, and cross-request responses, and shut down both stream directions after
+any framing, service, or I/O error. One
+connection serializes complete exchanges so concurrent local callers cannot
+interleave frames; a concurrent caller receives an immediate retryable
+connection-busy transport error rather than waiting outside the operation
+deadline. The loopback binding is not an alternate control plane: it invokes
+the same authorized `CampaignService`, and the checked client performs the same
+successful-response validation as direct calls.
+
+The frame itself does not authenticate a Unix peer. Before dispatch, the
+listener MUST authenticate the connected peer (for example with an exact local
+peer credential) and bind that capability, or an exact-request proof, into the
+per-connection `CampaignService` authorizer. A raw connected stream plus the
+self-asserted `principal` field is insufficient and non-conforming.
+
+This checkpoint carries successful service responses only. A service error
+closes the stream and reaches the client as a transport failure; the versioned
+canonical error envelope that preserves authorization, stale/conflict, and
+retry taxonomy across direct and loopback calls remains required before this
+binding satisfies full CCOMP-7/CCOMP-10 equivalence. The nested CLI and
+remaining service operations are also still open.
 
 - **[CCOMP-10]** The CLI MUST target `CampaignService` through a client
   abstraction and MUST behave identically whether the endpoint is embedded,

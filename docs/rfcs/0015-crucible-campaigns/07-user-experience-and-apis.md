@@ -321,9 +321,14 @@ their authority and idempotency rules are defined in
 The initial direct service contract implements strict request-bound
 `GetCampaign`, `ApplyCampaignCommand`, and operator `SubmitBranchRequest`
 messages over the semantic repository owner. It is an implementation
-checkpoint, not yet user porcelain: the nested CLI, loopback binding, create/
-derive operations, paged inspection, and watch stream remain required before
-the service is complete.
+checkpoint, not yet user porcelain: the nested CLI, create/derive operations,
+paged inspection, and watch stream remain required before the service is
+complete. The bounded versioned Unix-stream loopback binding is now
+implemented for successful responses. Canonical service-error envelopes that
+preserve authorization/conflict/retry meaning and nested CLI wiring remain
+open. Listener-side Unix-peer authentication and binding that credential into
+the per-connection principal authorizer are mandatory production wiring; the
+frame never treats its self-asserted principal field as authentication.
 
 All mutation requests carry command ID, expected snapshot ID, and authenticated
 principal. CAS conflict responses return the current head and enough detail to

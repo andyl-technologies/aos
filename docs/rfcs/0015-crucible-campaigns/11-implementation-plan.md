@@ -286,7 +286,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   checked direct client, raw golden vectors, and a repository adapter that
   requires exact-request authentication/authorization before repository
   access. Create/derive, paged snapshot/graph/frontier/choice/finding queries,
-  explanation/watch, loopback RPC, and CLI wiring remain open. Checked
+  explanation/watch, and CLI wiring remain open. The local Unix-stream binding
+  now dispatches all six initial request/response messages under one versioned,
+  64-MiB-body, absolute-deadline frame. Protocol, canonical, service, I/O, and
+  poisoned-lock failures shut down the connection; concurrent exchanges receive
+  a retryable busy error instead of queuing outside those deadlines. Canonical
+  service-error envelopes preserving authorization/conflict/retry taxonomy and
+  full direct/RPC error equivalence remain open with CLI wiring. Production
+  listener wiring must also authenticate the Unix peer and bind that capability
+  into the per-connection principal authorizer; message framing alone is not
+  authentication. Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529
   bundle-object initial store profile) and commits both its ID and digest in
