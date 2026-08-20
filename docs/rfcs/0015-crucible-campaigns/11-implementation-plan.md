@@ -201,8 +201,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   handle in a must-reap authority that rechecks identity before force-kill and
   preserves the handle on every reap error. Failed realizations can consume the
   active node, discard modeled channels/backend authority, and surrender the
-  child into that must-reap authority. All other cgroup pseudo-file reads are
-  byte-bounded.
+  child into that must-reap authority. The retained child carries the
+  unforgeable watcher-lifecycle token, rejecting a removed/recreated cgroup at
+  the same path. All other cgroup pseudo-file reads are byte-bounded.
   Production child contracts require a configured non-root user and group
   distinct from every real, effective, saved, or supplementary supervisor
   credential; the pre-exec path clears supplementary groups and installs all
@@ -216,7 +217,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
-  A lifecycle-bound, nondroppable daemon owner for the combined
+  A nondroppable daemon owner preserving the lifecycle-bound combined
   child/cgroup/watcher process quarantine, aggregate
   filesystem quota, execution-quantum counter composition, pinned run-directory
   ownership, the modeled attempt driver, concrete session wiring, and responsive

@@ -399,6 +399,7 @@ pub struct LinuxQemuDirectChild {
     identity: QemuProcessIdentity,
     child: QemuNodeChild,
     cgroup_path: PathBuf,
+    attempt_lifecycle: Arc<AtomicU8>,
 }
 
 impl LinuxQemuDirectChild {
@@ -1286,6 +1287,7 @@ impl LinuxQemuCgroup {
                 identity,
                 child,
                 cgroup_path: self.path.clone(),
+                attempt_lifecycle: Arc::clone(&self.control.watcher_state),
             }),
             Err(source) => Err(LinuxQemuDirectChildAuthenticationError {
                 source,
@@ -1310,6 +1312,11 @@ impl LinuxQemuCgroup {
         node: QemuNode,
     ) -> Result<LinuxQemuDirectChild, LinuxQemuDirectChildAuthenticationError> {
         self.retain_child(node.into_direct_child_for_quarantine())
+    }
+
+    fn owns_child_authority(&self, child: &LinuxQemuDirectChild) -> bool {
+        self.path == child.cgroup_path
+            && Arc::ptr_eq(&self.control.watcher_state, &child.attempt_lifecycle)
     }
 
     fn authenticate_process_id(
@@ -2652,6 +2659,50 @@ mod tests {
         retained.kill_and_reap_blocking()?;
         assert!(retained.is_reaped());
         assert!(linux_process_identity(process_id)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn direct_child_authority_rejects_same_path_cgroup_reincarnation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
+        let process_id = child.process_id();
+        fs::write(
+            directory.path().join("cgroup.procs"),
+            format!("{process_id}\n"),
+        )?;
+        let (first_control, _first_reader) = watcher_control_fixture(directory.path(), true)?;
+        let mut first = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open first lifecycle parent fixture",
+            )?,
+            name: String::from("same-path"),
+            maximum_tasks: 1,
+            control: first_control,
+        };
+        let child = first
+            .retain_child(child)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        assert!(first.owns_child_authority(&child));
+
+        let (second_control, _second_reader) = watcher_control_fixture(directory.path(), true)?;
+        let second = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open second lifecycle parent fixture",
+            )?,
+            name: String::from("same-path"),
+            maximum_tasks: 1,
+            control: second_control,
+        };
+        assert!(!second.owns_child_authority(&child));
+
+        let mut child = child;
+        child.kill_and_reap_blocking()?;
         Ok(())
     }
 }
