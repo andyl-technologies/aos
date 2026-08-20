@@ -32,7 +32,8 @@ pub use create::{
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use query::{
-    CampaignChoiceEntry, CampaignGraphEntry, GetCampaignGraphObjectRequest,
+    CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignGraphEntry,
+    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
     QueryCampaignGraphRequest, QueryCampaignGraphResponse,
@@ -140,6 +141,8 @@ pub enum CampaignServiceOperation {
     GetCampaignGraphObject,
     /// Read one bounded page from the authenticated discovered-choice index.
     QueryCampaignChoices,
+    /// Read one exact declaration or domain named by an authenticated choice.
+    GetCampaignChoiceObject,
     /// Apply one idempotent lifecycle, budget, or policy command.
     ApplyCampaignCommand,
     /// Submit one additive operator branch request.
@@ -363,6 +366,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_choices(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign choice-object read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this read's exact snapshot.
+    pub fn validate_for_get_campaign_choice_object(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1329,6 +1345,18 @@ pub trait CampaignService {
         request: &QueryCampaignChoicesRequest,
     ) -> Result<QueryCampaignChoicesResponse, Self::Error>;
 
+    /// Returns one exact declaration or domain named by a discovered choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, opportunity membership, repository access, or
+    /// response construction fails.
+    fn get_campaign_choice_object(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<GetCampaignChoiceObjectResponse, Self::Error>;
+
     /// Applies one exact idempotent campaign command.
     ///
     /// # Errors
@@ -1575,6 +1603,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_choices(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one choice dependency and validates its exact opportunity binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, opportunity, dependency, or proof.
+    pub fn get_campaign_choice_object(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<GetCampaignChoiceObjectResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_choice_object(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_choice_object(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -1979,6 +2033,44 @@ where
         )?)
     }
 
+    fn get_campaign_choice_object(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignChoiceObject,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (_, proof) = self.repository.graph_object_with_proof(
+            head.snapshot().roots().graph,
+            crate::repository::authoritative_choice_key(request.opportunity()),
+        )?;
+        let (opportunity, declaration, domain) = self
+            .repository
+            .load_choice_opportunity_dependencies(request.opportunity())?;
+        let object = match request.kind() {
+            CampaignChoiceObjectKind::Declaration => CampaignChoiceObject::Declaration(declaration),
+            CampaignChoiceObjectKind::Domain => CampaignChoiceObject::Domain(domain),
+        };
+        Ok(GetCampaignChoiceObjectResponse::new(
+            request,
+            head.snapshot().clone(),
+            opportunity,
+            object,
+            proof,
+        )?)
+    }
+
     fn apply_campaign_command(
         &self,
         request: &ApplyCampaignCommandRequest,
@@ -2318,6 +2410,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn get_campaign_choice_object(
+            &self,
+            _request: &GetCampaignChoiceObjectRequest,
+        ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2419,6 +2518,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn get_campaign_choice_object(
+            &self,
+            _request: &GetCampaignChoiceObjectRequest,
+        ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn apply_campaign_command(
             &self,
             _request: &ApplyCampaignCommandRequest,
@@ -2490,6 +2596,13 @@ mod tests {
             &self,
             _request: &QueryCampaignChoicesRequest,
         ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn get_campaign_choice_object(
+            &self,
+            _request: &GetCampaignChoiceObjectRequest,
+        ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

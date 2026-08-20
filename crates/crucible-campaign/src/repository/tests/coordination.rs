@@ -2059,6 +2059,28 @@ fn choice_discovery_is_exact_replayable_and_required_before_branching() {
             .expect("authoritative choice membership"),
         Some(request.opportunity().content_id())
     );
+    let opportunity = repository
+        .load_choice_opportunity(request.opportunity())
+        .expect("load discovered opportunity");
+    let object_request = crate::GetCampaignChoiceObjectRequest::new(
+        crate::CampaignPrincipal::new("operator:alice").expect("principal"),
+        crate::CampaignName::new("choice-discovery").expect("campaign"),
+        discovered.new_snapshot,
+        request.opportunity(),
+        crate::CampaignChoiceObjectKind::Domain,
+    )
+    .expect("choice object request");
+    let object_response = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitAlice,
+    ))
+    .get_campaign_choice_object(&object_request)
+    .expect("authenticated choice domain");
+    assert_eq!(object_response.opportunity(), &opportunity);
+    assert!(matches!(
+        object_response.object(),
+        crate::CampaignChoiceObject::Domain(domain) if domain.id().expect("domain id") == opportunity.domain()
+    ));
     let (choice_page, index_proof, page_proof) = repository
         .scan_choice_page(discovery_snapshot.snapshot.roots().graph, None, 1)
         .expect("authenticated choice page");

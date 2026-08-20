@@ -8,23 +8,26 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BranchBudget, BranchPointId,
-    BranchRequest, BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignClient,
-    CampaignCommandId, CampaignCommandResult, CampaignControlAction, CampaignDerivationResult,
-    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
+    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BooleanDomain, BranchBudget,
+    BranchPointId, BranchRequest, BranchRequestCause, BranchRequestResult, CampaignChoiceEntry,
+    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignClient, CampaignCommandId,
+    CampaignCommandResult, CampaignControlAction, CampaignDerivationResult, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignPolicy,
     CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository,
     CampaignRoots, CampaignSeed, CampaignService, CampaignServiceOperation, CampaignSnapshot,
-    CampaignSnapshotId, CampaignState, CandidateSource, ChoiceDomainId, ChoiceOpportunityId,
+    CampaignSnapshotId, CampaignState, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource,
     ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ControlRequest,
     CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
-    ExactRational, ExplorerPolicy, FairnessPolicy, GetCampaignGraphObjectRequest,
-    GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MerkleMap, ObjectEnvelope, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    ExactRational, ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    GetCampaignRequest, GetCampaignResponse, GetCampaignSnapshotRequest,
+    GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope,
+    ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
     QueryCampaignChoicesResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId, StopCondition,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
-    WatchCampaignResponse,
+    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -185,6 +188,28 @@ impl CampaignService for FixedCampaignService {
         .expect("choice response"))
     }
 
+    fn get_campaign_choice_object(
+        &self,
+        request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
+        let (snapshot, map, graph) = fixed_query_snapshot();
+        let (declaration, domain, opportunity) = fixed_choice_objects();
+        let (_, proof) = map
+            .get_with_proof(
+                graph,
+                CampaignChoiceEntry::new(request.opportunity()).graph_key(),
+            )
+            .expect("choice-object opportunity proof");
+        let object = match request.kind() {
+            CampaignChoiceObjectKind::Declaration => CampaignChoiceObject::Declaration(declaration),
+            CampaignChoiceObjectKind::Domain => CampaignChoiceObject::Domain(domain),
+        };
+        Ok(
+            GetCampaignChoiceObjectResponse::new(request, snapshot, opportunity, object, proof)
+                .expect("choice-object response"),
+        )
+    }
+
     fn apply_campaign_command(
         &self,
         request: &ApplyCampaignCommandRequest,
@@ -256,6 +281,14 @@ fn direct_and_loopback_campaign_services_are_identical() {
         None,
         2,
     );
+    let choice_object = choice_object_request(
+        "network-recovery",
+        fixed_query_snapshot()
+            .0
+            .id()
+            .expect("fixed query snapshot id"),
+        CampaignChoiceObjectKind::Domain,
+    );
     let apply = apply_request("network-recovery");
     let branch = branch_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
@@ -275,6 +308,9 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let expected_choices = direct
         .query_campaign_choices(&choices)
         .expect("direct choice query");
+    let expected_choice_object = direct
+        .get_campaign_choice_object(&choice_object)
+        .expect("direct choice object");
     let expected_apply = direct.apply_campaign_command(&apply).expect("direct apply");
     let expected_branch = direct
         .submit_branch_request(&branch)
@@ -282,7 +318,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..10 {
+        for _ in 0..11 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -330,6 +366,12 @@ fn direct_and_loopback_campaign_services_are_identical() {
             .query_campaign_choices(&choices)
             .expect("loopback choices"),
         expected_choices
+    );
+    assert_eq!(
+        client
+            .get_campaign_choice_object(&choice_object)
+            .expect("loopback choice object"),
+        expected_choice_object
     );
     assert_eq!(
         client
@@ -382,7 +424,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS09\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS10\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -426,6 +468,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS06",
         b"CRUCCS07",
         b"CRUCCS08",
+        b"CRUCCS09",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
@@ -570,6 +613,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &QueryCampaignChoicesRequest,
     ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn get_campaign_choice_object(
+        &self,
+        _request: &GetCampaignChoiceObjectRequest,
+    ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
@@ -867,6 +917,11 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     let query = graph_query_request("absent", snapshot("absent"), None, 1);
     let graph_object = graph_object_request("absent", snapshot("absent"), hash("graph-key"));
     let choices = choice_query_request("absent", snapshot("absent"), None, 1);
+    let choice_object = choice_object_request(
+        "absent",
+        snapshot("absent"),
+        CampaignChoiceObjectKind::Domain,
+    );
     let direct_repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(
             "campaign-loopback-direct-auth",
@@ -911,6 +966,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
     ));
+    assert!(matches!(
+        direct.get_campaign_choice_object(&choice_object),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
@@ -919,7 +980,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        for _ in 0..6 {
+        for _ in 0..7 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve denied request");
         }
@@ -959,6 +1020,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     ));
     assert!(matches!(
         client.query_campaign_choices(&choices),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_choice_object(&choice_object),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
@@ -1257,6 +1324,10 @@ fn fixed_query_snapshot() -> (CampaignSnapshot, MerkleMap, ContentId) {
         .insert(root, CampaignChoiceEntry::index_anchor_key(), choice_index)
         .expect("fixed choice-index anchor")
         .content_id();
+    let root = map
+        .insert(root, choice.graph_key(), choice.opportunity().content_id())
+        .expect("fixed choice opportunity")
+        .content_id();
     let roots = CampaignRoots {
         graph: root,
         exploration: empty,
@@ -1275,12 +1346,41 @@ fn fixed_query_snapshot() -> (CampaignSnapshot, MerkleMap, ContentId) {
 
 fn fixed_choice_entry() -> CampaignChoiceEntry {
     CampaignChoiceEntry::new(
-        ChoiceOpportunityId::parse(&format!(
-            "crucible.campaign.choice-opportunity@{}",
-            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"fixed-choice-opportunity").encode()
-        ))
-        .expect("fixed choice opportunity"),
+        fixed_choice_objects()
+            .2
+            .id()
+            .expect("fixed choice opportunity"),
     )
+}
+
+fn fixed_choice_objects() -> (SelectableDeclaration, ChoiceDomain, ChoiceOpportunity) {
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let declaration = SelectableDeclaration::new(
+        "product.network.retry",
+        ChoiceSource::Workload {
+            producer: "network-product".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::from(["network-recovery".to_owned()]))
+            .expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("selectable declaration");
+    let opportunity = ChoiceOpportunity::new(
+        ScenarioDefId::from_hash(hash("fixed-choice-scenario")),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: hash("fixed-choice-scheduler"),
+            producer: hash("fixed-choice-producer"),
+        },
+        "fixed-choice",
+        None,
+    )
+    .expect("choice opportunity");
+    (declaration, domain, opportunity)
 }
 
 fn fixed_graph_object() -> (CampaignHash, ObjectEnvelope) {
@@ -1462,6 +1562,21 @@ fn choice_query_request(
         limit,
     )
     .expect("choice query request")
+}
+
+fn choice_object_request(
+    name: &str,
+    snapshot: CampaignSnapshotId,
+    kind: CampaignChoiceObjectKind,
+) -> GetCampaignChoiceObjectRequest {
+    GetCampaignChoiceObjectRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        snapshot,
+        fixed_choice_entry().opportunity(),
+        kind,
+    )
+    .expect("choice object request")
 }
 
 fn branch_submission(name: &str) -> SubmitCampaignBranchRequest {

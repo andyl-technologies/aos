@@ -2031,6 +2031,26 @@ impl CampaignRepository {
         self.validate_opportunity_references_cached(&envelope, cache)
     }
 
+    /// Loads one opportunity and each exact dependency once for a bounded read.
+    pub(crate) fn load_choice_opportunity_dependencies(
+        &self,
+        id: ChoiceOpportunityId,
+    ) -> Result<(ChoiceOpportunity, SelectableDeclaration, ChoiceDomain), CampaignRepositoryError>
+    {
+        let envelope = self.read_envelope(id.content_id())?;
+        if envelope.record_kind() != crate::CampaignRecordKind::ChoiceOpportunity {
+            return Err(integrity("choice-opportunity-envelope-shape"));
+        }
+        let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
+        if opportunity.id()? != id {
+            return Err(integrity("choice-opportunity-envelope-shape"));
+        }
+        let declaration = self.read_selectable(opportunity.declaration().content_id())?;
+        let domain = self.read_choice_domain(opportunity.domain().content_id())?;
+        opportunity.validate_references(&declaration, &domain)?;
+        Ok((opportunity, declaration, domain))
+    }
+
     pub(super) fn validate_opportunity_references_cached(
         &self,
         envelope: &ObjectEnvelope,
