@@ -117,8 +117,9 @@ pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
     CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
-    GuidanceWeight, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+    GuidanceWeight, LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    LOG_INTEGER_GENERATOR_MAX_CANDIDATES, Objective, ObjectiveGoal, ProgressiveWideningPolicy,
+    PuctPolicy, RetentionPolicy, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
     STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
     WeightedGenerator,
 };

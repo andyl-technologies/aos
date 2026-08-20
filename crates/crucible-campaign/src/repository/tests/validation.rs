@@ -3,6 +3,65 @@
 use super::*;
 use crate::{ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue};
 
+fn generated_integer_request(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    domain: ChoiceDomain,
+    default: IntegerValue,
+    generator: CandidateGeneratorSpecId,
+    label: &str,
+    budget: u64,
+) -> (ChoiceDomain, BranchRequest) {
+    let declaration = SelectableDeclaration::new(
+        format!("generated.integer.{label}"),
+        ChoiceSource::Workload {
+            producer: "generated-integer".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Integer(default),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", label.as_bytes()),
+            producer: CampaignHash::derive("test", b"generated-integer-producer"),
+        },
+        label,
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let request = BranchRequest::new(
+        opportunity.branch_point_id(lineage.genesis()),
+        lineage.genesis_content(),
+        opportunity.id().expect("opportunity id"),
+        domain.id().expect("domain id"),
+        CandidateSource::generated(generator),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            format!("{label}-request").as_bytes(),
+        ))),
+        BranchBudget::new(budget, budget).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    (domain, request)
+}
+
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     let (repository, lineage, policy) = fixture();
@@ -761,59 +820,6 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
     let genesis = repository
         .create("generated-stratified", &lineage, &policy, &BTreeMap::new())
         .expect("create");
-    let request_for = |domain: ChoiceDomain,
-                       default: IntegerValue,
-                       generator: CandidateGeneratorSpecId,
-                       label: &str,
-                       budget: u64| {
-        let declaration = SelectableDeclaration::new(
-            format!("generated.stratified.{label}"),
-            ChoiceSource::Workload {
-                producer: "generated-stratified".to_owned(),
-            },
-            domain.clone(),
-            ChoiceValue::Integer(default),
-            ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
-            BTreeSet::new(),
-            true,
-        )
-        .expect("declaration");
-        repository
-            .publish_choice_domain(&domain)
-            .expect("publish domain");
-        repository
-            .publish_selectable(&declaration)
-            .expect("publish declaration");
-        let opportunity = ChoiceOpportunity::new(
-            lineage.scenario(),
-            &declaration,
-            &domain,
-            ChoiceCoordinate {
-                scheduler: CampaignHash::derive("test", label.as_bytes()),
-                producer: CampaignHash::derive("test", b"generated-stratified-producer"),
-            },
-            label,
-            None,
-        )
-        .expect("opportunity");
-        repository
-            .publish_choice_opportunity(&opportunity)
-            .expect("publish opportunity");
-        let request = BranchRequest::new(
-            opportunity.branch_point_id(lineage.genesis()),
-            lineage.genesis_content(),
-            opportunity.id().expect("opportunity id"),
-            domain.id().expect("domain id"),
-            CandidateSource::generated(generator),
-            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
-                CampaignHash::derive("test", format!("{label}-request").as_bytes()),
-            )),
-            BranchBudget::new(budget, budget).expect("budget"),
-            StopCondition::NextChoice,
-        )
-        .expect("request");
-        (domain, request)
-    };
 
     let generator = CandidateGeneratorSpec::new(
         crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
@@ -836,7 +842,9 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         )
         .expect("unsigned domain"),
     );
-    let (unsigned, request) = request_for(
+    let (unsigned, request) = generated_integer_request(
+        &repository,
+        &lineage,
         unsigned,
         IntegerValue::Unsigned(10),
         generator_id,
@@ -873,7 +881,9 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
     let singleton_id = repository
         .publish_generator(&singleton)
         .expect("publish singleton generator");
-    let (_, singleton_request) = request_for(
+    let (_, singleton_request) = generated_integer_request(
+        &repository,
+        &lineage,
         unsigned.clone(),
         IntegerValue::Unsigned(10),
         singleton_id,
@@ -895,7 +905,9 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
     let dense_id = repository
         .publish_generator(&dense)
         .expect("publish dense generator");
-    let (_, dense_request) = request_for(
+    let (_, dense_request) = generated_integer_request(
+        &repository,
+        &lineage,
         unsigned.clone(),
         IntegerValue::Unsigned(10),
         dense_id,
@@ -932,8 +944,15 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         )
         .expect("signed domain"),
     );
-    let (signed, signed_request) =
-        request_for(signed, IntegerValue::Signed(0), generator_id, "signed", 4);
+    let (signed, signed_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        signed,
+        IntegerValue::Signed(0),
+        generator_id,
+        "signed",
+        4,
+    );
     let signed_expected =
         [-10, -4, 2, 10].map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)));
     for (index, expected) in signed_expected.iter().enumerate() {
@@ -958,7 +977,9 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         )
         .expect("full signed domain"),
     );
-    let (full_signed, full_signed_request) = request_for(
+    let (full_signed, full_signed_request) = generated_integer_request(
+        &repository,
+        &lineage,
         full_signed,
         IntegerValue::Signed(0),
         generator_id,
@@ -1006,7 +1027,9 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
     let legacy_id = repository
         .publish_generator(&legacy)
         .expect("publish legacy generator");
-    let (_, legacy_request) = request_for(
+    let (_, legacy_request) = generated_integer_request(
+        &repository,
+        &lineage,
         unsigned.clone(),
         IntegerValue::Unsigned(10),
         legacy_id,
@@ -1079,6 +1102,272 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         restarted
             .head("generated-stratified")
             .expect("rebuild stratified history")
+            .snapshot_id(),
+        first_issued.new_snapshot
+    );
+}
+
+#[test]
+fn log_integer_generator_uses_exact_rounded_powers() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("generated-log", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let generator = CandidateGeneratorSpec::new(
+        crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::LogInteger { base: 10 },
+    )
+    .expect("log generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish log generator");
+    let unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(3),
+            IntegerValue::Unsigned(249),
+            2,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            Vec::new(),
+        )
+        .expect("unsigned domain"),
+    );
+    let (unsigned, request) = generated_integer_request(
+        &repository,
+        &lineage,
+        unsigned,
+        IntegerValue::Unsigned(3),
+        generator_id,
+        "log-unsigned",
+        4,
+    );
+    let expected =
+        [3, 11, 101, 249].map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)));
+    assert_eq!(
+        repository
+            .static_candidate_count(&request, &unsigned)
+            .expect("candidate count"),
+        Some(expected.len() as u64)
+    );
+    for (index, expected) in expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&request, &unsigned, index as u64 + 1)
+                .expect("candidate ordinal"),
+            Some(expected.clone())
+        );
+    }
+    assert!(matches!(
+        repository.static_candidate_at(&request, &unsigned, 5),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-ordinal-exceeds-source-cardinality"
+        })
+    ));
+
+    let signed = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(1),
+            IntegerValue::Signed(1_000),
+            3,
+            None,
+            ExactRational::new(1, 1).expect("signed scale"),
+            Vec::new(),
+        )
+        .expect("signed domain"),
+    );
+    let (signed, signed_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        signed,
+        IntegerValue::Signed(1),
+        generator_id,
+        "log-signed",
+        4,
+    );
+    let signed_expected =
+        [1, 10, 100, 1_000].map(|value| ChoiceValue::Integer(IntegerValue::Signed(value)));
+    for (index, expected) in signed_expected.iter().enumerate() {
+        assert_eq!(
+            repository
+                .static_candidate_at(&signed_request, &signed, index as u64 + 1)
+                .expect("signed candidate"),
+            Some(expected.clone())
+        );
+    }
+
+    let base_two = CandidateGeneratorSpec::new(
+        crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::LogInteger { base: 2 },
+    )
+    .expect("base-two generator");
+    let base_two_id = repository
+        .publish_generator(&base_two)
+        .expect("publish base-two generator");
+    let full_unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(1),
+            IntegerValue::Unsigned(u64::MAX),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("full scale"),
+            Vec::new(),
+        )
+        .expect("full unsigned domain"),
+    );
+    let (full_unsigned, full_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        full_unsigned,
+        IntegerValue::Unsigned(1),
+        base_two_id,
+        "log-full-unsigned",
+        crate::LOG_INTEGER_GENERATOR_MAX_CANDIDATES as u64,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&full_request, &full_unsigned)
+            .expect("full candidate count"),
+        Some(crate::LOG_INTEGER_GENERATOR_MAX_CANDIDATES as u64)
+    );
+    assert_eq!(
+        repository
+            .static_candidate_at(&full_request, &full_unsigned, 64)
+            .expect("last power"),
+        Some(ChoiceValue::Integer(IntegerValue::Unsigned(1_u64 << 63)))
+    );
+    assert_eq!(
+        repository
+            .static_candidate_at(&full_request, &full_unsigned, 65)
+            .expect("inclusive maximum"),
+        Some(ChoiceValue::Integer(IntegerValue::Unsigned(u64::MAX)))
+    );
+
+    let nonpositive = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Signed64,
+            IntegerValue::Signed(-10),
+            IntegerValue::Signed(10),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("nonpositive scale"),
+            Vec::new(),
+        )
+        .expect("nonpositive domain"),
+    );
+    assert!(matches!(
+        repository.validate_generator_for_domain(generator_id, &nonpositive),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "log-generator-domain-is-not-positive"
+        })
+    ));
+    let zero_unsigned = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(10),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("zero scale"),
+            Vec::new(),
+        )
+        .expect("zero domain"),
+    );
+    assert!(matches!(
+        repository.validate_generator_for_domain(generator_id, &zero_unsigned),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "log-generator-domain-is-not-positive"
+        })
+    ));
+
+    let legacy = CandidateGeneratorSpec::new(
+        crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::LogInteger { base: 10 },
+    )
+    .expect("legacy generator");
+    let legacy_id = repository
+        .publish_generator(&legacy)
+        .expect("publish legacy generator");
+    let (_, legacy_request) = generated_integer_request(
+        &repository,
+        &lineage,
+        unsigned.clone(),
+        IntegerValue::Unsigned(3),
+        legacy_id,
+        "log-legacy",
+        4,
+    );
+    assert_eq!(
+        repository
+            .static_candidate_count(&legacy_request, &unsigned)
+            .expect("legacy candidate count"),
+        None
+    );
+    assert_eq!(
+        repository
+            .initial_continuation_state(&legacy_request)
+            .expect("legacy continuation"),
+        ContinuationState::Open
+    );
+
+    let issued = repository
+        .submit_known_branch_request("generated-log", genesis.snapshot_id(), &request)
+        .expect("issue request");
+    let projection_id = repository
+        .project_finite_expansion(issued.new_snapshot, request.branch_point(), None, 10)
+        .expect("project log source");
+    assert_eq!(
+        repository
+            .load_expansion_state(projection_id)
+            .expect("load projection")
+            .continuations()
+            .get(&request.id().expect("request id")),
+        Some(&ContinuationState::Ready)
+    );
+    let head = repository.head("generated-log").expect("request head");
+    let wrong = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(249)),
+        1,
+    );
+    assert!(matches!(
+        repository.issue_proposal("generated-log", issued.new_snapshot, &wrong),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "proposal-value-does-not-match-source-order"
+        })
+    ));
+    assert_eq!(
+        repository
+            .head("generated-log")
+            .expect("unchanged head")
+            .snapshot_id(),
+        issued.new_snapshot
+    );
+    let first = finite_proposal(
+        &request,
+        &policy,
+        &head,
+        ChoiceValue::Integer(IntegerValue::Unsigned(3)),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal("generated-log", issued.new_snapshot, &first)
+        .expect("issue first log proposal");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("generated-log")
+            .expect("rebuild log history")
             .snapshot_id(),
         first_issued.new_snapshot
     );

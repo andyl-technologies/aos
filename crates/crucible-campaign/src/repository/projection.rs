@@ -75,6 +75,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::StratifiedInteger { .. },
                 crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::LogInteger { .. },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -88,6 +93,13 @@ impl CampaignRepository {
                 crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
             ) => stratified_integer_candidate_count(*strata, integer).map(Some),
+            (
+                CandidateGeneratorAlgorithm::LogInteger { base },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => u64::try_from(log_integer_candidates(*base, integer)?.len())
+                .map(Some)
+                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
             _ => Ok(None),
         }
     }
@@ -154,6 +166,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::StratifiedInteger { .. },
                 crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::LogInteger { .. },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -173,6 +190,16 @@ impl CampaignRepository {
             ) => stratified_integer_candidate(*strata, integer, ordinal)
                 .map(ChoiceValue::Integer)
                 .map(Some),
+            (
+                CandidateGeneratorAlgorithm::LogInteger { base },
+                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => log_integer_candidates(*base, integer)?
+                .get(index)
+                .copied()
+                .map(ChoiceValue::Integer)
+                .map(Some)
+                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
             _ => Ok(None),
         }
     }
@@ -191,20 +218,20 @@ impl CampaignRepository {
         };
         let mut values = Vec::new();
         let mut seen = BTreeSet::new();
-        push_boundary_candidate(&mut values, &mut seen, domain, domain.minimum())?;
-        push_boundary_candidate(&mut values, &mut seen, domain, domain.maximum())?;
-        push_boundary_candidate(&mut values, &mut seen, domain, *default)?;
+        push_static_integer_candidate(&mut values, &mut seen, domain, domain.minimum())?;
+        push_static_integer_candidate(&mut values, &mut seen, domain, domain.maximum())?;
+        push_static_integer_candidate(&mut values, &mut seen, domain, *default)?;
         for landmark in domain.landmarks() {
-            push_boundary_candidate(&mut values, &mut seen, domain, *landmark)?;
+            push_static_integer_candidate(&mut values, &mut seen, domain, *landmark)?;
         }
 
         let anchors = values.clone();
         for anchor in anchors {
             if let Some(lower) = integer_step_neighbor(anchor, domain.step(), false) {
-                push_boundary_candidate(&mut values, &mut seen, domain, lower)?;
+                push_static_integer_candidate(&mut values, &mut seen, domain, lower)?;
             }
             if let Some(upper) = integer_step_neighbor(anchor, domain.step(), true) {
-                push_boundary_candidate(&mut values, &mut seen, domain, upper)?;
+                push_static_integer_candidate(&mut values, &mut seen, domain, upper)?;
             }
         }
 
@@ -212,7 +239,7 @@ impl CampaignRepository {
             IntegerRepresentation::Unsigned64 => {
                 for exponent in 0..64 {
                     if let Some(value) = 1_u64.checked_shl(exponent) {
-                        push_boundary_candidate(
+                        push_static_integer_candidate(
                             &mut values,
                             &mut seen,
                             domain,
@@ -224,7 +251,7 @@ impl CampaignRepository {
             IntegerRepresentation::Signed64 => {
                 for exponent in 0..64 {
                     if exponent < 63 {
-                        push_boundary_candidate(
+                        push_static_integer_candidate(
                             &mut values,
                             &mut seen,
                             domain,
@@ -236,7 +263,7 @@ impl CampaignRepository {
                     } else {
                         -(1_i64 << exponent)
                     };
-                    push_boundary_candidate(
+                    push_static_integer_candidate(
                         &mut values,
                         &mut seen,
                         domain,
@@ -628,7 +655,7 @@ fn projection_order_key(id: ContentId) -> CampaignHash {
     CampaignHash::from_bytes(id.digest())
 }
 
-fn push_boundary_candidate(
+fn push_static_integer_candidate(
     values: &mut Vec<IntegerValue>,
     seen: &mut BTreeSet<IntegerValue>,
     domain: &IntegerDomain,
@@ -641,6 +668,75 @@ fn push_boundary_candidate(
         values.push(value);
     }
     Ok(())
+}
+
+fn log_integer_candidates(
+    base: u32,
+    domain: &IntegerDomain,
+) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
+    if base < 2 {
+        return Err(integrity("log-generator-base-is-invalid"));
+    }
+    let minimum = positive_integer_magnitude(domain.minimum())
+        .ok_or_else(|| integrity("log-generator-domain-is-not-positive"))?;
+    let maximum = positive_integer_magnitude(domain.maximum())
+        .ok_or_else(|| integrity("log-generator-domain-is-not-positive"))?;
+    let step = u128::from(domain.step());
+    let mut values = Vec::new();
+    let mut seen = BTreeSet::new();
+    push_static_integer_candidate(&mut values, &mut seen, domain, domain.minimum())?;
+
+    let mut power = 1_u128;
+    while power <= maximum {
+        let rounded = if power <= minimum {
+            minimum
+        } else {
+            let distance = power - minimum;
+            let steps = distance / step + u128::from(!distance.is_multiple_of(step));
+            minimum
+                .checked_add(
+                    steps
+                        .checked_mul(step)
+                        .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?,
+                )
+                .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?
+        };
+        if rounded <= maximum {
+            let value = integer_value_from_magnitude(domain.representation(), rounded)?;
+            push_static_integer_candidate(&mut values, &mut seen, domain, value)?;
+        }
+        power = match power.checked_mul(u128::from(base)) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+
+    push_static_integer_candidate(&mut values, &mut seen, domain, domain.maximum())?;
+    if values.len() > crate::LOG_INTEGER_GENERATOR_MAX_CANDIDATES {
+        return Err(integrity("log-generator-candidate-limit"));
+    }
+    Ok(values)
+}
+
+fn positive_integer_magnitude(value: IntegerValue) -> Option<u128> {
+    match value {
+        IntegerValue::Signed(value) => u128::try_from(value).ok().filter(|value| *value > 0),
+        IntegerValue::Unsigned(value) => (value > 0).then_some(u128::from(value)),
+    }
+}
+
+fn integer_value_from_magnitude(
+    representation: IntegerRepresentation,
+    magnitude: u128,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    match representation {
+        IntegerRepresentation::Signed64 => i64::try_from(magnitude)
+            .map(IntegerValue::Signed)
+            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+        IntegerRepresentation::Unsigned64 => u64::try_from(magnitude)
+            .map(IntegerValue::Unsigned)
+            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+    }
 }
 
 fn integer_step_neighbor(value: IntegerValue, step: u64, add: bool) -> Option<IntegerValue> {

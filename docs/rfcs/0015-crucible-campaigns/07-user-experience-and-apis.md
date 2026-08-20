@@ -224,9 +224,11 @@ Finite readiness, open proposal, exhaustion, and closure are represented;
 implementation-version 2 `all` sources over Boolean and discrete domains report
 the same exact states, as do implementation-version 3 `boundary_integer`
 sources and implementation-version 4 `stratified_integer` sources with at most
-4,096 strata. Other generated sources remain conservatively `Open` until their
-deterministic enumerator and feedback owner land. Rich admitted-value, visit,
-reward, interval, and explanation views and CLI rendering remain open.
+4,096 strata. Implementation-version 5 `log_integer` sources over strictly
+positive integer domains report those states for their at-most-65-candidate
+rounded-power order. Other generated sources remain conservatively `Open` until
+their deterministic enumerator and feedback owner land. Rich admitted-value,
+visit, reward, interval, and explanation views and CLI rendering remain open.
 
 The local repository API exposes the same validation boundary at object scale.
 Typed loads authenticate scenario/configuration artifacts, opportunities,
