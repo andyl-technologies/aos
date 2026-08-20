@@ -248,6 +248,11 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         }
         Ok(QemuAsyncQuantumCompletion {
             outcome: AdvanceOutcome::ReachedHorizon,
+            final_state: QemuNodeIdleState {
+                current_icount: Icount { retired: horizon },
+                next_deadline: None,
+            },
+            inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             operations: vec![
                 QemuQuantumOperation::StoreSchedulerCeiling,

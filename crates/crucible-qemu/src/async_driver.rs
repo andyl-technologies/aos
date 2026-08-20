@@ -509,6 +509,10 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
 pub struct QemuAsyncQuantumCompletion {
     /// Scheduler-facing advance result for this quantum.
     pub outcome: AdvanceOutcome,
+    /// Attested node state at the completed quantum boundary.
+    pub final_state: crate::QemuNodeIdleState,
+    /// Scheduler-staged inbound frames consumed at this completed boundary.
+    pub inbound_frames_consumed: usize,
     /// Guest-emitted frames drained while completing this quantum.
     pub emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
     /// Hot-path operations observed during the quantum.
@@ -519,6 +523,8 @@ impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
     fn from(report: QemuQuantumReport) -> Self {
         Self {
             outcome: report.outcome,
+            final_state: report.final_state,
+            inbound_frames_consumed: report.due_inbound_frames.len(),
             emitted_frames: report.emitted_frames,
             operations: report.operations,
         }
@@ -547,6 +553,10 @@ pub enum QemuAsyncNodeStepOutcome {
 pub struct QemuAsyncNodeStepReport {
     /// Outcome of the node-step.
     pub outcome: QemuAsyncNodeStepOutcome,
+    /// Attested state for a completed quantum, absent after a crash.
+    pub final_state: Option<crate::QemuNodeIdleState>,
+    /// Scheduler-staged inbound frames consumed at this completed boundary.
+    pub inbound_frames_consumed: usize,
     /// Guest-emitted frames drained at this completed boundary.
     pub emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
     /// Whether the driver yielded before starting this quantum.

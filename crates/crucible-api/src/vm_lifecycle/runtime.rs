@@ -230,6 +230,17 @@ impl ProductionVmLifecycleLoop {
         self.inner.backend().len()
     }
 
+    /// Returns the number of guest-emitted frames not yet globally committed.
+    ///
+    /// A nonzero result means a clean shutdown would discard a frame whose
+    /// source-local emission coordinate is ahead of the conservative world
+    /// frontier. Callers that need a clean terminal boundary should drive more
+    /// ordinary quanta until this count reaches zero.
+    #[must_use]
+    pub fn pending_network_output_count(&self) -> usize {
+        self.inner.pending_network_output_count()
+    }
+
     pub(super) fn reposition_debug_world(
         &mut self,
         request: DebugRuntimeRepositionRequest,

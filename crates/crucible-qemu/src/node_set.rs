@@ -9,18 +9,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendSnapshot, Decision,
-    FingerprintSample, GdbAttachInfo, GdbListen, NodeId, ObservableEvent, SimulationBackend,
-    StepObservation, VirtualTime,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
+    SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
 };
 
-use crate::QemuNode;
 #[cfg(target_os = "linux")]
 use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
+use crate::{QemuNode, QemuNodeIdleState};
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
@@ -29,6 +29,31 @@ pub struct QemuNodeTerminalReplacementPlan {
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
 const MAX_STEP_REISSUES: u32 = 64;
+
+fn consumed_input_without_retiring(
+    observation: &StepObservation,
+    previous: VirtualTime,
+    inbound_frames_consumed: usize,
+) -> bool {
+    observation.reached == previous
+        && matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. })
+        && inbound_frames_consumed > 0
+}
+
+fn stagnant_pause_boundary(
+    observation: &StepObservation,
+    previous: VirtualTime,
+    final_state: Option<QemuNodeIdleState>,
+) -> Option<(VirtualTime, Option<Icount>)> {
+    (observation.reached == previous
+        && matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. }))
+    .then(|| {
+        (
+            observation.reached,
+            final_state.and_then(|state| state.next_deadline),
+        )
+    })
+}
 
 /// A deterministic node-addressed collection of live QEMU backends.
 pub struct QemuNodeSet {
@@ -887,6 +912,7 @@ impl SimulationBackend for QemuNodeSet {
     ) -> Result<StepObservation, BackendError> {
         let backend = self.node_mut(node)?;
         let mut previous = SimulationBackend::now(backend);
+        let mut last_stagnant_pause = None;
         for reissue in 0..=MAX_STEP_REISSUES {
             let mut observation = backend.step_to(ceiling)?;
             if observation.reached == ceiling {
@@ -894,9 +920,8 @@ impl SimulationBackend for QemuNodeSet {
             }
             if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome
                 && let Some(deadline) = backend
-                    .idle_state()
-                    .map_err(BackendError::from)?
-                    .next_deadline
+                    .last_step_final_state()
+                    .and_then(|state| state.next_deadline)
                 && deadline.retired > ceiling.ticks
             {
                 observation.reached = ceiling;
@@ -913,14 +938,45 @@ impl SimulationBackend for QemuNodeSet {
                 // it before returning; issue a fresh quantum for the remainder.
             }
             if observation.reached <= previous {
+                if consumed_input_without_retiring(
+                    &observation,
+                    previous,
+                    backend.last_step_inbound_frames_consumed(),
+                ) {
+                    // Consuming an input due at the current coordinate is real
+                    // boundary progress even though it retires no guest
+                    // instruction. Reissue once that complete batch has left
+                    // the ring; the bounded loop still rejects a backend that
+                    // cannot subsequently move or consume another due batch.
+                    last_stagnant_pause = None;
+                    continue;
+                }
+                if let Some(boundary) =
+                    stagnant_pause_boundary(&observation, previous, backend.last_step_final_state())
+                    && last_stagnant_pause.as_ref() != Some(&boundary)
+                {
+                    // A fresh timer or control boundary can become visible at
+                    // the current coordinate without retiring an instruction.
+                    // Reissue it once; only an identical repeated boundary is
+                    // a stall. Distinct boundaries remain bounded by the outer
+                    // reissue limit.
+                    last_stagnant_pause = Some(boundary);
+                    continue;
+                }
                 return Err(BackendError::Rejected {
                     message: format!(
-                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues",
-                        node.name, observation.reached.ticks, ceiling.ticks
+                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: outcome {:?}, completed state {:?}, consumed inbound {}",
+                        node.name,
+                        observation.reached.ticks,
+                        ceiling.ticks,
+                        observation.outcome,
+                        backend.last_step_final_state(),
+                        backend.last_step_inbound_frames_consumed(),
                     ),
                 });
             }
             previous = observation.reached;
+            last_stagnant_pause = None;
         }
         Err(BackendError::Rejected {
             message: format!(
@@ -1051,5 +1107,82 @@ impl SimulationBackend for QemuNodeSet {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible::{AdvanceOutcome, Icount};
+
+    use super::*;
+
+    #[test]
+    fn current_coordinate_input_consumption_is_reissuable_boundary_progress() {
+        let previous = VirtualTime { ticks: 41 };
+        let paused = StepObservation::from_advance_outcome(
+            VirtualTime { ticks: 100 },
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 41 },
+            },
+        );
+
+        assert!(consumed_input_without_retiring(&paused, previous, 1));
+        assert!(!consumed_input_without_retiring(&paused, previous, 0));
+
+        let regressed = StepObservation::from_advance_outcome(
+            VirtualTime { ticks: 100 },
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 40 },
+            },
+        );
+        assert!(!consumed_input_without_retiring(&regressed, previous, 1));
+    }
+
+    #[test]
+    fn fresh_stagnant_pause_is_progress_but_an_identical_repeat_is_not() {
+        let previous = VirtualTime { ticks: 41 };
+        let paused = StepObservation::from_advance_outcome(
+            VirtualTime { ticks: 100 },
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 41 },
+            },
+        );
+        let first = stagnant_pause_boundary(
+            &paused,
+            previous,
+            Some(QemuNodeIdleState {
+                current_icount: Icount { retired: 41 },
+                next_deadline: Some(Icount { retired: 60 }),
+            }),
+        );
+        assert_eq!(first, Some((previous, Some(Icount { retired: 60 }))));
+
+        let repeated = stagnant_pause_boundary(
+            &paused,
+            previous,
+            Some(QemuNodeIdleState {
+                current_icount: Icount { retired: 41 },
+                next_deadline: Some(Icount { retired: 60 }),
+            }),
+        );
+        assert_eq!(repeated, first);
+
+        let advanced_boundary = stagnant_pause_boundary(
+            &paused,
+            previous,
+            Some(QemuNodeIdleState {
+                current_icount: Icount { retired: 41 },
+                next_deadline: Some(Icount { retired: 61 }),
+            }),
+        );
+        assert_ne!(advanced_boundary, first);
+
+        let regressed = StepObservation::from_advance_outcome(
+            VirtualTime { ticks: 100 },
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 40 },
+            },
+        );
+        assert_eq!(stagnant_pause_boundary(&regressed, previous, None), None);
     }
 }

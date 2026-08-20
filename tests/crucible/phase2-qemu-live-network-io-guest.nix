@@ -59,6 +59,28 @@ pkgs.mkDerivation {
           return ioctl(fd, SIOCSIFFLAGS, &request);
         }
 
+        static int stagger_guest_tx(int fd, const char *name) {
+          struct ifreq request;
+          memset(&request, 0, sizeof(request));
+          strncpy(request.ifr_name, name, IFNAMSIZ - 1);
+          if (ioctl(fd, SIOCGIFHWADDR, &request) != 0) {
+            return -1;
+          }
+
+          /*
+           * Multi-guest certification assigns stable node-derived MACs. A
+           * bounded instruction-count stagger keeps independent boot probes
+           * in one canonical order across fresh QEMU process launches. The
+           * ordinary single-guest fixture MAC has its high bit clear.
+           */
+          if (((uint8_t)request.ifr_hwaddr.sa_data[0] & 0x80) != 0) {
+            for (volatile uint64_t remaining = 25000000;
+                 remaining > 0; --remaining) {
+            }
+          }
+          return 0;
+        }
+
         static void build_frame(uint8_t frame[FRAME_LEN],
                                 const uint8_t destination[6],
                                 const uint8_t source[6],
@@ -104,6 +126,9 @@ pkgs.mkDerivation {
           address.sll_protocol = htons(CRUCIBLE_ETHERTYPE);
           address.sll_ifindex = index_request.ifr_ifindex;
           if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            park_forever();
+          }
+          if (stagger_guest_tx(fd, "eth0") != 0) {
             park_forever();
           }
 
@@ -164,6 +189,7 @@ pkgs.mkDerivation {
         guest_traffic_origin=guest-only
         guest_protocol=ethertype-88b5
         guest_interface=virtio-net-eth0
+        multi_guest_tx_order=deterministic-node-mac-stagger
         EVIDENCE
       '';
     }
