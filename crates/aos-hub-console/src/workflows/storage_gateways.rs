@@ -86,6 +86,12 @@ struct GatewayInventory {
     gateways: Vec<aos_proto_types::StorageGateway>,
 }
 
+#[derive(Clone, Debug)]
+struct GatewayCreateChoices {
+    bindings: Vec<aos_proto_types::StorageBinding>,
+    endpoints: Vec<aos_proto_types::DeliveryEndpoint>,
+}
+
 #[component]
 fn OrganizationStorageGateways(
     client: ApiClient,
@@ -251,16 +257,114 @@ fn GatewayBindingGroup(client: ApiClient, inventory: GatewayInventory) -> impl I
 
 #[component]
 fn GatewayCreate(client: ApiClient, scope: GatewayScope) -> impl IntoView {
+    let choices_client = client.clone();
+    let choices_scope = scope.clone();
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let scope = choices_scope.clone();
+        async move { load_gateway_create_choices(&client, &scope).await }
+    });
+
+    view! {
+        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading storage bindings and delivery endpoints…"</p></section> }>
+            {move || {
+                let client = client.clone();
+                let scope = scope.clone();
+                Suspend::new(async move {
+                    match choices.await.as_ref() {
+                        Ok(choices) => view! { <GatewayCreateForm client=client scope=scope choices=choices.clone()/> }.into_any(),
+                        Err(detail) => view! { <section class="panel editor-panel"><InlineError detail=detail.clone()/></section> }.into_any(),
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+async fn load_gateway_create_choices(
+    client: &ApiClient,
+    scope: &GatewayScope,
+) -> Result<GatewayCreateChoices, String> {
+    let owner_scope_key = scope.owner_scope_key();
+    let binding_scope = owner_scope_key.clone();
+    let bindings = client
+        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
+            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                owner_scope_key: binding_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.storage_bindings, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let endpoints = client
+        .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.delivery_endpoints, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+
+    Ok(GatewayCreateChoices {
+        bindings,
+        endpoints,
+    })
+}
+
+#[component]
+fn GatewayCreateForm(
+    client: ApiClient,
+    scope: GatewayScope,
+    choices: GatewayCreateChoices,
+) -> impl IntoView {
     let stable_id = RwSignal::new(String::new());
-    let binding_id = RwSignal::new(String::new());
-    let endpoint_id = RwSignal::new(String::new());
-    let endpoint_generation = RwSignal::new(String::new());
+    let binding_id = RwSignal::new(
+        choices
+            .bindings
+            .first()
+            .map(|binding| binding.stable_id.clone())
+            .unwrap_or_default(),
+    );
+    let endpoint_id = RwSignal::new(
+        choices
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.stable_id.clone())
+            .unwrap_or_default(),
+    );
+    let endpoint_generation = RwSignal::new(
+        choices
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.desired_generation.to_string())
+            .unwrap_or_default(),
+    );
     let client_base_path = RwSignal::new("/".to_string());
     let origin_prefix = RwSignal::new("/".to_string());
     let access = AccessPolicySignals::public();
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let binding_choices = choices.bindings;
+    let endpoint_choices = choices.endpoints.clone();
+    let selected_endpoints = choices.endpoints;
+    let on_endpoint_change = move |event| {
+        let value = event_target_value(&event);
+        endpoint_id.set(value.clone());
+        let generation = selected_endpoints
+            .iter()
+            .find(|endpoint| endpoint.stable_id == value)
+            .map(|endpoint| endpoint.desired_generation.to_string())
+            .unwrap_or_default();
+        endpoint_generation.set(generation);
+    };
     let owner_scope_key = scope.owner_scope_key();
     let plan_client = client.clone();
     let on_plan = move |event: SubmitEvent| {
@@ -331,21 +435,92 @@ fn GatewayCreate(client: ApiClient, scope: GatewayScope) -> impl IntoView {
 
     view! {
         <section class="panel editor-panel">
-            <h2>"Create storage gateway"</h2>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create storage gateway"</h2><p>"Choose the storage and endpoint by name. The gateway pins the endpoint's selected generation automatically."</p></div></div>
             <form class="editor-form" on:submit=on_plan>
                 <label><span>"Stable ID"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
-                <label><span>"Storage binding ID"</span><input required prop:value=move || binding_id.get() on:input=move |event| binding_id.set(event_target_value(&event))/></label>
-                <label><span>"Endpoint stable ID"</span><input required prop:value=move || endpoint_id.get() on:input=move |event| endpoint_id.set(event_target_value(&event))/></label>
-                <label><span>"Endpoint generation"</span><input required type="number" min="1" prop:value=move || endpoint_generation.get() on:input=move |event| endpoint_generation.set(event_target_value(&event))/></label>
+                <label><span>"Storage binding"</span><select required prop:value=move || binding_id.get() on:change=move |event| binding_id.set(event_target_value(&event))>{binding_choices.iter().map(|binding| view! { <option value=binding.stable_id.clone()>{storage_binding_option_label(binding)}</option> }).collect_view()}</select>{binding_choices.is_empty().then(|| view! { <small>"No storage bindings exist in this scope."</small> })}</label>
+                <label><span>"Delivery endpoint"</span><select required prop:value=move || endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No delivery endpoints exist in this scope. Create one first."</small> })}</label>
+                <label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/><small>"Pins the endpoint's currently selected generation."</small></label>
                 <label><span>"Client base path"</span><input required prop:value=move || client_base_path.get() on:input=move |event| client_base_path.set(event_target_value(&event))/></label>
                 <label><span>"Origin prefix"</span><input required prop:value=move || origin_prefix.get() on:input=move |event| origin_prefix.set(event_target_value(&event))/></label>
                 <AccessPolicyFields signals=access/>
-                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div>
+                <div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || binding_id.get().is_empty() || endpoint_id.get().is_empty()>"Review creation"</button></div>
             </form>
             {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
             {move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}
         </section>
     }
+}
+
+/// Formats one storage binding for a scoped resource selector.
+pub(super) fn storage_binding_option_label(binding: &aos_proto_types::StorageBinding) -> String {
+    let name = binding
+        .spec
+        .as_ref()
+        .map(|spec| spec.name.as_str())
+        .unwrap_or("unnamed");
+    format!("{name} · {}", storage_provider_label(binding))
+}
+
+fn storage_provider_label(binding: &aos_proto_types::StorageBinding) -> &'static str {
+    use aos_proto_types::storage_binding_spec::Provider;
+
+    match binding
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.provider.as_ref())
+    {
+        Some(Provider::LocalFilesystem(_)) => "Local filesystem",
+        Some(Provider::S3(_)) => "S3-compatible",
+        Some(Provider::R2(_)) => "Cloudflare R2 API",
+        Some(Provider::DeploymentR2(_)) => "Worker R2 deployment bucket",
+        None => "Unknown provider",
+    }
+}
+
+/// Formats one delivery endpoint with the generation a new reference will pin.
+pub(super) fn endpoint_option_label(endpoint: &aos_proto_types::DeliveryEndpoint) -> String {
+    format!(
+        "{} · generation {}",
+        endpoint_origin_label(endpoint),
+        endpoint.desired_generation
+    )
+}
+
+/// Formats one storage gateway with its pinned endpoint and desired generation.
+pub(super) fn gateway_option_label(gateway: &aos_proto_types::StorageGateway) -> String {
+    let desired = gateway.desired.as_ref();
+    let endpoint = desired
+        .map(|revision| format!("{}@{}", revision.endpoint_id, revision.endpoint_generation))
+        .unwrap_or_else(|| "unconfigured endpoint".to_string());
+    format!(
+        "{} · generation {} · {endpoint}",
+        gateway.stable_id, gateway.desired_generation
+    )
+}
+
+fn endpoint_origin_label(endpoint: &aos_proto_types::DeliveryEndpoint) -> String {
+    use aos_proto_types::endpoint_host::Host;
+
+    let host = endpoint
+        .host
+        .as_ref()
+        .and_then(|value| value.host.as_ref())
+        .map(|host| match host {
+            Host::DomainId(domain) => domain.clone(),
+            Host::Ipv4(bytes) => bytes
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join("."),
+            Host::Ipv6(bytes) => bytes
+                .chunks_exact(2)
+                .map(|part| format!("{:02x}{:02x}", part[0], part[1]))
+                .collect::<Vec<_>>()
+                .join(":"),
+        })
+        .unwrap_or_else(|| "unknown host".to_string());
+    format!("{}://{}:{}", endpoint.scheme, host, endpoint.effective_port)
 }
 
 #[component]
