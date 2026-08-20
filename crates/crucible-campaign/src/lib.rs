@@ -37,7 +37,8 @@ pub use campaign_service::{
     CampaignPrincipalAuthorizer, CampaignService, CampaignServiceErrorResponse,
     CampaignServiceFailure, CampaignServiceFailureSource, CampaignServiceOperation,
     CampaignServiceRetryDisposition, CreateCampaignRequest, CreateCampaignResponse,
-    DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignRequest, GetCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
     MAX_CREATE_CAMPAIGN_GENERATORS, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
@@ -84,8 +85,8 @@ pub use identity::{
     SelectableSemanticId, SelectionId,
 };
 pub use merkle::{
-    CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapPage, MerkleMapPageProof,
-    MerkleMapRoot,
+    CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
+    MerkleMapPageProof, MerkleMapRoot,
 };
 pub use model::{
     ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,

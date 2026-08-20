@@ -383,6 +383,13 @@ flat snapshot identity cannot selectively prove only the graph root. Object
 bodies remain separate; later explanation or object-read operations apply
 their own authorization.
 
+`GetGraphObject` is the separately authorized body read for one exact graph
+key. It returns only a strict configuration-artifact or choice-opportunity
+envelope, together with the complete anchoring snapshot metadata and a bounded
+minimal Merkle lookup proof. The checked client proves exact key membership and
+envelope identity before exposing the body. It cannot name arbitrary store
+content or fetch checkpoint/evidence objects through the graph capability.
+
 - **[CAPI-8]** Losing a watch stream MUST lose no campaign state. Reconnecting
   from a stale cursor returns the current snapshot and subsequent events. Graph,
   frontier, choice, and finding pagination cursors MUST bind the queried

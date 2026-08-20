@@ -188,9 +188,10 @@ the CLI, an in-process caller, and a future external coordinator implementation:
 
 ```text
 CreateCampaign        GetCampaign          ApplyCampaignCommand
-GetSnapshot           QueryGraph           QueryFrontier
-QueryChoices          SubmitBranchRequest  DeriveCampaign
-QueryFindings         ExplainObject        WatchCampaign
+GetSnapshot           QueryGraph           GetGraphObject
+QueryFrontier          QueryChoices         SubmitBranchRequest
+DeriveCampaign         QueryFindings        ExplainObject
+WatchCampaign
 ```
 
 Every mutation of an existing campaign carries an idempotent command ID and its
@@ -202,8 +203,9 @@ therefore cannot lose campaign state.
 
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
-`ApplyCampaignCommand`, `QueryGraph`, and `SubmitBranchRequest` messages. All
-use canonical schema version 1 and a 64 MiB outer bound:
+`ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
+`SubmitBranchRequest` messages. All use canonical schema version 1 and a 64 MiB
+outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
@@ -239,6 +241,15 @@ QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
                                CampaignSnapshotV2 |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
+
+MerkleLookupProofV1 = node_count:u64 |
+                      nodes[node_id | canonical MerkleNodeV1 envelope bytes]
+GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
+                                  graph_key
+GetCampaignGraphObjectResponseV1 = version | request_digest |
+                                   CampaignSnapshotV2 |
+                                   canonical ObjectEnvelopeV1 bytes |
+                                   MerkleLookupProofV1
 
 ApplyCampaignCommandRequestV1 = version | principal | campaign |
                                 ControlRequestV1
@@ -302,7 +313,7 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph` additionally permits 2 and 4;
+`QueryGraph` and `GetGraphObject` additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
 operation,
@@ -335,6 +346,9 @@ watch_request_digest =
 query_graph_request_digest =
   H("crucible.campaign-service.query-campaign-graph.v1",
     QueryCampaignGraphRequestV1)
+get_graph_object_request_digest =
+  H("crucible.campaign-service.get-campaign-graph-object.v1",
+    GetCampaignGraphObjectRequestV1)
 create_request_digest =
   H("crucible.campaign-service.create-campaign.v1", CreateCampaignRequestV1)
 derive_request_digest =
@@ -444,12 +458,22 @@ any other root ID MUST deny this operation. The operation does not grant any
 object body named by those IDs; object reads remain separately authorized, so
 sensitive checkpoint content is not carried in this response.
 
-The remaining object queries, paged frontier/choice/finding inspection, and
-explanation messages are still open. The strict local
+`GetCampaignGraphObject` is that separate graph-body capability. It accepts one
+exact current-snapshot graph key and returns only a strict
+`ConfigurationArtifact` or `ChoiceOpportunity` envelope. The response
+reconstructs the requested snapshot identity, proves that key's exact value
+with a minimal Merkle lookup path, and requires the returned envelope's content
+identity to equal that value. Presence and absence proofs carry at most 65
+unique nodes, each at most 64 KiB, and at most 4,259,840 aggregate proof bytes.
+The operation does not expose arbitrary content IDs or any non-graph record
+kind.
+
+The remaining non-graph object queries, paged frontier/choice/finding
+inspection, and explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV7 = "CRUCCS07" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV8 = "CRUCCS08" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -467,10 +491,12 @@ kind = 1 (GetCampaignRequestV1) |
       14 (QueryCampaignGraphRequestV1) |
       15 (QueryCampaignGraphResponseV1) |
       16 (GetCampaignSnapshotRequestV1) |
-      17 (GetCampaignSnapshotResponseV1)
+      17 (GetCampaignSnapshotResponseV1) |
+      18 (GetCampaignGraphObjectRequestV1) |
+      19 (GetCampaignGraphObjectResponseV1)
 ```
 
-Loopback frame versions 1 through 6 are rejected rather than reinterpreted
+Loopback frame versions 1 through 7 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

@@ -310,9 +310,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   lookahead to authenticate exact continuation or EOF without fetching object
   bodies or scanning ancestry for cursor/page resolution beyond the
   repository's required authenticated-head checkpoint rebuild. The local
+  graph-object read separately authorizes one exact graph key, authenticates
+  its value with a fixed-depth minimal Merkle lookup proof, and exposes only
+  strict configuration-artifact or choice-opportunity envelopes.
+  The local
   Unix-stream binding
-  now dispatches all sixteen initial success messages plus one stable
-  request-bound error envelope under a version-7, 64-MiB-body,
+  now dispatches all eighteen initial success messages plus one stable
+  request-bound error envelope under a version-8, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
