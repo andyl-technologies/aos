@@ -202,13 +202,20 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   credential; the pre-exec path clears supplementary groups and installs all
   real, effective, and saved IDs after cgroup attachment, with `no_new_privs`
   set first. The delegated hierarchy must not grant those child credentials a
-  separate write path to its controls.
-  Campaign-level supervisor ownership, the persistent cancellation watcher and
-  identity-preserving reaper/quarantine, aggregate filesystem quota,
-  execution-quantum charging, pinned run-directory ownership, the modeled
-  attempt driver, concrete session wiring, and responsive multi-slot scheduling
-  remain open. The authority remains crate-internal until those security
-  boundaries are composed. Validated launch commands now
+  separate write path to its controls. Exactly one persistent watcher must be
+  live before child minting. Cancellation or ordinary finalization makes the
+  sticky event readable before publishing terminal state, closes minting, and
+  kills and checks the group at a fixed 10 ms cadence until empty. Ordinary
+  control failures retry at that cadence with complete authority retained;
+  caught invariant panics enter a non-reentrant parked quarantine. A bounded
+  wait returns the live watcher on timeout, and dropping an unjoined watcher
+  latches closure while its worker retains authority until empty.
+  Campaign-level supervisor ownership, direct-child identity-preserving
+  reaper/quarantine composition, aggregate filesystem quota, execution-quantum
+  charging, pinned run-directory ownership, the modeled attempt driver,
+  concrete session wiring, and responsive multi-slot scheduling remain open.
+  The authority remains crate-internal until those security boundaries are
+  composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
   minimum, and root-overlay requirements against an admitted resource ceiling;
   the concrete session must invoke that check before spawn.
