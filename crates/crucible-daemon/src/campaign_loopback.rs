@@ -22,10 +22,10 @@
 //! poisons the connection by shutting down both stream directions. A valid
 //! request-bound service error leaves the connection reusable.
 //!
-//! Framing does not authenticate the connected peer. A listener must bind the
-//! stream's authenticated peer credential or an exact-request proof into the
-//! supplied [`CampaignService`] authorizer. Trusting only the principal string
-//! carried inside a request is non-conforming.
+//! Framing alone does not authenticate the connected peer. The authenticated
+//! repository adapter in this module reads Linux `SO_PEERCRED`, resolves it to
+//! one operational principal, and requires every request on that connection to
+//! claim exactly that principal before applying the ordinary service policy.
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -35,9 +35,11 @@ use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignCodecError, CampaignService,
-    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureSource,
-    GetCampaignRequest, GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
+    CampaignCodecError, CampaignName, CampaignPrincipal, CampaignPrincipalAuthorizer,
+    CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
+    CampaignServiceFailureSource, CampaignServiceOperation, GetCampaignRequest,
+    GetCampaignResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, RepositoryCampaignService,
     SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
 };
 
@@ -255,6 +257,158 @@ impl CampaignService for LoopbackCampaignService {
             |failure| failure.validate_for_submit_branch_request(request.expected_snapshot()),
         )
     }
+}
+
+/// Authenticated Linux credentials for one connected Unix-stream peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UnixPeerCampaignCredentials {
+    process_id: i32,
+    user_id: u32,
+    group_id: u32,
+}
+
+impl UnixPeerCampaignCredentials {
+    /// Returns the peer process ID captured by `SO_PEERCRED`.
+    #[must_use]
+    pub const fn process_id(self) -> i32 {
+        self.process_id
+    }
+
+    /// Returns the peer effective user ID captured by `SO_PEERCRED`.
+    #[must_use]
+    pub const fn user_id(self) -> u32 {
+        self.user_id
+    }
+
+    /// Returns the peer effective group ID captured by `SO_PEERCRED`.
+    #[must_use]
+    pub const fn group_id(self) -> u32 {
+        self.group_id
+    }
+}
+
+/// Resolves authenticated Unix peer credentials to one campaign principal.
+///
+/// The resolver is an operational identity-policy seam. Its output never
+/// enters immutable campaign state, but every request on the connection must
+/// claim the exact resolved principal.
+pub trait UnixPeerCampaignPrincipalResolver {
+    /// Resolves one kernel-authenticated peer identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignAuthorizationError`] when the peer is denied or the
+    /// identity policy cannot make a definitive decision.
+    fn resolve_campaign_principal(
+        &self,
+        credentials: UnixPeerCampaignCredentials,
+    ) -> Result<CampaignPrincipal, CampaignAuthorizationError>;
+}
+
+impl<F> UnixPeerCampaignPrincipalResolver for F
+where
+    F: Fn(UnixPeerCampaignCredentials) -> Result<CampaignPrincipal, CampaignAuthorizationError>,
+{
+    fn resolve_campaign_principal(
+        &self,
+        credentials: UnixPeerCampaignCredentials,
+    ) -> Result<CampaignPrincipal, CampaignAuthorizationError> {
+        self(credentials)
+    }
+}
+
+struct PeerBoundCampaignAuthorizer<'a, A: ?Sized> {
+    principal: CampaignPrincipal,
+    inner: &'a A,
+}
+
+impl<A> CampaignPrincipalAuthorizer for PeerBoundCampaignAuthorizer<'_, A>
+where
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    fn authorize(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        campaign: &CampaignName,
+        request_digest: crucible_campaign::CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        if principal != &self.principal {
+            return Err(CampaignAuthorizationError::Unauthorized);
+        }
+        self.inner
+            .authorize(principal, operation, campaign, request_digest)
+    }
+}
+
+/// Serves one repository request after binding Linux peer credentials.
+///
+/// This is the production connected-stream authorization boundary. It reads
+/// `SO_PEERCRED` before decoding the request, resolves the credential through
+/// `principal_resolver`, and rejects a request whose self-described principal
+/// differs from that authenticated result before repository access.
+///
+/// # Errors
+///
+/// Returns [`LoopbackCampaignServerError`] when peer authentication,
+/// authorization resolution, framing, canonical validation, response binding,
+/// or bounded socket I/O fails.
+pub fn serve_authenticated_repository_campaign_once<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    serve_authenticated_repository_campaign_once_with_timeouts(
+        stream,
+        repository,
+        principal_resolver,
+        authorizer,
+        LoopbackCampaignTimeouts::default(),
+    )
+}
+
+/// Serves one peer-bound repository request with explicit finite deadlines.
+///
+/// # Errors
+///
+/// Returns the same failures as
+/// [`serve_authenticated_repository_campaign_once`].
+pub fn serve_authenticated_repository_campaign_once_with_timeouts<R, A>(
+    stream: &mut UnixStream,
+    repository: &CampaignRepository,
+    principal_resolver: &R,
+    authorizer: &A,
+    timeouts: LoopbackCampaignTimeouts,
+) -> Result<(), LoopbackCampaignServerError>
+where
+    R: UnixPeerCampaignPrincipalResolver + ?Sized,
+    A: CampaignPrincipalAuthorizer + ?Sized,
+{
+    let result = (|| {
+        let peer = rustix::net::sockopt::socket_peercred(&*stream)
+            .map_err(|error| LoopbackCampaignProtocolError::Io(std::io::Error::from(error)))?;
+        let credentials = UnixPeerCampaignCredentials {
+            process_id: peer.pid.as_raw_pid(),
+            user_id: peer.uid.as_raw(),
+            group_id: peer.gid.as_raw(),
+        };
+        let principal = principal_resolver.resolve_campaign_principal(credentials)?;
+        let peer_authorizer = PeerBoundCampaignAuthorizer {
+            principal,
+            inner: authorizer,
+        };
+        let service = RepositoryCampaignService::new(repository, peer_authorizer);
+        serve_loopback_campaign_inner(stream, &service, timeouts)
+    })();
+    if result.is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    result
 }
 
 /// Serves one strict campaign-service request/response exchange.
@@ -511,6 +665,9 @@ pub enum LoopbackCampaignServerError {
     /// Framing, canonical validation, or bounded socket I/O failed.
     #[error(transparent)]
     Protocol(#[from] LoopbackCampaignProtocolError),
+    /// Kernel peer credentials were denied or could not be resolved.
+    #[error(transparent)]
+    PeerAuthentication(#[from] CampaignAuthorizationError),
 }
 
 impl From<CampaignCodecError> for LoopbackCampaignServerError {

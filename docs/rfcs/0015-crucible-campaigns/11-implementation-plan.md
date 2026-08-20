@@ -278,8 +278,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   finite absolute deadlines, close-on-error behavior, and direct/loopback
   equivalence. A killable production supervisor that enforces fuel, wall-clock,
   and cancellation bounds, the coordinator-owned Merkle-proof guidance bundle,
-  concrete closed planner, CampaignService RPC, and service-level principal
-  plumbing remain open. The first `CampaignService` checkpoint now provides
+  and concrete closed planner remain open. The first `CampaignService`
+  checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   authenticated current-head reads, lifecycle/budget/policy control, and
   additive operator branch submission, exact response-digest binding, a
@@ -293,10 +293,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   semantic failures keep it reusable, and concurrent exchanges receive a
   retryable busy error instead of queuing outside those deadlines. Direct and
   loopback clients now expose the same closed authorization/conflict/transition/
-  resource/availability/integrity failure vocabulary. CLI wiring remains open.
-  Production
-  listener wiring must also authenticate the Unix peer and bind that capability
-  into the per-connection principal authorizer; message framing alone is not
+  resource/availability/integrity failure vocabulary. A connected-stream
+  repository adapter now reads Linux `SO_PEERCRED`, resolves exact PID/UID/GID
+  through a mandatory deployment policy, and binds the result to every claimed
+  request principal before repository access. Production accept-loop and policy
+  configuration plus CLI wiring remain open; message framing alone is not
   authentication. Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529

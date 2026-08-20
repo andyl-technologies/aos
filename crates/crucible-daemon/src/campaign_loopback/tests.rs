@@ -476,6 +476,97 @@ impl CampaignPrincipalAuthorizer for DenyAll {
     }
 }
 
+struct AllowAll;
+
+impl CampaignPrincipalAuthorizer for AllowAll {
+    fn authorize(
+        &self,
+        _principal: &CampaignPrincipal,
+        _operation: CampaignServiceOperation,
+        _campaign: &CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crucible_campaign::CampaignAuthorizationError> {
+        Ok(())
+    }
+}
+
+struct RecordingPeerResolver {
+    observed: mpsc::Sender<UnixPeerCampaignCredentials>,
+}
+
+impl UnixPeerCampaignPrincipalResolver for RecordingPeerResolver {
+    fn resolve_campaign_principal(
+        &self,
+        credentials: UnixPeerCampaignCredentials,
+    ) -> Result<CampaignPrincipal, crucible_campaign::CampaignAuthorizationError> {
+        self.observed
+            .send(credentials)
+            .map_err(|_| crucible_campaign::CampaignAuthorizationError::Unavailable)?;
+        CampaignPrincipal::new("operator:alice")
+            .map_err(|_| crucible_campaign::CampaignAuthorizationError::Unavailable)
+    }
+}
+
+#[test]
+fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
+    let mismatched = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator:bob").expect("mismatched principal"),
+        CampaignName::new("absent").expect("campaign name"),
+    )
+    .expect("mismatched request");
+    let matched = get_request("absent");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
+    let server = thread::spawn(move || {
+        let repository = CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "campaign-loopback-peer-auth",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        );
+        let resolver = RecordingPeerResolver {
+            observed: observed_tx,
+        };
+        for _ in 0..2 {
+            serve_authenticated_repository_campaign_once(
+                &mut server_stream,
+                &repository,
+                &resolver,
+                &AllowAll,
+            )
+            .expect("serve peer-bound request");
+        }
+    });
+    let loopback = LoopbackCampaignService::new(client_stream).expect("loopback service");
+    let client = CampaignClient::new(loopback);
+
+    assert!(matches!(
+        client.get_campaign(&mismatched),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign(&matched),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::NotFound
+        ))
+    ));
+
+    let first = observed_rx.recv().expect("first peer credential");
+    let second = observed_rx.recv().expect("second peer credential");
+    assert_eq!(first, second);
+    assert_eq!(
+        first.process_id(),
+        i32::try_from(std::process::id()).expect("process id")
+    );
+    assert_ne!(first.process_id(), 0);
+    assert_eq!(first.user_id(), rustix::process::geteuid().as_raw());
+    assert_eq!(first.group_id(), rustix::process::getegid().as_raw());
+    server.join().expect("server thread");
+}
+
 #[test]
 fn campaign_loopback_preserves_authorization_before_repository_access() {
     let request = get_request("absent");

@@ -341,11 +341,16 @@ deadline. The loopback binding is not an alternate control plane: it invokes
 the same authorized `CampaignService`, and the checked client performs the same
 response binding and stable failure mapping as direct calls.
 
-The frame itself does not authenticate a Unix peer. Before dispatch, the
-listener MUST authenticate the connected peer (for example with an exact local
-peer credential) and bind that capability, or an exact-request proof, into the
-per-connection `CampaignService` authorizer. A raw connected stream plus the
-self-asserted `principal` field is insufficient and non-conforming.
+The frame itself does not authenticate a Unix peer. The initial daemon adapter
+reads Linux `SO_PEERCRED` before request decoding, passes exact PID/UID/GID to a
+mandatory operational principal resolver, and binds the resolved principal
+into the per-connection repository authorizer. Every request principal MUST
+equal that resolved identity before repository access; substitution returns
+`Unauthorized`. Peer-credential or resolver failure closes the connection
+without dispatch. A raw connected stream plus the self-asserted `principal`
+field remains insufficient and non-conforming. Production listener policy must
+configure the credential-to-principal resolver and the ordinary per-operation
+authorizer; neither mapping enters campaign state.
 
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and
