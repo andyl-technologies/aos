@@ -920,6 +920,31 @@ fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box
 }
 
 #[test]
+fn qemu_node_rejects_authoritative_warm_restore_without_coverage_generation_reset()
+-> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let setup_event =
+        ObservableEvent::coverage_block(Icount { retired: 3 }, node_id("vm-a"), 0x4010, 4);
+    let mut node = scripted_node_with_coverage(
+        Arc::clone(&log),
+        ScriptedNodeOptions::default(),
+        std::iter::empty(),
+        [vec![setup_event]],
+        std::iter::empty(),
+    )?;
+
+    let error = node
+        .prepare_authoritative_observation_stream()
+        .expect_err("publish-once setup coverage must fail closed");
+    assert!(matches!(error, QemuNodeError::CoverageEventLog { .. }));
+
+    let mut event_log = EventLog::new();
+    let (shutdown, _) = node.shutdown_child_with_event_log(&mut event_log)?;
+    assert!(shutdown.reaped);
+    Ok(())
+}
+
+#[test]
 fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
 -> Result<(), Box<dyn Error>> {
     let log = shared_log();

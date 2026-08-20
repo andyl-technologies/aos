@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crucible::{
-    BackendInput, CheckpointKind, Decision, ExecutionFingerprint, NodeBlobRef, RngDecision,
-    RngStreamId, ScenarioDef, Schedule, World,
+    BackendInput, CheckpointKind, Decision, DecisionRngState, ExecutionFingerprint,
+    MaterializedState, NodeBlobRef, ObservableEvent, RngDecision, RngStreamId, ScenarioDef,
+    Schedule, SchedulerState, World,
 };
 
 use super::*;
@@ -25,6 +26,7 @@ enum NodeExecutorCall {
         authorization: QemuLoadvmCommandPurpose,
         admission: QemuNodeRestoreAdmission,
     },
+    PrepareObservationStream,
     Advance(u64),
     Fingerprint,
     CurrentIcount,
@@ -43,6 +45,7 @@ struct ScriptedNode {
     log: SharedLog,
     runtime_id: ContentHash,
     current_icount: Icount,
+    shutdown_event: Option<ObservableEvent>,
 }
 
 impl QemuNodeRealizationLauncher for ScriptedLauncher {
@@ -63,6 +66,7 @@ impl QemuNodeRealizationLauncher for ScriptedLauncher {
             log: Rc::clone(&self.log),
             runtime_id: self.runtime_id,
             current_icount: self.current_icount,
+            shutdown_event: None,
         })
     }
 }
@@ -111,6 +115,43 @@ impl Backend for ScriptedNode {
 }
 
 impl QemuRealizedNodeBackend for ScriptedNode {
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError> {
+        self.log
+            .borrow_mut()
+            .push(NodeExecutorCall::PrepareObservationStream);
+        Ok(())
+    }
+
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+        _event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        Backend::advance_to_horizon(self, horizon)
+    }
+
+    fn seal_live_observation_boundary(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn shutdown_live_with_event_log(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        if let Some(event) = self.shutdown_event.take() {
+            event_log
+                .append_observable_events([event])
+                .map_err(|source| BackendError::Rejected {
+                    message: source.to_string(),
+                })?;
+        }
+        Backend::shutdown(self)?;
+        Ok(())
+    }
+
     fn current_icount(&mut self) -> Result<Icount, BackendError> {
         self.log.borrow_mut().push(NodeExecutorCall::CurrentIcount);
         Ok(self.current_icount)
@@ -151,6 +192,7 @@ fn qemu_node_realization_executor_loads_baked_genesis_before_node_replay()
                 authorization: QemuLoadvmCommandPurpose::BakedGenesisRealization,
                 admission: QemuNodeRestoreAdmission::BakedGenesis { world_id: world.id },
             },
+            NodeExecutorCall::PrepareObservationStream,
             NodeExecutorCall::Fingerprint,
         ]
     );
@@ -212,6 +254,100 @@ fn qemu_node_realization_executor_replays_without_generic_snapshot_or_restore()
 }
 
 #[test]
+fn replay_rejects_a_foreign_event_log_before_backend_work() -> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "foreign-event-log"));
+    let genesis = Configuration::genesis(scenario("foreign-event-log"));
+    let target = config_with_decision_values(genesis.def.clone(), &[7]);
+    let checkpoint =
+        checkpoint_for_config("foreign-event-log", &genesis, &node, 4, CheckpointKind::Fat)?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint,
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "foreign-event-log"), 4);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    let mut runtime = executor.load_baked_genesis(&genesis, admission)?;
+    runtime.event_log = EventLogOffset::new(hash("event-log", "foreign"), 17, 3);
+    let before = logged(&log);
+
+    let error = executor
+        .replay_one_quantum(
+            runtime,
+            QemuVmReplayRequest {
+                from: genesis,
+                to: target.clone(),
+                decision: target.schedule.decisions()[0].clone(),
+            },
+        )
+        .err()
+        .ok_or_else(|| QemuVmRealizationError::Executor {
+            operation: "test foreign event-log continuation",
+            message: String::from("foreign event-log continuation was unexpectedly accepted"),
+        })?;
+
+    assert!(matches!(error, QemuVmRealizationError::Executor { .. }));
+    assert_eq!(logged(&log), before);
+    Ok(())
+}
+
+#[test]
+fn replay_preserves_an_exact_nonzero_event_log_continuation() -> Result<(), QemuVmRealizationError>
+{
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "resumed-event-log"));
+    let genesis = Configuration::genesis(scenario("resumed-event-log"));
+    let target = config_with_decision_values(genesis.def.clone(), &[8]);
+    let mut checkpoint =
+        checkpoint_for_config("resumed-event-log", &genesis, &node, 6, CheckpointKind::Fat)?;
+    let resumed = EventLogOffset::new(hash("event-log", "resumed"), 4096, 23);
+    checkpoint.state = Some(MaterializedState::from_components(
+        checkpoint
+            .state
+            .as_ref()
+            .map(|state| state.vm_snapshots.clone())
+            .unwrap_or_default(),
+        BTreeMap::new(),
+        SchedulerState::from_schedule(&genesis.schedule),
+        DecisionRngState::empty(),
+        resumed,
+    ));
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint,
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "resumed-event-log"), 6);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    let runtime = executor.load_baked_genesis(&genesis, admission)?;
+    assert_eq!(runtime.event_log, resumed);
+
+    let replayed = executor.replay_one_quantum(
+        runtime,
+        QemuVmReplayRequest {
+            from: genesis,
+            to: target.clone(),
+            decision: target.schedule.decisions()[0].clone(),
+        },
+    )?;
+
+    assert_eq!(replayed.event_log, resumed);
+    assert!(logged(&log).contains(&NodeExecutorCall::Advance(7)));
+    Ok(())
+}
+
+#[test]
 fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
@@ -242,6 +378,7 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
                 authorization: QemuLoadvmCommandPurpose::ReplayOracleProbe,
                 admission: QemuNodeRestoreAdmission::ReplayOracleProbe,
             },
+            NodeExecutorCall::PrepareObservationStream,
             NodeExecutorCall::Fingerprint,
         ]
     );
@@ -270,16 +407,27 @@ fn live_realization_capability_borrows_only_the_installed_node_and_reaps_it()
     let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
 
     executor.load_baked_genesis(&config, admission)?;
-    let current = executor
-        .live_backend_mut()?
+    let backend = executor.live_backend_mut()?;
+    backend
+        .advance_to_horizon(crucible::ExecutionHorizon {
+            icount: Icount { retired: 18 },
+        })
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "advance test live backend",
+            message: source.to_string(),
+        })?;
+    let current = backend
         .current_icount()
         .map_err(|source| QemuVmRealizationError::Executor {
             operation: "read test live-backend icount",
             message: source.to_string(),
         })?;
-    assert_eq!(current, Icount { retired: 17 });
+    assert_eq!(current, Icount { retired: 18 });
+    assert_eq!(backend.event_log().offset(), EventLogOffset::default());
 
-    executor.shutdown_live_backend()?;
+    assert!(executor.seal_live_observation_boundary()?);
+    let shutdown = executor.shutdown_live_backend()?;
+    assert!(shutdown.observation_boundary_unchanged());
     assert!(executor.live_backend_mut().is_err());
     assert_eq!(
         logged(&log)
@@ -288,6 +436,49 @@ fn live_realization_capability_borrows_only_the_installed_node_and_reaps_it()
             .count(),
         1
     );
+    Ok(())
+}
+
+#[test]
+fn final_drain_change_is_measured_from_the_executor_owned_log() -> Result<(), QemuVmRealizationError>
+{
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "owned-final-log"));
+    let config = Configuration::genesis(scenario("owned-final-log"));
+    let checkpoint =
+        checkpoint_for_config("owned-final-log", &config, &node, 17, CheckpointKind::Fat)?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint,
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "owned-final-log"), 17);
+    let mut executor = QemuNodeRealizationExecutor::new(node.clone(), launcher);
+    executor.load_baked_genesis(&config, admission)?;
+    assert!(executor.seal_live_observation_boundary()?);
+    executor
+        .active_node
+        .as_mut()
+        .ok_or_else(|| QemuVmRealizationError::Executor {
+            operation: "test final event-log drain",
+            message: String::from("active node missing"),
+        })?
+        .shutdown_event = Some(ObservableEvent::coverage_block(
+        Icount { retired: 17 },
+        node,
+        0x4010,
+        4,
+    ));
+
+    let shutdown = executor.shutdown_live_backend()?;
+
+    assert!(!shutdown.observation_boundary_unchanged());
+    assert_ne!(executor.event_log.offset(), EventLogOffset::default());
     Ok(())
 }
 

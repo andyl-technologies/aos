@@ -7,8 +7,8 @@
 //! save/restore on the scheduler-facing node.
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendError, Checkpoint, Configuration, ContentHash, Icount, NodeId,
-    RuntimeState, SchedulerSendAuthorizer,
+    AdvanceOutcome, Backend, BackendError, Checkpoint, Configuration, ContentHash, EventLog,
+    EventLogOffset, Icount, NodeId, RuntimeState, SchedulerSendAuthorizer,
 };
 use crucible_shmem::RegionConfig;
 
@@ -29,6 +29,50 @@ use super::{
 /// scheduler-facing node receives VMState authority only before assembly, via a
 /// [`QemuNodeRestorePlan`].
 pub trait QemuRealizedNodeBackend: Backend {
+    /// Prepares the paused post-restore observation stream for canonical use.
+    ///
+    /// Implementations must reject a coverage-enabled process unless both the
+    /// producer novelty state and host consumer state have been reset to one
+    /// authenticated post-restore generation. Merely draining queued setup
+    /// events is insufficient for publish-once coverage transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when setup observations cannot be discarded or
+    /// coverage generation reset is unavailable.
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError>;
+
+    /// Advances one live quantum while appending observable events to `event_log`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the bounded quantum or event-log append fails.
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+        event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError>;
+
+    /// Drains observable events at a paused modeled observation boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the transport drain or event-log append fails.
+    fn seal_live_observation_boundary(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(), BackendError>;
+
+    /// Drains final observable events, shuts down, and attests process reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when final drain or shutdown fails.
+    fn shutdown_live_with_event_log(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(), BackendError>;
+
     /// Reads the current retired instruction count for the realized node.
     ///
     /// # Errors
@@ -45,9 +89,8 @@ pub trait QemuRealizedNodeBackend: Backend {
 pub trait QemuLiveAttemptBackend {
     /// Advances the live node to one scheduler-authorized horizon.
     ///
-    /// The current QEMU-node adapter fails closed when coverage transport is
-    /// enabled because the concrete campaign driver does not yet own the
-    /// unified event-log drain required for canonical coverage evidence.
+    /// Observable events from the completed quantum are appended to the one
+    /// supplied unified event log before this method returns.
     ///
     /// # Errors
     ///
@@ -77,29 +120,39 @@ pub trait QemuLiveAttemptBackend {
     ///
     /// Returns [`BackendError`] when the shared-memory hot path cannot be read.
     fn current_icount(&mut self) -> Result<Icount, BackendError>;
+
+    /// Returns the read-only unified event log updated by live advancement.
+    #[must_use]
+    fn event_log(&self) -> &EventLog;
 }
 
-impl<T> QemuLiveAttemptBackend for T
-where
-    T: QemuRealizedNodeBackend,
-{
-    fn advance_to_horizon(
-        &mut self,
-        horizon: crucible::ExecutionHorizon,
-    ) -> Result<AdvanceOutcome, BackendError> {
-        Backend::advance_to_horizon(self, horizon)
+/// Reap attestation for one live backend shutdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLiveBackendShutdown {
+    observation_boundary_unchanged: bool,
+}
+
+impl QemuLiveBackendShutdown {
+    /// Attests a reaped backend whose sealed observation boundary stayed unchanged.
+    #[must_use]
+    pub const fn unchanged() -> Self {
+        Self {
+            observation_boundary_unchanged: true,
+        }
     }
 
-    fn fingerprint(&mut self) -> Result<crucible::ExecutionFingerprint, BackendError> {
-        Backend::fingerprint(self)
+    /// Attests reap while reporting observable events after prior sealing.
+    #[must_use]
+    pub const fn changed_after_seal() -> Self {
+        Self {
+            observation_boundary_unchanged: false,
+        }
     }
 
-    fn deliver_input(&mut self, input: crucible::BackendInput) -> Result<(), BackendError> {
-        Backend::deliver_input(self, input)
-    }
-
-    fn current_icount(&mut self) -> Result<Icount, BackendError> {
-        QemuRealizedNodeBackend::current_icount(self)
+    /// Returns whether final drain appended no events after observation sealing.
+    #[must_use]
+    pub const fn observation_boundary_unchanged(self) -> bool {
+        self.observation_boundary_unchanged
     }
 }
 
@@ -113,7 +166,7 @@ pub trait QemuVmLiveRealizationExecutor: QemuVmRealizationExecutor {
     #[must_use]
     fn live_backend_is_active(&self) -> bool;
 
-    /// Borrows the active backend installed by the last successful realization.
+    /// Borrows the active backend and its one unified event log.
     ///
     /// # Errors
     ///
@@ -122,16 +175,57 @@ pub trait QemuVmLiveRealizationExecutor: QemuVmRealizationExecutor {
         &mut self,
     ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError>;
 
+    /// Seals the paused modeled observation boundary and returns newly appended events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when final observation drain fails.
+    fn seal_live_observation_boundary(&mut self) -> Result<bool, QemuVmRealizationError>;
+
     /// Shuts down and reaps the active backend, when one exists.
     ///
     /// # Errors
     ///
     /// Returns [`QemuVmRealizationError`] when the backend shutdown ladder
     /// reports failure.
-    fn shutdown_live_backend(&mut self) -> Result<(), QemuVmRealizationError>;
+    fn shutdown_live_backend(&mut self) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError>;
 }
 
 impl QemuRealizedNodeBackend for QemuNode {
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError> {
+        QemuNode::prepare_authoritative_observation_stream(self)
+            .map(|_| ())
+            .map_err(BackendError::from)
+    }
+
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+        event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        self.advance_to_ceiling_with_event_log(horizon.icount, event_log)
+            .map(|(outcome, _)| outcome)
+            .map_err(BackendError::from)
+    }
+
+    fn seal_live_observation_boundary(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        self.drain_observable_events_into(event_log)
+            .map(|_| ())
+            .map_err(BackendError::from)
+    }
+
+    fn shutdown_live_with_event_log(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        self.shutdown_child_with_event_log(event_log)
+            .map(|_| ())
+            .map_err(BackendError::from)
+    }
+
     fn current_icount(&mut self) -> Result<Icount, BackendError> {
         QemuNode::current_icount(self).map_err(BackendError::from)
     }
@@ -223,6 +317,8 @@ where
     node: NodeId,
     launcher: L,
     active_node: Option<L::Node>,
+    event_log: EventLog,
+    observation_sealed: bool,
 }
 
 impl<L> QemuNodeRealizationExecutor<L>
@@ -236,6 +332,8 @@ where
             node,
             launcher,
             active_node: None,
+            event_log: EventLog::new(),
+            observation_sealed: false,
         }
     }
 
@@ -256,6 +354,8 @@ where
         operation: &'static str,
     ) -> Result<ContentHash, QemuVmRealizationError> {
         let mut node = self.launcher.launch_restored_node(config, restore)?;
+        QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node)
+            .map_err(|source| node_backend_error(operation, source))?;
         let runtime_id = Backend::fingerprint(&mut node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| node_backend_error(operation, source))?;
@@ -264,28 +364,22 @@ where
         Ok(runtime_id)
     }
 
-    fn active_node_mut(
-        &mut self,
-        operation: &'static str,
-    ) -> Result<&mut L::Node, QemuVmRealizationError> {
-        self.active_node
-            .as_mut()
-            .ok_or_else(|| QemuVmRealizationError::Executor {
-                operation,
-                message: String::from("no QEMU node has been restored"),
-            })
-    }
-
     fn shutdown_active_node_for(
         &mut self,
         operation: &'static str,
     ) -> Result<(), QemuVmRealizationError> {
         if let Some(node) = self.active_node.as_mut() {
-            node.shutdown()
+            QemuRealizedNodeBackend::shutdown_live_with_event_log(node, &mut self.event_log)
                 .map_err(|source| node_backend_error(operation, source))?;
             self.active_node = None;
         }
+        self.observation_sealed = false;
         Ok(())
+    }
+
+    fn retain_runtime_event_log(&mut self, runtime: &RuntimeState) {
+        self.event_log = EventLog::from_offset(runtime.event_log);
+        self.observation_sealed = false;
     }
 }
 
@@ -307,6 +401,7 @@ where
             self.launch_and_install(config, restore, "load exact QEMU node snapshot")?;
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         validate_runtime_matches_admission(&runtime, admission)?;
+        self.retain_runtime_event_log(&runtime);
         Ok(runtime)
     }
 
@@ -325,7 +420,9 @@ where
             restore,
             "load exact QEMU node snapshot for replay oracle",
         )?;
-        runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)
+        let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
+        self.retain_runtime_event_log(&runtime);
+        Ok(runtime)
     }
 
     fn load_baked_genesis(
@@ -336,9 +433,9 @@ where
         let checkpoint = admission.checkpoint();
         let restore = QemuNodeRestorePlan::baked_genesis(admission);
         let runtime_id = self.launch_and_install(config, restore, "load baked QEMU genesis")?;
-        Ok(runtime_from_scheduled_checkpoint_material(
-            config, checkpoint, runtime_id,
-        ))
+        let runtime = runtime_from_scheduled_checkpoint_material(config, checkpoint, runtime_id);
+        self.retain_runtime_event_log(&runtime);
+        Ok(runtime)
     }
 
     fn replay_one_quantum(
@@ -346,10 +443,32 @@ where
         runtime: RuntimeState,
         request: QemuVmReplayRequest,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
+        if self.observation_sealed {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "replay one QEMU node quantum",
+                message: String::from("modeled observation boundary is already sealed"),
+            });
+        }
+        if runtime.event_log != self.event_log.offset() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "replay one QEMU node quantum",
+                message: format!(
+                    "runtime event-log offset {:?} does not match installed offset {:?}",
+                    runtime.event_log,
+                    self.event_log.offset()
+                ),
+            });
+        }
         let horizon = replay_horizon_from_runtime(&runtime)?;
         let node_id = self.node.clone();
-        let node = self.active_node_mut("replay one QEMU node quantum")?;
-        match Backend::advance_to_horizon(node, horizon)
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "replay one QEMU node quantum",
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        match QemuRealizedNodeBackend::advance_live_to_horizon(node, horizon, &mut self.event_log)
             .map_err(|source| node_backend_error("advance QEMU node replay quantum", source))?
         {
             AdvanceOutcome::ReachedHorizon => {}
@@ -375,6 +494,7 @@ where
             node_id,
             current_icount,
             runtime_id,
+            self.event_log.offset(),
         ))
     }
 }
@@ -390,12 +510,107 @@ where
     fn live_backend_mut(
         &mut self,
     ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError> {
-        let node = self.active_node_mut("borrow active realized QEMU node")?;
-        Ok(node as &mut dyn QemuLiveAttemptBackend)
+        if self.active_node.is_none() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "borrow active realized QEMU node",
+                message: String::from("no QEMU node has been restored"),
+            });
+        }
+        Ok(self)
     }
 
-    fn shutdown_live_backend(&mut self) -> Result<(), QemuVmRealizationError> {
-        self.shutdown_active_node()
+    fn seal_live_observation_boundary(&mut self) -> Result<bool, QemuVmRealizationError> {
+        let before = self.event_log.offset();
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "seal live QEMU observation boundary",
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        QemuRealizedNodeBackend::seal_live_observation_boundary(node, &mut self.event_log)
+            .map_err(|source| node_backend_error("seal live QEMU observation boundary", source))?;
+        let after = self.event_log.offset();
+        self.observation_sealed = true;
+        Ok(after == before)
+    }
+
+    fn shutdown_live_backend(&mut self) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
+        let Some(node) = self.active_node.as_mut() else {
+            return Ok(QemuLiveBackendShutdown::unchanged());
+        };
+        let before = self.event_log.offset();
+        QemuRealizedNodeBackend::shutdown_live_with_event_log(node, &mut self.event_log)
+            .map_err(|source| node_backend_error("shutdown active realized QEMU node", source))?;
+        let after = self.event_log.offset();
+        self.active_node = None;
+        let unchanged = !self.observation_sealed || before == after;
+        self.observation_sealed = false;
+        Ok(QemuLiveBackendShutdown {
+            observation_boundary_unchanged: unchanged,
+        })
+    }
+}
+
+impl<L> QemuLiveAttemptBackend for QemuNodeRealizationExecutor<L>
+where
+    L: QemuNodeRealizationLauncher,
+{
+    fn advance_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        if self.observation_sealed {
+            return Err(BackendError::Rejected {
+                message: String::from("modeled observation boundary is already sealed"),
+            });
+        }
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| BackendError::Rejected {
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        QemuRealizedNodeBackend::advance_live_to_horizon(node, horizon, &mut self.event_log)
+    }
+
+    fn fingerprint(&mut self) -> Result<crucible::ExecutionFingerprint, BackendError> {
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| BackendError::Rejected {
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        Backend::fingerprint(node)
+    }
+
+    fn deliver_input(&mut self, input: crucible::BackendInput) -> Result<(), BackendError> {
+        if self.observation_sealed {
+            return Err(BackendError::Rejected {
+                message: String::from("modeled observation boundary is already sealed"),
+            });
+        }
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| BackendError::Rejected {
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        Backend::deliver_input(node, input)
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| BackendError::Rejected {
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        QemuRealizedNodeBackend::current_icount(node)
+    }
+
+    fn event_log(&self) -> &EventLog {
+        &self.event_log
     }
 }
 
@@ -450,6 +665,7 @@ fn runtime_from_live_replay(
     node: NodeId,
     current_icount: Icount,
     runtime_id: ContentHash,
+    event_log: EventLogOffset,
 ) -> RuntimeState {
     let mut scheduler = runtime.scheduler;
     scheduler.apply_decision(&request.decision);
@@ -461,7 +677,7 @@ fn runtime_from_live_replay(
         node_blobs: runtime.node_blobs,
         node_icounts,
         scheduler,
-        event_log: runtime.event_log,
+        event_log,
     }
 }
 

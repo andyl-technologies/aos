@@ -13,11 +13,11 @@ use std::{
 
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, Configuration, ContentHash,
-    Decision, ExecutionFingerprint, ExecutionHorizon, Icount, RngDecision, RngStreamId,
+    Decision, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, RngDecision, RngStreamId,
     RuntimeState, ScenarioDef, SchedulerState,
 };
 use crucible_campaign::ExecutionRetentionIntent;
-use crucible_qemu::QemuRealizedNodeBackend;
+use crucible_qemu::{QemuLiveBackendShutdown, QemuRealizedNodeBackend};
 
 use super::*;
 
@@ -60,6 +60,33 @@ impl Backend for FakeBackend {
 }
 
 impl QemuRealizedNodeBackend for FakeBackend {
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+        _event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        Backend::advance_to_horizon(self, horizon)
+    }
+
+    fn seal_live_observation_boundary(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn shutdown_live_with_event_log(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Backend::shutdown(self)?;
+        Ok(())
+    }
+
     fn current_icount(&mut self) -> Result<Icount, BackendError> {
         Ok(Icount::default())
     }
@@ -67,10 +94,13 @@ impl QemuRealizedNodeBackend for FakeBackend {
 
 struct FakeExecutor {
     backend: FakeBackend,
+    event_log: EventLog,
     counters: TestCounters,
     active: bool,
     unreaped_failed_launch: bool,
     shutdown_error: bool,
+    seal_boundary_changed: bool,
+    shutdown_boundary_changed: bool,
     guarded_error: bool,
     failed_realization_reap_error: bool,
 }
@@ -120,10 +150,14 @@ impl QemuVmLiveRealizationExecutor for FakeExecutor {
     fn live_backend_mut(
         &mut self,
     ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError> {
-        Ok(&mut self.backend)
+        Ok(self)
     }
 
-    fn shutdown_live_backend(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn seal_live_observation_boundary(&mut self) -> Result<bool, QemuVmRealizationError> {
+        Ok(!self.seal_boundary_changed)
+    }
+
+    fn shutdown_live_backend(&mut self) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
         self.counters.shutdowns.fetch_add(1, Ordering::SeqCst);
         if self.shutdown_error {
             self.active = true;
@@ -133,7 +167,40 @@ impl QemuVmLiveRealizationExecutor for FakeExecutor {
             });
         }
         self.active = false;
-        Ok(())
+        if self.shutdown_boundary_changed {
+            Ok(QemuLiveBackendShutdown::changed_after_seal())
+        } else {
+            Ok(QemuLiveBackendShutdown::unchanged())
+        }
+    }
+}
+
+impl QemuLiveAttemptBackend for FakeExecutor {
+    fn advance_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        QemuRealizedNodeBackend::advance_live_to_horizon(
+            &mut self.backend,
+            horizon,
+            &mut self.event_log,
+        )
+    }
+
+    fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
+        Backend::fingerprint(&mut self.backend)
+    }
+
+    fn deliver_input(&mut self, input: BackendInput) -> Result<(), BackendError> {
+        Backend::deliver_input(&mut self.backend, input)
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        QemuRealizedNodeBackend::current_icount(&mut self.backend)
+    }
+
+    fn event_log(&self) -> &EventLog {
+        &self.event_log
     }
 }
 
@@ -217,7 +284,7 @@ impl QemuLiveAttemptDriver for UnusedDriver {
         _input: &CrucibleAttemptExecution,
         _context: &AttemptExecutionContext,
         _realization: QemuVmRealization,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+    ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>> {
         unreachable!("ownership test does not drive a modeled attempt")
     }
 }
@@ -235,6 +302,8 @@ struct TestCounters {
 #[derive(Clone, Copy, Default)]
 struct SessionBehavior {
     shutdown_error: bool,
+    seal_boundary_changed: bool,
+    shutdown_boundary_changed: bool,
     guarded_error: bool,
     failed_realization_reap_error: bool,
     replace_cancellation: bool,
@@ -463,6 +532,111 @@ fn failed_reap_quarantines_resources_and_poisons_the_next_launch() {
 }
 
 #[test]
+fn final_observable_events_reject_the_candidate_after_reap_and_release() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            shutdown_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+    assert!(
+        session
+            .seal_result_event_log(expected)
+            .expect("seal exact candidate boundary")
+    );
+
+    let result = session.finish();
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+    factory
+        .begin_attempt(&context)
+        .expect("reaped executor remains reusable");
+}
+
+#[test]
+fn exact_driver_event_log_boundary_is_accepted() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+
+    assert!(
+        session
+            .seal_result_event_log(expected)
+            .expect("seal exact driver boundary")
+    );
+    session.finish().expect("finish exact session");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn stale_driver_event_log_boundary_is_rejected() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(resources, counters, SessionBehavior::default());
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let stale = crucible::EventLogOffset::new(
+        ContentHash::from_canonical_material("crucible.test.live-session", "stale-log"),
+        8,
+        1,
+    );
+
+    assert!(
+        !session
+            .seal_result_event_log(stale)
+            .expect("seal stale driver boundary")
+    );
+}
+
+#[test]
+fn seal_time_observable_event_rejects_the_driver_boundary() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters,
+        SessionBehavior {
+            seal_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let expected = session.executor.event_log.offset();
+
+    assert!(
+        !session
+            .seal_result_event_log(expected)
+            .expect("seal changed observation boundary")
+    );
+}
+
+#[test]
 fn post_spawn_realization_failure_requires_reap_attestation_before_release() {
     let resources = resource_limits(1);
     let counters = TestCounters::default();
@@ -509,10 +683,13 @@ fn session_factory(
     QemuLiveAttemptSessionFactory::new(
         FakeExecutor {
             backend: FakeBackend,
+            event_log: EventLog::new(),
             counters: counters.clone(),
             active: false,
             unreaped_failed_launch: false,
             shutdown_error: behavior.shutdown_error,
+            seal_boundary_changed: behavior.seal_boundary_changed,
+            shutdown_boundary_changed: behavior.shutdown_boundary_changed,
             guarded_error: behavior.guarded_error,
             failed_realization_reap_error: behavior.failed_realization_reap_error,
         },

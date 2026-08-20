@@ -1586,6 +1586,25 @@ impl QemuNode {
         event_log: &mut EventLog,
     ) -> Result<(AdvanceOutcome, SchedulerEventLogAppend), QemuNodeError> {
         let report = self.advance_to_ceiling_report(ceiling)?;
+        let appended = self.drain_observable_events_into(event_log)?;
+        let outcome = self.finish_advance_report(ceiling, report)?;
+        Ok((outcome, appended))
+    }
+
+    /// Drains pending observable events into the run's unified event log.
+    ///
+    /// A campaign driver calls this at its modeled observation boundary before
+    /// constructing canonical coverage evidence. The node remains paused and
+    /// retains process ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory drain or unified-log
+    /// append fails.
+    pub fn drain_observable_events_into(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<SchedulerEventLogAppend, QemuNodeError> {
         let events = self
             .channels
             .shmem_hot_path
@@ -1593,13 +1612,41 @@ impl QemuNode {
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })?;
-        let appended = event_log
+        event_log
             .append_observable_events(events)
             .map_err(|source| QemuNodeError::CoverageEventLog {
                 message: source.to_string(),
-            })?;
-        let outcome = self.finish_advance_report(ceiling, report)?;
-        Ok((outcome, appended))
+            })
+    }
+
+    /// Prepares the paused node's observable stream for authoritative execution.
+    ///
+    /// Warm-restore setup and boot-barrier priming execute before VMState load
+    /// establishes the canonical runtime. Non-coverage setup observations can
+    /// therefore be discarded at this pre-install boundary. Basic-block
+    /// coverage is fail-closed: the current plugin publishes each map index at
+    /// most once per process, so draining its setup queue cannot reset novelty
+    /// consumed during priming. Coverage-enabled warm restore requires a future
+    /// versioned producer/consumer generation-reset transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory queue cannot be drained.
+    pub fn prepare_authoritative_observation_stream(&mut self) -> Result<usize, QemuNodeError> {
+        if self.channels.shmem_hot_path.coverage_enabled() {
+            return Err(QemuNodeError::CoverageEventLog {
+                message: String::from(
+                    "coverage-enabled warm restore lacks a producer/consumer generation reset",
+                ),
+            });
+        }
+        self.channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map(|events| events.len())
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
     }
 
     fn advance_to_ceiling_report(
@@ -2209,18 +2256,7 @@ impl QemuNode {
         &mut self,
         event_log: &mut EventLog,
     ) -> Result<(QemuShutdownReport, SchedulerEventLogAppend), QemuNodeError> {
-        let events = self
-            .channels
-            .shmem_hot_path
-            .drain_observable_events()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })?;
-        let appended = event_log
-            .append_observable_events(events)
-            .map_err(|source| QemuNodeError::CoverageEventLog {
-                message: source.to_string(),
-            })?;
+        let appended = self.drain_observable_events_into(event_log)?;
         let report = self.shutdown_child_after_coverage_drain()?;
         Ok((report, appended))
     }

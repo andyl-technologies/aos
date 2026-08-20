@@ -766,11 +766,27 @@ Checkpoint-store lookups receive the same cancellation signal, must bound their
 blocking work, and are cancellation-checked before, during, and after each
 call.
 
-Coverage-enabled live advancement, final coverage drain, and construction of
-the corresponding canonical observation evidence remain part of the concrete
-modeled-driver/full-flight gate. The current narrow QEMU-node facade fails
-closed when coverage requires the unified event-log path; this contract slice
-does not claim complete campaign coverage evidence.
+The realization executor owns one unified event log resumed from the realized
+runtime offset. Replay requires the caller's runtime offset to equal that
+installed offset before any backend work; the modeled driver receives only a
+read-only view of the same log, and a successful candidate commits its exact
+current offset. It is accepted only after a paused observation-boundary drain
+appends no new event and the sealed offset equals that commitment. Shutdown
+performs a final drain before its reap ladder; any event beyond the sealed
+boundary invalidates the candidate while still releasing the reaped resource
+guard.
+
+Coverage-enabled warm restore remains fail-closed in this implementation slice.
+Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
+each coverage-map index at most once for the process. Draining priming events
+would both contaminate the resumed log and permanently hide later post-restore
+coverage. A conforming coverage-enabled implementation therefore MUST reset the
+producer novelty bitmap, producer ring, and host consumer state together at an
+authenticated paused restore generation before installing the authoritative
+event log. That versioned QEMU/shared-memory reset transaction, coverage-aware
+live advancement, and projection into canonical campaign coverage evidence
+remain part of the modeled-driver/full-flight gate. Coverage-free realization
+discards other setup-era observations before authoritative installation.
 Only errors explicitly classified as store or executor unavailability are
 retryable; coarse store/executor failures and invalid checkpoints, ancestry,
 authorization, replay-oracle evidence, or ready-point policy fail terminally.

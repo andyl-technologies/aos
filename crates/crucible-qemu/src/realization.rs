@@ -24,8 +24,9 @@ pub use snapshot_codec::QemuVmSnapshotCodecError;
 mod node_executor;
 #[cfg(target_os = "linux")]
 pub use node_executor::{
-    QemuLiveAttemptBackend, QemuNodeRealizationExecutor, QemuNodeRealizationLauncher,
-    QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
+    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeRealizationExecutor,
+    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor,
+    QemuWarmRestoreNodeLauncher,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
