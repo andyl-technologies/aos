@@ -2,6 +2,72 @@
 
 use super::*;
 
+struct PermitAlice;
+
+impl crate::CampaignPrincipalAuthorizer for PermitAlice {
+    fn authorize(
+        &self,
+        principal: &crate::CampaignPrincipal,
+        _operation: crate::CampaignServiceOperation,
+        _campaign: &crate::CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crate::CampaignAuthorizationError> {
+        if principal.as_str() == "operator:alice" {
+            Ok(())
+        } else {
+            Err(crate::CampaignAuthorizationError::Unauthorized)
+        }
+    }
+}
+
+#[test]
+fn direct_campaign_service_uses_repository_owner_and_exact_replay() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("service", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let principal = crate::CampaignPrincipal::new("operator:alice").expect("principal");
+    let campaign = crate::CampaignName::new("service").expect("campaign name");
+    let service = crate::RepositoryCampaignService::new(&repository, PermitAlice);
+    let client = crate::CampaignClient::new(service);
+
+    let current = client
+        .get_campaign(
+            &crate::GetCampaignRequest::new(principal.clone(), campaign.clone())
+                .expect("get request"),
+        )
+        .expect("get campaign");
+    assert_eq!(current.snapshot(), genesis.snapshot_id());
+    assert_eq!(current.state(), CampaignState::Created);
+    assert_eq!(
+        current.state(),
+        repository
+            .state_at_snapshot(current.snapshot())
+            .expect("state at returned snapshot")
+    );
+
+    let request = crate::ApplyCampaignCommandRequest::new(
+        principal,
+        campaign,
+        command(
+            "service-resume",
+            genesis.snapshot_id(),
+            CampaignControlAction::Resume,
+        ),
+    )
+    .expect("apply request");
+    let accepted = client
+        .apply_campaign_command(&request)
+        .expect("apply command");
+    assert!(!accepted.replayed());
+    let replayed = client
+        .apply_campaign_command(&request)
+        .expect("replay command");
+    assert!(replayed.replayed());
+    assert_eq!(replayed.prior_snapshot(), accepted.prior_snapshot());
+    assert_eq!(replayed.new_snapshot(), accepted.new_snapshot());
+}
+
 #[test]
 fn create_and_control_form_linear_authenticated_history() {
     let (repository, lineage, policy) = fixture();
@@ -1795,6 +1861,23 @@ fn branch_request_is_one_lazy_exact_root_delta_and_replays() {
     assert!(replay.replayed);
     assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
     assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+    let service = crate::RepositoryCampaignService::new(&repository, PermitAlice);
+    let client = crate::CampaignClient::new(service);
+    let service_replay = client
+        .submit_branch_request(
+            &crate::SubmitCampaignBranchRequest::new(
+                crate::CampaignPrincipal::new("operator:alice").expect("principal"),
+                crate::CampaignName::new("lazy").expect("campaign name"),
+                genesis.snapshot_id(),
+                request.clone(),
+            )
+            .expect("service branch request"),
+        )
+        .expect("service replay");
+    assert!(service_replay.replayed());
+    assert_eq!(service_replay.prior_snapshot(), accepted.prior_snapshot);
+    assert_eq!(service_replay.new_snapshot(), accepted.new_snapshot);
 
     let reused_command = BranchRequest::new(
         request.branch_point(),
