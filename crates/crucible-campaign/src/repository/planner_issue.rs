@@ -37,6 +37,15 @@ struct IssueGeneratorValidation {
     remaining: usize,
 }
 
+struct PlannerIssueAttemptBasis<'a> {
+    snapshot: &'a LoadedSnapshot,
+    lineage: &'a CampaignLineage,
+    request: &'a BranchRequest,
+    opportunity: &'a ChoiceOpportunity,
+    domain: &'a ChoiceDomain,
+    parent_path: &'a BranchPath,
+}
+
 impl IssueGeneratorValidation {
     fn new() -> Self {
         Self {
@@ -161,11 +170,7 @@ impl CampaignRepository {
             self.read_opportunity(selected_request.opportunity().content_id())?;
         let selected_domain = self.read_choice_domain(selected_request.domain().content_id())?;
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        if !proposals.is_empty() && selected_request.parent() != lineage.genesis_content() {
-            return Err(integrity(
-                "proposal-admission-branch-path-owner-is-not-implemented",
-            ));
-        }
+        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &selected_request)?;
 
         let prior_exploration = snapshot.snapshot.roots().exploration;
         let prior_accounting = snapshot.snapshot.roots().accounting;
@@ -265,14 +270,16 @@ impl CampaignRepository {
         } else {
             self.next_planner_issue_admission_ordinal(prior_accounting)?
         };
+        let attempt_basis = PlannerIssueAttemptBasis {
+            snapshot,
+            lineage: &lineage,
+            request: &selected_request,
+            opportunity: &selected_opportunity,
+            domain: &selected_domain,
+            parent_path: &parent_path,
+        };
         for (proposal, proposal_id) in proposals.iter().zip(proposal_ids.iter().copied()) {
-            let attempt = self.derive_planner_issue_attempt(
-                &selected_request,
-                &selected_opportunity,
-                &selected_domain,
-                proposal,
-                mode,
-            )?;
+            let attempt = self.derive_planner_issue_attempt(&attempt_basis, proposal, mode)?;
             let attempt_id = attempt.id()?;
             let expected = self.expected_planner_issue_admission(
                 prior_accounting,
@@ -598,33 +605,41 @@ impl CampaignRepository {
 
     fn derive_planner_issue_attempt(
         &self,
-        request: &BranchRequest,
-        opportunity: &ChoiceOpportunity,
-        domain: &ChoiceDomain,
+        basis: &PlannerIssueAttemptBasis<'_>,
         proposal: &Proposal,
         mode: IssueProjectionMode,
     ) -> Result<Attempt, CampaignRepositoryError> {
         let selection = Selection::new_campaign_branch(
-            opportunity,
-            domain,
+            basis.opportunity,
+            basis.domain,
             proposal.value().clone(),
             proposal.branch_point(),
         )?;
         let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
             return Err(integrity("planner-issue-selection-is-not-campaign-branch"));
         };
-        let path = BranchPath::new(vec![crate::BranchPathSegment::new(
-            proposal.branch_point(),
+        let mut segments = basis
+            .parent_path
+            .segments()
+            .ok_or_else(|| integrity("planner-issue-parent-path-is-legacy"))?
+            .to_vec();
+        segments.push(crate::BranchPathSegment::new(proposal.branch_point(), edge));
+        let path = BranchPath::new(segments)?;
+        self.validate_attempt_path_owner(
+            basis.snapshot,
+            basis.lineage,
+            basis.request,
+            &path,
             edge,
-        )])?;
+        )?;
         let attempt = Attempt::new(
             AttemptStart::Branch {
                 edge,
-                parent: request.parent(),
+                parent: basis.request.parent(),
                 selection: selection.id()?,
             },
             path.id()?,
-            request.stop().clone(),
+            basis.request.stop().clone(),
         )?;
 
         if mode.publishes() {
@@ -642,6 +657,38 @@ impl CampaignRepository {
             return Err(integrity("planner-issue-derived-attempt-mismatch"));
         }
         Ok(attempt)
+    }
+
+    fn planner_issue_parent_path(
+        &self,
+        snapshot: &LoadedSnapshot,
+        lineage: &CampaignLineage,
+        request: &BranchRequest,
+    ) -> Result<BranchPath, CampaignRepositoryError> {
+        if request.parent() == lineage.genesis_content() {
+            return BranchPath::new(Vec::new()).map_err(Into::into);
+        }
+
+        let path_index = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().observations,
+                configuration_path_index_key(request.parent()),
+            )?
+            .ok_or_else(|| integrity("planner-issue-parent-path-index-is-missing"))?;
+        let page = self.merkle.scan(path_index, None, 1)?;
+        let [(key, content)] = page.entries() else {
+            return Err(integrity("planner-issue-parent-path-index-is-empty"));
+        };
+        let path_id = BranchPathId::from_content_id(*content)?;
+        if *key != path_index_order_key(path_id) {
+            return Err(integrity("planner-issue-parent-path-index-key-mismatch"));
+        }
+        let path = self.read_branch_path(*content)?;
+        if path.segments().is_none() {
+            return Err(integrity("planner-issue-parent-path-is-legacy"));
+        }
+        Ok(path)
     }
 
     fn overlay_get(

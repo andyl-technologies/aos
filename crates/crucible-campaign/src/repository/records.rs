@@ -1831,7 +1831,7 @@ impl CampaignRepository {
         }
     }
 
-    fn validate_attempt_path_owner(
+    pub(super) fn validate_attempt_path_owner(
         &self,
         snapshot: &LoadedSnapshot,
         lineage: &CampaignLineage,

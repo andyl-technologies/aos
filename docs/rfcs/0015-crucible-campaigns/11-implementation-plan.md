@@ -161,7 +161,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   schema-v4 observation transitions additionally retain every cumulative path
   under its exact child configuration, and direct non-genesis admission
   authenticates its prefix against that nested index after restart/import.
-  Planner-issued non-genesis path selection and reward, novelty, finding,
+  Atomic planner `Issue` chooses the lowest authenticated parent path, requires
+  it to be scoped version 2, derives the cumulative attempt, and recomputes the
+  same owner rule after convergence and restart. Reward, novelty, finding,
   interval, and PUCT folds remain open.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
@@ -648,7 +650,7 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..24` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
-| `LAZY-1..43` | 4 | lazy frontier, attempt idempotence, campaign replay |
+| `LAZY-1..44` | 4 | lazy frontier, attempt idempotence, campaign replay |
 | `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..22` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |

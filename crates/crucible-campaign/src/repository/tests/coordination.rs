@@ -1885,6 +1885,444 @@ fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
 }
 
 #[test]
+fn planner_issue_uses_the_canonical_authenticated_path_after_convergence() {
+    let (repository, lineage, policy) = fixture();
+    let (_, first_admitted, first_observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "planner-nested-path");
+    let first_observed = repository
+        .publish_observation(
+            "planner-nested-path",
+            first_admitted.new_snapshot,
+            &first_observation,
+        )
+        .expect("publish first convergent observation");
+
+    let first_proposal = repository
+        .read_proposal(first_admitted.proposal.content_id())
+        .expect("first proposal");
+    let source_request = repository
+        .read_branch_request(first_proposal.request().content_id())
+        .expect("source request");
+    let first_path = repository
+        .read_branch_path(first_observation.path().content_id())
+        .expect("first path");
+    let second_proposal = finite_proposal(
+        &source_request,
+        &policy,
+        &repository
+            .head("planner-nested-path")
+            .expect("first observation head"),
+        ChoiceValue::Boolean(true),
+        2,
+    );
+    let second_proposed = repository
+        .issue_proposal(
+            "planner-nested-path",
+            first_observed.new_snapshot,
+            &second_proposal,
+        )
+        .expect("issue second convergent proposal");
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&repository, &source_request, &second_proposal);
+    let second_admitted = repository
+        .admit_proposal(
+            "planner-nested-path",
+            second_proposed.new_snapshot,
+            second_proposed.proposal,
+            &second_selection,
+            &second_path,
+            &second_attempt,
+        )
+        .expect("admit second convergent attempt");
+    let second_observation = Observation::new(
+        second_admitted.attempt,
+        first_observation.child(),
+        first_observation.child_content(),
+        second_path.id().expect("second path id"),
+        first_observation.stop().clone(),
+        first_observation.measurements(),
+        first_observation.properties(),
+        first_observation.coverage(),
+        first_observation.discovered_choices().clone(),
+    )
+    .expect("second convergent observation");
+    let second_observed = repository
+        .publish_observation(
+            "planner-nested-path",
+            second_admitted.new_snapshot,
+            &second_observation,
+        )
+        .expect("publish second convergent observation");
+
+    let opportunity_id = *first_observation
+        .discovered_choices()
+        .first()
+        .expect("nested opportunity id");
+    let opportunity = repository
+        .load_choice_opportunity(opportunity_id)
+        .expect("nested opportunity");
+    let domain = repository
+        .load_choice_domain(opportunity.domain())
+        .expect("nested domain");
+    let branch_point = opportunity.branch_point_id(first_observation.child());
+    let nested_request = BranchRequest::new(
+        branch_point,
+        first_observation.child_content(),
+        opportunity_id,
+        opportunity.domain(),
+        CandidateSource::finite(BTreeSet::from([
+            ChoiceValue::Boolean(false),
+            ChoiceValue::Boolean(true),
+        ]))
+        .expect("nested finite source"),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test.planner-nested-path",
+            b"nested request",
+        ))),
+        BranchBudget::new(2, 2).expect("nested branch budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("nested request");
+    let nested_requested = repository
+        .submit_known_branch_request(
+            "planner-nested-path",
+            second_observed.new_snapshot,
+            &nested_request,
+        )
+        .expect("submit nested request");
+
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("planner state");
+    let (_, _, invocation) = planner_basis(
+        &repository,
+        "planner-nested-path",
+        nested_requested.new_snapshot,
+        initial_state,
+    );
+    let proposal = Proposal::new(
+        branch_point,
+        nested_request.id().expect("nested request id"),
+        nested_request.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        1,
+        invocation.input_view(),
+    )
+    .expect("nested proposal");
+    let usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 1,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 3,
+    };
+    let step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next planner state"),
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                branch_point,
+                nested_request.id().expect("nested request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: vec![proposal.clone()],
+        },
+    )
+    .expect("nested planner issue");
+    let accepted = repository
+        .accept_planner_step(
+            "planner-nested-path",
+            nested_requested.new_snapshot,
+            &step,
+            usage,
+        )
+        .expect("accept nested planner issue");
+
+    let accepted_snapshot = repository
+        .read_snapshot(accepted.new_snapshot.content_id())
+        .expect("accepted nested snapshot");
+    let admission_content = repository
+        .merkle
+        .get(
+            accepted_snapshot.snapshot.roots().accounting,
+            map_key_content(
+                "accounting.proposal-admission",
+                proposal.id().expect("proposal id").content_id(),
+            ),
+        )
+        .expect("proposal admission lookup")
+        .expect("proposal admission");
+    let admission = repository
+        .read_attempt_admission(admission_content)
+        .expect("nested attempt admission");
+    let attempt = repository
+        .read_attempt(admission.attempt().content_id())
+        .expect("nested attempt");
+    let path = repository
+        .read_branch_path(attempt.path().content_id())
+        .expect("nested cumulative path");
+    let canonical_parent = [first_path, second_path]
+        .into_iter()
+        .min_by_key(|path| path_index_order_key(path.id().expect("candidate path id")))
+        .expect("canonical parent path");
+    let selection = Selection::new_campaign_branch(
+        &opportunity,
+        &domain,
+        proposal.value().clone(),
+        branch_point,
+    )
+    .expect("nested selection");
+    let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+        panic!("nested campaign selection")
+    };
+    let mut expected_segments = canonical_parent
+        .segments()
+        .expect("scoped canonical parent")
+        .to_vec();
+    expected_segments.push(crate::BranchPathSegment::new(branch_point, edge));
+    assert_eq!(path.segments(), Some(expected_segments.as_slice()));
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    restarted
+        .validate_complete_head(accepted.new_snapshot.content_id())
+        .expect("restart-valid nested planner issue");
+    let replay = restarted
+        .accept_planner_step(
+            "planner-nested-path",
+            nested_requested.new_snapshot,
+            &step,
+            usage,
+        )
+        .expect("replay nested planner issue");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+}
+
+#[test]
+fn planner_issue_rejects_a_legacy_parent_path_before_publication() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("planner-legacy-path", &lineage, &policy, &BTreeMap::new())
+        .expect("create legacy-path campaign");
+    let source_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "planner-legacy-path-source",
+    );
+    let requested = repository
+        .submit_known_branch_request(
+            "planner-legacy-path",
+            genesis.snapshot_id(),
+            &source_request,
+        )
+        .expect("submit legacy-path source");
+    let source_proposal = finite_proposal(
+        &source_request,
+        &policy,
+        &repository
+            .head("planner-legacy-path")
+            .expect("source request head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal(
+            "planner-legacy-path",
+            requested.new_snapshot,
+            &source_proposal,
+        )
+        .expect("issue legacy-path proposal");
+    let (selection, _, _) = branch_attempt(&repository, &source_request, &source_proposal);
+    let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+        panic!("campaign branch selection")
+    };
+    let mut legacy_encoder = crate::codec::Encoder::new();
+    crate::codec::Canonical::encode(&1_u32, &mut legacy_encoder);
+    crate::codec::Canonical::encode(&vec![edge], &mut legacy_encoder);
+    let legacy_path =
+        BranchPath::from_canonical_bytes(&legacy_encoder.finish()).expect("legacy branch path");
+    assert!(legacy_path.segments().is_none());
+    let legacy_attempt = Attempt::new(
+        AttemptStart::Branch {
+            edge,
+            parent: source_request.parent(),
+            selection: selection.id().expect("selection id"),
+        },
+        legacy_path.id().expect("legacy path id"),
+        source_request.stop().clone(),
+    )
+    .expect("legacy-path attempt");
+    let admitted = repository
+        .admit_proposal(
+            "planner-legacy-path",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &legacy_path,
+            &legacy_attempt,
+        )
+        .expect("admit legacy genesis path");
+
+    let child =
+        ConfigurationId::from_hash(CampaignHash::derive("test.planner-legacy-path", b"child"));
+    let child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            b"planner legacy path child".to_vec(),
+        )
+        .expect("publish child");
+    let measurements = repository
+        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .expect("publish measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    let observation = Observation::new(
+        admitted.attempt,
+        child,
+        child_content,
+        legacy_path.id().expect("legacy path id"),
+        StopOutcome::Reached(StopCondition::NextChoice),
+        measurements,
+        properties,
+        coverage,
+        BTreeSet::from([source_request.opportunity()]),
+    )
+    .expect("legacy-path observation");
+    let observed = repository
+        .publish_observation("planner-legacy-path", admitted.new_snapshot, &observation)
+        .expect("publish legacy-path observation");
+
+    let opportunity = repository
+        .load_choice_opportunity(source_request.opportunity())
+        .expect("nested opportunity");
+    let branch_point = opportunity.branch_point_id(child);
+    let nested_request = BranchRequest::new(
+        branch_point,
+        child_content,
+        source_request.opportunity(),
+        source_request.domain(),
+        source_request.source().clone(),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test.planner-legacy-path",
+            b"nested request",
+        ))),
+        source_request.budget(),
+        source_request.stop().clone(),
+    )
+    .expect("nested request");
+    let nested_requested = repository
+        .submit_known_branch_request(
+            "planner-legacy-path",
+            observed.new_snapshot,
+            &nested_request,
+        )
+        .expect("submit nested request");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let (_, _, invocation) = planner_basis(
+        &repository,
+        "planner-legacy-path",
+        nested_requested.new_snapshot,
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![0],
+        )
+        .expect("planner state"),
+    );
+    let nested_proposal = Proposal::new(
+        branch_point,
+        nested_request.id().expect("nested request id"),
+        nested_request.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        1,
+        invocation.input_view(),
+    )
+    .expect("nested proposal");
+    let usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 1,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 3,
+    };
+    let step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next planner state"),
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                branch_point,
+                nested_request.id().expect("nested request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: vec![nested_proposal],
+        },
+    )
+    .expect("legacy-parent planner issue");
+    let before = blobs.object_count().expect("object count before rejection");
+    assert!(matches!(
+        repository.accept_planner_step(
+            "planner-legacy-path",
+            nested_requested.new_snapshot,
+            &step,
+            usage,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-issue-parent-path-is-legacy"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("object count after rejection"),
+        before
+    );
+    assert_eq!(
+        repository
+            .head("planner-legacy-path")
+            .expect("head after rejection")
+            .snapshot_id(),
+        nested_requested.new_snapshot
+    );
+}
+
+#[test]
 fn planner_cursor_and_imported_root_fail_closed() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
