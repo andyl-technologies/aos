@@ -487,6 +487,10 @@ async fn index_registry_inner(
             let catalog = verify_system_image_objects(
                 db,
                 fetch,
+                registry.id,
+                indexed_placement_id,
+                &advertised_commit,
+                &refs_digest,
                 &source_commit,
                 &release_tree.root.registry.name,
                 &release_tree.packages,
@@ -893,8 +897,12 @@ struct VerifiedSystemImageCatalog {
 
 /// Proves that every signed direct-delivery object exists with its exact identity.
 async fn verify_system_image_objects(
-    _db: &Database,
+    db: &Database,
     fetch: &dyn SurfaceFetch,
+    registry_id: i64,
+    indexed_placement_id: Option<i64>,
+    advertised_commit: &str,
+    refs_digest: &str,
     commit: &str,
     registry_identity: &str,
     packages: &[aos_registry_surface::manifest::PackageToml],
@@ -965,25 +973,115 @@ async fn verify_system_image_objects(
     }
     verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
     let digest = image_catalog_digest(registry_identity, &expected)?;
+    let publication = current_verified_publication(
+        db,
+        registry_id,
+        indexed_placement_id,
+        advertised_commit,
+        refs_digest,
+    )
+    .await?;
 
     let mut verified = Vec::with_capacity(expected.len());
     for (object_key, identity) in expected {
-        verified.push(
-            verify_system_image_object(
-                fetch,
-                object_key,
-                identity.sha256,
-                identity.byte_size,
-                snapshot_leases,
-            )
-            .await?,
-        );
+        let object = match &publication {
+            Some((publication_id, placement_id)) => {
+                verify_published_system_image_object(
+                    db,
+                    fetch,
+                    publication_id,
+                    *placement_id,
+                    object_key,
+                    identity.sha256,
+                    identity.byte_size,
+                )
+                .await?
+            }
+            None => {
+                verify_system_image_object(
+                    fetch,
+                    object_key,
+                    identity.sha256,
+                    identity.byte_size,
+                    snapshot_leases,
+                )
+                .await?
+            }
+        };
+        verified.push(object);
     }
     Ok(VerifiedSystemImageCatalog {
         digest,
         images,
         objects: verified,
     })
+}
+
+/// Resolves the exact ready publication that supplied this index generation.
+async fn current_verified_publication(
+    db: &Database,
+    registry_id: i64,
+    indexed_placement_id: Option<i64>,
+    advertised_commit: &str,
+    refs_digest: &str,
+) -> Result<Option<(String, i64)>> {
+    let Some(placement_id) = indexed_placement_id else {
+        return Ok(None);
+    };
+    let Some(state) = db.registry_publication_state(registry_id).await? else {
+        return Ok(None);
+    };
+    let Some(publication_id) = state.current_publication_id else {
+        return Ok(None);
+    };
+    let publication = db
+        .registry_publication(&publication_id)
+        .await?
+        .context("current registry publication is unavailable")?;
+    anyhow::ensure!(
+        publication.state == "ready"
+            && publication.default_commit.as_deref() == Some(advertised_commit)
+            && publication.refs_digest == refs_digest,
+        "current registry publication does not match the advertised generation"
+    );
+    Ok(Some((publication_id, placement_id)))
+}
+
+/// Revalidates a Hub-published image from durable upload evidence and version.
+async fn verify_published_system_image_object(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    publication_id: &str,
+    placement_id: i64,
+    object_key: String,
+    sha256: String,
+    byte_size: i64,
+) -> Result<crate::db::VerifiedRegistryImageObject> {
+    let evidence = db
+        .registry_publication_verified_object_at_placement(
+            publication_id,
+            placement_id,
+            &object_key,
+        )
+        .await?
+        .with_context(|| {
+            format!("signed image object '{object_key}' has no exact publication evidence")
+        })?;
+    anyhow::ensure!(
+        evidence.sha256 == sha256 && evidence.byte_size == byte_size,
+        "signed image object '{object_key}' publication evidence does not match the catalog"
+    );
+    let current_etag = fetch
+        .inventory_strong_etag(&object_key)
+        .await?
+        .with_context(|| {
+            format!("signed image object '{object_key}' backend does not expose a strong version")
+        })?;
+    anyhow::ensure!(
+        current_etag == evidence.strong_etag,
+        "signed image object '{object_key}' changed after publication verification"
+    );
+    Ok(evidence)
 }
 
 const MAX_IMAGE_PUBLICATION_RECEIPT_BYTES: usize = 1024 * 1024;
