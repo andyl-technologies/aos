@@ -1205,6 +1205,35 @@ mod entry {
                     }
                 }
             }
+            Job::ResetIndex { registry_id } => {
+                let db = aos_hub_core::db::Database::attach(make());
+                let Some(registry) = db.registry_by_id(*registry_id).await.map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job reset index load {registry_id}: {error:#}"
+                    ))
+                })?
+                else {
+                    worker::console_log!("job reset index {registry_id}: registry gone");
+                    return Ok(());
+                };
+                let placement = db
+                    .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
+                        registry.id,
+                    ))
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job reset index placement {registry_id}: {error:#}"
+                        ))
+                    })?;
+                db.mark_index_empty_from_placement(registry.id, placement.id)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job reset index {registry_id}: {error:#}"
+                        ))
+                    })?;
+            }
             Job::DeliverWebhook { delivery_id } => {
                 let db = aos_hub_core::db::Database::attach(make());
                 if let Some(delivery) = db

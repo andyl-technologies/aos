@@ -51,6 +51,12 @@ pub enum Job {
         /// The registry to re-index.
         registry_id: i64,
     },
+    /// Clears one registry's rebuildable derived index before an operator-led
+    /// full re-index. Publication state and stored surface objects are retained.
+    ResetIndex {
+        /// The registry whose derived index is reset.
+        registry_id: i64,
+    },
     /// Deliver a webhook event to a configured endpoint.
     DeliverWebhook {
         /// Stable delivery identity; queue retries resolve and claim this row.
@@ -157,6 +163,11 @@ mod tests {
         assert!(json.contains("\"kind\":\"reindex\""));
         let back: Job = serde_json::from_str(&json).unwrap();
         assert_eq!(back, job);
+
+        let reset = Job::ResetIndex { registry_id: 7 };
+        let json = serde_json::to_string(&reset).unwrap();
+        assert!(json.contains("\"kind\":\"reset_index\""));
+        assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), reset);
 
         let delivery = Job::DeliverWebhook {
             delivery_id: "delivery_01HZX".into(),
