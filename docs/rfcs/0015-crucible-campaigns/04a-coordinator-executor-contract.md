@@ -755,13 +755,15 @@ The realization executor owns replacement and VMState authority; the driver
 receives a narrow mutable live-backend facade that excludes generic snapshot,
 restore, shutdown, and process-replacement operations. The driver also receives
 only an operational-boundary view of the resource guard, never its release or
-quarantine authority. Every blocking launch, restore, and replay call receives
-the exact guard so cancellation can be observed while the call is in progress,
-not only before and after it. The session exact-binds the originating resource,
-retention, and cancellation context, shuts down the backend before releasing
-that guard, and repeats each incomplete cleanup phase from its drop backstop. A
-failed reap transfers the guard to supervisor-owned quarantine; the limits stay
-active and another attempt cannot use that executor until reap is attested.
+quarantine authority. Every blocking launch, restore, replay, and shutdown call
+receives the exact guard so cancellation and resource ownership remain active
+while the call is in progress, not only before and after it. The session
+exact-binds the originating resource, retention, and cancellation context,
+shuts down the backend under the guard before releasing it, and repeats each
+incomplete cleanup phase from its drop backstop. A failed reap retains or
+transfers direct-child and cgroup authority into supervisor-owned quarantine;
+the limits stay active and another attempt cannot use that executor until reap
+is attested.
 An error from a guarded realization call triggers a separate failed-realization
 reap attestation that covers children launched before active-backend
 installation; absent that attestation, the session quarantines the guard and
