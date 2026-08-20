@@ -105,6 +105,22 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0089-crucible-exact-boundary-vcpu-introspection.patch",
     "0090-crucible-active-tcg-kick-boundary.patch",
     "0091-crucible-canonical-rr-genesis-cursor.patch",
+    "0092-crucible-canonical-terminal-rr-cursor.patch",
+    "0093-crucible-canonical-register-cursor.patch",
+    "0094-crucible-retention-virtual-time-origin.patch",
+    "0095-crucible-raw-pte-update-identity.patch",
+    "0096-crucible-physical-page-table-region-fixture.patch",
+    "0097-crucible-canonicalize-memory-retry-identity.patch",
+    "0098-crucible-inactive-nested-tsc-guard.patch",
+    "0099-crucible-valid-aarch64-abort-fixture.patch",
+    "0100-crucible-aarch64-memory-exception-vectors.patch",
+    "0101-crucible-canonicalize-snapshot-rr-resume.patch",
+    "0102-crucible-bql-exact-register-capture.patch",
+    "0103-crucible-isolate-checkpoint-control-wake.patch",
+    "0104-crucible-preserve-checkpoint-block-durability.patch",
+    "0105-crucible-selector-control-plane-fixtures.patch",
+    "0106-crucible-defer-active-slice-host-wakes.patch",
+    "0107-crucible-anchor-rr-cursor-genesis.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

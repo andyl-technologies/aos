@@ -60,12 +60,10 @@ pub(super) fn advance_to_busy_ceiling(
         let outcome = node
             .advance_to_ceiling(Icount { retired: ceiling })
             .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
-        let current = node
-            .current_icount()
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::node_op("read post-advance icount", source)
-            })?
-            .retired;
+        let idle = node.idle_state().map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("read post-advance idle state", source)
+        })?;
+        let current = idle.current_icount.retired;
 
         let reached_horizon = matches!(outcome, AdvanceOutcome::ReachedHorizon);
         if current >= ceiling {
@@ -87,6 +85,7 @@ pub(super) fn advance_to_busy_ceiling(
             return Err(QemuLiveNodeStepGateError::StepStalled {
                 ceiling_icount: ceiling,
                 last_icount: current,
+                next_deadline_icount: idle.next_deadline.map(|deadline| deadline.retired),
                 reissue_count,
             });
         }

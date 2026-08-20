@@ -18,6 +18,7 @@ static bool require_ready;
 static bool terminal_crash;
 static bool ready_observed;
 static bool finished;
+static uint8_t terminal_evidence_hash[32];
 static uint8_t *payload;
 static size_t payload_len;
 static struct qemu_plugin_crucible_fault_command command;
@@ -205,6 +206,10 @@ static void validate_event(void)
          get_u32(evidence + 300) != 0)) {
         fail("terminal crash omitted its pre-exit decision fields");
     }
+    if (terminal_crash) {
+        memcpy(terminal_evidence_hash, envelope + 56,
+               sizeof(terminal_evidence_hash));
+    }
     if ((volatile_policy == 1 && get_u64(evidence + 104) != 0) ||
         (volatile_policy == 2 && get_u64(evidence + 104) == 0)) {
         fail("volatile-state policy did not control writable RAM treatment");
@@ -264,8 +269,8 @@ static void completion(void *opaque)
             g_printerr("41");
         }
         g_printerr(" evidence_sha256=");
-        for (size_t index = 0; index < sizeof(result.evidence_hash); index++) {
-            g_printerr("%02x", result.evidence_hash[index]);
+        for (size_t index = 0; index < sizeof(terminal_evidence_hash); index++) {
+            g_printerr("%02x", terminal_evidence_hash[index]);
         }
         g_printerr(" process_generation=1\n");
         return;

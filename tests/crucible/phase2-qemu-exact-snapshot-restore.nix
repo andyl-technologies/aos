@@ -6,12 +6,18 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  idleInitramfs = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
+  busySmpGuest = import ./phase2-qemu-live-plugin-quantum-smp-guest.nix {
+    inherit pkgs;
+    guestVcpus = 2;
+    guestIdle = false;
+    startAps = false;
+  };
   blockInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
   qemuCheckpoint = builtins.readFile ../../crates/crucible-qemu/src/checkpoint.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   qemuNodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
   qemuExactRunner = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs;
+  smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
   productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   taskList = builtins.concatStringsSep "," taskIds;
@@ -39,8 +45,16 @@
     ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs" qemuExactRunner [
       {label = "real exact runner"; needle = "run_qemu_live_exact_snapshot_gate";}
       {label = "pending block mode"; needle = "CRUCIBLE_EXACT_PENDING_BLOCK";}
+      {label = "optional diskless initrd"; needle = "!value.is_empty() && !require_pending_block";}
       {label = "forced crash evidence"; needle = "old_process_force_crashed";}
       {label = "paired replay oracle"; needle = "replay_oracle_pair_match";}
+    ]
+    ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
+      {label = "selectable busy guest"; needle = "guestIdle ? true,";}
+      {label = "busy BSP"; needle = "bsp_busy:";}
+      {label = "busy application processor"; needle = "ap_busy:";}
+      {label = "halted AP selection"; needle = "startAps ? true,";}
+      {label = "busy BSP and halted AP evidence"; needle = ''else "bsp-busy-aps-halted";'';}
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionLoop [
       {label = "snapshot control boundary capture"; needle = "self.capture_exact_checkpoint_set(&configuration)?";}
@@ -72,8 +86,9 @@ in
         pkgs.rust
         pkgs.sed
       ];
-      GUEST_KERNEL = builtins.toString pkgs.linux;
-      DISKLESS_INITRD = "${idleInitramfs}/initrd.img";
+      GUEST_KERNEL = "${busySmpGuest}/smp-idle-guest.elf";
+      GUEST_KERNEL_IS_FILE = "1";
+      DISKLESS_INITRD = "";
       BLOCK_INITRD = "${blockInitramfs}/initrd.img";
       GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
       GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
@@ -109,7 +124,11 @@ in
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
+            if [ "$GUEST_KERNEL_IS_FILE" = 1 ]; then
+              vmlinuz="$GUEST_KERNEL"
+            else
+              vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
+            fi
             test -n "$vmlinuz"
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/exact-snapshot-target" \
@@ -129,7 +148,7 @@ in
 
             diskless_report="$TMPDIR/exact-diskless.result"
             CRUCIBLE_EXACT_PENDING_BLOCK=0 \
-            CRUCIBLE_EXACT_CAPTURE_CEILING=9000000 \
+            CRUCIBLE_EXACT_CAPTURE_CEILING=9000002 \
             CRUCIBLE_EXACT_SUFFIX_INCREMENT=3000000 \
               timeout -k 15 590 "$runner" \
                 ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \

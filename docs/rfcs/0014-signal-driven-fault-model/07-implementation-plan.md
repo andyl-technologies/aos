@@ -435,6 +435,70 @@ produce live patched-QEMU architectural or device evidence.
   advance after-instruction register evidence from the callback-local retired
   prefix onto its semantic coordinate and project an exact quantum terminal
   onto the canonical next-vCPU, position-zero handoff.
+- [x] **T-QEMU-0094** Implement
+  [`crucible-retention-virtual-time-origin`](14-qemu-fault-patches/45-retention-virtual-time-origin.md):
+  initialize retention exposure and expiry in QEMU's authoritative virtual
+  nanosecond clock domain so clock bias cannot make a positive interval expire
+  at its installation instruction coordinate.
+- [x] **T-QEMU-0095** Implement
+  [`crucible-raw-pte-update-identity`](14-qemu-fault-patches/46-raw-pte-update-identity.md):
+  retain the raw x86 PTE low word for accessed/dirty cmpxchg while translation
+  consumes transient corrected bytes, preventing corrected page-walk faults
+  from persisting their mutation or retrying forever.
+- [x] **T-QEMU-0096** Implement
+  [`crucible-physical-page-table-region-fixture`](14-qemu-fault-patches/47-physical-page-table-region-fixture.md):
+  address persistent page-table descriptor regions by GPA in the live matrix,
+  while preserving GVA targeting for ordinary guest-memory region scenarios.
+- [x] **T-QEMU-0097** Implement
+  [`crucible-canonical-memory-retry-identity`](14-qemu-fault-patches/48-canonical-memory-retry-identity.md):
+  exclude TB-local instruction ordinals from memory retry identity and
+  serialize the retained compatibility field at canonical zero.
+- [x] **T-QEMU-0098** Implement
+  [`crucible-inactive-nested-tsc-guard`](14-qemu-fault-patches/49-inactive-nested-tsc-guard.md):
+  guard SVM entry and exit TSC sampling before evaluating clock-fault inputs,
+  preserving upstream nested icount behavior when clock faults are inactive.
+- [x] **T-QEMU-0099** Implement
+  [`crucible-valid-aarch64-abort-fixture`](14-qemu-fault-patches/50-valid-aarch64-abort-fixture.md):
+  submit the data-abort vector with an architecturally valid same-EL syndrome
+  in the live AArch64 poison-exception and retry cases so preparation reaches
+  the production exception validator and the guest-visible delivery path.
+- [x] **T-QEMU-0100** Implement
+  [`crucible-aarch64-memory-exception-vectors`](14-qemu-fault-patches/51-aarch64-memory-exception-vectors.md):
+  admit AArch64 fetch exceptions only with instruction-abort vector `2` and
+  non-fetch exceptions only with data-abort vector `3` before invoking the
+  production architecture validator.
+- [x] **T-QEMU-0101** Implement
+  [`crucible-canonical-snapshot-rr-resume`](14-qemu-fault-patches/52-canonical-snapshot-rr-resume.md):
+  arm the serialized RR owner after a successful snapshot so source
+  continuation preserves the same owner and intra-turn position as restore.
+- [x] **T-QEMU-0102** Implement
+  [`crucible-bql-exact-register-capture`](14-qemu-fault-patches/53-bql-exact-register-capture.md):
+  admit all-vCPU register capture only from BQL-held exact callbacks while
+  post-snapshot serialized-owner reselection is pending.
+- [x] **T-QEMU-0103** Implement
+  [`crucible-isolate-checkpoint-control-wake`](14-qemu-fault-patches/54-checkpoint-control-wake-isolation.md):
+  wake QEMU's main loop for an already-pending native stop without resuming a
+  parked block request beyond the published checkpoint coordinate.
+- [x] **T-QEMU-0104** Implement
+  [`crucible-preserve-checkpoint-block-durability`](14-qemu-fault-patches/55-checkpoint-block-durability.md):
+  suppress only QEMU's synthetic stop-time Crucible flush so exact checkpoints
+  retain volatile Apache durability state without a post-quiescence request.
+- [x] **T-QEMU-0105** Implement
+  [`crucible-selector-control-plane-fixtures`](14-qemu-fault-patches/56-selector-control-plane-fixtures.md):
+  give live selector overlap and exclusivity fixtures unreachable occurrences
+  so they test admission deterministically without firing an installed rule.
+- [x] **T-QEMU-0106** Implement
+  [`crucible-defer-active-slice-host-wakes`](14-qemu-fault-patches/57-defer-active-slice-host-wakes.md):
+  retain state-free wakes in an atomic idle/active/pending handshake and service them only at a
+  complete RR handoff, authorized scheduler ceiling, or guest idle boundary
+  while omitting multi-vCPU soft exits, and retain the single-vCPU soft exit and
+  initialization, terminal, lifecycle, and interrupt wake progress.
+- [x] **T-QEMU-0107** Implement
+  [`crucible-anchor-rr-cursor-genesis`](14-qemu-fault-patches/58-anchor-rr-cursor-genesis.md):
+  commit vCPU 0 at position 0 before the first sim RR budget so host-driven
+  startup cannot choose the serialized cursor origin, preserve the serialized
+  owner across loop-local restarts of a partial turn, and retain a cursor loaded
+  from VMState.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result

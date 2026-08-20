@@ -52,6 +52,7 @@ use super::{
 
 mod devices;
 mod error;
+mod logical_restore;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
@@ -1177,6 +1178,11 @@ impl LiveVcpuTimeCallbackState {
                     return Ok(None);
                 }
                 RegionControlAction::Pause => {
+                    if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
+                        // The eventfd-driven two-pass callback owns the paired
+                        // pause after device waiters have run.
+                        return Ok(None);
+                    }
                     if PluginShmemOrdering::device_io_active(self.slot.get()) {
                         wait = PluginShmemOrdering::prepare_futex_wait(self.slot.get());
                         continue;
@@ -1256,7 +1262,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_for_boundary(raw_icount, true, false, "vcpu-resume")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, false, "vcpu-resume")? {
             return Ok(());
         }
         if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
@@ -1302,7 +1308,8 @@ impl LiveVcpuTimeCallbackState {
                 .capture_submitted
                 .store(false, Ordering::Release);
         }
-        let paused = self.publish_pause_for_boundary(raw_icount, true, true, "control-boundary")?;
+        let paused =
+            self.publish_pause_for_boundary(raw_icount, true, true, true, "control-boundary")?;
         if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
             PluginShmemOrdering::publish_control_boundary(
@@ -1338,7 +1345,13 @@ impl LiveVcpuTimeCallbackState {
         checkpoint_handoff: bool,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, boundary)? {
+        if self.publish_pause_for_boundary(
+            raw_icount,
+            checkpoint_handoff,
+            false,
+            false,
+            boundary,
+        )? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1407,7 +1420,7 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount: u64,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.publish_pause_for_boundary(raw_icount, true, false, "progress-publication")
+        self.publish_pause_for_boundary(raw_icount, true, false, false, "progress-publication")
     }
 
     fn publish_pause_for_boundary(
@@ -1415,15 +1428,27 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
         checkpoint_handoff: bool,
         wait_for_fingerprint_publication: bool,
+        control_boundary_dispatch: bool,
         boundary: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.restore_logical_time_if_requested(raw_icount)?;
+        self.restore_logical_time_if_requested(raw_icount, true)?;
         match PluginShmemOrdering::observe_control_action(self.header.get()) {
             RegionControlAction::Shutdown => {
                 self.signal_shared_shutdown()?;
                 Ok(true)
             }
             RegionControlAction::Pause => {
+                // A paired control request owns checkpoint ordering. Its
+                // eventfd callback first resumes device waiters, then invokes
+                // the two-pass control boundary after their bottom halves are
+                // visible. Futex, vCPU, and device callbacks must fence guest
+                // progress but defer publication and native stop to that final
+                // callback; stopping here can strand a newly active coroutine.
+                if PluginShmemOrdering::control_boundary_is_requested(self.slot.get())
+                    && !control_boundary_dispatch
+                {
+                    return Ok(true);
+                }
                 if PluginShmemOrdering::device_io_active(self.slot.get()) {
                     return Ok(true);
                 }
@@ -1464,44 +1489,6 @@ impl LiveVcpuTimeCallbackState {
             }
             RegionControlAction::Continue => Ok(false),
         }
-    }
-
-    /// Reconstructs the plugin-local idle-jump offset after VMState load.
-    fn restore_logical_time_if_requested(
-        &self,
-        raw_icount: u64,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let Some(request) = PluginShmemOrdering::pending_logical_time_restore(self.slot.get())
-        else {
-            return Ok(());
-        };
-        let offset = request.target_icount.checked_sub(raw_icount).ok_or(
-            LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
-                raw_icount,
-                logical_icount: request.target_icount,
-            },
-        )?;
-        self.logical_icount_offset.store(offset, Ordering::Release);
-        self.last_raw_icount.store(raw_icount, Ordering::Release);
-        self.last_icount
-            .store(request.target_icount, Ordering::Release);
-        if let Some(fingerprint) = self.fingerprint.as_ref() {
-            // A fresh QEMU generation may have sampled the throwaway boot
-            // barrier priming state at the same coordinate as the restored
-            // VMState. Force the following exact pause to capture the loaded
-            // registers, RAM, and devices rather than retaining that sample.
-            fingerprint
-                .capture_submitted
-                .store(false, Ordering::Release);
-        }
-        PluginShmemOrdering::acknowledge_logical_time_restore(
-            self.slot.get(),
-            request,
-            request.target_icount,
-            raw_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })
     }
 
     /// Requests QEMU's native stopped runstate after publishing the boundary.
@@ -1893,7 +1880,11 @@ impl LiveVcpuTimeCallbackState {
         // QEMU clock regression.
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
         let raw_icount = (self.icount_raw)();
-        self.restore_logical_time_if_requested(raw_icount)?;
+        // Device callbacks run before the two-pass control boundary. They need
+        // the restored offset to interpret raw QEMU time, but acknowledging the
+        // transaction here would expose an intermediate RUNNING publication to
+        // the host before the exact pause callback publishes quiescence.
+        self.restore_logical_time_if_requested(raw_icount, false)?;
         let latest_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
         if raw_icount_publication_is_superseded(raw_icount_at_entry, raw_icount, latest_raw_icount)?
         {
@@ -1931,7 +1922,7 @@ impl LiveVcpuTimeCallbackState {
             }
             let raw_icount = (self.icount_raw)();
             let _pause_observed =
-                self.publish_pause_for_boundary(raw_icount, true, true, boundary)?;
+                self.publish_pause_for_boundary(raw_icount, true, true, false, boundary)?;
         }
         Ok(())
     }
@@ -2018,7 +2009,7 @@ impl LiveVcpuTimeCallbackState {
     /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount = (self.icount_raw)();
-        if self.publish_pause_for_boundary(raw_icount, true, false, "max-advance")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, false, "max-advance")? {
             return Ok(raw_icount);
         }
         self.pump_fault_commands(raw_icount)?;

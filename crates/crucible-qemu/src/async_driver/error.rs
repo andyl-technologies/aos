@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Error returned by a node-step target adapter.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("{operation} failed: {message}")]
+pub struct QemuAsyncDriverTargetError {
+    /// Operation being attempted.
+    pub operation: &'static str,
+    /// Deterministic failure detail.
+    pub message: String,
+}
+
+impl QemuAsyncDriverTargetError {
+    /// Creates a target adapter error.
+    #[must_use]
+    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            operation,
+            message: message.into(),
+        }
+    }
+}
+
 /// Error returned by the bounded async driver.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuAsyncDriverError {

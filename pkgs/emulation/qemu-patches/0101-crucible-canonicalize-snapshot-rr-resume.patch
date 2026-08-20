@@ -1,0 +1,58 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 263674246..d8554b767 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -105,6 +105,20 @@ uint64_t icount_crucible_rr_cursor_position(void)
+     return timers_state.crucible_rr_cursor_position;
+ }
+ 
++void icount_crucible_rr_snapshot_resume_prepare(void)
++{
++    if (icount_crucible_rr_switch_quantum() != 0 &&
++        timers_state.crucible_rr_cursor_valid) {
++        /*
++         * A loaded snapshot selects its serialized owner before consulting the
++         * new RR thread's local loop cursor. Give source-side continuation the
++         * same one-shot selection so snapshot creation cannot change the next
++         * vCPU or discard a nonzero intra-turn position.
++         */
++        timers_state.crucible_rr_selection_pending = true;
++    }
++}
++
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu)
+ {
+     uint64_t quantum = icount_crucible_rr_switch_quantum();
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 3cbfd5c37..3ab3fb95a 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -81,6 +81,7 @@ int64_t icount_round(int64_t count);
+ uint64_t icount_crucible_rr_switch_quantum(void);
+ uint64_t icount_crucible_rr_current_vcpu(void);
+ uint64_t icount_crucible_rr_cursor_position(void);
++void icount_crucible_rr_snapshot_resume_prepare(void);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
+ 
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 08ff0832a..ec35791af 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -50,6 +50,7 @@
+ #include "qapi/qapi-builtin-visit.h"
+ #include "qemu/error-report.h"
+ #include "system/cpus.h"
++#include "system/cpu-timers.h"
+ #include "exec/memory.h"
+ #include "exec/target_page.h"
+ #include "trace.h"
+@@ -3508,6 +3509,8 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
+ 
+     ret = 0;
+ 
++    icount_crucible_rr_snapshot_resume_prepare();
++
+  the_end:
+     bdrv_drain_all_end();
+ 

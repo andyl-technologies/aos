@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
             "CRUCIBLE_EXACT_TIMEOUT_SECS",
             240,
         )?));
-    if let Some(initrd) = initrd.filter(|_| !require_pending_block) {
+    if let Some(initrd) = initrd.filter(|value| !value.is_empty() && !require_pending_block) {
         config = config.with_initrd(initrd);
     }
     if let Some(kernel_cmdline) = env::var_os("GUEST_KERNEL_APPEND") {
@@ -102,7 +102,7 @@ fn run() -> Result<(), String> {
         if require_pending_block {
             80_000_000_000
         } else {
-            9_000_000
+            9_000_001
         },
     )?;
     let suffix_increment = env_u64("CRUCIBLE_EXACT_SUFFIX_INCREMENT", 3_000_000)?;
