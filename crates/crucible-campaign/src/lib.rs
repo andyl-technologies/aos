@@ -118,8 +118,10 @@ pub use policy::{
     CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
     CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
     GuidanceWeight, LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-    LOG_INTEGER_GENERATOR_MAX_CANDIDATES, Objective, ObjectiveGoal, ProgressiveWideningPolicy,
-    PuctPolicy, RetentionPolicy, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+    LOG_INTEGER_GENERATOR_MAX_CANDIDATES, Objective, ObjectiveGoal,
+    PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY,
+    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
     STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
     WeightedGenerator,
 };

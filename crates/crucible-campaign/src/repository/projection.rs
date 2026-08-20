@@ -80,6 +80,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::LogInteger { .. },
                 crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -100,6 +105,11 @@ impl CampaignRepository {
             ) => u64::try_from(log_integer_candidates(*base, integer)?.len())
                 .map(Some)
                 .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => permuted_integer_candidate_count(integer).map(Some),
             _ => Ok(None),
         }
     }
@@ -114,12 +124,10 @@ impl CampaignRepository {
         if ordinal == 0 {
             return Err(integrity("proposal-ordinal-is-not-canonical"));
         }
-        let index = usize::try_from(ordinal - 1)
-            .map_err(|_| integrity("proposal-ordinal-is-not-canonical"))?;
         if let Some(values) = request.source().finite_values() {
             return values
                 .iter()
-                .nth(index)
+                .nth(candidate_index(ordinal)?)
                 .cloned()
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality"));
@@ -135,9 +143,9 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_),
-            ) => match index {
-                0 => Ok(Some(ChoiceValue::Boolean(false))),
-                1 => Ok(Some(ChoiceValue::Boolean(true))),
+            ) => match ordinal {
+                1 => Ok(Some(ChoiceValue::Boolean(false))),
+                2 => Ok(Some(ChoiceValue::Boolean(true))),
                 _ => Err(integrity("proposal-ordinal-exceeds-source-cardinality")),
             },
             (
@@ -147,7 +155,7 @@ impl CampaignRepository {
             ) => discrete
                 .alternatives()
                 .keys()
-                .nth(index)
+                .nth(candidate_index(ordinal)?)
                 .copied()
                 .map(ChoiceValue::Discrete)
                 .map(Some)
@@ -171,6 +179,11 @@ impl CampaignRepository {
                 CandidateGeneratorAlgorithm::LogInteger { .. },
                 crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
+            )
+            | (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
             ) => Err(integrity("candidate-generator-domain-family-mismatch")),
             (
                 CandidateGeneratorAlgorithm::BoundaryInteger,
@@ -178,7 +191,7 @@ impl CampaignRepository {
                 ChoiceDomain::Integer(integer),
             ) => self
                 .boundary_integer_candidates(request, integer)?
-                .get(index)
+                .get(candidate_index(ordinal)?)
                 .copied()
                 .map(ChoiceValue::Integer)
                 .map(Some)
@@ -195,11 +208,18 @@ impl CampaignRepository {
                 crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
                 ChoiceDomain::Integer(integer),
             ) => log_integer_candidates(*base, integer)?
-                .get(index)
+                .get(candidate_index(ordinal)?)
                 .copied()
                 .map(ChoiceValue::Integer)
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (
+                CandidateGeneratorAlgorithm::PermutedInteger,
+                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Integer(integer),
+            ) => permuted_integer_candidate(request, integer, ordinal)
+                .map(ChoiceValue::Integer)
+                .map(Some),
             _ => Ok(None),
         }
     }
@@ -655,6 +675,10 @@ fn projection_order_key(id: ContentId) -> CampaignHash {
     CampaignHash::from_bytes(id.digest())
 }
 
+fn candidate_index(ordinal: u64) -> Result<usize, CampaignRepositoryError> {
+    usize::try_from(ordinal - 1).map_err(|_| integrity("proposal-ordinal-is-not-canonical"))
+}
+
 fn push_static_integer_candidate(
     values: &mut Vec<IntegerValue>,
     seen: &mut BTreeSet<IntegerValue>,
@@ -795,6 +819,16 @@ fn stratified_integer_candidate(
             .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?
             / u128::from(candidate_count - 1)
     };
+    integer_candidate_at_offset(domain, offset)
+}
+
+fn integer_candidate_at_offset(
+    domain: &IntegerDomain,
+    offset: u128,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    if offset >= domain.cardinality() {
+        return Err(integrity("candidate-source-offset-is-out-of-range"));
+    }
     let delta = offset
         .checked_mul(u128::from(domain.step()))
         .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
@@ -817,7 +851,50 @@ fn stratified_integer_candidate(
         }
     };
     if !domain.contains_integer(value) {
-        return Err(integrity("stratified-generator-produced-illegal-value"));
+        return Err(integrity("static-generator-produced-illegal-integer"));
     }
     Ok(value)
+}
+
+fn permuted_integer_candidate_count(
+    domain: &IntegerDomain,
+) -> Result<u64, CampaignRepositoryError> {
+    if domain.cardinality() > crate::PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY {
+        return Err(integrity("permuted-generator-cardinality-limit"));
+    }
+    u64::try_from(domain.cardinality())
+        .map_err(|_| integrity("permuted-generator-cardinality-limit"))
+}
+
+fn permuted_integer_candidate(
+    request: &BranchRequest,
+    domain: &IntegerDomain,
+    ordinal: u64,
+) -> Result<IntegerValue, CampaignRepositoryError> {
+    let cardinality = permuted_integer_candidate_count(domain)?;
+    if ordinal == 0 || ordinal > cardinality {
+        return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
+    }
+    let request_digest = request.id()?.content_id().digest();
+    let key = CampaignHash::derive(
+        "crucible.campaign.generator.permuted-integer.v6",
+        &request_digest,
+    );
+    let envelope_mask = u64::try_from(u128::from(cardinality).next_power_of_two() - 1)
+        .map_err(|_| integrity("permuted-generator-cardinality-limit"))?;
+    let mut offset = ordinal - 1;
+    for (round, chunk) in key.as_bytes().chunks_exact(8).enumerate() {
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(chunk);
+        let word = u64::from_be_bytes(bytes);
+        let candidate = if round % 2 == 0 {
+            offset ^ (word & envelope_mask)
+        } else {
+            word.wrapping_sub(offset) & envelope_mask
+        };
+        if candidate < cardinality {
+            offset = candidate;
+        }
+    }
+    integer_candidate_at_offset(domain, u128::from(offset))
 }

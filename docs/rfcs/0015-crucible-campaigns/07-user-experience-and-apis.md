@@ -226,7 +226,9 @@ the same exact states, as do implementation-version 3 `boundary_integer`
 sources and implementation-version 4 `stratified_integer` sources with at most
 4,096 strata. Implementation-version 5 `log_integer` sources over strictly
 positive integer domains report those states for their at-most-65-candidate
-rounded-power order. Other generated sources remain conservatively `Open` until
+rounded-power order. Implementation-version 6 `permuted_integer` sources report
+the same states while walking up to `2^64 - 1` legal values without
+materialization. Other generated sources remain conservatively `Open` until
 their deterministic enumerator and feedback owner land. Rich admitted-value,
 visit, reward, interval, and explanation views and CLI rendering remain open.
 
