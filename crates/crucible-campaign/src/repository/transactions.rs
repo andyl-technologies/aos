@@ -475,6 +475,27 @@ impl CampaignRepository {
         Ok((page, index_proof, page_proof))
     }
 
+    pub(crate) fn lookup_frontier_projection(
+        &self,
+        exploration_root: ContentId,
+        request: BranchRequestId,
+    ) -> Result<(ContentId, MerkleMapLookupProof, MerkleMapLookupProof), CampaignRepositoryError>
+    {
+        let (frontier_index, index_proof) = self
+            .merkle
+            .get_with_proof(exploration_root, frontier_index_anchor_key())?;
+        let frontier_index = frontier_index.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-frontier-index",
+        })?;
+        let (projection, object_proof) = self
+            .merkle
+            .get_with_proof(frontier_index, frontier_index_order_key(request))?;
+        let projection = projection.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-branch-request-is-not-in-frontier-index",
+        })?;
+        Ok((projection, index_proof, object_proof))
+    }
+
     /// Projects durable lifecycle intent from authenticated snapshot ancestry.
     ///
     /// # Errors

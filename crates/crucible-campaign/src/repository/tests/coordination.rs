@@ -2341,6 +2341,15 @@ fn legacy_mutations_never_create_partial_choice_or_frontier_indexes() {
             reason: "campaign-snapshot-has-no-frontier-index"
         })
     ));
+    assert!(matches!(
+        repository.lookup_frontier_projection(
+            requested.snapshot().roots().exploration,
+            request.id().expect("request id"),
+        ),
+        Err(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-snapshot-has-no-frontier-index"
+        })
+    ));
 }
 
 #[test]

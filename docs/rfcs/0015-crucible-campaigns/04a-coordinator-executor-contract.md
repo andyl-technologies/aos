@@ -189,7 +189,8 @@ the CLI, an in-process caller, and a future external coordinator implementation:
 ```text
 CreateCampaign        GetCampaign          ApplyCampaignCommand
 GetSnapshot           QueryGraph           GetGraphObject
-QueryFrontier          QueryChoices         GetChoiceObject
+QueryFrontier          GetFrontierObject    QueryChoices
+GetChoiceObject
 SubmitBranchRequest    DeriveCampaign       QueryFindings
 ExplainObject          WatchCampaign
 ```
@@ -204,8 +205,8 @@ therefore cannot lose campaign state.
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
-`QueryChoices`, `QueryFrontier`, `GetChoiceObject`, and `SubmitBranchRequest`
-messages. All use
+`QueryChoices`, `QueryFrontier`, `GetFrontierObject`, `GetChoiceObject`, and
+`SubmitBranchRequest` messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -276,6 +277,14 @@ QueryCampaignFrontierResponseV1 = version | request_digest |
                                   optional next_after |
                                   MerkleLookupProofV1 |
                                   MerkleScanProofV1
+GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
+                                     snapshot | BranchRequestId
+GetCampaignFrontierObjectResponseV1 = version | request_digest |
+                                      CampaignSnapshotV2 |
+                                      ContinuationProjectionV1 |
+                                      BranchRequestV1 |
+                                      MerkleLookupProofV1 |
+                                      MerkleLookupProofV1
 
 CampaignChoiceObjectKindV1 = 0 (Declaration) | 1 (Domain)
 CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
@@ -348,8 +357,8 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 `CreateCampaign` additionally permits 3; `DeriveCampaign` additionally permits
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
-`QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`, and
-`GetChoiceObject`
+`QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
+`GetFrontierObject`, and `GetChoiceObject`
 additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 4, 5, 6, and 7; and
 `SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
@@ -392,6 +401,9 @@ query_choices_request_digest =
 query_frontier_request_digest =
   H("crucible.campaign-service.query-campaign-frontier.v1",
     QueryCampaignFrontierRequestV1)
+get_frontier_object_request_digest =
+  H("crucible.campaign-service.get-campaign-frontier-object.v1",
+    GetCampaignFrontierObjectRequestV1)
 get_choice_object_request_digest =
   H("crucible.campaign-service.get-campaign-choice-object.v1",
     GetCampaignChoiceObjectRequestV1)
@@ -570,6 +582,18 @@ reported `Open` at this checkpoint; deterministic generated enumeration and
 feedback-driven readiness remain open and MUST replace that conservative state
 before generated work is advertised as executable.
 
+`GetFrontierObject` is the separately authorized body read for one exact
+`BranchRequestId` returned by `QueryFrontier`. The response repeats the
+authenticated projection and returns the strict `BranchRequestV1` body. The
+first minimal lookup proof authenticates the fixed frontier-index anchor; the
+second authenticates the request-keyed projection ID inside that index. A
+checked client reconstructs both the projection and request content IDs,
+requires their request and branch-point fields to agree, and rejects unrelated
+or substituted bodies. The body is bounded to 32 MiB and each proof to 65
+64-KiB nodes, keeping the complete response below 64 MiB. This operation grants
+the complete snapshot metadata, one projection, and one request body; it grants
+no arbitrary exploration-root or content-store read.
+
 `GetChoiceObject` is the separately authorized dependency read for one exact
 graph-authenticated opportunity, including opportunities returned by
 `QueryChoices`. Its lookup proof authenticates the opportunity under the
@@ -587,7 +611,7 @@ details, and explanation messages are still open. The strict local
 transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV11 = "CRUCCS11" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV12 = "CRUCCS12" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -613,10 +637,12 @@ kind = 1 (GetCampaignRequestV1) |
       22 (GetCampaignChoiceObjectRequestV1) |
       23 (GetCampaignChoiceObjectResponseV1) |
       24 (QueryCampaignFrontierRequestV1) |
-      25 (QueryCampaignFrontierResponseV1)
+      25 (QueryCampaignFrontierResponseV1) |
+      26 (GetCampaignFrontierObjectRequestV1) |
+      27 (GetCampaignFrontierObjectResponseV1)
 ```
 
-Loopback frame versions 1 through 10 are rejected rather than reinterpreted
+Loopback frame versions 1 through 11 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB

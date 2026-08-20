@@ -217,6 +217,9 @@ opportunity body. A distinct choice-object operation returns only the exact
 declaration or effective domain named by an authenticated opportunity.
 `frontier` returns each request's exact branch point and owner-projected
 `ContinuationState` from an independently verified exploration-root index.
+An independently authorized frontier-object read returns the exact
+`BranchRequest` body named by one projection without granting a general
+exploration-root read.
 Finite readiness, open proposal, exhaustion, and closure are represented;
 generated sources remain conservatively `Open` until their deterministic
 enumerator and feedback owner land. Rich admitted-value, visit, reward,
@@ -306,6 +309,7 @@ CampaignService
   GetSnapshot
   QueryGraph
   QueryFrontier
+  GetFrontierObject
   QueryChoices
   GetChoiceObject
   SubmitBranchRequest

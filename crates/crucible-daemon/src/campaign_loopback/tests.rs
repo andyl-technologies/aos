@@ -21,10 +21,11 @@ use crucible_campaign::{
     ContinuationProjection, ContinuationState, ControlRequest, CreateCampaignRequest,
     CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, ExactRational,
     ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
-    GetCampaignChoiceObjectResponse, GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    GetCampaignRequest, GetCampaignResponse, GetCampaignSnapshotRequest,
-    GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope,
-    ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MerkleMap, ObjectEnvelope, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
     QueryCampaignChoicesResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
     QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
     RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, StopCondition,
@@ -241,6 +242,37 @@ impl CampaignService for FixedCampaignService {
         .expect("frontier response"))
     }
 
+    fn get_campaign_frontier_object(
+        &self,
+        request: &GetCampaignFrontierObjectRequest,
+    ) -> Result<GetCampaignFrontierObjectResponse, Self::Error> {
+        let (snapshot, map, _) = fixed_query_snapshot();
+        let exploration = snapshot.roots().exploration;
+        let anchor = CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b"");
+        let (_, index_proof) = map
+            .get_with_proof(exploration, anchor)
+            .expect("frontier-object index proof");
+        let frontier_index = map
+            .get(exploration, anchor)
+            .expect("frontier-object index lookup")
+            .expect("frontier-object index root");
+        let (_, object_proof) = map
+            .get_with_proof(
+                frontier_index,
+                CampaignHash::from_bytes(request.request().content_id().digest()),
+            )
+            .expect("frontier-object membership proof");
+        Ok(GetCampaignFrontierObjectResponse::new(
+            request,
+            snapshot,
+            fixed_frontier_projection(),
+            branch_submission("network-recovery").request().clone(),
+            index_proof,
+            object_proof,
+        )
+        .expect("frontier-object response"))
+    }
+
     fn get_campaign_choice_object(
         &self,
         request: &GetCampaignChoiceObjectRequest,
@@ -343,6 +375,13 @@ fn direct_and_loopback_campaign_services_are_identical() {
         None,
         2,
     );
+    let frontier_object = frontier_object_request(
+        "network-recovery",
+        fixed_query_snapshot()
+            .0
+            .id()
+            .expect("fixed query snapshot id"),
+    );
     let choice_object = choice_object_request(
         "network-recovery",
         fixed_query_snapshot()
@@ -373,6 +412,9 @@ fn direct_and_loopback_campaign_services_are_identical() {
     let expected_frontier = direct
         .query_campaign_frontier(&frontier)
         .expect("direct frontier query");
+    let expected_frontier_object = direct
+        .get_campaign_frontier_object(&frontier_object)
+        .expect("direct frontier object");
     let expected_choice_object = direct
         .get_campaign_choice_object(&choice_object)
         .expect("direct choice object");
@@ -383,7 +425,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..12 {
+        for _ in 0..13 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -437,6 +479,12 @@ fn direct_and_loopback_campaign_services_are_identical() {
             .query_campaign_frontier(&frontier)
             .expect("loopback frontier"),
         expected_frontier
+    );
+    assert_eq!(
+        client
+            .get_campaign_frontier_object(&frontier_object)
+            .expect("loopback frontier object"),
+        expected_frontier_object
     );
     assert_eq!(
         client
@@ -495,7 +543,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS11\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS12\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -541,6 +589,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS08",
         b"CRUCCS09",
         b"CRUCCS10",
+        b"CRUCCS11",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
@@ -636,6 +685,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &CreateCampaignRequest,
     ) -> Result<CreateCampaignResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn get_campaign_frontier_object(
+        &self,
+        _request: &GetCampaignFrontierObjectRequest,
+    ) -> Result<GetCampaignFrontierObjectResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
@@ -997,6 +1053,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     let graph_object = graph_object_request("absent", snapshot("absent"), hash("graph-key"));
     let choices = choice_query_request("absent", snapshot("absent"), None, 1);
     let frontier = frontier_query_request("absent", snapshot("absent"), None, 1);
+    let frontier_object = frontier_object_request("absent", snapshot("absent"));
     let choice_object = choice_object_request(
         "absent",
         snapshot("absent"),
@@ -1053,6 +1110,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
         ))
     ));
     assert!(matches!(
+        direct.get_campaign_frontier_object(&frontier_object),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
         direct.get_campaign_choice_object(&choice_object),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
@@ -1066,7 +1129,7 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
             Arc::new(MemoryRefBackend::new()),
         );
         let service = RepositoryCampaignService::new(&repository, DenyAll);
-        for _ in 0..8 {
+        for _ in 0..9 {
             serve_loopback_campaign_once(&mut server_stream, &service)
                 .expect("serve denied request");
         }
@@ -1112,6 +1175,12 @@ fn campaign_loopback_preserves_authorization_before_repository_access() {
     ));
     assert!(matches!(
         client.query_campaign_frontier(&frontier),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_frontier_object(&frontier_object),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))
@@ -1698,6 +1767,19 @@ fn frontier_query_request(
         limit,
     )
     .expect("frontier query request")
+}
+
+fn frontier_object_request(
+    name: &str,
+    snapshot: CampaignSnapshotId,
+) -> GetCampaignFrontierObjectRequest {
+    GetCampaignFrontierObjectRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        snapshot,
+        fixed_frontier_projection().request(),
+    )
+    .expect("frontier object request")
 }
 
 fn choice_object_request(
