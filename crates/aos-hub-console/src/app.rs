@@ -87,6 +87,8 @@ fn ManagementShell(
 ) -> impl IntoView {
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
+    let navigation_route = route.clone();
+    let context_route = route.clone();
     let workflow_route = route.clone();
     let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
@@ -168,12 +170,12 @@ fn ManagementShell(
                 <details class="settings-nav-disclosure" open>
                     <summary>"Settings navigation"</summary>
                     <Transition fallback=move || view! { <nav class="settings-nav" aria-label="Settings navigation" aria-busy="true"><span class="settings-nav-label">"Loading navigation…"</span></nav> }>
-                        {move || { let route = route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) => view! { <Navigation route=route client=client.clone()/> }.into_any(), Err(_) => view! { <nav class="settings-nav" aria-label="Settings navigation"><a href=route.base_path.clone()>"Overview"</a></nav> }.into_any() } }) }}
+                        {move || { let route = navigation_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) => view! { <Navigation route=route client=client.clone()/> }.into_any(), Err(_) => view! { <nav class="settings-nav" aria-label="Settings navigation"><a href=route.base_path.clone()>"Overview"</a></nav> }.into_any() } }) }}
                     </Transition>
                 </details>
                 <main id="main-content" class="settings-body">
                     <h1>{page_label}</h1>
-                    <ContextRail route=route.clone()/>
+                    <ContextRail route=context_route.clone()/>
                     <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
                         {move || { let route = workflow_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
                     </Transition>
