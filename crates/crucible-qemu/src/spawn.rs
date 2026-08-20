@@ -35,12 +35,17 @@ const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 /// per-spawn duplicate. A production contract also carries validated non-root
 /// child credentials; pre-exec clears supplementary groups, sets
 /// `no_new_privs`, and switches every user/group identity after attaching the
-/// child to the cgroup.
+/// child to the cgroup. The contract seals the exact admitted vCPU,
+/// resident-memory, and aggregate writable-byte ceilings so guarded launch can
+/// reject an incompatible command before touching the run directory or
+/// allocating child descriptors.
 #[derive(Debug)]
 pub struct QemuChildProcessContract {
     cgroup_procs: OwnedFd,
     cancellation_event: OwnedFd,
-    maximum_file_bytes: u64,
+    maximum_vcpus: u32,
+    maximum_resident_bytes: u64,
+    maximum_writable_bytes: u64,
     credentials: Option<QemuChildCredentials>,
 }
 
@@ -171,7 +176,9 @@ impl QemuChildProcessContract {
     pub(crate) fn new(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
-        maximum_file_bytes: u64,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
         credentials: QemuChildCredentials,
     ) -> Result<Self, QemuSpawnError> {
         validate_cgroup_procs_fd(cgroup_procs.as_raw_fd())?;
@@ -179,7 +186,9 @@ impl QemuChildProcessContract {
         Ok(Self {
             cgroup_procs,
             cancellation_event,
-            maximum_file_bytes,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
             credentials: Some(credentials),
         })
     }
@@ -188,12 +197,31 @@ impl QemuChildProcessContract {
     fn for_test(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
-        maximum_file_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Self {
+        Self::for_test_with_resources(
+            cgroup_procs,
+            cancellation_event,
+            u32::MAX,
+            u64::MAX,
+            maximum_writable_bytes,
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_resources(
+        cgroup_procs: OwnedFd,
+        cancellation_event: OwnedFd,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
     ) -> Self {
         Self {
             cgroup_procs,
             cancellation_event,
-            maximum_file_bytes,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
             credentials: None,
         }
     }
@@ -362,6 +390,12 @@ pub enum QemuSpawnError {
         /// Requested child group ID.
         group_id: libc::gid_t,
     },
+    /// The validated launch command exceeds the attempt's admitted ceiling.
+    #[error("QEMU launch exceeds admitted attempt resources: {source}")]
+    LaunchResources {
+        /// Exact launch-resource mismatch.
+        source: crate::QemuLaunchResourceError,
+    },
 }
 
 /// Spawns a validated QEMU launch command in `run_directory`.
@@ -407,14 +441,17 @@ pub fn spawn_qemu_child_with_fds_in_directory(
 /// Unlike [`spawn_qemu_child_with_fds_in_directory`], this operation never
 /// invokes `qemu-img` or creates the exact-VMState container. The supervisor
 /// must provision and validate that container under its own bounded service
-/// policy before admitting the attempt. The child writes itself into the
-/// attempt cgroup and checks cancellation in `pre_exec`, before QEMU executes.
+/// policy before admitting the attempt. Before accessing that directory, this
+/// path validates the command's fixed resource baseline against the ceilings
+/// sealed into `contract`. The child writes itself into the attempt cgroup and
+/// checks cancellation in `pre_exec`, before QEMU executes.
 ///
 /// # Errors
 ///
-/// Returns [`QemuSpawnError`] when the prepared container is absent or not a
-/// regular file, descriptor preparation fails, the pre-exec containment
-/// contract rejects the child, or QEMU cannot be spawned.
+/// Returns [`QemuSpawnError`] when the launch exceeds its admitted resources,
+/// the prepared container is absent or not a regular file, descriptor
+/// preparation fails, the pre-exec containment contract rejects the child, or
+/// QEMU cannot be spawned.
 pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     command: &QemuLaunchCommand,
     run_directory: impl AsRef<Path>,
@@ -422,6 +459,14 @@ pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     contract: &QemuChildProcessContract,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
     let run_directory = run_directory.as_ref();
+    command
+        .resource_requirements()
+        .validate_ceiling(
+            contract.maximum_vcpus,
+            contract.maximum_resident_bytes,
+            contract.maximum_writable_bytes,
+        )
+        .map_err(|source| QemuSpawnError::LaunchResources { source })?;
     validate_prepared_vmstate_container(run_directory)?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
@@ -633,7 +678,7 @@ fn spawn_process_with_resources(
     let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
-        maximum_file_bytes: contract.maximum_file_bytes,
+        maximum_file_bytes: contract.maximum_writable_bytes,
         credentials: contract.credentials,
     });
 
