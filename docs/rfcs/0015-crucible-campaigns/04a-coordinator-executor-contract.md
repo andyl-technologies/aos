@@ -788,8 +788,9 @@ not grant a non-cooperating writer access to that same namespace. Once a child
 directory exists, every setup error retains its pinned cleanup authority, and a
 failed release returns that authority instead of dropping it. The authority
 retains independent `cgroup.kill` and `cgroup.events` access for
-cancellation/reap supervision, authenticates exact process-generation
-membership before and after a fixed-memory scan bounded to 65,536 tasks, and
+cancellation/reap supervision, derives the exact PID/start-time/executable
+identity from the owned direct child, authenticates that process generation
+before and after a fixed-memory membership scan bounded to 65,536 tasks, and
 byte-bounds every other pseudo-file read. It pins parent and child directory
 identities instead of trusting mutable paths and removes the child under the
 namespace lock only after `populated 0` is observed and its named identity is
@@ -820,13 +821,13 @@ authority. A bounded caller wait returns the still-live watcher on timeout for
 retry or quarantine. Dropping an unjoined watcher also latches terminal closure
 and leaves its worker retaining authority until empty, fail-closed.
 
-This authority is not yet the production guard. Direct-child
-identity-preserving reap/quarantine composition, aggregate filesystem quota,
-concrete guard composition of the execution-quantum counter, invocation of
-launch-command
-resource-profile admission, pinned run-directory ownership, and concrete
-session wiring remain mandatory before the guarded path may launch a campaign
-QEMU. Until then the cgroup authority remains crate-internal.
+This authority is not yet the production guard. Transfer of the authenticated
+direct-child identity into persistent reap/quarantine ownership, aggregate
+filesystem quota, concrete guard composition of the execution-quantum counter,
+invocation of launch-command resource-profile admission, pinned run-directory
+ownership, and concrete session wiring remain mandatory before the guarded path
+may launch a campaign QEMU. Until then the cgroup authority remains
+crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

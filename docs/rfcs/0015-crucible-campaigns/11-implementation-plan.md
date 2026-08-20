@@ -195,8 +195,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   cleanup owners retain one exclusive delegated-namespace lock and pinned
   parent/child identities; setup and release errors return the remaining
   authority instead of dropping it. Process membership is fixed-memory and
-  bounded to 65,536 tasks, with process-generation identity checked on both
-  sides of the scan, and all other cgroup pseudo-file reads are byte-bounded.
+  bounded to 65,536 tasks. The authority derives PID/start-time/executable
+  identity from its owned direct child and checks that exact process generation
+  on both sides of the scan; all other cgroup pseudo-file reads are byte-bounded.
   Production child contracts require a configured non-root user and group
   distinct from every real, effective, saved, or supplementary supervisor
   credential; the pre-exec path clears supplementary groups and installs all
@@ -210,11 +211,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   caught invariant panics enter a non-reentrant parked quarantine. A bounded
   wait returns the live watcher on timeout, and dropping an unjoined watcher
   latches closure while its worker retains authority until empty.
-  Campaign-level supervisor ownership, direct-child identity-preserving
-  reaper/quarantine composition, aggregate filesystem quota, execution-quantum
-  counter composition, pinned run-directory ownership, the modeled attempt
-  driver, concrete session wiring, and responsive multi-slot scheduling remain
-  open.
+  Campaign-level supervisor ownership, transfer of the authenticated
+  direct-child identity into persistent reaper/quarantine ownership, aggregate
+  filesystem quota, execution-quantum counter composition, pinned run-directory
+  ownership, the modeled attempt driver, concrete session wiring, and responsive
+  multi-slot scheduling remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
