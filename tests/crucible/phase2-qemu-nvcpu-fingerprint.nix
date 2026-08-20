@@ -6,11 +6,7 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  s11GuestCheck = import ./phase0-s11.nix {
-    inherit pkgs lib;
-    stopAt = 1;
-  };
-  s11Guest = s11GuestCheck.passthru.crucibleSmpGuest;
+  nvcpuGuest = import ./phase2-qemu-nvcpu-bios.nix {inherit pkgs;};
 
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
@@ -27,7 +23,7 @@
   qemuTraceTest = builtins.readFile ../../crates/crucible-qemu/tests/qemu_trace_fingerprint.rs;
   pluginVcpu = builtins.readFile ../../crates/crucible-qemu-plugin/src/vcpu_introspection.rs;
   qemuTracePlugin = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
-  phase0S11 = builtins.readFile ./phase0-s11.nix;
+  nvcpuGuestSource = builtins.readFile ./phase2-qemu-nvcpu-bios.nix;
   pluginIntrospectionCheck = import ./phase2-plugin-vcpu-introspection.nix {inherit pkgs lib;};
   qmpClientCheck = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
   boundaryGate = builtins.readFile ./phase2-qemu-determinism-boundary.nix;
@@ -434,50 +430,18 @@
         needle = "launch_definition_digest";
       }
     ]
-    ++ failuresFor "tests/crucible/phase0-s11.nix" phase0S11 [
+    ++ failuresFor "tests/crucible/phase2-qemu-nvcpu-bios.nix" nvcpuGuestSource [
       {
-        label = "real QEMU multi-vCPU fingerprint spike";
-        needle = "spike=multi-vcpu-rr-sim-tcg-fingerprint";
+        label = "topology-independent application-processor startup";
+        needle = "all excluding self";
       }
       {
-        label = "real QEMU per-vCPU register assertion";
-        needle = "register_count_assertion=nonempty_per_vcpu";
+        label = "all-vCPU busy workload";
+        needle = "ap3_busy:";
       }
       {
-        label = "real QEMU S11 binds external QEMU identity";
-        needle = ''qemu_build_digest=$(sha256sum "$QEMU"'';
-      }
-      {
-        label = "real QEMU S11 binds external plugin identity";
-        needle = ''trace_plugin_build_digest=$(sha256sum "$PLUGIN"'';
-      }
-      {
-        label = "real QEMU S11 executes zero-provenance rejection";
-        needle = "zero S11 provenance digest is not accepted";
-      }
-      {
-        label = "real QEMU S11 compares trace and external QEMU identity";
-        needle = ''.qemu_build_digest == $qemu_build_digest'';
-      }
-      {
-        label = "real QEMU S11 compares trace and external plugin identity";
-        needle = ''.trace_plugin_build_digest == $trace_plugin_build_digest'';
-      }
-      {
-        label = "reusable real SMP guest fixture";
-        needle = "crucibleSmpGuest";
-      }
-      {
-        label = "real SMP guest retains stock KASLR and ASLR";
-        needle = "stockEntropyKernelAppend";
-      }
-      {
-        label = "real QEMU RR cursor diff localization";
-        needle = "\"rr_cursor_position\"";
-      }
-      {
-        label = "real QEMU no fallback";
-        needle = "fallback=smp1_not_needed";
+        label = "fixed-size reset-vector firmware image";
+        needle = "expected 65536";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-determinism-boundary.nix" boundaryGate [
@@ -518,10 +482,8 @@ in
         pkgs.socat
       ];
 
-      SMP_GUEST_INITRAMFS = "${s11Guest.initramfs}/initrd.img";
-      SMP_GUEST_KERNEL = builtins.toString s11Guest.kernel;
-      SMP_GUEST_KERNEL_APPEND = s11Guest.stockEntropyKernelAppend;
-      SMP_GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
+      SMP_GUEST_KERNEL_APPEND = "";
+      SMP_GUEST_FIRMWARE = "${nvcpuGuest}/nvcpu-bios.bin";
 
       phases = [
         {
@@ -709,33 +671,23 @@ in
             jitter_pids=""
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
             argv_launcher="$TMPDIR/qemu-argv-launcher"
-            cadence=600000000
-            # The stock-entropy SMP guest reaches its four-thread affinity
-            # workload at the S11-certified 3.6-billion-instruction horizon.
-            # Observe 100 million instructions later so every vCPU has retired
-            # instructions while the horizon remains distinct from cadence.
-            horizon=3700000000
+            cadence=4000000
+            # The reset-vector BIOS starts all APs directly and keeps every
+            # vCPU in a register-mutating loop. A 21-million-instruction horizon
+            # covers sustained execution while remaining distinct from cadence.
+            horizon=21000000
             quantum=4096
             memory_mib=128
             qemu_binary="${pkgs.qemu-crucible}/bin/qemu-system-x86_64"
             trace_plugin="${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so"
-            vmlinuz=$(ls "$SMP_GUEST_KERNEL"/boot/vmlinuz-* | head -1)
-            if [ -z "$vmlinuz" ]; then
-              echo "FAIL: real SMP guest kernel image is absent" >&2
-              exit 1
-            fi
             seed="$TMPDIR/nvcpu-seed.bin"
             printf 'crucible-phase2-nvcpu-seed-v1\n' > "$seed"
             qemu_build_digest=$(sha256sum "$qemu_binary" | cut -d ' ' -f 1)
             trace_plugin_build_digest=$(sha256sum "$trace_plugin" | cut -d ' ' -f 1)
-            kernel_digest=$(sha256sum "$vmlinuz" | cut -d ' ' -f 1)
-            initramfs_digest=$(sha256sum "$SMP_GUEST_INITRAMFS" | cut -d ' ' -f 1)
             firmware_digest=$(sha256sum "$SMP_GUEST_FIRMWARE" | cut -d ' ' -f 1)
             seed_digest=$(sha256sum "$seed" | cut -d ' ' -f 1)
             guest_image_digest=$(printf '%s\n' \
               "firmware=$firmware_digest" \
-              "kernel=$kernel_digest" \
-              "initramfs=$initramfs_digest" \
               | sha256sum | cut -d ' ' -f 1)
             injected_input_sequence_digest=$(printf '%s\n' \
               'crucible.injected-input-sequence.v1' \
@@ -751,11 +703,8 @@ in
               "fw_cfg=opt/crucible/seed,seed_digest=$seed_digest" \
               'rng_object=rng-builtin,id=crucible-rng0' \
               'rng_device=virtio-rng-pci,rng=crucible-rng0' \
-              "kernel_append=$SMP_GUEST_KERNEL_APPEND" \
               "qemu_build_digest=$qemu_build_digest" \
               "trace_plugin_build_digest=$trace_plugin_build_digest" \
-              "kernel_digest=$kernel_digest" \
-              "initramfs_digest=$initramfs_digest" \
               "seed_digest=$seed_digest" \
               "plugin_cadence=$cadence" "plugin_stop_at=$horizon" \
               'plugin_extended=on' 'plugin_mem_events=on' 'plugin_rr_switch_events=on' \
@@ -766,7 +715,7 @@ in
             zero_sha256=0000000000000000000000000000000000000000000000000000000000000000
             for digest in \
               "$qemu_build_digest" "$trace_plugin_build_digest" \
-              "$kernel_digest" "$initramfs_digest" "$firmware_digest" "$seed_digest" \
+              "$firmware_digest" "$seed_digest" \
               "$guest_image_digest" "$injected_input_sequence_digest" \
               "$launch_definition_digest"; do
               printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
@@ -921,7 +870,7 @@ in
                 -machine q35 \
                 -bios "$SMP_GUEST_FIRMWARE" \
                 -accel sim,thread=single \
-                -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum="$quantum" \
                 -cpu qemu64,-rdrand,-rdseed \
                 -m "$memory_mib" \
                 -smp 4 \
@@ -930,9 +879,6 @@ in
                 -fw_cfg name=opt/crucible/seed,file="$seed" \
                 -object rng-builtin,id=crucible-rng0 \
                 -device virtio-rng-pci,rng=crucible-rng0 \
-                -kernel "$vmlinuz" \
-                -initrd "$SMP_GUEST_INITRAMFS" \
-                -append "$SMP_GUEST_KERNEL_APPEND" \
                 -chardev file,id=serial0,path="$TMPDIR/serial-definition.log" \
                 -serial chardev:serial0 \
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
@@ -1041,7 +987,7 @@ in
                 -machine q35 \
                 -bios "$SMP_GUEST_FIRMWARE" \
                 -accel sim,thread=single \
-                -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum="$quantum" \
                 -cpu qemu64,-rdrand,-rdseed \
                 -m "$memory_mib" \
                 -smp 4 \
@@ -1050,9 +996,6 @@ in
                 -fw_cfg name=opt/crucible/seed,file="$seed" \
                 -object rng-builtin,id=crucible-rng0 \
                 -device virtio-rng-pci,rng=crucible-rng0 \
-                -kernel "$vmlinuz" \
-                -initrd "$SMP_GUEST_INITRAMFS" \
-                -append "$SMP_GUEST_KERNEL_APPEND" \
                 -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
                 -serial chardev:serial0 \
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
@@ -1546,11 +1489,11 @@ in
             real_qemu_comparison=canonical-rust-stream
             real_qemu_gate_hook=run_single_vm_fingerprint_gate
             qmp_topology=both-runs-exact-sorted-cpu-index-0-through-3
-            guest_fixture=phase0-s11-reusable-real-smp-guest
-            guest_entropy_path=stock-kaslr-aslr-with-fixed-qemu-seed
+            guest_fixture=reset-vector-broadcast-init-sipi-sipi-busy-smp-bios
+            guest_entropy_path=fixed-qemu-seed
             guest_entropy_seal=fw-cfg-plus-seeded-rng-builtin-no-rdrand-rdseed
             firmware_artifact_digest_bound=true
-            guest_horizon=3700000000-non-cadence
+            guest_horizon=21000000-non-cadence
             all_vcpus_retired_at_horizon=true
             live_device_io_observed=true
             zero_observation_hashes_rejected=true
@@ -1566,7 +1509,7 @@ in
             observation_contract_source=independent-definition-only-qemu-preflight
             independent_observation_contract=true
             fingerprint_definition=canonical-periodic-and-event-boundary-trace-v6
-            periodic_cadence=600000000-real-smp-guest
+            periodic_cadence=4000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
             postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-host-cpu-load

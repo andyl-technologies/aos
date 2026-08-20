@@ -185,6 +185,23 @@ in
 
             completion=$(printf '{"execute":"crucible-complete-terminal-lifecycle","arguments":{"action-sha256":"%s","evidence-sha256":"%s","process-generation":1}}' "$action" "$evidence")
             qmp "$socket" "$completion" "$TMPDIR/completion.json"
+            jq -e -s 'all(.[]; has("error") | not) and
+              ([.[] | select(has("return"))] | length == 2) and
+              ([.[] | select(has("return"))][-1].return == {})' \
+              "$TMPDIR/completion.json" >/dev/null \
+              || { cat "$TMPDIR/completion.json" >&2; fail "terminal authorization was rejected"; }
+            attempts=0
+            while kill -0 "$qemu_pid" 2>/dev/null && [ "$attempts" -lt 300 ]; do
+              sleep 0.1
+              attempts=$((attempts + 1))
+            done
+            if kill -0 "$qemu_pid" 2>/dev/null; then
+              qmp "$socket" '{"execute":"query-status"}' "$TMPDIR/post-completion-status.json"
+              jq -c -s . "$TMPDIR/completion.json" >&2 || true
+              jq -c -s . "$TMPDIR/post-completion-status.json" >&2 || true
+              cat "$log" >&2
+              fail "authorized terminal lifecycle did not exit within 30 seconds"
+            fi
             set +e
             wait "$qemu_pid"
             exit_status="$?"

@@ -1,13 +1,15 @@
 {
   pkgs,
   guestVcpus ? 4,
+  guestIdle ? true,
+  startAps ? true,
 }: let
   apStartup =
-    if guestVcpus == 1
+    if guestVcpus == 1 || !startAps
     then "bsp-only"
     else "directed-init-sipi-sipi";
   startApplicationProcessors =
-    if guestVcpus == 1
+    if guestVcpus == 1 || !startAps
     then ""
     else ''
         /* Start APIC IDs 1..${toString (guestVcpus - 1)} at the real-mode trampoline on vector 8. */
@@ -28,34 +30,9 @@
       cmpl ${"$"}${toString guestVcpus}, %ecx
         jne start_next_ap
     '';
-in
-  assert guestVcpus >= 1 && guestVcpus <= 4;
-  # A diskless multiboot guest that optionally starts application processors,
-  # parks every configured vCPU with HLT, and gives the BSP a periodic PIT
-  # deadline. This keeps the idle proof independent of Linux boot cost and
-  # scheduler policy.
-    pkgs.mkDerivation {
-      pname = "crucible-live-plugin-quantum-${toString guestVcpus}vcpu-guest";
-      version = "0";
-      src = null;
-
-      buildDeps = [pkgs.coreutils];
-
-      phases = [
-        {
-          name = "build-smp-idle-multiboot-guest";
-          script = ''
-            set -eu
-            cat > guest.S <<'GUEST_ASM'
-            .section .text,"ax"
-            .code32
-            .global _start
-            _start:
-              cli
-              movl $stack_top, %esp
-
-              ${startApplicationProcessors}
-
+  bspRunLoop =
+    if guestIdle
+    then ''
               /* Install an interrupt gate for the remapped PIT IRQ. */
               movl $irq0, %eax
               movw %ax, idt + (0x20 * 8)
@@ -100,6 +77,67 @@ in
               sti
               hlt
               jmp bsp_idle
+    ''
+    else ''
+              movl $0x51f15eed, %eax
+            bsp_busy:
+              roll $13, %eax
+              xorl $0x9e3779b9, %eax
+              addl $0x6d2b79f5, %eax
+              jmp bsp_busy
+    '';
+  apRunLoop =
+    if guestIdle
+    then ''
+            ap_idle:
+              hlt
+              jmp ap_idle
+    ''
+    else ''
+              movw $0x51f1, %ax
+            ap_busy:
+              rolw $5, %ax
+              xorw $0x79b9, %ax
+              addw $0x5eed, %ax
+              jmp ap_busy
+    '';
+  guestActivity =
+    if guestIdle
+    then "all-vcpus-hlt"
+    else if startAps
+    then "all-vcpus-busy"
+    else "bsp-busy-aps-halted";
+  guestDeadline = if guestIdle then "periodic-pit-channel-0" else "none";
+in
+  assert guestVcpus >= 1 && guestVcpus <= 4;
+  # A diskless multiboot guest that optionally starts application processors.
+  # Idle mode parks every configured vCPU with HLT and gives the BSP a periodic
+  # PIT deadline; busy mode keeps the BSP, and optionally every started AP,
+  # executing a fixed register-only loop. These modes keep scheduler proofs
+  # independent of Linux boot policy.
+    pkgs.mkDerivation {
+      pname = "crucible-live-plugin-quantum-${toString guestVcpus}vcpu-${if guestIdle then "idle" else "busy"}-${if startAps then "smp" else "bsp-only"}-guest";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.coreutils];
+
+      phases = [
+        {
+          name = "build-smp-idle-multiboot-guest";
+          script = ''
+            set -eu
+            cat > guest.S <<'GUEST_ASM'
+            .section .text,"ax"
+            .code32
+            .global _start
+            _start:
+              cli
+              movl $stack_top, %esp
+
+              ${startApplicationProcessors}
+
+            ${bspRunLoop}
 
             wait_for_icr:
               movl 0xfee00300, %eax
@@ -150,9 +188,7 @@ in
             .code16
             ap_start:
               cli
-            ap_idle:
-              hlt
-              jmp ap_idle
+            ${apRunLoop}
             GUEST_ASM
 
             cat > guest.ld <<'GUEST_LD'
@@ -187,8 +223,9 @@ in
             guest_format=multiboot-elf32
             guest_vcpus=${toString guestVcpus}
             guest_ap_startup=${apStartup}
-            guest_idle=all-vcpus-hlt
-            guest_deadline=periodic-pit-channel-0
+            ${if guestIdle then "guest_idle=all-vcpus-hlt" else "guest_idle=false"}
+            guest_activity=${guestActivity}
+            guest_deadline=${guestDeadline}
             EVIDENCE
           '';
         }

@@ -29,7 +29,9 @@ use crate::{
     QmpTimeoutStream, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
+mod restore_cleanup;
 mod restore_plan;
+use restore_cleanup::*;
 
 pub use restore_plan::{QemuNodeRestoreAdmission, QemuNodeRestorePlan};
 
@@ -728,6 +730,20 @@ where
             QemuNodeFactoryError::CheckpointPause { source },
         ));
     }
+    // Prevalidate while the plugin's exact barrier is still acknowledged and
+    // guest/device dispatch is frozen. Delaying this work until after QMP stop
+    // and pause release admits a transient callback publication; delaying
+    // pause release until after validation can instead strand the stopped
+    // callback behind the BQL. Validation is read-only, so this position keeps
+    // both halves exact without extending the native stopped interval.
+    if let Err(source) =
+        host_io_runtime.validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
+    {
+        return Err(reap_failed_restore_child(
+            &mut child,
+            QemuNodeFactoryError::HostIoCheckpointValidation { source },
+        ));
+    }
     if let Err(stop) = qmp.stop_for_checkpoint() {
         let primary = match host_io_runtime.abort_checkpoint_pause() {
             Ok(()) => QemuNodeFactoryError::CheckpointStop { source: stop },
@@ -742,9 +758,6 @@ where
         ));
     }
     let restore_result = (|| {
-        host_io_runtime
-            .validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
-            .map_err(|source| QemuNodeFactoryError::HostIoCheckpointValidation { source })?;
         let restored_icount = node_continuation
             .map_or(checkpoint.virtual_time.ticks, |continuation| {
                 continuation.last_observed_time().ticks
@@ -879,32 +892,6 @@ where
         return Err(reap_failed_restored_node(&mut node, primary));
     }
     Ok(node)
-}
-
-fn reap_failed_restore_child(
-    child: &mut QemuNodeChild,
-    primary: QemuNodeFactoryError,
-) -> QemuNodeFactoryError {
-    match child.force_kill_and_reap_failed_realization() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
-            primary: Box::new(primary),
-            cleanup,
-        },
-    }
-}
-
-fn reap_failed_restored_node(
-    node: &mut QemuNode,
-    primary: QemuNodeFactoryError,
-) -> QemuNodeFactoryError {
-    match node.reap_failed_realization() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
-            primary: Box::new(primary),
-            cleanup,
-        },
-    }
 }
 
 fn prepare_qemu_node_setup<A>(

@@ -175,13 +175,15 @@ pub enum QemuLiveNodeStepGateError {
     /// advance path did not rouse it -- the wake defect the first live node user
     /// is expected to surface if a busy window ever hits an idle wait.
     #[error(
-        "node step for ceiling {ceiling_icount} stalled at {last_icount} after {reissue_count} re-issues"
+        "node step for ceiling {ceiling_icount} stalled at {last_icount} with next deadline {next_deadline_icount:?} after {reissue_count} re-issues"
     )]
     StepStalled {
         /// Ceiling the step was driving toward.
         ceiling_icount: u64,
         /// Last observed node icount.
         last_icount: u64,
+        /// Plugin-published idle deadline at the stalled coordinate, if idle.
+        next_deadline_icount: Option<u64>,
         /// Re-issues attempted before the stall was declared.
         reissue_count: u32,
     },

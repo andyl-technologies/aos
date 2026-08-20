@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "ff765c47e3876b8ce0e813bdde9d2dc8ecbf9a3f05612494da05664a027df0ac";
+  patchBranchBundleSha256 = "f032ffdf46d2c9d33d366ce486bc55f21de5267e3677a47615202b4c818846c9";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7e622d4d0a71e524fac5cf5a9a56f4a396ced77a";
+  patchBranchHeadCommit = "4dfd46c2f210788e4477f09d4cdf8e77615e6bfd";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -809,7 +809,7 @@ let
     {
       file = "0088-crucible-deterministic-host-kick-boundary.patch";
       branchSubject = "crucible: defer generic host kicks in active sim slices";
-      branchCommit = "3561cc760370e03fec2f7be7d6d25d6971936a0b";
+      branchCommit = "79780f4de0d08c3ef2ad43019d787ade68f0294a";
       branchTree = "e6dd34d7a989df6352ed4a6f6aad38098832a3f9";
       catalogName = "crucible-deterministic-host-kick-boundary";
       class = "D";
@@ -819,12 +819,192 @@ let
     {
       file = "0089-crucible-exact-boundary-vcpu-introspection.patch";
       branchSubject = "crucible: admit vCPU introspection at exact boundaries";
-      branchCommit = "7e622d4d0a71e524fac5cf5a9a56f4a396ced77a";
+      branchCommit = "0e16a87a0e79c39d6c07d5b02169c5e118228780";
       branchTree = "1bdcbb1934ac36da79f25d7e78bec7b911a3dc65";
       catalogName = "crucible-exact-boundary-vcpu-introspection";
       class = "D";
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
+    }
+    {
+      file = "0090-crucible-active-tcg-kick-boundary.patch";
+      branchSubject = "crucible: defer generic kicks to TCG boundaries";
+      branchCommit = "260c90b9564b99764ec70442d26d4ee5ee588143";
+      branchTree = "6bbc6b736a157cbbc62092c925ac4a4ef3e16bd9";
+      catalogName = "crucible-active-tcg-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "state-free sim kicks request exit at the next deterministic translation-block boundary while committed transitions preserve immediate liveness";
+    }
+    {
+      file = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      branchSubject = "crucible: expose the canonical RR genesis cursor";
+      branchCommit = "53d1c54de86a867fafa21936aa090b6de8e8fd5b";
+      branchTree = "4762a69a59020bf84d761d6f2a1e18d3df4856e9";
+      catalogName = "crucible-canonical-rr-genesis-cursor";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
+    }
+    {
+      file = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      branchSubject = "crucible: canonicalize terminal RR observations";
+      branchCommit = "e4b752dd8373c62d92c70c5385886730ea2bd7dd";
+      branchTree = "c9084d25cd61d01f8ab29b98d2700f509551be04";
+      catalogName = "crucible-canonical-terminal-rr-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
+    }
+    {
+      file = "0093-crucible-canonical-register-cursor.patch";
+      branchSubject = "crucible: canonicalize after-instruction register cursors";
+      branchCommit = "fe4c33d744b1c99f2442b378a9685186f5e1eed3";
+      branchTree = "bc8035c8095c35d16b8f43633487376f8bdd1463";
+      catalogName = "crucible-canonical-register-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "after-instruction register evidence advances its callback-local prefix and projects an exact quantum terminal onto the canonical next RR coordinate";
+    }
+    {
+      file = "0094-crucible-retention-virtual-time-origin.patch";
+      branchSubject = "crucible: anchor retention to virtual time";
+      branchCommit = "c1b2fa0afe7e3c2578d64d2300c5155a079992e0";
+      branchTree = "37205ff713b40c8b464d45209ed39e5a6798db14";
+      catalogName = "crucible-retention-virtual-time-origin";
+      class = "D";
+      enforces = "DET-1,TIME-23,E14";
+      capability = "memory-retention expiry originates in authoritative virtual nanoseconds instead of mixing raw instruction coordinates with clock-biased deadlines";
+    }
+    {
+      file = "0095-crucible-raw-pte-update-identity.patch";
+      branchSubject = "crucible: preserve raw PTE update identity";
+      branchCommit = "ad89e6e4f077ac9b6de7c272d3024d406eb4932a";
+      branchTree = "572186aabeeaf06b53fa884ca0e90763b7d011b8";
+      catalogName = "crucible-raw-pte-update-identity";
+      class = "D";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";
+      capability = "x86 page-table translation consumes corrected transient PTE bytes while accessed/dirty cmpxchg preserves the canonical backing entry and cannot retry forever";
+    }
+    {
+      file = "0096-crucible-physical-page-table-region-fixture.patch";
+      branchSubject = "tests/tcg: target page-table regions physically";
+      branchCommit = "e84d2198d62c7b27cf23d0a04c809e678ea39100";
+      branchTree = "808dbdf038afacd7ea56070c8b2e08454d3bce13";
+      catalogName = "crucible-physical-page-table-region-fixture";
+      class = "F";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-EVIDENCE";
+      capability = "live persistent page-table-region tests address descriptor storage by GPA while ordinary guest-memory region tests retain GVA targeting";
+    }
+    {
+      file = "0097-crucible-canonicalize-memory-retry-identity.patch";
+      branchSubject = "crucible: canonicalize memory retry identity";
+      branchCommit = "0c5ca04c7d5faf006f74897487cd4f8479fea331";
+      branchTree = "d0a0bf263189e252f70012616db28d6611db61a6";
+      catalogName = "crucible-canonical-memory-retry-identity";
+      class = "D";
+      enforces = "DET-1,QFP-MEMA-1,QFP-STATE-2";
+      capability = "memory retry keys exclude TB-local instruction ordinals and serialize that compatibility field at canonical zero across fault-driven retranslation";
+    }
+    {
+      file = "0098-crucible-inactive-nested-tsc-guard.patch";
+      branchSubject = "crucible: guard inactive nested TSC reads";
+      branchCommit = "e729387d8d9234b5e2a5bfa14c67256f98ed50d6";
+      branchTree = "00436831a19214a239c96184050710d0b6b6a69a";
+      catalogName = "crucible-inactive-nested-tsc-guard";
+      class = "D";
+      enforces = "DET-1,QFP-CLOCK-2,PATCH-3";
+      capability = "inactive guest-clock faults avoid TSC sampling inside SVM entry and exit so nested execution preserves upstream icount accounting";
+    }
+    {
+      file = "0099-crucible-valid-aarch64-abort-fixture.patch";
+      branchSubject = "tests/tcg: use valid AArch64 abort syndrome";
+      branchCommit = "e298c16dfb0adbca3ceb5bac4dc4a3bb4bd909b3";
+      branchTree = "6aa83b00f0dd16834d9db22da96968dd46744ca5";
+      catalogName = "crucible-valid-aarch64-abort-fixture";
+      class = "F";
+      enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
+      capability = "the live AArch64 poison-exception and retry fixtures submit the data-abort vector and a same-EL syndrome accepted by the production architecture validator";
+    }
+    {
+      file = "0100-crucible-aarch64-memory-exception-vectors.patch";
+      branchSubject = "crucible: validate AArch64 memory exception vectors";
+      branchCommit = "b41f49fe0e69342b99cb872a7703ff7954af72bd";
+      branchTree = "028d0e3ce20abbc16f61d012adc6c0fe02ee2e6c";
+      catalogName = "crucible-aarch64-memory-exception-vectors";
+      class = "D";
+      enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
+      capability = "AArch64 memory exception admission requires instruction-abort vector 2 for fetches and data-abort vector 3 for non-fetch accesses";
+    }
+    {
+      file = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+      branchSubject = "crucible: canonicalize snapshot RR resume";
+      branchCommit = "dd3d1fa0c6f5c04df5f404f02d7101a5d4e05e45";
+      branchTree = "9dedd930f5f79b0b6c5a6e17903aea3ea967e9c7";
+      catalogName = "crucible-canonical-snapshot-rr-resume";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "successful sim-mode snapshots arm the same one-shot serialized-owner selection used after load so source continuation preserves the RR owner and intra-turn position";
+    }
+    {
+      file = "0102-crucible-bql-exact-register-capture.patch";
+      branchSubject = "crucible: admit BQL exact register capture";
+      branchCommit = "a7dc729c8d417e352065e2c7991192ab75abbfed";
+      branchTree = "585ccd4a54ee53f5cbc943de49f696a145e752a2";
+      catalogName = "crucible-bql-exact-register-capture";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "BQL-held exact callbacks read quiescent vCPU registers while post-snapshot RR owner reselection is pending, and idle-time completion is explicitly scoped as exact";
+    }
+    {
+      file = "0103-crucible-isolate-checkpoint-control-wake.patch";
+      branchSubject = "crucible: isolate checkpoint control wake";
+      branchCommit = "859b261410fab3bf6415469ea10ca3b07a7d07bc";
+      branchTree = "6c754af78a97f503ea6694912cdd6394f78178c8";
+      catalogName = "crucible-isolate-checkpoint-control-wake";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,PATCH-20";
+      capability = "a pending exact VM-stop handoff wakes QEMU's main loop without resuming parked block coroutines or admitting post-pause completions";
+    }
+    {
+      file = "0104-crucible-preserve-checkpoint-block-durability.patch";
+      branchSubject = "crucible: preserve checkpoint block durability";
+      branchCommit = "7f92549090d8e81574df4090bcc3262bc788ffc9";
+      branchTree = "b42f8dd65a98694748e95198b85a825e8571ba23";
+      catalogName = "crucible-preserve-checkpoint-block-durability";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QFP-BLOCK-3";
+      capability = "synthetic QEMU stop-time flushes preserve the checkpointed Apache durability continuation and cannot create post-quiescence Crucible block requests";
+    }
+    {
+      file = "0105-crucible-selector-control-plane-fixtures.patch";
+      branchSubject = "crucible: isolate selector control-plane fixtures";
+      branchCommit = "210d93eda69fdffe3b1905702883fb53e4a6194a";
+      branchTree = "31300b1150f0ed13746312c890dc35a42ef0957c";
+      catalogName = "crucible-selector-control-plane-fixtures";
+      class = "F";
+      enforces = "FAULT-ORDER,PATCH-3,QFP-INST-3";
+      capability = "live instruction selector overlap and exclusivity fixtures use unreachable occurrences so admission checks remain isolated from data-plane fault delivery";
+    }
+    {
+      file = "0106-crucible-defer-active-slice-host-wakes.patch";
+      branchSubject = "crucible: defer active-slice host wake requests";
+      branchCommit = "82b7dca937ad7114dca3d64d6d24b52bc223ef6a";
+      branchTree = "2c9eaf69465ebba659b6370733a78dc1f73c82b3";
+      catalogName = "crucible-defer-active-slice-host-wakes";
+      class = "D";
+      enforces = "DET-1,QFP-KICK-3,QEMU-43";
+      capability = "an atomic idle-active-pending handshake admits multi-vCPU state-free wakes only before TCG starts and never lets them select a translation-block endpoint, while single-vCPU soft exits and explicit terminal and committed lifecycle wakes remain live";
+    }
+    {
+      file = "0107-crucible-anchor-rr-cursor-genesis.patch";
+      branchSubject = "crucible: anchor RR cursor at guest genesis";
+      branchCommit = "4dfd46c2f210788e4477f09d4cdf8e77615e6bfd";
+      branchTree = "aea0a6763b645630b007d24d46ea55c26f50881d";
+      catalogName = "crucible-anchor-rr-cursor-genesis";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "fresh sim-mode execution establishes vCPU 0 position 0 before the first budget, and the serialized owner remains authoritative across partial turns and VMState restore";
     }
   ];
   catalogOnlyCapabilities = [

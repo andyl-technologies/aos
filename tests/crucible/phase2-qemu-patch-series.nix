@@ -622,6 +622,132 @@
       enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
       capability = "exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected";
     }
+    {
+      file = "0090-crucible-active-tcg-kick-boundary.patch";
+      catalogName = "crucible-active-tcg-kick-boundary";
+      class = "D";
+      enforces = "DET-1,DET-29,QEMU-43";
+      capability = "state-free sim kicks request exit at the next deterministic translation-block boundary while committed transitions preserve immediate liveness";
+    }
+    {
+      file = "0091-crucible-canonical-rr-genesis-cursor.patch";
+      catalogName = "crucible-canonical-rr-genesis-cursor";
+      class = "D";
+      enforces = "DET-1,QFP-REG-1,QFP-STATE-2";
+      capability = "exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected";
+    }
+    {
+      file = "0092-crucible-canonical-terminal-rr-cursor.patch";
+      catalogName = "crucible-canonical-terminal-rr-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state";
+    }
+    {
+      file = "0093-crucible-canonical-register-cursor.patch";
+      catalogName = "crucible-canonical-register-cursor";
+      class = "D";
+      enforces = "DET-1,DET-29,QFP-STATE-2";
+      capability = "after-instruction register evidence advances its callback-local prefix and projects an exact quantum terminal onto the canonical next RR coordinate";
+    }
+    {
+      file = "0094-crucible-retention-virtual-time-origin.patch";
+      catalogName = "crucible-retention-virtual-time-origin";
+      class = "D";
+      enforces = "DET-1,TIME-23,E14";
+      capability = "memory-retention expiry originates in authoritative virtual nanoseconds instead of mixing raw instruction coordinates with clock-biased deadlines";
+    }
+    {
+      file = "0095-crucible-raw-pte-update-identity.patch";
+      catalogName = "crucible-raw-pte-update-identity";
+      class = "D";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-ORDER";
+      capability = "x86 page-table translation consumes corrected transient PTE bytes while accessed/dirty cmpxchg preserves the canonical backing entry and cannot retry forever";
+    }
+    {
+      file = "0096-crucible-physical-page-table-region-fixture.patch";
+      catalogName = "crucible-physical-page-table-region-fixture";
+      class = "F";
+      enforces = "QFP-MEMA-1,QFP-MEMA-2,FAULT-EVIDENCE";
+      capability = "live persistent page-table-region tests address descriptor storage by GPA while ordinary guest-memory region tests retain GVA targeting";
+    }
+    {
+      file = "0097-crucible-canonicalize-memory-retry-identity.patch";
+      catalogName = "crucible-canonical-memory-retry-identity";
+      class = "D";
+      enforces = "DET-1,QFP-MEMA-1,QFP-STATE-2";
+      capability = "memory retry keys exclude TB-local instruction ordinals and serialize that compatibility field at canonical zero across fault-driven retranslation";
+    }
+    {
+      file = "0098-crucible-inactive-nested-tsc-guard.patch";
+      catalogName = "crucible-inactive-nested-tsc-guard";
+      class = "D";
+      enforces = "DET-1,QFP-CLOCK-2,PATCH-3";
+      capability = "inactive guest-clock faults avoid TSC sampling inside SVM entry and exit so nested execution preserves upstream icount accounting";
+    }
+    {
+      file = "0099-crucible-valid-aarch64-abort-fixture.patch";
+      catalogName = "crucible-valid-aarch64-abort-fixture";
+      class = "F";
+      enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
+      capability = "the live AArch64 poison-exception and retry fixtures submit the data-abort vector and a same-EL syndrome accepted by the production architecture validator";
+    }
+    {
+      file = "0100-crucible-aarch64-memory-exception-vectors.patch";
+      catalogName = "crucible-aarch64-memory-exception-vectors";
+      class = "D";
+      enforces = "QFP-MEMA-1,FAULT-EVIDENCE,PATCH-3";
+      capability = "AArch64 memory exception admission requires instruction-abort vector 2 for fetches and data-abort vector 3 for non-fetch accesses";
+    }
+    {
+      file = "0101-crucible-canonicalize-snapshot-rr-resume.patch";
+      catalogName = "crucible-canonical-snapshot-rr-resume";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "successful sim-mode snapshots arm the same one-shot serialized-owner selection used after load so source continuation preserves the RR owner and intra-turn position";
+    }
+    {
+      file = "0102-crucible-bql-exact-register-capture.patch";
+      catalogName = "crucible-bql-exact-register-capture";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "BQL-held exact callbacks read quiescent vCPU registers while post-snapshot RR owner reselection is pending, and idle-time completion is explicitly scoped as exact";
+    }
+    {
+      file = "0103-crucible-isolate-checkpoint-control-wake.patch";
+      catalogName = "crucible-isolate-checkpoint-control-wake";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,PATCH-20";
+      capability = "a pending exact VM-stop handoff wakes QEMU's main loop without resuming parked block coroutines or admitting post-pause completions";
+    }
+    {
+      file = "0104-crucible-preserve-checkpoint-block-durability.patch";
+      catalogName = "crucible-preserve-checkpoint-block-durability";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QFP-BLOCK-3";
+      capability = "synthetic QEMU stop-time flushes preserve the checkpointed Apache durability continuation and cannot create post-quiescence Crucible block requests";
+    }
+    {
+      file = "0105-crucible-selector-control-plane-fixtures.patch";
+      catalogName = "crucible-selector-control-plane-fixtures";
+      class = "F";
+      enforces = "FAULT-ORDER,PATCH-3,QFP-INST-3";
+      capability = "live instruction selector overlap and exclusivity fixtures use unreachable occurrences so admission checks remain isolated from data-plane fault delivery";
+    }
+    {
+      file = "0106-crucible-defer-active-slice-host-wakes.patch";
+      catalogName = "crucible-defer-active-slice-host-wakes";
+      class = "D";
+      enforces = "DET-1,QFP-KICK-3,QEMU-43";
+      capability = "an atomic idle-active-pending handshake admits multi-vCPU state-free wakes only before TCG starts and never lets them select a translation-block endpoint, while single-vCPU soft exits and explicit terminal and committed lifecycle wakes remain live";
+    }
+    {
+      file = "0107-crucible-anchor-rr-cursor-genesis.patch";
+      catalogName = "crucible-anchor-rr-cursor-genesis";
+      class = "D";
+      enforces = "DET-1,QFP-STATE-2,QEMU-43";
+      capability = "fresh sim-mode execution establishes vCPU 0 position 0 before the first budget, the serialized owner remains authoritative across partial turns and VMState restore, and terminal live observation emits canonical RR-switch transitions";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
