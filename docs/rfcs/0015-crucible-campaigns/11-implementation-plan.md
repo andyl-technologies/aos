@@ -309,7 +309,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   work; candidate acceptance binds the driver's exact log offset and requires
   an unchanged paused-boundary seal plus an unchanged final shutdown drain. The
   session releases the guard only after reap attestation, and cleanup tracks
-  backend and guard phases separately on explicit finish and drop. Only
+  backend and guard phases separately on explicit finish and drop. Normal
+  shutdown receives that same guard, so a failed direct-child reap can retain
+  or transfer its exact authority before quarantine. Only
   explicitly typed availability failures retry; deterministic realization
   failures terminate.
   Canonical `DescribeExecutor` and cursor-bound `WatchCapacity` messages now

@@ -254,6 +254,16 @@ impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
         Ok(runtime)
     }
 
+    fn shutdown_live_backend_guarded(
+        &mut self,
+        _guard: &mut TrackingGuard,
+    ) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
+        self.counters
+            .guarded_shutdowns
+            .fetch_add(1, Ordering::SeqCst);
+        QemuVmLiveRealizationExecutor::shutdown_live_backend(self)
+    }
+
     fn reap_failed_realization_guarded(
         &mut self,
         _guard: &mut TrackingGuard,
@@ -291,6 +301,7 @@ impl QemuLiveAttemptDriver for UnusedDriver {
 #[derive(Clone, Default)]
 struct TestCounters {
     shutdowns: Arc<AtomicUsize>,
+    guarded_shutdowns: Arc<AtomicUsize>,
     finishes: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
     guarded_calls: Arc<AtomicUsize>,
@@ -478,6 +489,7 @@ fn explicit_finish_reaps_backend_before_releasing_exact_resource_guard() {
     session.finish().expect("finish exact session");
 
     assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 1);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }

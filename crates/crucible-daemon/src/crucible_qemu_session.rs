@@ -305,6 +305,22 @@ where
         request: QemuVmReplayRequest,
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError>;
 
+    /// Drains, terminates, and reaps the active backend under `guard`.
+    ///
+    /// A successful return attests that no process generation remains. On
+    /// failure, the implementation must retain or transfer every direct-child
+    /// and cgroup authority needed by [`QemuAttemptResourceGuard::quarantine`];
+    /// it must not release resource enforcement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when final drain, termination, or
+    /// direct-child reap cannot be attested.
+    fn shutdown_live_backend_guarded(
+        &mut self,
+        guard: &mut G,
+    ) -> Result<crucible_qemu::QemuLiveBackendShutdown, QemuVmRealizationError>;
+
     /// Reaps every process generation possibly launched by a failed operation.
     ///
     /// Returning success is an attestation that the failed guarded call either
@@ -608,7 +624,7 @@ where
                     .map(|()| true)
             } else {
                 self.executor
-                    .shutdown_live_backend()
+                    .shutdown_live_backend_guarded(&mut self.guard)
                     .map(|outcome| outcome.observation_boundary_unchanged())
             };
             match reap {
