@@ -28,7 +28,7 @@ use rustix::fs::{
 use thiserror::Error;
 
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
-use crate::{QemuProcessIdentity, linux_process_identity};
+use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
 const MAX_CGROUP_CONTROL_BYTES: u64 = 4096;
@@ -1148,6 +1148,42 @@ impl LinuxQemuCgroup {
             });
         }
         Ok(())
+    }
+
+    /// Authenticates the exact process generation owned by `child` as a member.
+    ///
+    /// The returned identity binds the direct-child PID, Linux start-time
+    /// ticks, and canonical executable. Membership validation brackets its
+    /// bounded `cgroup.procs` scan with that same complete identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupError::ProcessMembership`] when the direct child
+    /// no longer has a readable identity or is not an exact member of this
+    /// cgroup, and returns [`LinuxQemuCgroupError::Io`] on `/proc` or cgroup
+    /// validation failure.
+    pub fn authenticate_child(
+        &mut self,
+        child: &QemuNodeChild,
+    ) -> Result<QemuProcessIdentity, LinuxQemuCgroupError> {
+        self.authenticate_process_id(child.process_id())
+    }
+
+    fn authenticate_process_id(
+        &mut self,
+        process_id: u32,
+    ) -> Result<QemuProcessIdentity, LinuxQemuCgroupError> {
+        let process = linux_process_identity(process_id)
+            .map_err(|source| LinuxQemuCgroupError::Io {
+                operation: "derive QEMU direct-child identity",
+                path: self.path.clone(),
+                source: io::Error::other(source),
+            })?
+            .ok_or_else(|| LinuxQemuCgroupError::ProcessMembership {
+                path: self.path.clone(),
+            })?;
+        self.verify_process_member(&process)?;
+        Ok(process)
     }
 
     /// Returns whether this cgroup currently contains a live process.
@@ -2401,6 +2437,43 @@ mod tests {
         })?;
         assert!(contains_member_pid(&mut file, &path, 1499, 1500)?);
         assert!(contains_member_pid(&mut file, &path, 1501, 1499).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn direct_child_identity_is_authenticated_across_membership_scan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let process_id = std::process::id();
+        fs::write(
+            directory.path().join("cgroup.procs"),
+            format!("{process_id}\n"),
+        )?;
+        let (control, _cancellation_reader) = watcher_control_fixture(directory.path(), true)?;
+        let mut group = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open direct-child identity parent fixture",
+            )?,
+            name: String::from("direct-child-identity"),
+            maximum_tasks: 1,
+            control,
+        };
+
+        let expected = linux_process_identity(process_id)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "test process disappeared"))?;
+        assert_eq!(group.authenticate_process_id(process_id)?, expected);
+
+        let other_process_id = if process_id == 1 { 2 } else { 1 };
+        fs::write(
+            directory.path().join("cgroup.procs"),
+            format!("{other_process_id}\n"),
+        )?;
+        assert!(matches!(
+            group.authenticate_process_id(process_id),
+            Err(LinuxQemuCgroupError::ProcessMembership { .. })
+        ));
         Ok(())
     }
 }
