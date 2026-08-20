@@ -37,6 +37,100 @@ pub trait QemuRealizedNodeBackend: Backend {
     fn current_icount(&mut self) -> Result<Icount, BackendError>;
 }
 
+/// Narrow live-node operations available to a modeled attempt driver.
+///
+/// This facade deliberately excludes generic snapshot, restore, shutdown, and
+/// process-replacement authority. VMState operations remain owned by the
+/// realization executor.
+pub trait QemuLiveAttemptBackend {
+    /// Advances the live node to one scheduler-authorized horizon.
+    ///
+    /// The current QEMU-node adapter fails closed when coverage transport is
+    /// enabled because the concrete campaign driver does not yet own the
+    /// unified event-log drain required for canonical coverage evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the bounded quantum cannot complete.
+    fn advance_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError>;
+
+    /// Samples the live node's deterministic execution fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the fingerprint cannot be read.
+    fn fingerprint(&mut self) -> Result<crucible::ExecutionFingerprint, BackendError>;
+
+    /// Delivers one already-scheduled deterministic input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the input cannot be delivered.
+    fn deliver_input(&mut self, input: crucible::BackendInput) -> Result<(), BackendError>;
+
+    /// Reads the current retired instruction count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the shared-memory hot path cannot be read.
+    fn current_icount(&mut self) -> Result<Icount, BackendError>;
+}
+
+impl<T> QemuLiveAttemptBackend for T
+where
+    T: QemuRealizedNodeBackend,
+{
+    fn advance_to_horizon(
+        &mut self,
+        horizon: crucible::ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        Backend::advance_to_horizon(self, horizon)
+    }
+
+    fn fingerprint(&mut self) -> Result<crucible::ExecutionFingerprint, BackendError> {
+        Backend::fingerprint(self)
+    }
+
+    fn deliver_input(&mut self, input: crucible::BackendInput) -> Result<(), BackendError> {
+        Backend::deliver_input(self, input)
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        QemuRealizedNodeBackend::current_icount(self)
+    }
+}
+
+/// Live-backend capability exposed after policy-controlled QEMU realization.
+///
+/// Implementations retain ownership of process launch, VMState restore, and
+/// teardown. Attempt drivers receive only a bounded mutable borrow of the
+/// already-realized backend; they cannot replace it or invoke generic restore.
+pub trait QemuVmLiveRealizationExecutor: QemuVmRealizationExecutor {
+    /// Returns whether an installed backend still owns a process generation.
+    #[must_use]
+    fn live_backend_is_active(&self) -> bool;
+
+    /// Borrows the active backend installed by the last successful realization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when no realized backend is active.
+    fn live_backend_mut(
+        &mut self,
+    ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError>;
+
+    /// Shuts down and reaps the active backend, when one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the backend shutdown ladder
+    /// reports failure.
+    fn shutdown_live_backend(&mut self) -> Result<(), QemuVmRealizationError>;
+}
+
 impl QemuRealizedNodeBackend for QemuNode {
     fn current_icount(&mut self) -> Result<Icount, BackendError> {
         QemuNode::current_icount(self).map_err(BackendError::from)
@@ -162,8 +256,7 @@ where
         operation: &'static str,
     ) -> Result<ContentHash, QemuVmRealizationError> {
         let mut node = self.launcher.launch_restored_node(config, restore)?;
-        let runtime_id = node
-            .fingerprint()
+        let runtime_id = Backend::fingerprint(&mut node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| node_backend_error(operation, source))?;
         self.shutdown_active_node_for("replace active realized QEMU node")?;
@@ -187,9 +280,10 @@ where
         &mut self,
         operation: &'static str,
     ) -> Result<(), QemuVmRealizationError> {
-        if let Some(mut node) = self.active_node.take() {
+        if let Some(node) = self.active_node.as_mut() {
             node.shutdown()
                 .map_err(|source| node_backend_error(operation, source))?;
+            self.active_node = None;
         }
         Ok(())
     }
@@ -255,8 +349,7 @@ where
         let horizon = replay_horizon_from_runtime(&runtime)?;
         let node_id = self.node.clone();
         let node = self.active_node_mut("replay one QEMU node quantum")?;
-        match node
-            .advance_to_horizon(horizon)
+        match Backend::advance_to_horizon(node, horizon)
             .map_err(|source| node_backend_error("advance QEMU node replay quantum", source))?
         {
             AdvanceOutcome::ReachedHorizon => {}
@@ -270,12 +363,10 @@ where
                 });
             }
         }
-        let runtime_id = node
-            .fingerprint()
+        let runtime_id = Backend::fingerprint(node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| node_backend_error("sample QEMU node replay fingerprint", source))?;
-        let current_icount = node
-            .current_icount()
+        let current_icount = QemuRealizedNodeBackend::current_icount(node)
             .map_err(|source| node_backend_error("sample QEMU node replay icount", source))?;
 
         Ok(runtime_from_live_replay(
@@ -285,6 +376,26 @@ where
             current_icount,
             runtime_id,
         ))
+    }
+}
+
+impl<L> QemuVmLiveRealizationExecutor for QemuNodeRealizationExecutor<L>
+where
+    L: QemuNodeRealizationLauncher,
+{
+    fn live_backend_is_active(&self) -> bool {
+        self.active_node.is_some()
+    }
+
+    fn live_backend_mut(
+        &mut self,
+    ) -> Result<&mut dyn QemuLiveAttemptBackend, QemuVmRealizationError> {
+        let node = self.active_node_mut("borrow active realized QEMU node")?;
+        Ok(node as &mut dyn QemuLiveAttemptBackend)
+    }
+
+    fn shutdown_live_backend(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.shutdown_active_node()
     }
 }
 

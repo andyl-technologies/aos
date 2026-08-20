@@ -93,6 +93,20 @@ pub struct AttemptExecutionContext {
 }
 
 impl AttemptExecutionContext {
+    /// Creates an operational context without coordinator assignment identity.
+    #[must_use]
+    pub const fn new(
+        resources: AttemptResourceLimits,
+        retention: ExecutionRetentionIntent,
+        cancellation: ExecutionCancellation,
+    ) -> Self {
+        Self {
+            resources,
+            retention,
+            cancellation,
+        }
+    }
+
     /// Returns the hard resource ceilings admitted for this execution.
     #[must_use]
     pub const fn resources(&self) -> AttemptResourceLimits {
@@ -109,6 +123,14 @@ impl AttemptExecutionContext {
     #[must_use]
     pub const fn cancellation(&self) -> &ExecutionCancellation {
         &self.cancellation
+    }
+
+    /// Returns whether another context names the exact same execution contract.
+    #[must_use]
+    pub fn matches(&self, other: &Self) -> bool {
+        self.resources == other.resources
+            && self.retention == other.retention
+            && self.cancellation.same_incarnation(&other.cancellation)
     }
 }
 
@@ -251,11 +273,11 @@ where
         let input = self
             .resolve_input(queued.request())
             .map_err(repository_worker_failure)?;
-        let context = AttemptExecutionContext {
-            resources: queued.request().resources(),
-            retention: queued.request().retention(),
-            cancellation: queued.cancellation().clone(),
-        };
+        let context = AttemptExecutionContext::new(
+            queued.request().resources(),
+            queued.request().retention(),
+            queued.cancellation().clone(),
+        );
         let candidate = self
             .model
             .execute(&input, &context)

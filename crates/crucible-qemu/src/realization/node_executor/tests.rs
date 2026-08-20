@@ -248,6 +248,49 @@ fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
     Ok(())
 }
 
+#[test]
+fn live_realization_capability_borrows_only_the_installed_node_and_reaps_it()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "live-capability"));
+    let config = Configuration::genesis(scenario("live-capability"));
+    let checkpoint =
+        checkpoint_for_config("live-capability", &config, &node, 17, CheckpointKind::Fat)?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint,
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "live-capability"), 17);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+
+    executor.load_baked_genesis(&config, admission)?;
+    let current = executor
+        .live_backend_mut()?
+        .current_icount()
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "read test live-backend icount",
+            message: source.to_string(),
+        })?;
+    assert_eq!(current, Icount { retired: 17 });
+
+    executor.shutdown_live_backend()?;
+    assert!(executor.live_backend_mut().is_err());
+    assert_eq!(
+        logged(&log)
+            .iter()
+            .filter(|call| matches!(call, NodeExecutorCall::Shutdown))
+            .count(),
+        1
+    );
+    Ok(())
+}
+
 fn scripted_launcher(
     log: SharedLog,
     runtime_id: ContentHash,

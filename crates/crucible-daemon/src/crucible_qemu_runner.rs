@@ -102,23 +102,23 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
     fn run_attempt(
         &mut self,
         input: &CrucibleAttemptExecution,
-        context: &AttemptExecutionContext,
         realization: QemuVmRealization,
     ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
 
     /// Reclaims every process, file, and resource reservation owned by the session.
     ///
     /// This operation is mandatory on successful, failed, and canceled
-    /// attempts. Even when it returns an error, the implementation must have
-    /// completed its kill-and-reap ladder so no guest process remains charged
-    /// outside the local executor supervisor. Implementations must provide the
-    /// same cleanup from `Drop` as an unwind backstop; normal control flow uses
-    /// this consuming method so cleanup failures remain observable.
+    /// attempts. Success attests that the kill-and-reap ladder completed before
+    /// resource release. A failed-reap error instead attests that the exact
+    /// resource guard was transferred to supervisor-owned quarantine and the
+    /// executor remains poisoned until reap is proven. Implementations must
+    /// provide the same cleanup from `Drop` as an unwind backstop; normal control
+    /// flow uses this consuming method so cleanup failures remain observable.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuVmRealizationError`] when cleanup completed with an
-    /// operational diagnostic failure.
+    /// Returns [`QemuVmRealizationError`] for cleanup diagnostics or when reap
+    /// failed and ownership was transferred to quarantine.
     fn finish(self) -> Result<(), QemuVmRealizationError>;
 }
 
@@ -260,8 +260,8 @@ where
     let cleanup = session.finish();
     match (result, cleanup) {
         (Ok(outcome), Ok(())) => Ok(outcome),
-        (Err(failure), _) => Err(failure),
-        (Ok(_), Err(error)) => Err(classify_realization_failure(error)),
+        (Err(failure), Ok(())) => Err(failure),
+        (_, Err(error)) => Err(classify_realization_failure(error)),
     }
 }
 
@@ -300,7 +300,7 @@ where
         | QemuVmRealizationKind::BakedGenesisLoad { .. } => CrucibleMaterializationTier::ThinReplay,
     };
     let candidate = session
-        .run_attempt(input, context, realization)
+        .run_attempt(input, realization)
         .map_err(map_driver_failure)?;
     Ok(CrucibleExecutionOutcome::new(candidate, materialization))
 }
@@ -470,7 +470,6 @@ mod tests {
         fn run_attempt(
             &mut self,
             _input: &CrucibleAttemptExecution,
-            _context: &AttemptExecutionContext,
             _realization: QemuVmRealization,
         ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
             unreachable!("finish-only test session does not drive QEMU")
@@ -479,9 +478,9 @@ mod tests {
         fn finish(self) -> Result<(), QemuVmRealizationError> {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             if self.cleanup_error {
-                Err(QemuVmRealizationError::ExecutorUnavailable {
+                Err(QemuVmRealizationError::ReapQuarantined {
                     operation: "finish test QEMU session",
-                    message: String::from("injected cleanup diagnostic"),
+                    message: String::from("injected failed reap"),
                 })
             } else {
                 Ok(())
@@ -559,12 +558,28 @@ mod tests {
         );
         assert!(matches!(
             cleanup,
-            Err(AttemptWorkerFailure::Retryable(
+            Err(AttemptWorkerFailure::Terminal(
                 QemuExactThinRunnerError::Realization(
-                    QemuVmRealizationError::ExecutorUnavailable { .. }
+                    QemuVmRealizationError::ReapQuarantined { .. }
                 )
             ))
         ));
         assert_eq!(finishes.load(Ordering::SeqCst), 5);
+
+        let combined = finish_attempt_session(
+            finish_session(finishes.clone(), true),
+            Err::<(), _>(AttemptWorkerFailure::Terminal(
+                QemuExactThinRunnerError::Driver(()),
+            )),
+        );
+        assert!(matches!(
+            combined,
+            Err(AttemptWorkerFailure::Terminal(
+                QemuExactThinRunnerError::Realization(
+                    QemuVmRealizationError::ReapQuarantined { .. }
+                )
+            ))
+        ));
+        assert_eq!(finishes.load(Ordering::SeqCst), 6);
     }
 }

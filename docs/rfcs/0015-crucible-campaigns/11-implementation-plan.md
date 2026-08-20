@@ -176,7 +176,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   preflighted immutable observation-candidate bundle without advancing campaign
   state, and returns results to the supervisor actor for durable completion or
   bounded retry without holding supervisor state during guest execution.
-  Campaign-level supervisor ownership, the concrete QEMU/session adapter, and
+  The QEMU realization executor now exposes only a borrowed already-realized
+  live-backend facade without generic VMState/process authority, and the daemon
+  composes that capability with a pre-launch exact resource guard and mandatory
+  teardown session. Guarded executor methods receive the guard during every
+  blocking realization operation; failed reap transfers enforcement to
+  quarantine instead of releasing it, including a failed launch before active
+  backend installation. Campaign-level supervisor
+  ownership, the concrete host resource guard, the modeled attempt driver, and
   responsive multi-slot scheduling remain open.
 - [ ] **T-CAM-4.6** Implement strict and streaming commit modes, restart
   recovery, duplicate/conflict handling, backpressure, pagination, and
@@ -256,17 +263,23 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   coordinator through a mandatory attempt-scoped resource/cancellation session,
   classifies exact versus replay telemetry, delegates typed
   selection/stop/candidate work through the session's live-backend capability,
-  and tears the session down on every exit. Only explicitly typed availability
-  failures retry; deterministic realization failures terminate.
+  and tears the session down on every exit. The live-node composition now
+  installs and verifies the exact guard before launch authority is returned,
+  exact-binds the cancellation incarnation, lends the driver only narrow live
+  operations plus a non-releasing boundary view, and releases the guard only
+  after reap attestation. Cleanup tracks backend and guard phases separately on
+  explicit finish and drop. Only explicitly typed
+  availability failures retry; deterministic realization failures terminate.
   Canonical `DescribeExecutor` and cursor-bound `WatchCapacity` messages now
   separate immutable compatibility/ceiling facts from daemon-epoch-scoped
   availability and exact/hot locality. Checked direct and Unix-loopback clients
   reject stale epochs, capability drift, non-advancing sequences, capacity
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
-  slots, CPU, memory, disk, and execution-quanta limits. The concrete driver,
-  hot-fork realization, full out-of-process campaign flight, and complete component
-  conformance gate remain open.
+  slots, CPU, memory, disk, and execution-quanta limits. The concrete host
+  resource guard and modeled driver, coverage-aware live advancement and final
+  event-log drain, hot-fork realization, full out-of-process campaign flight,
+  and complete component conformance gate remain open.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
   mutations with bounded immutable validated-head/lifecycle checkpoints and
   authenticated membership and result-locator indexes; promote only after ref

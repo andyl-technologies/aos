@@ -19,7 +19,9 @@
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
-//! exact-restore/thin-replay QEMU realization path; [`planner_loopback`] owns
+//! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
+//! composes its attempt-scoped live backend, resource guard, and modeled driver;
+//! [`planner_loopback`] owns
 //! the strict local pure-planner component transport.
 //! Future modules split session hosting, API transport, and diagnostics.
 
@@ -32,6 +34,7 @@ pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
 pub mod crucible_qemu_runner;
+pub mod crucible_qemu_session;
 pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_supervisor;
@@ -62,6 +65,11 @@ pub use crucible_execution::{
 pub use crucible_qemu_runner::{
     QemuCrucibleAttemptSession, QemuCrucibleRealizationStore, QemuCrucibleSessionFactory,
     QemuExactThinExecutionRunner, QemuExactThinRunnerError,
+};
+pub use crucible_qemu_session::{
+    QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
+    QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptSession,
+    QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

@@ -262,6 +262,12 @@ impl ExecutionCancellation {
         self.canceled.load(Ordering::Acquire)
     }
 
+    /// Returns whether two handles name the same execution incarnation.
+    #[must_use]
+    pub fn same_incarnation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.canceled, &other.canceled)
+    }
+
     fn cancel(&self) {
         self.canceled.store(true, Ordering::Release);
     }
