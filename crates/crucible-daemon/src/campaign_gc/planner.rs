@@ -50,6 +50,10 @@ impl<'a> CampaignGcPhysicalStore<'a> {
     pub const fn backend(self) -> &'a str {
         self.backend
     }
+
+    pub(super) const fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.admin
+    }
 }
 
 /// Complete non-destructive output of one single-host GC planning pass.

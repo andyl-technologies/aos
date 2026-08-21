@@ -752,8 +752,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   produces a non-destructive plan across an ordered set of physical leaves,
   persists the exact plan/manifests and phase in a durable external journal, and
   excludes campaign children-before-ref publication with a shared/exclusive ref
-  lifecycle fence. Exact-pin materialization selection, composed-store fencing,
-  exact-generation destructive apply, and its end-to-end interruption tests
+  lifecycle fence. Exact-generation single-host loose-leaf apply now
+  revalidates every root and physical basis, deletes under the leaf fence, and
+  leaves interrupted journals recovery-required. Exact-pin materialization
+  selection, composed cache/durable/pack fencing, and full operator-flight tests
   remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
