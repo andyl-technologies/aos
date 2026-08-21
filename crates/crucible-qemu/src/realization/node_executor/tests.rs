@@ -30,6 +30,8 @@ enum NodeExecutorCall {
     Advance(u64),
     Fingerprint,
     CurrentIcount,
+    Seal,
+    Capture(ContentHash),
     Snapshot,
     Restore,
     Shutdown,
@@ -134,7 +136,23 @@ impl QemuRealizedNodeBackend for ScriptedNode {
         &mut self,
         _event_log: &mut EventLog,
     ) -> Result<(), BackendError> {
+        self.log.borrow_mut().push(NodeExecutorCall::Seal);
         Ok(())
+    }
+
+    fn capture_live_exact_snapshot_paused(
+        &mut self,
+        _node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.log
+            .borrow_mut()
+            .push(NodeExecutorCall::Capture(checkpoint.id));
+        QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun).map_err(|source| {
+            BackendError::Rejected {
+                message: source.to_string(),
+            }
+        })
     }
 
     fn shutdown_live_with_event_log(
@@ -506,6 +524,117 @@ fn final_drain_change_is_measured_from_the_executor_owned_log() -> Result<(), Qe
 
     assert!(!shutdown.observation_boundary_unchanged());
     assert_ne!(executor.event_log.offset(), EventLogOffset::default());
+    Ok(())
+}
+
+#[test]
+fn live_exact_capture_authenticates_and_seals_the_installed_basis()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "live-capture"));
+    let config = Configuration::genesis(scenario("live-capture"));
+    let checkpoint =
+        checkpoint_for_config("live-capture", &config, &node, 23, CheckpointKind::Fat)?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint: checkpoint.clone(),
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "live-capture"), 23);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    executor.load_baked_genesis(&config, admission)?;
+
+    let snapshot = executor.capture_live_exact_snapshot(checkpoint.clone())?;
+
+    assert_eq!(snapshot.checkpoint(), &checkpoint);
+    assert!(logged(&log).contains(&NodeExecutorCall::Seal));
+    assert!(logged(&log).contains(&NodeExecutorCall::Capture(checkpoint.id)));
+    assert!(
+        executor
+            .live_backend_mut()?
+            .advance_to_horizon(crucible::ExecutionHorizon {
+                icount: Icount { retired: 24 },
+            })
+            .is_err()
+    );
+    executor.shutdown_live_backend()?;
+    Ok(())
+}
+
+#[test]
+fn live_exact_capture_rejects_a_foreign_log_after_sealing_without_capture()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "foreign-capture-log"));
+    let config = Configuration::genesis(scenario("foreign-capture-log"));
+    let mut checkpoint = checkpoint_for_config(
+        "foreign-capture-log",
+        &config,
+        &node,
+        31,
+        CheckpointKind::Fat,
+    )?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint: checkpoint.clone(),
+    };
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "foreign-capture-log"), 31);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    executor.load_baked_genesis(&config, admission)?;
+    let state =
+        checkpoint
+            .state
+            .as_ref()
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "test live exact capture",
+                message: String::from("test checkpoint has no materialized state"),
+            })?;
+    checkpoint.state = Some(MaterializedState::from_components(
+        state.vm_snapshots.clone(),
+        state.device_overlays.clone(),
+        state.scheduler.clone(),
+        state.decision_rng.clone(),
+        EventLogOffset::new(hash("event-log", "foreign-capture-log"), 64, 1),
+    ));
+
+    let error = executor
+        .capture_live_exact_snapshot(checkpoint)
+        .err()
+        .ok_or_else(|| QemuVmRealizationError::Executor {
+            operation: "test foreign capture log",
+            message: String::from("foreign capture log was unexpectedly accepted"),
+        })?;
+
+    assert!(matches!(
+        error,
+        QemuVmRealizationError::InvalidCheckpoint { .. }
+    ));
+    assert!(logged(&log).contains(&NodeExecutorCall::Seal));
+    assert!(
+        !logged(&log)
+            .iter()
+            .any(|call| matches!(call, NodeExecutorCall::Capture(_)))
+    );
+    assert!(
+        executor
+            .live_backend_mut()?
+            .advance_to_horizon(crucible::ExecutionHorizon {
+                icount: Icount { retired: 32 },
+            })
+            .is_err()
+    );
+    executor.shutdown_live_backend()?;
     Ok(())
 }
 

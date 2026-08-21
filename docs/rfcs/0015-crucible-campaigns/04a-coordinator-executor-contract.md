@@ -1508,6 +1508,20 @@ performs a final drain before its reap ladder; any event beyond the sealed
 boundary invalidates the candidate while still releasing the reaped resource
 guard.
 
+Exact-checkpoint pause uses a separate executor-owned capability, never the
+modeled live-backend facade. The lifecycle owner supplies a materialized
+scheduler `Checkpoint`; capture first verifies that its identity and
+configuration equal the installed configuration, seals the executor-owned
+event log, and then requires the checkpoint's exact event-log offset and node
+instruction count to match the live boundary before QEMU VMState or host-I/O
+capture begins. Success leaves QEMU paused. Failure after sealing also closes
+further modeled progress and retains the session for guarded reap or
+quarantine. The returned authenticated `QemuVmSnapshot` MUST be durably
+published before the session is finished and its resource guard is released.
+The current checkpoint lands this capture/ownership contract; durable
+publication and restart-resume ledger composition remain mandatory before the
+campaign supervisor may report exact-checkpoint pause complete.
+
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
 each coverage-map index at most once for the process. Draining priming events

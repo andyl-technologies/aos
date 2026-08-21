@@ -63,6 +63,21 @@ pub trait QemuRealizedNodeBackend: Backend {
         event_log: &mut EventLog,
     ) -> Result<(), BackendError>;
 
+    /// Captures one exact snapshot while leaving the realized node paused.
+    ///
+    /// The caller owns scheduler and event-log admission. Implementations own
+    /// VMState and host-I/O capture and must leave the process paused after
+    /// either success or an indeterminate capture failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when exact VMState or host-I/O capture fails.
+    fn capture_live_exact_snapshot_paused(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError>;
+
     /// Drains final observable events, shuts down, and attests process reap.
     ///
     /// # Errors
@@ -182,6 +197,23 @@ pub trait QemuVmLiveRealizationExecutor: QemuVmRealizationExecutor {
     /// Returns [`QemuVmRealizationError`] when final observation drain fails.
     fn seal_live_observation_boundary(&mut self) -> Result<bool, QemuVmRealizationError>;
 
+    /// Captures the active backend at one exact scheduler boundary.
+    ///
+    /// The executor authenticates the checkpoint against the installed
+    /// configuration, current node instruction count, and executor-owned
+    /// unified event log before delegating VMState capture. Once boundary
+    /// sealing begins, the backend remains unavailable for further modeled
+    /// execution even when capture fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when no backend is active, the exact
+    /// live basis differs, observation sealing fails, or snapshot capture fails.
+    fn capture_live_exact_snapshot(
+        &mut self,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError>;
+
     /// Shuts down and reaps the active backend, when one exists.
     ///
     /// # Errors
@@ -214,6 +246,15 @@ impl QemuRealizedNodeBackend for QemuNode {
     ) -> Result<(), BackendError> {
         self.drain_observable_events_into(event_log)
             .map(|_| ())
+            .map_err(BackendError::from)
+    }
+
+    fn capture_live_exact_snapshot_paused(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.capture_exact_snapshot_paused(node, checkpoint)
             .map_err(BackendError::from)
     }
 
@@ -317,6 +358,7 @@ where
     node: NodeId,
     launcher: L,
     active_node: Option<L::Node>,
+    active_configuration: Option<ContentHash>,
     event_log: EventLog,
     observation_sealed: bool,
 }
@@ -332,6 +374,7 @@ where
             node,
             launcher,
             active_node: None,
+            active_configuration: None,
             event_log: EventLog::new(),
             observation_sealed: false,
         }
@@ -356,6 +399,7 @@ where
     #[allow(dead_code)]
     pub(crate) fn take_active_node_for_quarantine(&mut self) -> Option<L::Node> {
         self.observation_sealed = false;
+        self.active_configuration = None;
         self.active_node.take()
     }
 
@@ -385,13 +429,85 @@ where
                 .map_err(|source| node_backend_error(operation, source))?;
             self.active_node = None;
         }
+        self.active_configuration = None;
         self.observation_sealed = false;
         Ok(())
     }
 
-    fn retain_runtime_event_log(&mut self, runtime: &RuntimeState) {
+    fn retain_runtime_basis(&mut self, runtime: &RuntimeState) {
+        self.active_configuration = Some(runtime.configuration);
         self.event_log = EventLog::from_offset(runtime.event_log);
         self.observation_sealed = false;
+    }
+
+    fn validate_capture_checkpoint_basis(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), QemuVmRealizationError> {
+        let active_configuration =
+            self.active_configuration
+                .ok_or_else(|| QemuVmRealizationError::Executor {
+                    operation: "capture live exact QEMU snapshot",
+                    message: String::from("no active configuration is installed"),
+                })?;
+        if checkpoint.configuration != active_configuration || checkpoint.id != active_configuration
+        {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: format!(
+                    "checkpoint configuration {:?} and identity {:?} do not match installed configuration {:?}",
+                    checkpoint.configuration, checkpoint.id, active_configuration
+                ),
+            });
+        }
+
+        let expected_icount = checkpoint.node_icounts.get(&self.node).ok_or_else(|| {
+            QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: format!(
+                    "checkpoint has no instruction count for realized node `{}`",
+                    self.node.name
+                ),
+            }
+        })?;
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "capture live exact QEMU snapshot",
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        let observed_icount = QemuRealizedNodeBackend::current_icount(node)
+            .map_err(|source| node_backend_error("authenticate exact snapshot icount", source))?;
+        if observed_icount != *expected_icount {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: format!(
+                    "checkpoint icount {} does not match realized node icount {}",
+                    expected_icount.retired, observed_icount.retired
+                ),
+            });
+        }
+
+        let expected_event_log = checkpoint
+            .state
+            .as_ref()
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: String::from("exact checkpoint has no materialized scheduler state"),
+            })?
+            .event_log;
+        if expected_event_log != self.event_log.offset() {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: format!(
+                    "checkpoint event-log offset {:?} does not match installed offset {:?}",
+                    expected_event_log,
+                    self.event_log.offset()
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -413,7 +529,7 @@ where
             self.launch_and_install(config, restore, "load exact QEMU node snapshot")?;
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         validate_runtime_matches_admission(&runtime, admission)?;
-        self.retain_runtime_event_log(&runtime);
+        self.retain_runtime_basis(&runtime);
         Ok(runtime)
     }
 
@@ -433,7 +549,7 @@ where
             "load exact QEMU node snapshot for replay oracle",
         )?;
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
-        self.retain_runtime_event_log(&runtime);
+        self.retain_runtime_basis(&runtime);
         Ok(runtime)
     }
 
@@ -446,7 +562,7 @@ where
         let restore = QemuNodeRestorePlan::baked_genesis(admission);
         let runtime_id = self.launch_and_install(config, restore, "load baked QEMU genesis")?;
         let runtime = runtime_from_scheduled_checkpoint_material(config, checkpoint, runtime_id);
-        self.retain_runtime_event_log(&runtime);
+        self.retain_runtime_basis(&runtime);
         Ok(runtime)
     }
 
@@ -500,14 +616,16 @@ where
         let current_icount = QemuRealizedNodeBackend::current_icount(node)
             .map_err(|source| node_backend_error("sample QEMU node replay icount", source))?;
 
-        Ok(runtime_from_live_replay(
+        let runtime = runtime_from_live_replay(
             runtime,
             request,
             node_id,
             current_icount,
             runtime_id,
             self.event_log.offset(),
-        ))
+        );
+        self.active_configuration = Some(runtime.configuration);
+        Ok(runtime)
     }
 }
 
@@ -547,6 +665,61 @@ where
         Ok(after == before)
     }
 
+    fn capture_live_exact_snapshot(
+        &mut self,
+        checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+        if self.observation_sealed {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "capture live exact QEMU snapshot",
+                message: String::from("modeled observation boundary is already sealed"),
+            });
+        }
+        if self.active_node.is_none() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "capture live exact QEMU snapshot",
+                message: String::from("no QEMU node has been restored"),
+            });
+        }
+        let active_configuration =
+            self.active_configuration
+                .ok_or_else(|| QemuVmRealizationError::Executor {
+                    operation: "capture live exact QEMU snapshot",
+                    message: String::from("no active configuration is installed"),
+                })?;
+        if checkpoint.configuration != active_configuration || checkpoint.id != active_configuration
+        {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "live exact snapshot capture",
+                message: String::from(
+                    "checkpoint identity does not name the installed configuration",
+                ),
+            });
+        }
+
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "capture live exact QEMU snapshot",
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        self.observation_sealed = true;
+        QemuRealizedNodeBackend::seal_live_observation_boundary(node, &mut self.event_log)
+            .map_err(|source| node_backend_error("seal exact snapshot boundary", source))?;
+        self.validate_capture_checkpoint_basis(&checkpoint)?;
+
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "capture live exact QEMU snapshot",
+                message: String::from("no QEMU node has been restored"),
+            })?;
+        QemuRealizedNodeBackend::capture_live_exact_snapshot_paused(node, &self.node, checkpoint)
+            .map_err(|source| node_backend_error("capture live exact QEMU snapshot", source))
+    }
+
     fn shutdown_live_backend(&mut self) -> Result<QemuLiveBackendShutdown, QemuVmRealizationError> {
         let Some(node) = self.active_node.as_mut() else {
             return Ok(QemuLiveBackendShutdown::unchanged());
@@ -556,6 +729,7 @@ where
             .map_err(|source| node_backend_error("shutdown active realized QEMU node", source))?;
         let after = self.event_log.offset();
         self.active_node = None;
+        self.active_configuration = None;
         let unchanged = !self.observation_sealed || before == after;
         self.observation_sealed = false;
         Ok(QemuLiveBackendShutdown {

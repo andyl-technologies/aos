@@ -105,6 +105,22 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
         realization: QemuVmRealization,
     ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
 
+    /// Captures one exact paused checkpoint under the active resource guard.
+    ///
+    /// Modeled drivers do not receive this authority. The daemon lifecycle
+    /// owner supplies the scheduler checkpoint, durably publishes the returned
+    /// snapshot while this session still owns the paused process and resource
+    /// guard, and only then consumes the session through [`Self::finish`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] on cancellation, live-basis mismatch,
+    /// observation sealing failure, or exact VMState/host-I/O capture failure.
+    fn capture_exact_checkpoint(
+        &mut self,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError>;
+
     /// Reclaims every process, file, and resource reservation owned by the session.
     ///
     /// This operation is mandatory on successful, failed, and canceled
@@ -473,6 +489,13 @@ mod tests {
             _realization: QemuVmRealization,
         ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
             unreachable!("finish-only test session does not drive QEMU")
+        }
+
+        fn capture_exact_checkpoint(
+            &mut self,
+            _checkpoint: crucible::Checkpoint,
+        ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+            unreachable!("finish-only test session does not capture QEMU")
         }
 
         fn finish(self) -> Result<(), QemuVmRealizationError> {
