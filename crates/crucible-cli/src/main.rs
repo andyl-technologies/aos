@@ -1252,6 +1252,30 @@ struct ServeArgs {
     /// Map a client certificate fingerprint to debugger capabilities.
     #[arg(long, value_name = "sha256=capability,...")]
     debug_role: Vec<String>,
+    /// Host the local CampaignService on this managed Unix socket.
+    #[arg(long, value_name = "path")]
+    campaign_socket: Option<PathBuf>,
+    /// Retain local campaign objects and refs below this existing directory.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_state: Option<PathBuf>,
+    /// Load the strict local campaign peer policy from this file.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_policy: Option<PathBuf>,
+    /// Set the managed campaign socket's Unix permission bits in octal.
+    #[arg(
+        long,
+        value_name = "octal",
+        default_value = "600",
+        requires = "campaign_socket",
+        value_parser = parse_campaign_socket_mode
+    )]
+    campaign_socket_mode: u32,
+}
+
+fn parse_campaign_socket_mode(value: &str) -> Result<u32, String> {
+    let digits = value.strip_prefix("0o").unwrap_or(value);
+    u32::from_str_radix(digits, 8)
+        .map_err(|_| String::from("campaign socket mode must be an octal integer"))
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

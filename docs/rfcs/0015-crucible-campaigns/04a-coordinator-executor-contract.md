@@ -765,10 +765,27 @@ socket for the next locked incarnation. The endpoint directory and its
 ancestors are an operator-owned namespace: non-cooperating same-credential
 renames remain outside this local deployment contract.
 
-Operational diagnostic routing and the remaining CLI process bootstrap remain
-open. The pre-bound constructor remains useful for embedded/test deployments,
-but constructing it without equivalent path ownership and parsed policy does
-not make an endpoint production-authorized.
+The same deployment owner requires an existing absolute state directory and
+regular policy file, each owned by the daemon's exact effective UID/GID with no
+group/other write bits. Both paths are free of NUL/dot components and at most
+4,095 bytes. Policy open uses `O_NOFOLLOW`, authenticates the opened inode, and
+reads at most the 1-MiB policy ceiling before any repository or socket write.
+The state root retains a stable owner-only exclusive lock across the complete
+listener lifetime, creates or validates private `objects/` and `refs/`
+subdirectories, and rejects a second cooperating daemon even if it names a
+different socket. Its directory identity is rechecked before the path-backed
+stores become reachable. `crucible serve` enables this composition only when
+`--campaign-socket`, `--campaign-state`, and `--campaign-policy` are supplied
+together; `--campaign-socket-mode` is octal and defaults to `600`. SIGINT,
+SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both
+services and joins the campaign workers before releasing either lock.
+`--read-only` also wraps the campaign authorizer and denies Create, Derive,
+ApplyCommand, Pin, and SubmitBranch even if the policy file grants them.
+
+Structured operational diagnostic routing remains open. The pre-bound
+constructor remains useful for embedded/test deployments, but constructing it
+without equivalent path ownership and parsed policy does not make an endpoint
+production-authorized.
 
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and

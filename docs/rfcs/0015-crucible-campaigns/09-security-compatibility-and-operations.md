@@ -179,6 +179,17 @@ graceful cleanup is exact-inode conditional. The containing directory tree is
 operator-owned deployment state; sharing its mutation credential with an
 untrusted process is non-conforming.
 
+The durable campaign state root is separately single-writer locked for the
+daemon lifetime. It and the strict policy file must be regular/exact-owner
+deployment objects with no group/other write permission; policy bytes are
+bounded and authenticated before state-directory creation or socket bind.
+Different socket paths do not permit two daemon incarnations to share one
+mutable campaign ref namespace. Graceful process shutdown joins both lifecycle
+and campaign services before releasing repository or endpoint ownership.
+The process-wide read-only mode denies every CampaignService mutation after
+ordinary policy authorization, so a permissive deployment file cannot weaken
+that operational boundary.
+
 - **[CSEC-11]** Export and debugger capabilities MUST be separate from ordinary
   campaign operation because exact closures may contain secrets.
 

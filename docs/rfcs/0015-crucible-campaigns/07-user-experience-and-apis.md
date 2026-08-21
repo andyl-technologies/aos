@@ -457,6 +457,25 @@ and removes only the exact bound inode after listener shutdown. The directory
 and its ancestors remain operator-owned deployment state. Framing or the
 listener alone is never authentication.
 
+The initial combined daemon process is started with an existing secure state
+directory and policy file:
+
+```text
+crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
+  --campaign-socket /run/crucible/campaign.sock \
+  --campaign-state /var/lib/crucible/campaign \
+  --campaign-policy /etc/crucible/campaign-policy.toml \
+  --campaign-socket-mode 600
+```
+
+The three campaign paths are an all-or-none profile. The daemon uses its exact
+effective UID/GID as the filesystem and peer-policy owner, takes one durable
+repository lock before opening the socket, and stops the lifecycle and campaign
+services as one signal-driven lifecycle. Restart reopens the same object/ref
+directories while stale-socket recovery remains exact-owner conditional.
+`--read-only` applies to both APIs and cannot be bypassed by a mutation grant in
+the campaign policy.
+
 All mutation requests carry an authenticated principal. Mutations of an
 existing campaign also carry command ID and expected snapshot ID; creation
 instead carries expected absence of its canonical name. CAS conflict responses
