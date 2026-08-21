@@ -338,6 +338,71 @@
       }
     ];
   };
+  qemuDeterministicNetworkKick = pkgs.mkDerivation {
+    pname = "crucible-phase2-qemu-deterministic-network-kick";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.tar pkgs.xz];
+    phases = [
+      {
+        name = "verify-deterministic-network-kick";
+        script = ''
+          set -eu
+          mkdir -p "$out" "$TMPDIR/stock-qemu"
+
+          result="${qemuLiveNetworkIo}/live-world-network.result"
+          grep -q '^PASS$' "$result"
+          grep -q '^guest_acknowledgements=[1-9][0-9]*$' "$result"
+          grep -q '^exact_restore_next_quantum_match=true$' "$result"
+          grep -q '^checkpoint_packet_continuation=[1-9][0-9]*$' "$result"
+          grep -q '^checkpoint_fault_decision_continuation=[1-9][0-9]*$' "$result"
+
+          patch_file="${patchDir}/0108-crucible-deterministic-network-kick.patch"
+          grep -q '^+.*vdev->device_id == VIRTIO_ID_NET' "$patch_file"
+          grep -q '^+.*network TX crosses the registered plugin callback' "$patch_file"
+          grep -q '^+static bool virtio_net_crucible_sync_tx' "$patch_file"
+          grep -q '^+        virtio_net_tx_bh(q);' "$patch_file"
+          grep -q '^+                 \* tx_waiting is VMState, but the scheduled state of tx_bh is' "$patch_file"
+          grep -q '^+static bool virtio_crucible_queue_signal_state_needed' "$patch_file"
+          grep -q '^+        VMSTATE_UINT16(signalled_used, struct VirtQueue)' "$patch_file"
+          grep -q '^+        VMSTATE_BOOL(signalled_used_valid, struct VirtQueue)' "$patch_file"
+          grep -q '^+        &vmstate_virtio_crucible_queue_signals,' "$patch_file"
+          test "$(grep -c '^+                virtio_net_tx_bh(q);' "$patch_file")" -ge 2
+          grep -q '^+         \* different number of descriptors after an exact VMState restore' "$patch_file"
+          test "$(grep -c '^+.*tb_flush(first_cpu);' "$patch_file")" -eq 2
+          grep -q '^+.*canonical_insns > 32' "$patch_file"
+          grep -q '^+.*CF_NO_GOTO_TB | CF_NO_GOTO_PTR | canonical_insns' "$patch_file"
+          grep -q 'successful save path and successful load path flush' ${../docs/rfcs/0014-signal-driven-fault-model/14-qemu-fault-patches/59-deterministic-network-kick.md}
+          tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
+          stock_pci="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio-pci.c"
+          stock_virtio="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio.c"
+          stock_virtio_net="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/net/virtio-net.c"
+          ! grep -q 'virtio-rng, virtio-blk, and virtio-net' "$stock_pci"
+          ! grep -q 'virtio-9p, virtio-blk, and virtio-net' "$stock_virtio"
+          ! grep -q 'virtio_net_crucible_sync_tx' "$stock_virtio_net"
+
+          cat > "$out/result" <<'RESULT'
+          PASS
+          gate=gate:patch-microtests
+          patch=0108-crucible-deterministic-network-kick.patch
+          patched_fixture_exercised=true
+          stock_negative_control=true
+          qemu_package=${qemuPackage}
+          qemu_package_version=${qemuPackage.version}
+          live_guest_acknowledgement=true
+          exact_restore_packet_continuation=true
+          exact_restore_fault_decision_continuation=true
+          symmetric_snapshot_tb_flush=true
+          snapshot_bounded_tb_shape=true
+          guest_transmit_kick_dispatch=sim-icount-inline
+          guest_transmit_bottom_half_dispatch=sim-icount-synchronous
+          virtqueue_notification_cursor=sim-vmstate-preserved
+          non_sim_notifier_path_preserved=true
+          RESULT
+        '';
+      }
+    ];
+  };
   qemuCanonicalRrGenesisCursor = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-canonical-rr-genesis-cursor";
     version = "0";
@@ -1022,6 +1087,10 @@
     {
       patch = "0107-crucible-anchor-rr-cursor-genesis.patch";
       check = qemuExactSnapshotRestore;
+    }
+    {
+      patch = "0108-crucible-deterministic-network-kick.patch";
+      check = qemuDeterministicNetworkKick;
     }
   ];
 

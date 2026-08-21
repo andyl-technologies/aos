@@ -524,7 +524,7 @@ impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
         Self {
             outcome: report.outcome,
             final_state: report.final_state,
-            inbound_frames_consumed: report.due_inbound_frames.len(),
+            inbound_frames_consumed: report.inbound_frames_consumed,
             emitted_frames: report.emitted_frames,
             operations: report.operations,
         }

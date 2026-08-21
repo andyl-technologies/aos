@@ -1,8 +1,8 @@
 {pkgs}:
-# A diskless Linux initramfs whose PID 1 emits one raw Ethernet probe, blocks
-# until the Crucible router reply arrives, then emits an acknowledgement. The
-# guest creates all application traffic; the host gate only routes the
-# guest-originated frame and schedules its deterministic response.
+# A diskless Linux initramfs whose PID 1 exchanges a raw Ethernet probe,
+# acknowledgement, and checkpoint-continuation stream. The guest creates all
+# application traffic; the host gate only routes guest-originated frames and
+# schedules deterministic responses.
 pkgs.mkDerivation {
   pname = "crucible-live-network-io-initramfs";
   version = "0";
@@ -35,11 +35,13 @@ pkgs.mkDerivation {
         #define PAYLOAD_OFFSET 14
         #define CRUCIBLE_ETHERTYPE 0x88b5
 
-        static const uint8_t guest_mac[6] =
-          {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
         static const uint8_t probe_payload[] = "crucible-network-probe-v1";
         static const uint8_t reply_payload[] = "crucible-network-reply-v1";
         static const uint8_t ack_payload[] = "crucible-network-ack-v1";
+        static const uint8_t checkpoint_payload[] =
+          "crucible-network-checkpoint-v1";
+        static const uint8_t continuation_payload[] =
+          "crucible-network-continuation-v1";
 
         static void park_forever(void) {
           const struct timespec interval = {0, 20000000};
@@ -59,13 +61,15 @@ pkgs.mkDerivation {
           return ioctl(fd, SIOCSIFFLAGS, &request);
         }
 
-        static int stagger_guest_tx(int fd, const char *name) {
+        static int read_guest_mac_and_stagger_tx(int fd, const char *name,
+                                                 uint8_t guest_mac[6]) {
           struct ifreq request;
           memset(&request, 0, sizeof(request));
           strncpy(request.ifr_name, name, IFNAMSIZ - 1);
           if (ioctl(fd, SIOCGIFHWADDR, &request) != 0) {
             return -1;
           }
+          memcpy(guest_mac, request.ifr_hwaddr.sa_data, 6);
 
           /*
            * Multi-guest certification assigns stable node-derived MACs. A
@@ -79,6 +83,12 @@ pkgs.mkDerivation {
             }
           }
           return 0;
+        }
+
+        static int payload_matches(const uint8_t *frame, ssize_t received,
+                                   const uint8_t *payload, size_t payload_len) {
+          return received >= PAYLOAD_OFFSET + (ssize_t)payload_len &&
+                 memcmp(frame + PAYLOAD_OFFSET, payload, payload_len) == 0;
         }
 
         static void build_frame(uint8_t frame[FRAME_LEN],
@@ -128,7 +138,8 @@ pkgs.mkDerivation {
           if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
             park_forever();
           }
-          if (stagger_guest_tx(fd, "eth0") != 0) {
+          uint8_t guest_mac[6];
+          if (read_guest_mac_and_stagger_tx(fd, "eth0", guest_mac) != 0) {
             park_forever();
           }
 
@@ -144,24 +155,52 @@ pkgs.mkDerivation {
 
           for (;;) {
             ssize_t received = recv(fd, frame, sizeof(frame), 0);
-            if (received < PAYLOAD_OFFSET + (ssize_t)(sizeof(reply_payload) - 1)) {
-              continue;
-            }
-            if (frame[12] != 0x88 || frame[13] != 0xb5 ||
-                memcmp(frame + PAYLOAD_OFFSET, reply_payload,
-                       sizeof(reply_payload) - 1) != 0) {
+            if (received < PAYLOAD_OFFSET || frame[12] != 0x88 ||
+                frame[13] != 0xb5) {
               continue;
             }
 
+            const uint8_t *response_payload = 0;
+            size_t response_payload_len = 0;
+            unsigned int response_count = 1;
+            const uint8_t *response_destination = broadcast;
             const uint8_t router_mac[6] =
               {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-            build_frame(frame, router_mac, guest_mac, ack_payload,
-                        sizeof(ack_payload) - 1);
-            if (send_frame(fd, index_request.ifr_ifindex, frame) !=
-                (ssize_t)sizeof(frame)) {
-              park_forever();
+            if (payload_matches(frame, received, reply_payload,
+                                sizeof(reply_payload) - 1)) {
+              response_payload = ack_payload;
+              response_payload_len = sizeof(ack_payload) - 1;
+              response_destination = router_mac;
+            } else if (payload_matches(frame, received, probe_payload,
+                                       sizeof(probe_payload) - 1)) {
+              response_payload = ack_payload;
+              response_payload_len = sizeof(ack_payload) - 1;
+            } else if (payload_matches(frame, received, ack_payload,
+                                       sizeof(ack_payload) - 1)) {
+              response_payload = checkpoint_payload;
+              response_payload_len = sizeof(checkpoint_payload) - 1;
+              response_count = 4;
+            } else if (payload_matches(frame, received, checkpoint_payload,
+                                       sizeof(checkpoint_payload) - 1)) {
+              response_payload = continuation_payload;
+              response_payload_len = sizeof(continuation_payload) - 1;
+            } else if (payload_matches(frame, received, continuation_payload,
+                                       sizeof(continuation_payload) - 1)) {
+              response_payload = checkpoint_payload;
+              response_payload_len = sizeof(checkpoint_payload) - 1;
+            } else {
+              continue;
             }
-            park_forever();
+
+            build_frame(frame, response_destination, guest_mac,
+                        response_payload, response_payload_len);
+            for (unsigned int response = 0; response < response_count;
+                 ++response) {
+              if (send_frame(fd, index_request.ifr_ifindex, frame) !=
+                  (ssize_t)sizeof(frame)) {
+                park_forever();
+              }
+            }
           }
         }
         INIT_C

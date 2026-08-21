@@ -1385,6 +1385,8 @@ impl LiveVcpuTimeCallbackState {
                 ceiling_icount,
             });
         }
+        let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
+        self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?;
         // Sample the fingerprint only at the host-driven ceiling, and gate on
         // exact equality (not `>=`): the plugin clamps advance at the max-advance
         // ceiling, so a reached publish at a host-driven boundary lands on
@@ -1633,37 +1635,8 @@ impl LiveVcpuTimeCallbackState {
         // QEMU RX injection and fingerprint capture may synchronously invoke
         // another plugin callback. Keep the pending token armed, but release its
         // mutex and every mutable ring view before crossing those boundaries.
-        let preview = if let Some(network) = self.network.as_ref() {
-            let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
-            let preview = {
-                let inbound = network.inbound.inbound();
-                PluginInboundFrames::reject_already_passed_ring_heads(
-                    [inbound],
-                    passed_delivery_floor_icount,
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-                PluginInboundFrames::preview_deliverable_since(
-                    [inbound],
-                    target_icount,
-                    passed_delivery_floor_icount,
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
-            };
-            if !preview.frames().is_empty() {
-                let mut rx_queue = network.rx_queue;
-                handle_network_rx_idle_callback(
-                    &network.rx,
-                    &mut rx_queue,
-                    passed_delivery_floor_icount,
-                    target_icount,
-                    preview.frames(),
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
-            }
-            Some(preview)
-        } else {
-            None
-        };
+        let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
+        self.inject_due_network_inbound(target_icount, passed_delivery_floor_icount)?;
 
         if target_icount == ceiling_icount {
             self.publish_fingerprint_sample(target_icount, false)?;
@@ -1680,19 +1653,6 @@ impl LiveVcpuTimeCallbackState {
             .validate_completion(completion)
             .map_err(|source| LiveVcpuTimeCallbackError::IdleAdvanceCompletion { source })?;
         if let Some(network) = self.network.as_ref() {
-            let preview = preview
-                .as_ref()
-                .ok_or(LiveVcpuTimeCallbackError::InboundCommitMismatch)?;
-            let inbound = network.inbound.inbound();
-            let committed = PluginInboundFrames::drain_deliverable_since(
-                [inbound],
-                target_icount,
-                self.last_icount.load(Ordering::Acquire),
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-            if committed.frames() != preview.frames() {
-                return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
-            }
             let mut outbound = network.outbound.outbound();
             network
                 .tx
@@ -1730,7 +1690,64 @@ impl LiveVcpuTimeCallbackState {
         Ok(target_icount)
     }
 
-    fn on_network_tx(&self, payload: &[u8]) -> Result<(), LiveVcpuTimeCallbackError> {
+    /// Injects and commits every router frame due at this guest boundary.
+    ///
+    /// The plugin is the only consumer of the router-to-VM SPSC ring. The host
+    /// may observe the consumer index after a release-published boundary, but it
+    /// must never dequeue a payload. Previewing before the callback and
+    /// comparing the committed batch afterwards keeps reentrant QEMU RX work
+    /// from changing which deterministic delivery keys this boundary owns.
+    fn inject_due_network_inbound(
+        &self,
+        current_icount: u64,
+        passed_delivery_floor_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(network) = self.network.as_ref() else {
+            return Ok(());
+        };
+        let preview = {
+            let inbound = network.inbound.inbound();
+            PluginInboundFrames::reject_already_passed_ring_heads(
+                [inbound],
+                passed_delivery_floor_icount,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
+            PluginInboundFrames::preview_deliverable_since(
+                [inbound],
+                current_icount,
+                passed_delivery_floor_icount,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
+        };
+        if !preview.frames().is_empty() {
+            let mut rx_queue = network.rx_queue;
+            handle_network_rx_idle_callback(
+                &network.rx,
+                &mut rx_queue,
+                passed_delivery_floor_icount,
+                current_icount,
+                preview.frames(),
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
+        }
+        let inbound = network.inbound.inbound();
+        let committed = PluginInboundFrames::drain_deliverable_since(
+            [inbound],
+            current_icount,
+            passed_delivery_floor_icount,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
+        if committed.frames() != preview.frames() {
+            return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
+        }
+        Ok(())
+    }
+
+    fn on_network_tx(
+        &self,
+        raw_emit_icount: u64,
+        payload: &[u8],
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         let network = self
             .network
             .as_ref()
@@ -1771,7 +1788,7 @@ impl LiveVcpuTimeCallbackState {
         drop(pending_slot);
 
         let mut outbound = network.outbound.outbound();
-        let current_icount = self.callback_current_icount_without_pause()?;
+        let current_icount = self.callback_supplied_raw_icount_without_pause(raw_emit_icount)?;
         network
             .tx
             .enqueue_guest_frame(&mut outbound, current_icount, payload)
@@ -1880,6 +1897,28 @@ impl LiveVcpuTimeCallbackState {
         // QEMU clock regression.
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
         let raw_icount = (self.icount_raw)();
+        self.publish_callback_icount_without_pause(raw_icount_at_entry, raw_icount)
+    }
+
+    /// Publishes a device coordinate supplied atomically by QEMU.
+    ///
+    /// Network TX crosses from QEMU with the raw icount committed at the
+    /// synchronous virtio device boundary. Re-sampling after entering Rust can
+    /// otherwise observe a later translation-block accounting state after a
+    /// cold VMState restore.
+    fn callback_supplied_raw_icount_without_pause(
+        &self,
+        raw_icount: u64,
+    ) -> Result<u64, LiveVcpuTimeCallbackError> {
+        let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
+        self.publish_callback_icount_without_pause(raw_icount_at_entry, raw_icount)
+    }
+
+    fn publish_callback_icount_without_pause(
+        &self,
+        raw_icount_at_entry: u64,
+        raw_icount: u64,
+    ) -> Result<u64, LiveVcpuTimeCallbackError> {
         // Device callbacks run before the two-pass control boundary. They need
         // the restored offset to interpret raw QEMU time, but acknowledging the
         // transaction here would expose an intermediate RUNNING publication to
@@ -2308,6 +2347,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_block_wait_cb(
 pub(crate) extern "C" fn crucible_qemu_plugin_live_network_tx_cb(
     payload: *const u8,
     payload_len: usize,
+    raw_emit_icount: u64,
     userdata: *mut c_void,
 ) -> std::os::raw::c_int {
     let state = callback_userdata_or_abort(userdata);
@@ -2324,7 +2364,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_network_tx_cb(
         // readable for `payload_len` bytes until this callback returns.
         unsafe { core::slice::from_raw_parts(payload.as_ptr(), payload_len) }
     };
-    if let Err(error) = state.on_network_tx(payload) {
+    if let Err(error) = state.on_network_tx(raw_emit_icount, payload) {
         abort_live_callback(error);
     }
     0

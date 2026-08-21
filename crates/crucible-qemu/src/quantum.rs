@@ -8,6 +8,8 @@
 //! caller-supplied shared-memory ABI objects; it does not allocate private
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
+use std::collections::VecDeque;
+
 use crucible::{
     AdvanceOutcome, BackendInput, BasicBlockCoverageConfig, ContentHash, ExecutionFingerprint,
     ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorizer,
@@ -34,12 +36,14 @@ pub use support::QemuQuantumError;
 pub(crate) use support::idle_state_from_snapshot;
 use support::{
     authorize_qemu_delivery_ceiling, completed_quantum_clamp_is_attested,
-    device_io_freeze_from_snapshot, inbound_live_count, inbound_ring_capacity, qemu_scheduler_node,
-    quantum_outcome, validate_queue_capacity,
+    device_io_freeze_from_snapshot, qemu_scheduler_node, quantum_outcome, validate_queue_capacity,
 };
 
 const QUANTUM_FINGERPRINT_DOMAIN: &str = "crucible.qemu.quantum-shmem-fingerprint.v1";
 const DEFAULT_ROUTER_SLOT: u32 = 31;
+
+mod inbound_delivery;
+use inbound_delivery::inbound_delivery_ledger_from_view;
 
 /// Configuration for one QEMU shared-memory quantum hot-path adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,33 +152,6 @@ pub struct QemuInboundFrame {
     pub payload: Vec<u8>,
 }
 
-/// An inbound frame whose delivery icount is due for the QEMU injection layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuDueInboundFrame {
-    /// The logical destination VM node.
-    pub destination: NodeId,
-    /// The icount at which the frame becomes eligible for injection.
-    pub delivery_icount: Icount,
-    /// The producing physical node slot.
-    pub src_node: u32,
-    /// Per-producer deterministic frame sequence.
-    pub sequence: u32,
-    /// Frame payload.
-    pub payload: Vec<u8>,
-}
-
-impl QemuDueInboundFrame {
-    /// Returns the deterministic delivery key used for guest-visible ordering.
-    #[must_use]
-    pub fn delivery_key(&self) -> FrameDeliveryKey {
-        FrameDeliveryKey {
-            delivery_icount: self.delivery_icount.retired,
-            src_node: self.src_node,
-            seq: self.sequence,
-        }
-    }
-}
-
 /// A frame emitted by the guest-side plugin path toward the router ring.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuOutboundFrame {
@@ -242,8 +219,8 @@ pub enum QemuQuantumOperation {
     ReadCompletionReport,
     /// Enqueue a router-to-VM frame into the inbound SPSC ring.
     EnqueueInboundFrame,
-    /// Drain currently due inbound frame records from the inbound SPSC ring.
-    DrainDueInboundFrames,
+    /// Observe plugin-owned router-to-VM consumption without dequeuing.
+    ObserveInboundConsumption,
     /// Enqueue a plugin-emitted VM-to-router frame into the outbound SPSC ring.
     EnqueueOutboundFrame,
     /// Dequeue a VM-to-router frame from the outbound SPSC ring.
@@ -272,7 +249,7 @@ impl QemuQuantumOperation {
             | Self::ObservePluginReport
             | Self::ReadCompletionReport
             | Self::EnqueueInboundFrame
-            | Self::DrainDueInboundFrames
+            | Self::ObserveInboundConsumption
             | Self::EnqueueOutboundFrame
             | Self::DequeueOutboundFrame => QemuQuantumOperationPlane::SharedMemory,
             Self::PluginIpcControlFrame { .. } => QemuQuantumOperationPlane::PluginIpcControl,
@@ -289,7 +266,7 @@ impl QemuQuantumOperation {
             Self::ObservePluginReport => "observe-plugin-report",
             Self::ReadCompletionReport => "read-completion-report",
             Self::EnqueueInboundFrame => "enqueue-inbound-frame",
-            Self::DrainDueInboundFrames => "drain-due-inbound-frames",
+            Self::ObserveInboundConsumption => "observe-inbound-consumption",
             Self::EnqueueOutboundFrame => "enqueue-outbound-frame",
             Self::DequeueOutboundFrame => "dequeue-outbound-frame",
             Self::PluginIpcControlFrame { operation } => operation,
@@ -312,8 +289,6 @@ pub struct QemuPendingQuantum {
     /// pause at the delivery boundary so the frame can become visible before
     /// the backend continues toward the original horizon in a fresh quantum.
     pub ceiling: Icount,
-    /// Earliest delivery icount still valid for this scheduler pass.
-    pub passed_delivery_floor: Icount,
     /// Device-I/O freeze state before publishing the scheduler ceiling.
     pub initial_device_io_freeze: QemuDeviceIoFreezeObservation,
     /// Node-slot publish generation observed before the wake.
@@ -326,7 +301,35 @@ pub struct QemuPendingQuantum {
     /// report against the original scheduler ceiling.
     pub initial_control_boundary_ack: u32,
     operation_start: usize,
-    due_before_wake: Vec<QemuDueInboundFrame>,
+    inbound_consumption: QemuInboundConsumptionBaseline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QemuInboundConsumptionBaseline {
+    read_idx: u64,
+    write_idx: u64,
+    delivery_keys: Vec<FrameDeliveryKey>,
+}
+
+enum QemuInboundDeliveryLedger<'a> {
+    Owned(VecDeque<FrameDeliveryKey>),
+    Borrowed(&'a mut VecDeque<FrameDeliveryKey>),
+}
+
+impl QemuInboundDeliveryLedger<'_> {
+    fn get(&self) -> &VecDeque<FrameDeliveryKey> {
+        match self {
+            Self::Owned(ledger) => ledger,
+            Self::Borrowed(ledger) => ledger,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut VecDeque<FrameDeliveryKey> {
+        match self {
+            Self::Owned(ledger) => ledger,
+            Self::Borrowed(ledger) => ledger,
+        }
+    }
 }
 
 /// A detailed report for one completed QEMU scheduler quantum.
@@ -340,8 +343,8 @@ pub struct QemuQuantumReport {
     pub final_state: QemuNodeIdleState,
     /// Backend-facing advance outcome for this quantum.
     pub outcome: AdvanceOutcome,
-    /// Inbound frame records due for the QEMU injection layer.
-    pub due_inbound_frames: Vec<QemuDueInboundFrame>,
+    /// Router-to-VM frames consumed and injected by the plugin this quantum.
+    pub inbound_frames_consumed: usize,
     /// Outbound frames drained toward the router during this quantum.
     pub emitted_frames: Vec<QemuNodeEmittedFrame>,
     /// Device-I/O freeze state observed across this quantum.
@@ -356,6 +359,7 @@ pub struct QemuQuantumShmemHotPath<'a> {
     view: QemuQuantumShmemView<'a>,
     operation_log: Vec<QemuQuantumOperation>,
     next_router_inbound_sequence: u64,
+    inbound_delivery_ledger: QemuInboundDeliveryLedger<'a>,
     send_authorizer: &'a dyn SchedulerSendAuthorizer,
 }
 
@@ -376,11 +380,34 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 shift_bits: config.shift_bits,
             });
         }
+        let inbound_delivery_ledger = inbound_delivery_ledger_from_view(&view)?;
         Ok(Self {
             config,
             view,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
+            inbound_delivery_ledger: QemuInboundDeliveryLedger::Owned(inbound_delivery_ledger),
+            send_authorizer,
+        })
+    }
+
+    pub(crate) fn new_with_inbound_delivery_ledger(
+        config: QemuQuantumShmemConfig,
+        view: QemuQuantumShmemView<'a>,
+        inbound_delivery_ledger: &'a mut VecDeque<FrameDeliveryKey>,
+        send_authorizer: &'a dyn SchedulerSendAuthorizer,
+    ) -> Result<Self, QemuQuantumError> {
+        if config.shift_bits >= 64 {
+            return Err(QemuQuantumError::InvalidShift {
+                shift_bits: config.shift_bits,
+            });
+        }
+        Ok(Self {
+            config,
+            view,
+            operation_log: Vec::new(),
+            next_router_inbound_sequence: 0,
+            inbound_delivery_ledger: QemuInboundDeliveryLedger::Borrowed(inbound_delivery_ledger),
             send_authorizer,
         })
     }
@@ -428,6 +455,9 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<(), QemuQuantumError> {
         let entry = self.inbound_entry_from_frame(frame)?;
         self.publish_inbound_entry_and_wake(&entry)?;
+        self.inbound_delivery_ledger
+            .get_mut()
+            .push_back(entry.delivery_key());
         Ok(())
     }
 
@@ -478,21 +508,14 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let initial_snapshot = self.view.node_slot.snapshot();
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
-        let passed_delivery_floor = initial_state.current_icount;
-        let due_before_wake = self.drain_due_inbound_since(
-            passed_delivery_floor.retired,
-            initial_state.current_icount.retired,
-        )?;
+        let inbound_consumption =
+            self.snapshot_inbound_consumption(initial_state.current_icount.retired)?;
 
         self.record(QemuQuantumOperation::ComputeSchedulerCeiling);
-        let earliest_delivery = self
-            .view
-            .inbound_ring
-            .peek_delivery_icount(self.view.inbound_entries)
-            .map_err(|source| QemuQuantumError::SpscRing {
-                operation: "peek inbound delivery icount",
-                source,
-            })?;
+        let earliest_delivery = inbound_consumption
+            .delivery_keys
+            .first()
+            .map(|key| key.delivery_icount);
         let effective_ceiling = earliest_delivery
             .map_or(horizon.icount.retired, |delivery_icount| {
                 horizon.icount.retired.min(delivery_icount)
@@ -527,12 +550,11 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             ceiling: Icount {
                 retired: effective_ceiling,
             },
-            passed_delivery_floor,
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
             initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
             operation_start,
-            due_before_wake,
+            inbound_consumption,
         })
     }
 
@@ -590,12 +612,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
         self.record(QemuQuantumOperation::ReadCompletionReport);
         let final_device_io_freeze = device_io_freeze_from_snapshot(final_snapshot);
-        let mut due_inbound_frames = pending.due_before_wake.clone();
-        due_inbound_frames.extend(self.drain_due_inbound_since(
-            final_state.current_icount.retired,
-            final_state.current_icount.retired,
-        )?);
-        due_inbound_frames.sort_by_key(QemuDueInboundFrame::delivery_key);
+        let inbound_frames_consumed =
+            self.observe_inbound_consumption(pending, final_state.current_icount.retired)?;
         let emitted_frames = self.drain_emitted_outbound()?;
         let outcome = if completed_clamp
             && final_state.current_icount.retired < pending.requested_horizon.retired
@@ -614,7 +632,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             ceiling: pending.ceiling,
             final_state,
             outcome,
-            due_inbound_frames,
+            inbound_frames_consumed,
             emitted_frames,
             device_io_freeze: QemuDeviceIoFreezeReport {
                 initial: pending.initial_device_io_freeze,
@@ -645,82 +663,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Icount {
             retired: self.view.node_slot.snapshot().current_icount,
         }
-    }
-
-    fn drain_due_inbound_since(
-        &mut self,
-        passed_delivery_floor_icount: u64,
-        current_icount: u64,
-    ) -> Result<Vec<QemuDueInboundFrame>, QemuQuantumError> {
-        if passed_delivery_floor_icount > current_icount {
-            return Err(QemuQuantumError::InvalidDeliveryWindow {
-                passed_delivery_floor_icount,
-                current_icount,
-            });
-        }
-
-        self.record(QemuQuantumOperation::DrainDueInboundFrames);
-        let due_entries =
-            self.preview_due_inbound_since(passed_delivery_floor_icount, current_icount)?;
-        let mut frames = Vec::with_capacity(due_entries.len());
-        for expected in due_entries {
-            let Some(entry) = self
-                .view
-                .inbound_ring
-                .dequeue(self.view.inbound_entries)
-                .map_err(|source| QemuQuantumError::SpscRing {
-                    operation: "dequeue inbound frame",
-                    source,
-                })?
-            else {
-                return Err(QemuQuantumError::DequeuedUnexpectedDelivery {
-                    expected: expected.delivery_key(),
-                    actual: FrameDeliveryKey {
-                        delivery_icount: current_icount,
-                        src_node: 0,
-                        seq: 0,
-                    },
-                });
-            };
-            if entry.delivery_key() != expected.delivery_key() {
-                return Err(QemuQuantumError::DequeuedUnexpectedDelivery {
-                    expected: expected.delivery_key(),
-                    actual: entry.delivery_key(),
-                });
-            }
-            frames.push(self.due_inbound_frame_from_entry(entry)?);
-        }
-        frames.sort_by_key(QemuDueInboundFrame::delivery_key);
-        Ok(frames)
-    }
-
-    fn preview_due_inbound_since(
-        &self,
-        passed_delivery_floor_icount: u64,
-        current_icount: u64,
-    ) -> Result<Vec<FrameEntry>, QemuQuantumError> {
-        let capacity = inbound_ring_capacity(self.view.inbound_entries)?;
-        let read_idx = self.view.inbound_ring.read_index();
-        let write_idx = self.view.inbound_ring.write_index();
-        let live = inbound_live_count(read_idx, write_idx, capacity)?;
-        let mut frames = Vec::new();
-
-        for offset in 0..live {
-            let slot = ((read_idx.wrapping_add(offset)) & (capacity - 1)) as usize;
-            let entry = self.view.inbound_entries[slot].clone();
-            if entry.delivery_icount < passed_delivery_floor_icount {
-                return Err(QemuQuantumError::DeliveryAlreadyPassed {
-                    passed_delivery_floor_icount,
-                    current_icount,
-                    frame: entry.delivery_key(),
-                });
-            }
-            if entry.delivery_icount > current_icount {
-                break;
-            }
-            frames.push(entry);
-        }
-        Ok(frames)
     }
 
     fn drain_emitted_outbound(&mut self) -> Result<Vec<QemuNodeEmittedFrame>, QemuQuantumError> {
@@ -760,25 +702,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             return Ok(None);
         };
         Ok(Some(self.emitted_frame_from_entry(entry)?))
-    }
-
-    fn due_inbound_frame_from_entry(
-        &self,
-        entry: FrameEntry,
-    ) -> Result<QemuDueInboundFrame, QemuQuantumError> {
-        let payload = entry
-            .payload()
-            .map_err(|source| QemuQuantumError::FrameEntry { source })?
-            .to_vec();
-        Ok(QemuDueInboundFrame {
-            destination: self.config.node.clone(),
-            delivery_icount: Icount {
-                retired: entry.delivery_icount,
-            },
-            src_node: entry.src_node,
-            sequence: entry.seq,
-            payload,
-        })
     }
 
     fn emitted_frame_from_entry(
