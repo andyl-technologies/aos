@@ -6,6 +6,9 @@ use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::Read as _;
 
+mod io;
+use io::read_bounded_file;
+
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v4\0";
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -118,7 +121,7 @@ pub(super) fn persist_exact_checkpoint_set(
     checkpoint: &mut ProductionVmExactCheckpointSet,
 ) -> Result<(), SchedulerError> {
     validate_checkpoint_set(scenario, checkpoint)?;
-    let (mut manifest, objects) = manifest_and_objects(scenario, checkpoint)?;
+    let (mut manifest, objects) = manifest_and_objects(scenario, resource_limits, checkpoint)?;
     manifest.identity = closure_identity(&manifest)?;
     checkpoint.identity = manifest.identity;
     let manifest_bytes = encode_manifest(&manifest)?;
@@ -424,7 +427,7 @@ pub(super) fn load_exact_checkpoint_set(
             &object_directory,
             manifest.fault_checkpoint,
             &mut budget,
-            LARGE_CONTINUATION_MAX_BYTES,
+            limits.fat_checkpoint_bytes,
         )?,
         signal_plan,
         scenario.id(),
@@ -436,12 +439,15 @@ pub(super) fn load_exact_checkpoint_set(
         let node = NodeId {
             name: target.node.clone(),
         };
-        let snapshot = QemuVmSnapshot::from_canonical_bytes(&read_object(
-            &object_directory,
-            target.snapshot,
-            &mut budget,
-            SMALL_CONTINUATION_MAX_BYTES,
-        )?)
+        let snapshot = QemuVmSnapshot::from_canonical_bytes_with_limit(
+            &read_object(
+                &object_directory,
+                target.snapshot,
+                &mut budget,
+                limits.fat_checkpoint_bytes,
+            )?,
+            limits.fat_checkpoint_bytes,
+        )
         .map_err(|error| {
             loop_factory_error(format!(
                 "decode QEMU snapshot for `{}`: {error}",
@@ -1095,6 +1101,7 @@ fn terminal_cause_matches_verdict(
 
 fn manifest_and_objects(
     scenario: ContentHash,
+    resource_limits: FaultResourceLimits,
     checkpoint: &ProductionVmExactCheckpointSet,
 ) -> Result<(ClosureManifest, ClosureObjects), SchedulerError> {
     let schedule = checkpoint.configuration.schedule.to_compact_binary();
@@ -1110,16 +1117,19 @@ fn manifest_and_objects(
     let lifecycle_state = encode_lifecycle(checkpoint)?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint
-        .to_canonical_bytes()
+        .to_canonical_bytes_with_limit(resource_limits.fat_checkpoint_bytes)
         .map_err(|error| store_error(format!("encode fault continuation: {error}")))?;
     let mut snapshots = BTreeMap::new();
     let targets = checkpoint
         .targets
         .iter()
         .map(|(node, target)| {
-            let bytes = target.snapshot.to_canonical_bytes().map_err(|error| {
-                store_error(format!("encode QEMU snapshot for `{}`: {error}", node.name))
-            })?;
+            let bytes = target
+                .snapshot
+                .to_canonical_bytes_with_limit(resource_limits.fat_checkpoint_bytes)
+                .map_err(|error| {
+                    store_error(format!("encode QEMU snapshot for `{}`: {error}", node.name))
+                })?;
             let snapshot = ContentHash::from_bytes(&bytes);
             snapshots.insert(node.clone(), bytes);
             Ok(TargetManifest {
@@ -1770,21 +1780,6 @@ impl CheckpointReadBudget {
         }
         self.reserve(size)
     }
-}
-
-fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>, std::io::Error> {
-    let capacity = usize::try_from(fs::metadata(path)?.len().min(limit)).unwrap_or(usize::MAX);
-    let mut bytes = Vec::with_capacity(capacity);
-    File::open(path)?
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "file exceeds its checkpoint read limit",
-        ));
-    }
-    Ok(bytes)
 }
 
 fn validate_file_hash(path: &Path, expected: ContentHash) -> Result<(), SchedulerError> {
