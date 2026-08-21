@@ -567,13 +567,14 @@ in
               queued_idle_advance_requires_qemu_enqueue_symbol \
               queued_idle_advance_rejects_targets_outside_qemu_signed_range \
               inbound_frame_drain_rejects_late_head_without_consuming \
+              inbound_frame_drain_since_rejects_before_floor_without_consuming \
               inbound_frame_select_rejects_late_candidate_frame \
               idle_loop_rejects_late_inbound_ring_before_direct_advance \
               idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads \
-              network_rx_requires_qemu_net_send_and_flush_symbols \
-              network_rx_rejects_late_frame_before_queue_or_flush \
-              network_rx_queue_failure_is_loud_without_flush \
-              network_rx_flush_failure_is_loud_after_queueing \
+              network_rx_requires_qemu_direct_injection_symbol \
+              network_rx_rejects_unproven_late_frame \
+              network_rx_delivery_failure_is_loud \
+              network_rx_qemu_direct_injection_retains_backpressured_frame \
               network_tx_rejects_full_ring_loudly_without_dropping_or_sequence_advance \
               block_submit_full_ring_releases_freeze_token_loudly \
               block_poll_guest_completion_failure_still_releases_freeze_token \
@@ -583,6 +584,19 @@ in
               whitebox_guest_input_rejects_late_delivery \
               coverage_registration_on_mode_requires_basic_block_callback_capability
             do
+              listed_tests="$TMPDIR/plugin-tests-$filter"
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$target_dir" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                "$filter" \
+                -- --list > "$listed_tests"
+              if ! grep -Eq "(^|::)$filter: test$" "$listed_tests"; then
+                echo "requested plugin regression did not resolve to a test: $filter" >&2
+                exit 1
+              fi
               cargo test \
                 --frozen \
                 --offline \

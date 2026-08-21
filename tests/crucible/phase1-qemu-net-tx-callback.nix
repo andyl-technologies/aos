@@ -144,8 +144,8 @@
         needle = "crucible-net-tx-callback";
       }
       {
-        label = "network flush API catalog";
-        needle = "crucible-net-flush-api";
+        label = "network direct-injection API catalog";
+        needle = "crucible-net-direct-inject-api";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

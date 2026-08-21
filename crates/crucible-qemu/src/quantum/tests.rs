@@ -222,10 +222,49 @@ fn qemu_quantum_preserves_backpressured_due_frame_for_retry() {
         .unwrap_or_else(|error| panic!("delivery quantum should start: {error}"));
     slot.publish_reached_icount(5, 0)
         .unwrap_or_else(|error| panic!("plugin boundary should publish: {error}"));
+    plugin_mark_inbound_retained(&hot_path);
 
     let report = hot_path
         .finish_quantum(pending)
         .unwrap_or_else(|error| panic!("backpressured delivery should remain canonical: {error}"));
+    assert_eq!(report.inbound_frames_consumed, 0);
+    assert_eq!(inbound_ring.read_index(), 0);
+}
+
+#[test]
+fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
+    let slot = NodeSlot::default();
+    if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
+        panic!("test ceiling should publish: {error}");
+    }
+    if let Err(error) = slot.publish_reached_icount(5, 0) {
+        panic!("test current icount should publish: {error}");
+    }
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    enqueue_raw(
+        &inbound_ring,
+        &mut inbound_entries,
+        frame(4, 31, 7, b"retained"),
+    );
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+    plugin_mark_inbound_retained(&hot_path);
+
+    let pending = hot_path
+        .start_quantum(horizon(5))
+        .unwrap_or_else(|error| panic!("retained-frame quantum should start: {error}"));
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("retained late head should remain canonical: {error}"));
+
     assert_eq!(report.inbound_frames_consumed, 0);
     assert_eq!(inbound_ring.read_index(), 0);
 }
@@ -278,7 +317,7 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
 }
 
 #[test]
-fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
+fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     let slot = NodeSlot::default();
     if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
         panic!("test ceiling should publish: {error}");
@@ -305,11 +344,14 @@ fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
 
     let pending = hot_path
         .start_quantum(horizon(5))
-        .unwrap_or_else(|error| panic!("retained delivery should remain retryable: {error}"));
-    let report = hot_path
-        .finish_quantum(pending)
-        .unwrap_or_else(|error| panic!("retained delivery should stay canonical: {error}"));
-    assert_eq!(report.inbound_frames_consumed, 0);
+        .unwrap_or_else(|error| panic!("late-frame rejection quantum should start: {error}"));
+    assert_eq!(
+        hot_path.finish_quantum(pending),
+        Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
+            current_icount: 5,
+            frame: frame(4, 31, 7, b"late").delivery_key(),
+        })
+    );
     assert_eq!(inbound_ring.read_index(), 0);
 }
 
@@ -369,7 +411,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
     let pending = hot_path
         .start_quantum(horizon(10))
         .unwrap_or_else(|error| panic!("quantum should start without inbound frames: {error}"));
-    hot_path
+    let _frame = hot_path
         .enqueue_inbound_frame(QemuInboundFrame {
             delivery_icount: icount(5),
             src_node: 31,
@@ -497,6 +539,20 @@ fn plugin_consume_inbound(
         .collect::<Vec<_>>();
     frames.sort_by_key(FrameEntry::delivery_key);
     frames
+}
+
+fn plugin_mark_inbound_retained(hot_path: &QemuQuantumShmemHotPath<'_>) {
+    hot_path
+        .view
+        .inbound_ring
+        .peek(hot_path.view.inbound_entries)
+        .unwrap_or_else(|error| panic!("plugin retained peek should succeed: {error}"))
+        .unwrap_or_else(|| panic!("plugin retained peek should find a published frame"));
+    let slot = (hot_path.view.inbound_ring.read_index()
+        & (hot_path.view.inbound_entries.len() as u64 - 1)) as usize;
+    hot_path.view.inbound_entries[slot]
+        .mark_delivery_retained()
+        .unwrap_or_else(|error| panic!("shared retained mark should succeed: {error}"));
 }
 
 fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {

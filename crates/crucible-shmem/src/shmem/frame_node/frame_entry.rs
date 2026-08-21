@@ -1,9 +1,10 @@
 //! Fixed-capacity shared-memory frame entry and its wire-layout constants.
 
+use core::fmt;
+
 use super::*;
 
 /// A shared-memory frame whose delivery time is carried in band.
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct FrameEntry {
     /// The consumer icount at which the frame becomes visible.
@@ -14,7 +15,8 @@ pub struct FrameEntry {
     pub seq: u32,
     /// The number of valid bytes in [`FrameEntry::data`].
     pub len: u16,
-    pub(crate) _pad: [u8; 6],
+    delivery_state: AtomicU8,
+    pub(crate) _pad: [u8; 5],
     /// The fixed-capacity frame payload buffer.
     pub data: [u8; MAX_FRAME_DATA],
 }
@@ -28,6 +30,9 @@ pub const FRAME_ENTRY_SRC_NODE_OFFSET: usize = core::mem::offset_of!(FrameEntry,
 pub const FRAME_ENTRY_SEQ_OFFSET: usize = core::mem::offset_of!(FrameEntry, seq);
 /// Byte offset of [`FrameEntry`]'s payload-length field.
 pub const FRAME_ENTRY_LEN_OFFSET: usize = core::mem::offset_of!(FrameEntry, len);
+/// Byte offset of [`FrameEntry`]'s consumer-owned delivery state.
+pub const FRAME_ENTRY_DELIVERY_STATE_OFFSET: usize =
+    core::mem::offset_of!(FrameEntry, delivery_state);
 /// Byte offset of [`FrameEntry`]'s reserved padding bytes.
 pub const FRAME_ENTRY_PAD_OFFSET: usize = core::mem::offset_of!(FrameEntry, _pad);
 /// Byte offset of [`FrameEntry`]'s payload data.
@@ -41,7 +46,8 @@ const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
 const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
 const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
 const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
-const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
+const _: () = assert!(FRAME_ENTRY_DELIVERY_STATE_OFFSET == 18);
+const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 19);
 const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
 const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
 const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
@@ -49,6 +55,7 @@ const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
 const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
 const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
 const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_state) == 18);
 const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
 #[rustfmt::skip]
  const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
@@ -82,9 +89,45 @@ impl FrameEntry {
             src_node,
             seq,
             len: payload.len() as u16,
-            _pad: [0; 6],
+            delivery_state: AtomicU8::new(FRAME_DELIVERY_PENDING),
+            _pad: [0; 5],
             data,
         })
+    }
+
+    /// Returns the consumer-owned canonical delivery state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameDeliveryStateError::UnknownState`] when the shared state
+    /// byte is not defined by this ABI version.
+    pub fn delivery_state(&self) -> Result<FrameDeliveryState, FrameDeliveryStateError> {
+        match self.delivery_state.load(Ordering::Acquire) {
+            FRAME_DELIVERY_PENDING => Ok(FrameDeliveryState::Pending),
+            FRAME_DELIVERY_RETAINED => Ok(FrameDeliveryState::Retained),
+            state => Err(FrameDeliveryStateError::UnknownState { state }),
+        }
+    }
+
+    /// Marks this live consumer-owned frame as retained after backpressure.
+    ///
+    /// The transition is idempotent so a deterministic retry that remains
+    /// backpressured preserves the same canonical proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameDeliveryStateError::UnknownState`] when the shared state
+    /// byte is not defined by this ABI version.
+    pub fn mark_delivery_retained(&self) -> Result<(), FrameDeliveryStateError> {
+        match self.delivery_state.compare_exchange(
+            FRAME_DELIVERY_PENDING,
+            FRAME_DELIVERY_RETAINED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(FRAME_DELIVERY_RETAINED) => Ok(()),
+            Err(state) => Err(FrameDeliveryStateError::UnknownState { state }),
+        }
     }
 
     /// Returns `true` when this frame is visible at `consumer_current_icount`.
@@ -136,13 +179,78 @@ impl FrameEntry {
                 capacity: MAX_FRAME_DATA,
             });
         }
+        self.delivery_state()
+            .map_err(|FrameDeliveryStateError::UnknownState { state }| {
+                SpscRingError::InvalidFrameDeliveryState { state }
+            })?;
 
         let mut canonical = self.clone();
-        canonical._pad = [0; 6];
+        canonical._pad = [0; 5];
         canonical.data[len..].fill(0);
         Ok(canonical)
     }
 }
+
+/// Consumer-owned state for one canonical inbound delivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameDeliveryState {
+    /// The consumer has not reported guest backpressure for this frame.
+    Pending = FRAME_DELIVERY_PENDING,
+    /// A real guest delivery attempt was backpressured and must be retried.
+    Retained = FRAME_DELIVERY_RETAINED,
+}
+
+/// Wire value for a frame that has not been backpressured.
+pub const FRAME_DELIVERY_PENDING: u8 = 0;
+/// Wire value for a frame retained after guest backpressure.
+pub const FRAME_DELIVERY_RETAINED: u8 = 1;
+
+impl Clone for FrameEntry {
+    fn clone(&self) -> Self {
+        Self {
+            delivery_icount: self.delivery_icount,
+            src_node: self.src_node,
+            seq: self.seq,
+            len: self.len,
+            delivery_state: AtomicU8::new(self.delivery_state.load(Ordering::Acquire)),
+            _pad: self._pad,
+            data: self.data,
+        }
+    }
+}
+
+impl fmt::Debug for FrameEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrameEntry")
+            .field("delivery_icount", &self.delivery_icount)
+            .field("src_node", &self.src_node)
+            .field("seq", &self.seq)
+            .field("len", &self.len)
+            .field(
+                "delivery_state",
+                &self.delivery_state.load(Ordering::Acquire),
+            )
+            .field("data", &self.data)
+            .finish()
+    }
+}
+
+impl PartialEq for FrameEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.delivery_icount == other.delivery_icount
+            && self.src_node == other.src_node
+            && self.seq == other.seq
+            && self.len == other.len
+            && self.delivery_state.load(Ordering::Acquire)
+                == other.delivery_state.load(Ordering::Acquire)
+            && self._pad == other._pad
+            && self.data == other.data
+    }
+}
+
+impl Eq for FrameEntry {}
 
 impl Default for FrameEntry {
     fn default() -> Self {
@@ -151,7 +259,8 @@ impl Default for FrameEntry {
             src_node: 0,
             seq: 0,
             len: 0,
-            _pad: [0; 6],
+            delivery_state: AtomicU8::new(FRAME_DELIVERY_PENDING),
+            _pad: [0; 5],
             data: [0; MAX_FRAME_DATA],
         }
     }

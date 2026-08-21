@@ -263,6 +263,10 @@
         needle = "passed_delivery_floor_icount";
       }
       {
+        label = "retained head excluded from future deadline";
+        needle = "delivery_state(&frame)? == FrameDeliveryState::Pending";
+      }
+      {
         label = "windowed deliverability";
         needle = "frame.delivery_icount <= consumer_current_icount";
       }
@@ -278,6 +282,10 @@
         label = "floor-late no-consume test";
         needle = "inbound_frame_drain_since_rejects_before_floor_without_consuming";
       }
+      {
+        label = "retained head backlog and deadline regression test";
+        needle = "inbound_retained_head_authorizes_blocked_fifo_backlog";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
@@ -289,7 +297,7 @@
         needle = "let (advance, pending_advance) =\n            Self::advance_after_scheduler_wake";
       }
       {
-        label = "previews inbound before RX queue";
+        label = "previews inbound before direct RX injection";
         needle = "PluginInboundFrames::preview_deliverable_since";
       }
       {

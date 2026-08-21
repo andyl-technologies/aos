@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 
-use crucible_shmem::FrameDeliveryKey;
+use crucible_shmem::{FrameDeliveryKey, FrameDeliveryState};
 
 use super::support::{QemuQuantumError, inbound_live_count, inbound_ring_capacity};
 use super::{
@@ -90,16 +90,44 @@ impl QemuQuantumShmemHotPath<'_> {
                 });
             }
         }
-        if let Some(frame) = ledger.iter().enumerate().find_map(|(index, frame)| {
-            (index >= consumed as usize
-                && index >= baseline.delivery_keys.len()
-                && frame.delivery_icount <= current_icount)
-                .then_some(frame)
-        }) {
-            return Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
-                current_icount,
-                frame: *frame,
-            });
+        if let Some(frame) = ledger
+            .iter()
+            .skip(consumed as usize)
+            .find(|frame| frame.delivery_icount <= current_icount)
+        {
+            let head = self
+                .view
+                .inbound_ring
+                .peek(self.view.inbound_entries)
+                .map_err(|source| QemuQuantumError::SpscRing {
+                    operation: "observe retained inbound head",
+                    source,
+                })?;
+            let retained = head
+                .as_ref()
+                .filter(|head| {
+                    ledger
+                        .get(consumed as usize)
+                        .is_some_and(|expected| head.delivery_key() == *expected)
+                })
+                .is_some_and(|head| {
+                    head.delivery_state()
+                        .is_ok_and(|state| state == FrameDeliveryState::Retained)
+                });
+            if let Some(head) = head.as_ref()
+                && let Err(source) = head.delivery_state()
+            {
+                return Err(QemuQuantumError::InboundFrameDeliveryState {
+                    frame: head.delivery_key(),
+                    source,
+                });
+            }
+            if !retained {
+                return Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
+                    current_icount,
+                    frame: *frame,
+                });
+            }
         }
         self.inbound_delivery_ledger
             .get_mut()

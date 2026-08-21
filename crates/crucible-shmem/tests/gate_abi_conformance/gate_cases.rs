@@ -242,6 +242,7 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.node.logical_time_restore_request, 13);
     assert_eq!(decoded.node.logical_time_restore_ack, 13);
     assert_eq!(decoded.frame.payload, b"PING");
+    assert_eq!(decoded.frame.delivery_state, FRAME_DELIVERY_RETAINED);
     assert_eq!(decoded.coverage.current_icount, 901);
     assert_eq!(decoded.coverage.guest_pc, 0x4010);
     assert_eq!(decoded.coverage.map_index, 17);

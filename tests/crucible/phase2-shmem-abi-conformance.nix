@@ -141,8 +141,12 @@
         needle = "const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);";
       }
       {
+        label = "frame entry delivery state Rust static assertion";
+        needle = "const _: () = assert!(FRAME_ENTRY_DELIVERY_STATE_OFFSET == 18);";
+      }
+      {
         label = "frame entry padding Rust static assertion";
-        needle = "const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);";
+        needle = "const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 19);";
       }
       {
         label = "frame entry data Rust static assertion";
@@ -400,11 +404,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=10";
+        needle = "abi_version=15";
       }
       {
         label = "total serialized length";
-        needle = "total_len=14552";
+        needle = "total_len=19288";
       }
       {
         label = "region magic";
@@ -635,6 +639,10 @@
       {
         label = "frame length offset static assert";
         needle = "offsetof(crucible_shmem_frame_entry, len) == CRUCIBLE_SHMEM_FRAME_ENTRY_LEN_OFFSET";
+      }
+      {
+        label = "frame delivery state offset static assert";
+        needle = "offsetof(crucible_shmem_frame_entry, delivery_state) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET";
       }
       {
         label = "frame padding offset static assert";
@@ -966,6 +974,7 @@ in
                 frame.src_node = 2u;
                 frame.seq = 42u;
                 frame.len = 4u;
+                atomic_init(&frame.delivery_state, CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED);
                 memcpy(frame.data, "PING", 4);
 
                 crucible_shmem_coverage_entry coverage;
@@ -1199,6 +1208,8 @@ in
                     || frame.src_node != 2u
                     || frame.seq != 42u
                     || frame.len != 4u
+                    || atomic_load_explicit(&frame.delivery_state, memory_order_acquire)
+                        != CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED
                     || memcmp(frame.data, "PING", 4) != 0) {
                     fprintf(stderr, "frame entry validation failed\n");
                     return 1;

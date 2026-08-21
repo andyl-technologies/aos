@@ -89,8 +89,25 @@ pub enum QemuLiveNetworkIoGateError {
         source: QemuNodeChannelError,
     },
     /// The guest failed to leave the plugin startup barrier.
-    #[error("live network guest did not reach the priming ceiling")]
-    PrimeDidNotReach,
+    #[error("live network guest did not reach priming ceiling {ceiling}: {evidence}")]
+    PrimeDidNotReach {
+        /// The exact scheduler ceiling that was not reached.
+        ceiling: u64,
+        /// Final node-slot state or the error that prevented observing it.
+        evidence: String,
+    },
+    /// Real QEMU did not retain the pre-driver frame in canonical shared memory.
+    #[error("live network boot-time frame did not prove guest backpressure: {evidence}")]
+    BootBackpressureNotRetained {
+        /// Canonical inbound-ring state observed at the first boundary.
+        evidence: String,
+    },
+    /// A retained frame remained after the guest NIC became ready.
+    #[error("live network retained frame {frame:?} did not deliver on canonical retry")]
+    BackpressureRetryDidNotDeliver {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+    },
     /// The probe/reply discovery quantum did not park with a scheduled reply.
     #[error(
         "live network probe discovery did not schedule a reply and park at its ceiling: {evidence}"

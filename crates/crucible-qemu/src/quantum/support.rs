@@ -280,6 +280,14 @@ pub enum QemuQuantumError {
         /// Due deterministic delivery key still owned by the plugin.
         frame: FrameDeliveryKey,
     },
+    /// A retained inbound frame carries a state unknown to this ABI version.
+    #[error("QEMU quantum inbound frame {frame:?} has invalid delivery state: {source}")]
+    InboundFrameDeliveryState {
+        /// The affected deterministic delivery key.
+        frame: FrameDeliveryKey,
+        /// The shared state validation failure.
+        source: FrameDeliveryStateError,
+    },
     /// The node-slot handoff rejected a state transition.
     #[error("QEMU quantum node-slot operation {operation} failed: {source}")]
     NodeSlot {

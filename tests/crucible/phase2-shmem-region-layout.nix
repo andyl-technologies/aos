@@ -87,7 +87,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 10;";
+        needle = "pub const ABI_VERSION: u32 = 15;";
       }
       {
         label = "physical slot capacity";
@@ -150,8 +150,16 @@
         needle = "REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61";
       }
       {
+        label = "region header control padding offset";
+        needle = "REGION_HEADER_CONTROL_PADDING_OFFSET == 62";
+      }
+      {
+        label = "region header fault payload arena offset";
+        needle = "REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64";
+      }
+      {
         label = "region header reserved offset";
-        needle = "REGION_HEADER_RESERVED_OFFSET == 62";
+        needle = "REGION_HEADER_RESERVED_OFFSET == 68";
       }
       {
         label = "node slot size";
@@ -183,7 +191,7 @@
       }
       {
         label = "frame entry padding offset";
-        needle = "FRAME_ENTRY_PAD_OFFSET == 18";
+        needle = "FRAME_ENTRY_PAD_OFFSET == 19";
       }
       {
         label = "pinned layout target";

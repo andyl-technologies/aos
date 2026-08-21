@@ -257,6 +257,7 @@ pub(super) fn emit_constants(out: &mut String) {
             ("SRC_NODE", FRAME_ENTRY_SRC_NODE_OFFSET),
             ("SEQ", FRAME_ENTRY_SEQ_OFFSET),
             ("LEN", FRAME_ENTRY_LEN_OFFSET),
+            ("DELIVERY_STATE", FRAME_ENTRY_DELIVERY_STATE_OFFSET),
             ("PAD", FRAME_ENTRY_PAD_OFFSET),
             ("DATA", FRAME_ENTRY_DATA_OFFSET),
         ],
@@ -265,6 +266,16 @@ pub(super) fn emit_constants(out: &mut String) {
         out,
         "CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN",
         FRAME_ENTRY_DATA_OFFSET - FRAME_ENTRY_PAD_OFFSET,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_FRAME_DELIVERY_PENDING",
+        FRAME_DELIVERY_PENDING,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED",
+        FRAME_DELIVERY_RETAINED,
     );
     out.push('\n');
 
