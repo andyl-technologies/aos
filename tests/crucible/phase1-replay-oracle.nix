@@ -10,7 +10,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   };
   guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};

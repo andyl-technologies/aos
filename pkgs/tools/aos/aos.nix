@@ -112,7 +112,9 @@
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "aos-cargo-dummy-source";
+      cargoRoot = "crates";
     };
+    cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos"
@@ -132,6 +134,9 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    passthru = {
+      inherit cargoArtifacts cargoDeps cargoEnv;
+    };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
     # (CMake build) with SSH smart-transport support against system libssh2.

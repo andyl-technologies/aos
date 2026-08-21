@@ -48,8 +48,8 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "pinned vendored dependency hash binding";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        label = "central vendored dependency hash binding";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
@@ -57,7 +57,11 @@
       }
       {
         label = "non-Crucible workspace excludes";
-        needle = "nonCrucibleWorkspacePackages = [";
+        needle = "nonCrucibleWorkspacePackages = builtins.filter";
+      }
+      {
+        label = "workspace membership comes from Cargo metadata";
+        needle = "workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
       }
       {
         label = "workspace cargo flags";

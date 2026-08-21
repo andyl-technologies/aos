@@ -529,18 +529,17 @@ in rec {
             else toString cargoArtifacts
           }" ]; then
             mkdir -p target
-            cp -R "${
+            tar xf "${
             if cargoArtifacts == null
             then "/dev/null"
-            else "${cargoArtifacts}/target"
-          }/." target/
+            else "${cargoArtifacts}/target.tar"
+          }" -C target
             chmod -R u+w target
             # Nix builders reuse /build/source and normalize source mtimes.
             # Without an explicit freshness boundary Cargo can mistake dummy
             # first-party units for the real source. Force workspace targets
             # dirty while leaving restored registry dependencies reusable.
-            find . -path ./target -prune -o -type f \
-              \( -name '*.rs' -o -name 'Cargo.toml' \) -exec touch {} +
+            find . -path ./target -prune -o -type f -name '*.rs' -exec touch {} +
           fi
         '';
       }
@@ -602,7 +601,7 @@ in rec {
             if installCargoArtifacts
             then ''
               mkdir -p "$out"
-              cp -R target "$out/target"
+              tar cf "$out/target.tar" -C target .
               cp "$NIX_BUILD_TOP/cargo-build-messages.jsonl" "$out/build-messages.jsonl"
               printf '%s\n' '${builtins.toJSON cargoArtifactContract}' > "$out/contract.json"
             ''

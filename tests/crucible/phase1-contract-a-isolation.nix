@@ -6,7 +6,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   };
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
   contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;

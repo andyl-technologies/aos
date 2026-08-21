@@ -20,9 +20,10 @@ toolchain and packages, and introduces no nixpkgs or host-tool dependency.
 `mkCargoDummySource` retains Cargo metadata and the names of Rust targets while
 replacing target contents with minimal Rust. `mkCargoArtifacts` compiles that
 workspace with `CARGO_INCREMENTAL=0` and publishes the complete Cargo target
-directory plus Cargo JSON messages and a versioned compatibility contract.
-`mkCargoPackage` restores a compatible target directory before building the
-real source.
+directory as an uncompressed archive, plus Cargo JSON messages and a versioned
+compatibility contract. The archive preserves Cargo's internal mtimes across
+Nix store normalization; `mkCargoPackage` restores it before building the real
+source.
 
 The contract fails closed when the producer and consumer differ. Its baseline
 keys are:
@@ -77,6 +78,13 @@ bounded nextest test group rather than forcing the entire workspace serial.
 Doctests remain explicit `cargo test --doc` gates because nextest does not run
 them. Clippy, rustdoc, ABI conformance, license-boundary, VM, fleet, and release
 checks remain separate derivations with their existing policy.
+
+The hundreds of focused Crucible policy gates retain their narrow test
+selection, private target directories, and deterministic harness arguments.
+They do not inherit another component's artifact family: in particular,
+Apache-host artifacts never seed GPL plugin gates. The shared Crucible vendor
+hash is defined once and imported by every gate, so a lockfile update cannot
+leave hundreds of independently stale fixed-output hashes.
 
 ## Validation
 
