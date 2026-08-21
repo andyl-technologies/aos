@@ -20,6 +20,7 @@
   simBackendLib = import ./_crucible-local-and-test-backends-source.nix;
   qemuNodeLib = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs)
     (builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs)
   ];
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;

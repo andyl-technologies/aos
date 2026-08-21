@@ -56,6 +56,9 @@ use checkpoint_store::{load_exact_checkpoint_set, persist_exact_checkpoint_set};
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::collect_signal_artifact_objects;
 mod fault_implementation;
+pub use fault_implementation::{
+    network_effect_implementation_registry, storage_effect_implementation_registry,
+};
 
 /// Default final icount available to one production CLI lifecycle session.
 const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
