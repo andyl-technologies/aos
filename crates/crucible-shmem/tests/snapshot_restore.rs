@@ -240,6 +240,20 @@ fn canonical_decoder_rejects_frame_count_before_allocation() {
 }
 
 #[test]
+fn canonical_decoder_rejects_amplified_truncated_ring_before_reservation() {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&1_000_000_u64.to_le_bytes());
+    assert_eq!(
+        SpscRingSnapshot::from_canonical_bytes(&encoded, 1_048_576),
+        Err(SpscRingError::SnapshotDecodeTruncated {
+            offset: 8,
+            needed: 31_000_000,
+            available: 0,
+        })
+    );
+}
+
+#[test]
 fn canonical_decoder_rejects_retained_attempt_before_delivery() {
     let retained = frame(100, 7, 0, b"retained");
     retained
@@ -414,7 +428,7 @@ fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
             bytes: missing_delivery_icount,
             error: SpscRingError::SnapshotDecodeTruncated {
                 offset: 8,
-                needed: 8,
+                needed: 31,
                 available: 0,
             },
         },
@@ -422,9 +436,9 @@ fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
             name: "truncated-seq",
             bytes: truncated_seq,
             error: SpscRingError::SnapshotDecodeTruncated {
-                offset: 20,
-                needed: 4,
-                available: 0,
+                offset: 8,
+                needed: 31,
+                available: 12,
             },
         },
         MalformedSnapshotCase {
