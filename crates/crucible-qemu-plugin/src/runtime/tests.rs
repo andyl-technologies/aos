@@ -718,6 +718,10 @@ extern "C" fn live_network_flush_ok() -> std::os::raw::c_int {
     0
 }
 
+extern "C" fn live_network_can_receive() -> std::os::raw::c_int {
+    1
+}
+
 struct RecordingSuccessfulCallbackRegistrar {
     state_address: Cell<usize>,
     wake_fd: Cell<i32>,
@@ -915,6 +919,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_net_tx: Some(capture_network_tx_registration),
                 net_send: Some(live_network_send_ok),
                 net_flush: Some(live_network_flush_ok),
+                net_can_receive: Some(live_network_can_receive),
                 register_block: Some(capture_block_registration),
                 register_block_event: Some(capture_block_event_registration),
                 register_block_wait: Some(capture_block_wait_registration),

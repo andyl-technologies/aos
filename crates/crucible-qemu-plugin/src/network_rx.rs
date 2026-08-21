@@ -2,8 +2,9 @@
 //!
 //! The idle callback hands due inbound frames to this module after QEMU virtual
 //! time has advanced to the deterministic wake icount. The module enforces that
-//! delivery gate, queues frame payloads through a lossless backend, and flushes
-//! the backend once the ordered batch has been queued.
+//! delivery gate and queues frame payloads through a lossless backend. A ready
+//! guest NIC is flushed immediately; under backpressure QEMU retains the batch
+//! until the NIC resumes receiving.
 
 use std::{
     fmt,
@@ -18,7 +19,7 @@ use crucible_shmem::{FrameDeliveryKey, FrameEntry, FrameEntryError};
 pub const QEMU_PLUGIN_NET_SEND_SYMBOL: &str = "qemu_plugin_net_send";
 /// QEMU patch export used to flush queued RX frames into the guest NIC.
 pub const QEMU_PLUGIN_NET_FLUSH_SYMBOL: &str = "qemu_plugin_net_flush";
-/// QEMU patch export used only for diagnostics around guest RX readiness.
+/// QEMU patch export used to distinguish immediate delivery from retention.
 pub const QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL: &str = "qemu_plugin_net_can_receive";
 const QEMU_PLUGIN_NET_SEND_SYMBOL_C: &[u8] = b"qemu_plugin_net_send\0";
 const QEMU_PLUGIN_NET_FLUSH_SYMBOL_C: &[u8] = b"qemu_plugin_net_flush\0";
@@ -35,7 +36,7 @@ pub type QemuPluginNetSendFn = extern "C" fn(*const u8, usize) -> c_int;
 /// The patched QEMU API exports `qemu_plugin_net_flush` as a no-argument function
 /// returning zero on success and nonzero on loud failure.
 pub type QemuPluginNetFlushFn = extern "C" fn() -> c_int;
-/// QEMU's network RX readiness diagnostic function.
+/// QEMU's network RX readiness function.
 pub type QemuPluginNetCanReceiveFn = extern "C" fn() -> c_int;
 
 /// Resolves QEMU's lossless network RX queue export from the loaded process.
@@ -98,7 +99,7 @@ pub const fn resolve_qemu_net_flush_symbol() -> Option<QemuPluginNetFlushFn> {
     None
 }
 
-/// Resolves QEMU's network RX readiness diagnostic export from the loaded process.
+/// Resolves QEMU's network RX readiness export from the loaded process.
 #[cfg(unix)]
 #[must_use]
 pub fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
@@ -122,7 +123,7 @@ pub fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn
     }
 }
 
-/// Resolves QEMU's network RX readiness diagnostic export from the loaded process.
+/// Resolves QEMU's network RX readiness export from the loaded process.
 #[cfg(not(unix))]
 #[must_use]
 pub const fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
@@ -196,14 +197,14 @@ impl PluginNetworkRx {
             frame_keys.push(frame_key);
         }
 
-        rx_queue
+        let flush_outcome = rx_queue
             .flush_lossless_rx()
             .map_err(|source| NetworkRxError::Flush { source })?;
 
         Ok(NetworkRxInjection {
             current_icount,
             frame_keys,
-            flushed: true,
+            flushed: flush_outcome == NetworkRxFlushOutcome::Delivered,
         })
     }
 }
@@ -246,13 +247,22 @@ pub trait LosslessNetworkRxQueue {
     /// and must fail loudly instead of dropping it.
     fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError>;
 
-    /// Flushes queued RX payloads toward the guest device.
+    /// Flushes queued RX payloads or confirms QEMU retained them under backpressure.
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkRxQueueError`] when the backend cannot flush the queued
-    /// payloads and must fail loudly.
-    fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError>;
+    /// Returns [`NetworkRxQueueError`] when the backend can neither deliver nor
+    /// retain the queued payloads and must fail loudly.
+    fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError>;
+}
+
+/// Result of handing a queued RX batch to the guest device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkRxFlushOutcome {
+    /// The guest device accepted every queued frame immediately.
+    Delivered,
+    /// QEMU retained every queued frame until the guest device becomes ready.
+    Retained,
 }
 
 /// Lossless network RX backend backed by QEMU's patch exports.
@@ -260,6 +270,7 @@ pub trait LosslessNetworkRxQueue {
 pub struct QemuLosslessNetworkRxQueue {
     net_send: QemuPluginNetSendFn,
     net_flush: QemuPluginNetFlushFn,
+    net_can_receive: QemuPluginNetCanReceiveFn,
 }
 
 impl QemuLosslessNetworkRxQueue {
@@ -267,11 +278,12 @@ impl QemuLosslessNetworkRxQueue {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkRxError::CapabilityUnavailable`] when either
-    /// `qemu_plugin_net_send` or `qemu_plugin_net_flush` was not resolved.
+    /// Returns [`NetworkRxError::CapabilityUnavailable`] when a required
+    /// network queue, flush, or readiness export was not resolved.
     pub fn require(
         net_send: Option<QemuPluginNetSendFn>,
         net_flush: Option<QemuPluginNetFlushFn>,
+        net_can_receive: Option<QemuPluginNetCanReceiveFn>,
     ) -> Result<Self, NetworkRxError> {
         let Some(net_send) = net_send else {
             return Err(NetworkRxError::CapabilityUnavailable {
@@ -283,10 +295,16 @@ impl QemuLosslessNetworkRxQueue {
                 symbol: QEMU_PLUGIN_NET_FLUSH_SYMBOL,
             });
         };
+        let Some(net_can_receive) = net_can_receive else {
+            return Err(NetworkRxError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
+            });
+        };
 
         Ok(Self {
             net_send,
             net_flush,
+            net_can_receive,
         })
     }
 }
@@ -305,10 +323,22 @@ impl LosslessNetworkRxQueue for QemuLosslessNetworkRxQueue {
         }
     }
 
-    fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError> {
+    fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError> {
+        let readiness = (self.net_can_receive)();
+        if readiness == 0 {
+            return Ok(NetworkRxFlushOutcome::Retained);
+        }
+        if readiness != 1 {
+            return Err(NetworkRxQueueError::qemu_patch(
+                NetworkRxQueueOperation::Readiness,
+                QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
+                readiness,
+            ));
+        }
+
         let status = (self.net_flush)();
         if status == 0 {
-            Ok(())
+            Ok(NetworkRxFlushOutcome::Delivered)
         } else {
             Err(NetworkRxQueueError::qemu_patch(
                 NetworkRxQueueOperation::Flush,
@@ -326,6 +356,8 @@ pub enum NetworkRxQueueOperation {
     Queue,
     /// Lossless queue flushing failed.
     Flush,
+    /// Checking whether the guest device can currently receive.
+    Readiness,
 }
 
 impl fmt::Display for NetworkRxQueueOperation {
@@ -333,6 +365,7 @@ impl fmt::Display for NetworkRxQueueOperation {
         match self {
             Self::Queue => formatter.write_str("queue"),
             Self::Flush => formatter.write_str("flush"),
+            Self::Readiness => formatter.write_str("readiness check"),
         }
     }
 }
@@ -708,8 +741,9 @@ mod tests {
             injection.frame_keys(),
             &[frame(20, 1, 0, b"queued").delivery_key()]
         );
-        assert_eq!(queue.pending_payloads, Vec::<Vec<u8>>::new());
-        assert_eq!(queue.queued_payloads, vec![b"queued".to_vec()]);
+        assert!(!injection.flushed());
+        assert_eq!(queue.pending_payloads, vec![b"queued".to_vec()]);
+        assert_eq!(queue.queued_payloads, Vec::<Vec<u8>>::new());
         assert_eq!(queue.flush_count, 1);
     }
 
@@ -830,17 +864,35 @@ mod tests {
     }
 
     #[test]
-    fn network_rx_requires_qemu_net_send_and_flush_symbols() {
+    fn network_rx_requires_qemu_queue_flush_and_readiness_symbols() {
         assert_eq!(
-            require_qemu_queue_error(None, Some(qemu_plugin_net_flush_ok)),
+            require_qemu_queue_error(
+                None,
+                Some(qemu_plugin_net_flush_ok),
+                Some(qemu_plugin_net_can_receive_ready),
+            ),
             NetworkRxError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_NET_SEND_SYMBOL,
             }
         );
         assert_eq!(
-            require_qemu_queue_error(Some(qemu_plugin_net_send_ok), None),
+            require_qemu_queue_error(
+                Some(qemu_plugin_net_send_ok),
+                None,
+                Some(qemu_plugin_net_can_receive_ready),
+            ),
             NetworkRxError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_NET_FLUSH_SYMBOL,
+            }
+        );
+        assert_eq!(
+            require_qemu_queue_error(
+                Some(qemu_plugin_net_send_ok),
+                Some(qemu_plugin_net_flush_ok),
+                None,
+            ),
+            NetworkRxError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
             }
         );
     }
@@ -854,6 +906,7 @@ mod tests {
         let mut queue = match QemuLosslessNetworkRxQueue::require(
             Some(qemu_plugin_net_send_ok),
             Some(qemu_plugin_net_flush_ok),
+            Some(qemu_plugin_net_can_receive_ready),
         ) {
             Ok(queue) => queue,
             Err(error) => panic!("QEMU network RX symbols should bind: {error}"),
@@ -873,6 +926,35 @@ mod tests {
         assert_eq!(QEMU_NET_SEND_COUNT.load(Ordering::SeqCst), 1);
         assert_eq!(QEMU_NET_SEND_LAST_LEN.load(Ordering::SeqCst), 4);
         assert_eq!(QEMU_NET_FLUSH_COUNT.load(Ordering::SeqCst), 1);
+        assert!(injection.flushed());
+    }
+
+    #[test]
+    fn network_rx_qemu_lossless_queue_retains_backpressured_frame() {
+        QEMU_NET_SEND_COUNT.store(0, Ordering::SeqCst);
+        QEMU_NET_FLUSH_COUNT.store(0, Ordering::SeqCst);
+        let network_rx = PluginNetworkRx::new();
+        let mut queue = match QemuLosslessNetworkRxQueue::require(
+            Some(qemu_plugin_net_send_ok),
+            Some(qemu_plugin_net_flush_ok),
+            Some(qemu_plugin_net_can_receive_backpressured),
+        ) {
+            Ok(queue) => queue,
+            Err(error) => panic!("QEMU network RX symbols should bind: {error}"),
+        };
+
+        let injection = network_rx
+            .inject_due_frames_from_idle_context(
+                &mut queue,
+                20,
+                20,
+                &[frame(20, 1, 0, b"retained")],
+            )
+            .unwrap_or_else(|error| panic!("backpressured frame should remain queued: {error}"));
+
+        assert!(!injection.flushed());
+        assert_eq!(QEMU_NET_SEND_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(QEMU_NET_FLUSH_COUNT.load(Ordering::SeqCst), 0);
     }
 
     extern "C" fn qemu_plugin_net_send_ok(payload: *const u8, len: usize) -> c_int {
@@ -889,11 +971,20 @@ mod tests {
         0
     }
 
+    extern "C" fn qemu_plugin_net_can_receive_ready() -> c_int {
+        1
+    }
+
+    extern "C" fn qemu_plugin_net_can_receive_backpressured() -> c_int {
+        0
+    }
+
     fn require_qemu_queue_error(
         net_send: Option<QemuPluginNetSendFn>,
         net_flush: Option<QemuPluginNetFlushFn>,
+        net_can_receive: Option<QemuPluginNetCanReceiveFn>,
     ) -> NetworkRxError {
-        match QemuLosslessNetworkRxQueue::require(net_send, net_flush) {
+        match QemuLosslessNetworkRxQueue::require(net_send, net_flush, net_can_receive) {
             Ok(_) => panic!("QEMU queue binding should fail"),
             Err(error) => error,
         }
@@ -1323,14 +1414,18 @@ mod tests {
             Ok(())
         }
 
-        fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError> {
+        fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError> {
             if self.fail_flush {
                 return Err(NetworkRxQueueError::flush("test flush failure"));
             }
 
             self.flush_count += 1;
-            self.queued_payloads.append(&mut self.pending_payloads);
-            Ok(())
+            if self.ready {
+                self.queued_payloads.append(&mut self.pending_payloads);
+                Ok(NetworkRxFlushOutcome::Delivered)
+            } else {
+                Ok(NetworkRxFlushOutcome::Retained)
+            }
         }
     }
 
