@@ -68,7 +68,11 @@ struct ResolvedHead {
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
 
 /// Maximum number of static channel partitions fetched concurrently.
-const CHANNEL_PARTITION_FETCH_CONCURRENCY: usize = 32;
+///
+/// The protocol fixes this set at 256 tiny objects. Fetching the whole set in
+/// one bounded wave keeps a corrupt or incompletely published channel from
+/// multiplying a CDN miss latency across several serial waves.
+const CHANNEL_PARTITION_FETCH_CONCURRENCY: usize = channel::PARTITION_COUNT;
 
 // ---------------------------------------------------------------------------
 // Main sync flow
