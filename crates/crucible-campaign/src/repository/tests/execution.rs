@@ -1,10 +1,14 @@
 //! Attempt admission, observation, executor, and projection repository tests.
 
 use super::*;
-use crate::{ExecutorClient, ExecutorService};
+use crate::{
+    ExecutorClient, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+};
 
 struct CompletingExecutor {
-    calls: usize,
+    requests: Vec<SubmitAttemptRequest>,
+    status_requests: Vec<GetAttemptExecutionRequest>,
     execution: ExecutionId,
     observation: ObservationId,
 }
@@ -16,17 +20,27 @@ impl ExecutorService for CompletingExecutor {
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
-        self.calls += 1;
-        let disposition = if self.calls == 1 {
-            SubmitAttemptDisposition::Accepted {
-                execution: self.execution,
-            }
-        } else {
-            SubmitAttemptDisposition::AlreadyCompleted {
-                observation: self.observation,
-            }
+        self.requests.push(request.clone());
+        let disposition = SubmitAttemptDisposition::Accepted {
+            execution: self.execution,
         };
         SubmitAttemptResponse::new(request, disposition).map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for CompletingExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.status_requests.push(request.clone());
+        GetAttemptExecutionResponse::new(
+            request,
+            GetAttemptExecutionDisposition::Completed {
+                observation: self.observation,
+            },
+        )
+        .map_err(|_| "response encoding")
     }
 }
 
@@ -56,6 +70,16 @@ impl ExecutorService for DeferringExecutor {
     }
 }
 
+impl ExecutorStatusService for DeferringExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
 impl ExecutorService for RejectingExecutor {
     type Error = &'static str;
 
@@ -70,6 +94,16 @@ impl ExecutorService for RejectingExecutor {
             },
         )
         .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for RejectingExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
     }
 }
 
@@ -1013,7 +1047,8 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
     let resources =
         AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
     let service = CompletingExecutor {
-        calls: 0,
+        requests: Vec::new(),
+        status_requests: Vec::new(),
         execution: ExecutionId::from_bytes([0x91; 16]).expect("execution"),
         observation: observation_id,
     };
@@ -1048,7 +1083,14 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
     assert_eq!(incorporated.prior_snapshot, running.new_snapshot);
     assert_eq!(incorporated.observation, observation_id);
     assert_eq!(driver.reservation_count(), 0);
-    assert_eq!(driver.into_executor().into_inner().calls, 2);
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert_eq!(
+        service.status_requests[0].execution_basis(),
+        service.requests[0].execution_basis_digest()
+    );
+    assert_eq!(service.status_requests[0].execution(), service.execution);
 
     let restarted_repository = Arc::new(CampaignRepository::new(
         repository.blobs.clone(),

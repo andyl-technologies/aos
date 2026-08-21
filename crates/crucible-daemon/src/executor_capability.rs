@@ -8,8 +8,9 @@ use std::collections::BTreeSet;
 
 use crucible_campaign::{
     CampaignCodecError, ExecutorCapabilityService, ExecutorCapacityReport, ExecutorDescription,
-    ExecutorMaterializationLocality, ExecutorService, SubmitAttemptRequest, SubmitAttemptResponse,
-    WatchExecutorCapacityRequest,
+    ExecutorMaterializationLocality, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, SubmitAttemptRequest,
+    SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 
 use crate::{
@@ -109,6 +110,19 @@ where
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
         self.supervisor.submit_attempt(request)
+    }
+}
+
+impl<L, V> ExecutorStatusService for LocalExecutorCapabilityService<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.supervisor.get_attempt_execution(request)
     }
 }
 

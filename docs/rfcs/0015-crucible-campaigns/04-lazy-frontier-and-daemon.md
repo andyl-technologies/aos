@@ -214,10 +214,14 @@ without adding reservation fields to semantic identity.
 
 The coordinator-owned `CampaignExecutorDriver` composes those two primitives
 without making its cursor or reservation authoritative. One call consumes at
-most one accounting page and one checked `SubmitAttempt` exchange. Assignment
-identity is derived from the exact daemon epoch, lease generation, attempt,
-lineage, resource ceiling, and retention basis, but none of those operational
-fields enter modeled identity. `Backpressure` and `UnavailableInput` release
+most one accounting page and one checked executor exchange. Assignment identity
+is derived from the exact daemon epoch, lease generation, attempt, lineage,
+resource ceiling, and retention basis, but none of those operational fields
+enter modeled identity. A checked running response installs one bounded
+read-only `GetAttemptExecution` poll keyed by the exact epoch, lineage, attempt,
+execution, and execution-basis digest. Status polls create no assignment-ledger
+records; a transport or response-validation failure retains the exact query for
+commit-indeterminate replay. `Backpressure` and `UnavailableInput` release
 the lease so the next bounded scan uses the fresh `AssignmentId` required by
 the executor retry contract. `Unauthorized` retains only the volatile lease and
 requires local reconfiguration; it never fabricates a campaign policy fact.
@@ -227,6 +231,30 @@ stable `Incompatible` response closes the execution-basis ordinal with an
 reloaded, closure-authenticated, and incorporated only through the observation
 owner transaction. Restart discards driver state and reconstructs both pending
 work and already resolved attempts from the authenticated roots.
+
+The daemon's `LocalExecutorWorkerPool` provides the matching fixed execution
+owner. Startup creates `1..=256` worker threads and never grows that set; the
+count cannot exceed the supervisor's admitted execution slots. Its cloneable
+service implements the same checked submit and capability interfaces used by
+direct and loopback clients. Exact assignment replay/epoch checks run under the
+short supervisor actor, repository-backed admission validation runs after that
+actor is released, and final admission rechecks assignment identity under the
+actor. Each accepted `QueuedAttempt` then moves linearly to one worker. Guest
+execution, candidate preflight, and immutable publication occur outside actor
+ownership; only publication-root staging and durable completion/cancellation
+reconciliation reacquire it.
+
+Retryable worker failure requeues the same accepted execution without growing
+capacity. Retryable candidate-publication or ledger failure retains the exact
+phase token and retries that phase without re-running the guest. Sticky pool
+shutdown prevents new admission, signals every active cancellation token,
+drains accepted-but-not-started tokens as cancellations, and releases resource
+reservations only after physical worker exit acknowledgement. A caught worker
+or admission-validator panic poisons the executor incarnation and cancels all
+active work; a worker panic additionally reconciles that exact execution before
+its thread exits. These fixed threads keep capacity reporting, submission, and
+cancellation responsive while another worker is blocked in a bounded guest or
+storage operation.
 
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or

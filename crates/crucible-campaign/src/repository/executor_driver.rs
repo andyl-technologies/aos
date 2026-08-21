@@ -10,7 +10,8 @@ use std::sync::Arc;
 use super::*;
 use crate::{
     AssignmentId, AttemptResourceLimits, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
-    ExecutorClientError, ExecutorRejection, ExecutorService,
+    ExecutorClientError, ExecutorRejection, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest,
 };
 
 /// Coordinator-owned bounded driver for one local executor component.
@@ -23,6 +24,14 @@ pub struct CampaignExecutorDriver<S> {
     scan_limit: usize,
     cursor: Option<AttemptQueueCursor>,
     settled_snapshot: Option<CampaignSnapshotId>,
+    active_executions: BTreeMap<WorkerSlotId, ActiveExecutionPoll>,
+}
+
+#[derive(Clone)]
+struct ActiveExecutionPoll {
+    reservation: AttemptReservation,
+    request: SubmitAttemptRequest,
+    execution: ExecutionId,
 }
 
 impl<S> CampaignExecutorDriver<S> {
@@ -53,6 +62,7 @@ impl<S> CampaignExecutorDriver<S> {
             scan_limit,
             cursor: None,
             settled_snapshot: None,
+            active_executions: BTreeMap::new(),
         })
     }
 
@@ -66,11 +76,15 @@ impl<S> CampaignExecutorDriver<S> {
     ///
     /// Transient backpressure and unavailable input release the lease so the
     /// next scan obtains the fresh assignment identity required by the executor
-    /// protocol. Stable incompatibility closes through an explicit non-modeled
-    /// owner fact. Authorization denial retains the lease but creates no
-    /// semantic fact; replacing the locally misconfigured driver discards that
-    /// volatile lease. Executor completion is independently authenticated
-    /// before snapshot incorporation.
+    /// protocol. A checked `Accepted` or `AlreadyRunning` response installs one
+    /// bounded read-only status poll; later calls do not create assignment
+    /// records. A transport or validation error retains the exact execution
+    /// query for commit-indeterminate replay. Stable incompatibility closes
+    /// through an explicit non-modeled owner fact.
+    /// Authorization denial retains the lease but creates no semantic fact;
+    /// replacing the locally misconfigured driver discards that volatile
+    /// lease. Executor completion is independently authenticated before
+    /// snapshot incorporation.
     ///
     /// # Errors
     ///
@@ -84,7 +98,7 @@ impl<S> CampaignExecutorDriver<S> {
         worker_slot: WorkerSlotId,
     ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
     where
-        S: ExecutorService,
+        S: ExecutorStatusService,
     {
         let (head, state) = self.repository.head_with_state(campaign)?;
         let reservation = match self.queue.reservation_for_slot(worker_slot) {
@@ -156,12 +170,23 @@ impl<S> CampaignExecutorDriver<S> {
             .map_err(CampaignRepositoryError::from)?;
         if already_observed.is_some() || already_closed.is_some() {
             self.queue.release(reservation)?;
+            self.active_executions.remove(&worker_slot);
             self.reset_scan();
             return Ok(CampaignExecutorStepOutcome::AlreadyResolved {
                 attempt: reservation.attempt(),
                 snapshot: head.snapshot_id(),
             });
         }
+
+        if let Some(active) = self
+            .active_executions
+            .get(&worker_slot)
+            .filter(|active| active.reservation == reservation)
+            .cloned()
+        {
+            return self.poll_execution(campaign, worker_slot, active);
+        }
+        self.active_executions.remove(&worker_slot);
 
         let request = self.request_for(reservation, head.snapshot().lineage())?;
         let response = self
@@ -173,6 +198,14 @@ impl<S> CampaignExecutorDriver<S> {
 
         match response.disposition() {
             SubmitAttemptDisposition::Accepted { execution } => {
+                self.active_executions.insert(
+                    worker_slot,
+                    ActiveExecutionPoll {
+                        reservation,
+                        request,
+                        execution,
+                    },
+                );
                 Ok(CampaignExecutorStepOutcome::Running {
                     attempt: reservation.attempt(),
                     execution,
@@ -180,6 +213,14 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             SubmitAttemptDisposition::AlreadyRunning { execution } => {
+                self.active_executions.insert(
+                    worker_slot,
+                    ActiveExecutionPoll {
+                        reservation,
+                        request,
+                        execution,
+                    },
+                );
                 Ok(CampaignExecutorStepOutcome::Running {
                     attempt: reservation.attempt(),
                     execution,
@@ -193,6 +234,7 @@ impl<S> CampaignExecutorDriver<S> {
                     self.repository
                         .publish_observation(campaign, expected, &observation_record)?;
                 self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::Incorporated(result))
             }
@@ -201,6 +243,7 @@ impl<S> CampaignExecutorDriver<S> {
                     reason @ (ExecutorRejection::Backpressure | ExecutorRejection::UnavailableInput),
             } => {
                 self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::RetryScheduled {
                     attempt: reservation.attempt(),
@@ -211,6 +254,7 @@ impl<S> CampaignExecutorDriver<S> {
                 reason: ExecutorRejection::ConflictingAssignment,
             } => {
                 self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::AssignmentRenewed {
                     attempt: reservation.attempt(),
@@ -238,6 +282,7 @@ impl<S> CampaignExecutorDriver<S> {
                     disposition,
                 )?;
                 self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::Closed(result))
             }
@@ -276,6 +321,49 @@ impl<S> CampaignExecutorDriver<S> {
     fn reset_scan(&mut self) {
         self.cursor = None;
         self.settled_snapshot = None;
+    }
+
+    fn poll_execution(
+        &mut self,
+        campaign: &str,
+        worker_slot: WorkerSlotId,
+        active: ActiveExecutionPoll,
+    ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorStatusService,
+    {
+        let query = GetAttemptExecutionRequest::new(&active.request, active.execution)?;
+        let response = self
+            .executor
+            .get_attempt_execution(&query)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match response.disposition() {
+            GetAttemptExecutionDisposition::Running => Ok(CampaignExecutorStepOutcome::Running {
+                attempt: active.reservation.attempt(),
+                execution: active.execution,
+                newly_accepted: false,
+            }),
+            GetAttemptExecutionDisposition::Completed { observation } => {
+                let observation_record = self.repository.load_observation(observation)?;
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result =
+                    self.repository
+                        .publish_observation(campaign, expected, &observation_record)?;
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Incorporated(result))
+            }
+            GetAttemptExecutionDisposition::Canceled
+            | GetAttemptExecutionDisposition::NotCurrent => {
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::AssignmentRenewed {
+                    attempt: active.reservation.attempt(),
+                })
+            }
+        }
     }
 }
 

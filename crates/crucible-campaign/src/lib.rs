@@ -62,8 +62,9 @@ pub use codec::CampaignCodecError;
 pub use execution::{
     AssignmentId, AttemptResourceLimits, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
     ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorRejection,
-    ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptDisposition,
-    SubmitAttemptRequest, SubmitAttemptResponse,
+    ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,

@@ -4,11 +4,12 @@
 //! objects:
 //!
 //! ```text
-//! ExecutorLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
+//! ExecutorLoopbackFrameV2 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (SubmitAttemptRequestV1) | 2 (SubmitAttemptResponseV1) |
 //!        3 (DescribeExecutorRequestV1) | 4 (ExecutorDescriptionV1) |
-//!        5 (WatchExecutorCapacityRequestV1) | 6 (ExecutorCapacityReportV1)
+//!        5 (WatchExecutorCapacityRequestV1) | 6 (ExecutorCapacityReportV1) |
+//!        7 (GetAttemptExecutionRequestV1) | 8 (GetAttemptExecutionResponseV1)
 //! ```
 //!
 //! Both sides enforce the same 4-KiB component-message bound before allocation.
@@ -23,11 +24,12 @@ use std::time::{Duration, Instant};
 
 use crucible_campaign::{
     CampaignCodecError, DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapacityReport,
-    ExecutorDescription, ExecutorService, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-    SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
+    ExecutorDescription, ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptRequest,
+    SubmitAttemptResponse, WatchExecutorCapacityRequest,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCEX01";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCEX02";
 const FRAME_HEADER_BYTES: usize = 16;
 const SUBMIT_ATTEMPT_REQUEST_KIND: u8 = 1;
 const SUBMIT_ATTEMPT_RESPONSE_KIND: u8 = 2;
@@ -35,6 +37,8 @@ const DESCRIBE_EXECUTOR_REQUEST_KIND: u8 = 3;
 const EXECUTOR_DESCRIPTION_KIND: u8 = 4;
 const WATCH_CAPACITY_REQUEST_KIND: u8 = 5;
 const EXECUTOR_CAPACITY_REPORT_KIND: u8 = 6;
+const GET_ATTEMPT_EXECUTION_REQUEST_KIND: u8 = 7;
+const GET_ATTEMPT_EXECUTION_RESPONSE_KIND: u8 = 8;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
@@ -196,6 +200,33 @@ impl ExecutorCapabilityService for LoopbackExecutorService {
     }
 }
 
+impl ExecutorStatusService for LoopbackExecutorService {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        let result = (|| {
+            write_frame(
+                &mut self.stream,
+                GET_ATTEMPT_EXECUTION_REQUEST_KIND,
+                &request.canonical_bytes(),
+                self.timeouts.write,
+            )?;
+            let response = read_frame(
+                &mut self.stream,
+                GET_ATTEMPT_EXECUTION_RESPONSE_KIND,
+                self.timeouts.read,
+            )?;
+            GetAttemptExecutionResponse::from_canonical_bytes_for(request, &response)
+                .map_err(Into::into)
+        })();
+        if result.is_err() {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
+        result
+    }
+}
+
 /// Serves one strict executor request/response exchange on a Unix stream.
 ///
 /// A long-lived daemon calls this once per request on the same connection, or
@@ -268,11 +299,14 @@ fn serve_loopback_executor_inner<S: ExecutorService>(
 /// malformed request, invalid service response, or bounded socket failure.
 /// Returns [`LoopbackExecutorServerError::Service`] when the executor cannot
 /// produce the selected protocol response. Every error shuts down the stream.
-pub fn serve_loopback_executor_component_once<S: ExecutorCapabilityService>(
+pub fn serve_loopback_executor_component_once<S>(
     stream: &mut UnixStream,
     service: &mut S,
     timeouts: LoopbackExecutorTimeouts,
-) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+) -> Result<(), LoopbackExecutorServerError<S::Error>>
+where
+    S: ExecutorCapabilityService + ExecutorStatusService,
+{
     let result = serve_loopback_executor_component_inner(stream, service, timeouts);
     if result.is_err() {
         let _ = stream.shutdown(Shutdown::Both);
@@ -280,11 +314,14 @@ pub fn serve_loopback_executor_component_once<S: ExecutorCapabilityService>(
     result
 }
 
-fn serve_loopback_executor_component_inner<S: ExecutorCapabilityService>(
+fn serve_loopback_executor_component_inner<S>(
     stream: &mut UnixStream,
     service: &mut S,
     timeouts: LoopbackExecutorTimeouts,
-) -> Result<(), LoopbackExecutorServerError<S::Error>> {
+) -> Result<(), LoopbackExecutorServerError<S::Error>>
+where
+    S: ExecutorCapabilityService + ExecutorStatusService,
+{
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
     let (response_kind, response) = match kind {
@@ -314,6 +351,17 @@ fn serve_loopback_executor_component_inner<S: ExecutorCapabilityService>(
                 .map_err(LoopbackExecutorServerError::Service)?;
             response.validate_for(&description, request.after_sequence())?;
             (EXECUTOR_CAPACITY_REPORT_KIND, response.canonical_bytes())
+        }
+        GET_ATTEMPT_EXECUTION_REQUEST_KIND => {
+            let request = GetAttemptExecutionRequest::from_canonical_bytes(&body)?;
+            let response = service
+                .get_attempt_execution(&request)
+                .map_err(LoopbackExecutorServerError::Service)?;
+            response.validate_for(&request)?;
+            (
+                GET_ATTEMPT_EXECUTION_RESPONSE_KIND,
+                response.canonical_bytes(),
+            )
         }
         _ => {
             return Err(LoopbackExecutorProtocolError::InvalidFrame {

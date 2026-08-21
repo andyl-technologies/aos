@@ -9,10 +9,11 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch, ExecutionId,
     ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
     ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
-    SubmitAttemptDisposition,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -62,6 +63,18 @@ impl ExecutorCapabilityService for CapabilityExecutor {
         _request: &WatchExecutorCapacityRequest,
     ) -> Result<ExecutorCapacityReport, Self::Error> {
         Ok(self.report.clone())
+    }
+}
+
+impl ExecutorStatusService for CapabilityExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        Ok(
+            GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::Running)
+                .expect("bounded status response"),
+        )
     }
 }
 
@@ -150,6 +163,45 @@ fn direct_and_loopback_capability_negotiation_are_identical() {
 }
 
 #[test]
+fn direct_and_loopback_execution_status_are_identical() {
+    let (description, report) = capability_fixture();
+    let assignment = request(0x19);
+    let status_request = GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x61; 16]).expect("execution"),
+    )
+    .expect("status request");
+    let direct = ExecutorClient::new(CapabilityExecutor {
+        description: description.clone(),
+        report: report.clone(),
+    })
+    .get_attempt_execution(&status_request)
+    .expect("direct status");
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description,
+            report,
+        };
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve status");
+    });
+    let loopback = ExecutorClient::new(
+        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
+    )
+    .get_attempt_execution(&status_request)
+    .expect("loopback status");
+    server.join().expect("server thread");
+
+    assert_eq!(loopback, direct);
+}
+
+#[test]
 fn frame_header_and_canonical_body_have_one_exact_encoding() {
     let request = request(0x12);
     let body = request.canonical_bytes();
@@ -164,7 +216,7 @@ fn frame_header_and_canonical_body_have_one_exact_encoding() {
 
     let mut encoded = vec![0; FRAME_HEADER_BYTES + body.len()];
     reader.read_exact(&mut encoded).expect("read exact frame");
-    assert_eq!(&encoded[..8], b"CRUCEX01");
+    assert_eq!(&encoded[..8], b"CRUCEX02");
     assert_eq!(encoded[8], SUBMIT_ATTEMPT_REQUEST_KIND);
     assert_eq!(&encoded[9..12], &[0, 0, 0]);
     assert_eq!(
@@ -240,7 +292,7 @@ fn client_rejects_a_canonical_response_for_another_request() {
         thread::sleep(Duration::from_millis(100));
     });
     let deadlines =
-        LoopbackExecutorTimeouts::new(Duration::from_millis(20), Duration::from_millis(20))
+        LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
             .expect("finite deadlines");
     let mut service = LoopbackExecutorService::with_timeouts(client_stream, deadlines)
         .expect("configure client deadlines");
@@ -254,6 +306,59 @@ fn client_rejects_a_canonical_response_for_another_request() {
     assert!(matches!(
         poisoned,
         LoopbackExecutorProtocolError::Io(ref error)
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+    ));
+    server.join().expect("server thread");
+}
+
+#[test]
+fn client_poisons_after_cross_execution_status_response() {
+    let assignment = request(0x25);
+    let submitted = GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x71; 16]).expect("execution"),
+    )
+    .expect("status request");
+    let other = GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x72; 16]).expect("other execution"),
+    )
+    .expect("other status request");
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let _request = read_frame(
+            &mut server_stream,
+            GET_ATTEMPT_EXECUTION_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read status request");
+        let response =
+            GetAttemptExecutionResponse::new(&other, GetAttemptExecutionDisposition::NotCurrent)
+                .expect("other response");
+        write_frame(
+            &mut server_stream,
+            GET_ATTEMPT_EXECUTION_RESPONSE_KIND,
+            &response.canonical_bytes(),
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("write wrong status response");
+        thread::sleep(Duration::from_millis(100));
+    });
+    let deadlines =
+        LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+            .expect("finite deadlines");
+    let mut service = LoopbackExecutorService::with_timeouts(client_stream, deadlines)
+        .expect("configure client deadlines");
+    assert!(matches!(
+        service.get_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Codec(_))
+    ));
+    assert!(matches!(
+        service.get_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Io(ref error))
             if !matches!(
                 error.kind(),
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
