@@ -5,16 +5,20 @@ use super::*;
 use std::os::unix::net::UnixStream;
 
 use crucible_campaign::{
-    ActiveAttemptPolicy, ApplyCampaignCommandRequest, BudgetGrant, CampaignClient,
-    CampaignCommandId, CampaignControlAction, CampaignName, CampaignPolicyId, CampaignPrincipal,
-    CampaignService, CampaignServiceFailureSource, CampaignSnapshotId, CampaignState,
-    ControlRequest, GetCampaignRequest, WatchCampaignRequest,
+    ActiveAttemptPolicy, ApplyCampaignCommandRequest, BranchRequestId, BudgetGrant, CampaignClient,
+    CampaignCommandId, CampaignControlAction, CampaignHash, CampaignName, CampaignPolicyId,
+    CampaignPrincipal, CampaignService, CampaignServiceFailureSource, CampaignSnapshotId,
+    CampaignState, ChoiceOpportunityId, ContinuationState, ControlRequest, GetCampaignRequest,
+    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignFrontierRequest,
+    QueryCampaignGraphRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
+const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v1";
 
 #[derive(Serialize)]
 struct CampaignHeadReport {
@@ -38,6 +42,38 @@ struct CampaignMutationReport {
     prior_snapshot: String,
     new_snapshot: String,
     replayed: bool,
+}
+
+#[derive(Serialize)]
+struct CampaignPageReport {
+    schema: &'static str,
+    operation: &'static str,
+    campaign: String,
+    snapshot: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_after: Option<String>,
+    entries: Vec<CampaignPageEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum CampaignPageEntry {
+    Graph {
+        key: String,
+        object: String,
+    },
+    Choice {
+        opportunity: String,
+    },
+    Frontier {
+        request: String,
+        branch_point: String,
+        state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completed_visits: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        required_visits: Option<u64>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +104,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_head(&client, principal, &args.command)?;
             render_campaign_head(&report, cli.output_format())?
         }
+        CampaignCommand::Graph(_) | CampaignCommand::Choices(_) | CampaignCommand::Frontier(_) => {
+            let report = query_campaign_page(&client, principal, &args.command)?;
+            render_campaign_page(&report, cli.output_format())?
+        }
         _ => {
             let report = apply_campaign_mutation(&client, principal, &args.command)?;
             render_campaign_mutation(&report, cli.output_format())?
@@ -91,6 +131,23 @@ fn validate_campaign_command(command: &CampaignCommand) -> Result<(), CliError> 
                 .map_err(|error| usage_error(format!("invalid campaign watch cursor: {error}")))?;
             Ok(())
         }
+        CampaignCommand::Graph(page) => {
+            validate_campaign_page(page, "graph", MAX_CAMPAIGN_QUERY_PAGE_ITEMS, |cursor| {
+                CampaignHash::parse(cursor).map(|_| ())
+            })
+        }
+        CampaignCommand::Choices(page) => validate_campaign_page(
+            page,
+            "choice",
+            MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+            |cursor| ChoiceOpportunityId::parse(cursor).map(|_| ()),
+        ),
+        CampaignCommand::Frontier(page) => validate_campaign_page(
+            page,
+            "frontier",
+            MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+            |cursor| BranchRequestId::parse(cursor).map(|_| ()),
+        ),
         _ => {
             let (basis, _, _) = campaign_mutation_spec(command)?;
             campaign_name(basis.name)?;
@@ -102,6 +159,30 @@ fn validate_campaign_command(command: &CampaignCommand) -> Result<(), CliError> 
             Ok(())
         }
     }
+}
+
+fn validate_campaign_page<F>(
+    page: &CampaignPageArgs,
+    kind: &str,
+    maximum: u32,
+    parse_cursor: F,
+) -> Result<(), CliError>
+where
+    F: FnOnce(&str) -> Result<(), crucible_campaign::CampaignCodecError>,
+{
+    campaign_name(&page.name)?;
+    CampaignSnapshotId::parse(&page.snapshot)
+        .map_err(|error| usage_error(format!("invalid campaign page snapshot: {error}")))?;
+    if let Some(after) = page.after.as_deref() {
+        parse_cursor(after)
+            .map_err(|error| usage_error(format!("invalid campaign {kind} cursor: {error}")))?;
+    }
+    if page.limit == 0 || page.limit > maximum {
+        return Err(usage_error(format!(
+            "campaign {kind} page limit must be between 1 and {maximum}"
+        )));
+    }
+    Ok(())
 }
 
 fn query_campaign_head<S>(
@@ -161,6 +242,160 @@ where
         _ => Err(backend_error(
             "campaign mutation reached the read-only command path",
         )),
+    }
+}
+
+fn query_campaign_page<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    command: &CampaignCommand,
+) -> Result<CampaignPageReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    match command {
+        CampaignCommand::Graph(page) => {
+            let (campaign, snapshot) = campaign_page_basis(page)?;
+            let after = page
+                .after
+                .as_deref()
+                .map(CampaignHash::parse)
+                .transpose()
+                .map_err(|error| usage_error(format!("invalid campaign graph cursor: {error}")))?;
+            let request = QueryCampaignGraphRequest::new(
+                principal,
+                campaign.clone(),
+                snapshot,
+                after,
+                page.limit,
+            )
+            .map_err(|error| usage_error(format!("invalid campaign graph query: {error}")))?;
+            let response = client
+                .query_campaign_graph(&request)
+                .map_err(|error| backend_error(format!("campaign graph query failed: {error}")))?;
+            Ok(CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "graph",
+                campaign: campaign.as_str().to_owned(),
+                snapshot: snapshot.to_string(),
+                next_after: response.next_after().map(|cursor| cursor.to_hex()),
+                entries: response
+                    .entries()
+                    .iter()
+                    .map(|entry| CampaignPageEntry::Graph {
+                        key: entry.key().to_hex(),
+                        object: entry.object().to_string(),
+                    })
+                    .collect(),
+            })
+        }
+        CampaignCommand::Choices(page) => {
+            let (campaign, snapshot) = campaign_page_basis(page)?;
+            let after = page
+                .after
+                .as_deref()
+                .map(ChoiceOpportunityId::parse)
+                .transpose()
+                .map_err(|error| usage_error(format!("invalid campaign choice cursor: {error}")))?;
+            let request = QueryCampaignChoicesRequest::new(
+                principal,
+                campaign.clone(),
+                snapshot,
+                after,
+                page.limit,
+            )
+            .map_err(|error| usage_error(format!("invalid campaign choices query: {error}")))?;
+            let response = client.query_campaign_choices(&request).map_err(|error| {
+                backend_error(format!("campaign choices query failed: {error}"))
+            })?;
+            Ok(CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "choices",
+                campaign: campaign.as_str().to_owned(),
+                snapshot: snapshot.to_string(),
+                next_after: response.next_after().map(|cursor| cursor.to_string()),
+                entries: response
+                    .entries()
+                    .iter()
+                    .map(|entry| CampaignPageEntry::Choice {
+                        opportunity: entry.opportunity().to_string(),
+                    })
+                    .collect(),
+            })
+        }
+        CampaignCommand::Frontier(page) => {
+            let (campaign, snapshot) = campaign_page_basis(page)?;
+            let after = page
+                .after
+                .as_deref()
+                .map(BranchRequestId::parse)
+                .transpose()
+                .map_err(|error| {
+                    usage_error(format!("invalid campaign frontier cursor: {error}"))
+                })?;
+            let request = QueryCampaignFrontierRequest::new(
+                principal,
+                campaign.clone(),
+                snapshot,
+                after,
+                page.limit,
+            )
+            .map_err(|error| usage_error(format!("invalid campaign frontier query: {error}")))?;
+            let response = client.query_campaign_frontier(&request).map_err(|error| {
+                backend_error(format!("campaign frontier query failed: {error}"))
+            })?;
+            Ok(CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "frontier",
+                campaign: campaign.as_str().to_owned(),
+                snapshot: snapshot.to_string(),
+                next_after: response.next_after().map(|cursor| cursor.to_string()),
+                entries: response
+                    .entries()
+                    .iter()
+                    .map(|projection| {
+                        let (state, completed_visits, required_visits) =
+                            continuation_state_report(projection.state());
+                        CampaignPageEntry::Frontier {
+                            request: projection.request().to_string(),
+                            branch_point: projection.branch_point().to_string(),
+                            state,
+                            completed_visits,
+                            required_visits,
+                        }
+                    })
+                    .collect(),
+            })
+        }
+        _ => Err(backend_error(
+            "non-page campaign command reached the page query path",
+        )),
+    }
+}
+
+fn campaign_page_basis(
+    page: &CampaignPageArgs,
+) -> Result<(CampaignName, CampaignSnapshotId), CliError> {
+    let campaign = campaign_name(&page.name)?;
+    let snapshot = CampaignSnapshotId::parse(&page.snapshot)
+        .map_err(|error| usage_error(format!("invalid campaign page snapshot: {error}")))?;
+    Ok((campaign, snapshot))
+}
+
+const fn continuation_state_report(
+    state: ContinuationState,
+) -> (&'static str, Option<u64>, Option<u64>) {
+    match state {
+        ContinuationState::Ready => ("ready", None, None),
+        ContinuationState::WaitingForFeedback(wait) => (
+            "waiting-for-feedback",
+            Some(wait.completed_visits()),
+            Some(wait.required_visits()),
+        ),
+        ContinuationState::Open => ("open", None, None),
+        ContinuationState::Exhausted => ("exhausted", None, None),
+        ContinuationState::Closed => ("closed", None, None),
     }
 }
 
@@ -259,7 +494,11 @@ fn campaign_mutation_spec(
                 CampaignControlAction::ActivatePolicy(policy),
             ))
         }
-        CampaignCommand::Status(_) | CampaignCommand::Watch(_) => Err(backend_error(
+        CampaignCommand::Status(_)
+        | CampaignCommand::Watch(_)
+        | CampaignCommand::Graph(_)
+        | CampaignCommand::Choices(_)
+        | CampaignCommand::Frontier(_) => Err(backend_error(
             "campaign read reached the mutation command path",
         )),
     }
@@ -375,6 +614,88 @@ fn render_campaign_mutation(
     }
 }
 
+fn render_campaign_page(
+    report: &CampaignPageReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Json => serde_json::to_string_pretty(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Table => render_campaign_page_table(report),
+        OutputFormat::Markdown => Ok(render_campaign_page_markdown(report)),
+    }
+}
+
+fn render_campaign_page_table(report: &CampaignPageReport) -> Result<String, CliError> {
+    let mut lines = vec![
+        format!("{:<11} {}", "campaign", report.campaign),
+        format!("{:<11} {}", "snapshot", report.snapshot),
+        format!(
+            "{:<11} {}",
+            "next_after",
+            report.next_after.as_deref().unwrap_or("-")
+        ),
+        format!("{:<11} {}", "entries", report.entries.len()),
+        String::new(),
+    ];
+    match report.operation {
+        "graph" => lines.push(String::from("key\tobject")),
+        "choices" => lines.push(String::from("opportunity")),
+        "frontier" => lines.push(String::from(
+            "request\tbranch_point\tstate\tcompleted_visits\trequired_visits",
+        )),
+        _ => return Err(backend_error("unknown campaign page report operation")),
+    }
+    for entry in &report.entries {
+        lines.push(campaign_page_entry_row(entry, "\t"));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn render_campaign_page_markdown(report: &CampaignPageReport) -> String {
+    let mut output = format!(
+        "| Field | Value |\n| --- | --- |\n| campaign | {} |\n| snapshot | {} |\n| next_after | {} |\n| entries | {} |\n\n",
+        report.campaign,
+        report.snapshot,
+        report.next_after.as_deref().unwrap_or("-"),
+        report.entries.len()
+    );
+    match report.operation {
+        "graph" => output.push_str("| Key | Object |\n| --- | --- |\n"),
+        "choices" => output.push_str("| Opportunity |\n| --- |\n"),
+        "frontier" => output.push_str(
+            "| Request | Branch point | State | Completed visits | Required visits |\n| --- | --- | --- | --- | --- |\n",
+        ),
+        _ => {}
+    }
+    for entry in &report.entries {
+        output.push_str("| ");
+        output.push_str(&campaign_page_entry_row(entry, " | "));
+        output.push_str(" |\n");
+    }
+    output.trim_end().to_owned()
+}
+
+fn campaign_page_entry_row(entry: &CampaignPageEntry, separator: &str) -> String {
+    match entry {
+        CampaignPageEntry::Graph { key, object } => format!("{key}{separator}{object}"),
+        CampaignPageEntry::Choice { opportunity } => opportunity.clone(),
+        CampaignPageEntry::Frontier {
+            request,
+            branch_point,
+            state,
+            completed_visits,
+            required_visits,
+        } => format!(
+            "{request}{separator}{branch_point}{separator}{state}{separator}{}{separator}{}",
+            completed_visits.map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            required_visits.map_or_else(|| "-".to_owned(), |value| value.to_string())
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -382,14 +703,21 @@ mod tests {
     use super::*;
 
     use std::convert::Infallible;
+    use std::sync::Arc;
     use std::thread;
 
     use crucible_campaign::*;
-    use crucible_cas::content_store::{ContentId, ObjectKind};
+    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, ObjectKind};
     use crucible_daemon::serve_loopback_campaign_once;
 
     #[derive(Clone, Copy)]
     struct FixedHeadService;
+
+    struct GraphPageService {
+        map: MerkleMap,
+        root: ContentId,
+        snapshot: CampaignSnapshot,
+    }
 
     impl CampaignService for FixedHeadService {
         type Error = Infallible;
@@ -512,6 +840,117 @@ mod tests {
         }
     }
 
+    impl CampaignService for GraphPageService {
+        type Error = Infallible;
+
+        fn create_campaign(
+            &self,
+            _request: &CreateCampaignRequest,
+        ) -> Result<CreateCampaignResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn derive_campaign(
+            &self,
+            _request: &DeriveCampaignRequest,
+        ) -> Result<DeriveCampaignResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn get_campaign(
+            &self,
+            _request: &GetCampaignRequest,
+        ) -> Result<GetCampaignResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn get_campaign_snapshot(
+            &self,
+            _request: &GetCampaignSnapshotRequest,
+        ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn watch_campaign(
+            &self,
+            _request: &WatchCampaignRequest,
+        ) -> Result<WatchCampaignResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn query_campaign_graph(
+            &self,
+            request: &QueryCampaignGraphRequest,
+        ) -> Result<QueryCampaignGraphResponse, Self::Error> {
+            let (page, proof) = self
+                .map
+                .scan_with_proof(self.root, request.after(), request.limit() as usize)
+                .expect("proof-bearing graph page");
+            let entries = page
+                .entries()
+                .iter()
+                .map(|(key, object)| CampaignGraphEntry::new(*key, *object))
+                .collect();
+            Ok(QueryCampaignGraphResponse::new(
+                request,
+                self.snapshot.clone(),
+                entries,
+                page.next_after(),
+                proof,
+            )
+            .expect("bound graph response"))
+        }
+
+        fn get_campaign_graph_object(
+            &self,
+            _request: &GetCampaignGraphObjectRequest,
+        ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn query_campaign_choices(
+            &self,
+            _request: &QueryCampaignChoicesRequest,
+        ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn query_campaign_frontier(
+            &self,
+            _request: &QueryCampaignFrontierRequest,
+        ) -> Result<QueryCampaignFrontierResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn get_campaign_frontier_object(
+            &self,
+            _request: &GetCampaignFrontierObjectRequest,
+        ) -> Result<GetCampaignFrontierObjectResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn get_campaign_choice_object(
+            &self,
+            _request: &GetCampaignChoiceObjectRequest,
+        ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn apply_campaign_command(
+            &self,
+            _request: &ApplyCampaignCommandRequest,
+        ) -> Result<ApplyCampaignCommandResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn submit_branch_request(
+            &self,
+            _request: &SubmitCampaignBranchRequest,
+        ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+    }
+
     #[test]
     fn campaign_head_report_renders_machine_and_human_forms() {
         let report = CampaignHeadReport {
@@ -569,6 +1008,63 @@ mod tests {
     }
 
     #[test]
+    fn campaign_page_reports_render_all_query_shapes() {
+        let snapshot = snapshot("page").to_string();
+        let reports = [
+            CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "graph",
+                campaign: "example".to_owned(),
+                snapshot: snapshot.clone(),
+                next_after: Some(hash("cursor").to_hex()),
+                entries: vec![CampaignPageEntry::Graph {
+                    key: hash("graph-key").to_hex(),
+                    object: ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"object")
+                        .to_string(),
+                }],
+            },
+            CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "choices",
+                campaign: "example".to_owned(),
+                snapshot: snapshot.clone(),
+                next_after: None,
+                entries: vec![CampaignPageEntry::Choice {
+                    opportunity: "choice".to_owned(),
+                }],
+            },
+            CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "frontier",
+                campaign: "example".to_owned(),
+                snapshot,
+                next_after: None,
+                entries: vec![CampaignPageEntry::Frontier {
+                    request: "request".to_owned(),
+                    branch_point: "branch-point".to_owned(),
+                    state: "waiting-for-feedback",
+                    completed_visits: Some(3),
+                    required_visits: Some(5),
+                }],
+            },
+        ];
+
+        for report in reports {
+            let json = render_campaign_page(&report, OutputFormat::Json).expect("JSON page");
+            let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+            assert_eq!(decoded["schema"], CAMPAIGN_PAGE_REPORT_SCHEMA);
+            assert_eq!(decoded["operation"], report.operation);
+            assert_eq!(decoded["entries"].as_array().map(Vec::len), Some(1));
+
+            let table = render_campaign_page(&report, OutputFormat::Table).expect("table page");
+            assert!(table.contains("campaign    example"));
+            let markdown =
+                render_campaign_page(&report, OutputFormat::Markdown).expect("Markdown page");
+            assert!(markdown.contains("| entries | 1 |"));
+        }
+    }
+
+    #[test]
     fn campaign_status_and_watch_use_the_checked_loopback_transport() {
         let status = CampaignCommand::Status(CampaignStatusArgs {
             name: "example".to_owned(),
@@ -586,6 +1082,38 @@ mod tests {
         assert_eq!(watch_report.operation, "watch");
         assert_eq!(watch_report.state, "running");
         assert_eq!(watch_report.advanced, Some(true));
+    }
+
+    #[test]
+    fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
+        let (service, snapshot) = graph_page_service();
+        let command = CampaignCommand::Graph(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            after: None,
+            limit: 1,
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve graph page request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_page(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked graph query");
+        server.join().expect("campaign server thread");
+
+        assert_eq!(report.operation, "graph");
+        assert_eq!(report.snapshot, snapshot.to_string());
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.next_after.is_some());
     }
 
     #[test]
@@ -698,6 +1226,35 @@ mod tests {
         });
         assert!(validate_campaign_command(&bad_watch).is_err());
 
+        let bad_graph_cursor = CampaignCommand::Graph(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            after: Some("not-a-hash".to_owned()),
+            limit: 8,
+        });
+        assert!(validate_campaign_command(&bad_graph_cursor).is_err());
+        let empty_choices_page = CampaignCommand::Choices(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            after: None,
+            limit: 0,
+        });
+        assert!(validate_campaign_command(&empty_choices_page).is_err());
+        let oversized_graph_page = CampaignCommand::Graph(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            after: None,
+            limit: MAX_CAMPAIGN_QUERY_PAGE_ITEMS + 1,
+        });
+        assert!(validate_campaign_command(&oversized_graph_page).is_err());
+        let bad_frontier_cursor = CampaignCommand::Frontier(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            after: Some("not-a-branch-request".to_owned()),
+            limit: 8,
+        });
+        assert!(validate_campaign_command(&bad_frontier_cursor).is_err());
+
         let mut bad_command_basis = mutation_basis("bad-command");
         bad_command_basis.command = "not-a-command".to_owned();
         assert!(validate_campaign_command(&CampaignCommand::Resume(bad_command_basis)).is_err());
@@ -756,6 +1313,33 @@ mod tests {
                 ..
             })
         ));
+
+        for operation in ["graph", "choices", "frontier"] {
+            let page = Cli::try_parse_from([
+                "crucible",
+                "campaign",
+                "--socket",
+                "/run/crucible/campaign.sock",
+                "--principal",
+                "operator",
+                operation,
+                "example",
+                "--snapshot",
+                &snapshot("page").to_string(),
+                "--limit",
+                "3",
+            ])
+            .expect("campaign page arguments");
+            assert!(matches!(
+                page.command,
+                Commands::Campaign(CampaignArgs {
+                    command: CampaignCommand::Graph(CampaignPageArgs { limit: 3, .. })
+                        | CampaignCommand::Choices(CampaignPageArgs { limit: 3, .. })
+                        | CampaignCommand::Frontier(CampaignPageArgs { limit: 3, .. }),
+                    ..
+                })
+            ));
+        }
 
         let expected = snapshot("current").to_string();
         let command = hash("pause").to_hex();
@@ -855,6 +1439,43 @@ mod tests {
         .expect("checked campaign mutation");
         server.join().expect("campaign server thread");
         report
+    }
+
+    fn graph_page_service() -> (GraphPageService, CampaignSnapshotId) {
+        let backend = Arc::new(MemoryBlobBackend::new("cli-graph-page", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let mut root = map.empty().expect("empty graph root");
+        for label in ["first", "second"] {
+            root = map
+                .insert(
+                    root.content_id(),
+                    hash(label),
+                    ContentId::for_bytes(ObjectKind::CampaignFact, 1, label.as_bytes()),
+                )
+                .expect("graph insertion");
+        }
+        let roots = CampaignRoots {
+            graph: root.content_id(),
+            exploration: root.content_id(),
+            observations: root.content_id(),
+            corpus: root.content_id(),
+            coverage: root.content_id(),
+            findings: root.content_id(),
+            pins: root.content_id(),
+            accounting: root.content_id(),
+            coordination: root.content_id(),
+        };
+        let snapshot = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
+            .expect("graph snapshot");
+        let snapshot_id = snapshot.id().expect("graph snapshot ID");
+        (
+            GraphPageService {
+                map,
+                root: root.content_id(),
+                snapshot,
+            },
+            snapshot_id,
+        )
     }
 
     fn mutation_basis(label: &str) -> CampaignMutationBasisArgs {
