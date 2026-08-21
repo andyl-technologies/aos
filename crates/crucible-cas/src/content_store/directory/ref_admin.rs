@@ -15,6 +15,7 @@ static REF_INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const REF_ADMIN_DIRECTORY: &str = ".ref-admin";
 const REF_INVENTORY_LOCK_FILE: &str = "lock";
+const REF_PUBLICATION_LOCK_FILE: &str = "publication-lock";
 const REF_INVENTORY_STATE_FILE: &str = "state-v1";
 const REF_INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-ref-inventory-state.v1";
 const MAX_REF_INVENTORY_STATE_BYTES: u64 = 256;
@@ -57,6 +58,32 @@ impl DirectoryRefBackend {
         Ok(file)
     }
 
+    pub(super) fn acquire_ref_publication_lock(
+        &self,
+        operation: FlockOperation,
+    ) -> Result<File, StoreError> {
+        let directory = self.ref_inventory_admin_directory();
+        create_dir_all_durable(&directory)?;
+        let path = directory.join(REF_PUBLICATION_LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|source| StoreError::Io {
+                operation: "open-ref-publication-lock",
+                path: path.clone(),
+                source,
+            })?;
+        flock(&file, operation).map_err(|source| StoreError::Io {
+            operation: "lock-ref-publication",
+            path,
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Ok(file)
+    }
+
     pub(super) fn load_or_create_ref_inventory_state(
         &self,
     ) -> Result<DirectoryRefInventoryState, StoreError> {
@@ -93,10 +120,12 @@ impl DirectoryRefBackend {
 
 impl RefStoreAdmin for DirectoryRefBackend {
     fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let publication = self.acquire_ref_publication_lock(FlockOperation::LockExclusive)?;
         let lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
         let state = self.load_or_create_ref_inventory_state()?;
         Ok(Box::new(DirectoryRefInventoryFence {
             backend: self,
+            _publication: publication,
             _lock: lock,
             state,
         }))
@@ -105,6 +134,7 @@ impl RefStoreAdmin for DirectoryRefBackend {
 
 struct DirectoryRefInventoryFence<'a> {
     backend: &'a DirectoryRefBackend,
+    _publication: File,
     _lock: File,
     state: DirectoryRefInventoryState,
 }

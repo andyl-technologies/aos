@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefCasOutcome,
-    RefName, StoreError,
+    RefName, RefPublicationGuard, StoreError,
 };
 use thiserror::Error;
 
@@ -635,6 +635,11 @@ pub struct CampaignRepository {
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
     planner_authority: Option<PlannerAuthorityKey>,
     debugger_authority: Option<DebuggerAuthorityKey>,
+}
+
+struct RepositoryMutationGuard<'a> {
+    _local: MutexGuard<'a, ()>,
+    _publication: Box<dyn RefPublicationGuard + 'a>,
 }
 
 mod ancestry;

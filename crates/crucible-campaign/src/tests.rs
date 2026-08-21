@@ -380,6 +380,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.gc-plan",
         "crucible.campaign.gc-root-manifest",
         "crucible.campaign.gc-candidate-manifest",
+        "crucible.campaign.gc-journal-state",
     ] {
         let record = rows
             .get(schema)

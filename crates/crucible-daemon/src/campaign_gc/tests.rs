@@ -3,6 +3,7 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -356,6 +357,97 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         prepared.plan().candidates(),
         prepared.candidates().summary()
     );
+}
+
+#[test]
+fn external_journal_reopens_exact_plan_and_durable_phase() {
+    let prepared = journal_plan_fixture(0x41);
+    let different = journal_plan_fixture(0x42);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("gc-journal");
+
+    let (mut journal, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("create journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Created);
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    assert_eq!(journal.plan(), prepared.plan());
+    assert_eq!(journal.roots(), prepared.roots());
+    assert_eq!(journal.candidates(), prepared.candidates());
+    assert_eq!(
+        journal.begin_apply().expect("begin apply"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        journal.begin_apply().expect("repeat begin apply"),
+        CampaignGcJournalTransition::Existing
+    );
+    drop(journal);
+
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen applying journal");
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Applying);
+    assert_eq!(
+        reopened.mark_complete().expect("complete apply"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        reopened.mark_complete().expect("repeat completion"),
+        CampaignGcJournalTransition::Existing
+    );
+    drop(reopened);
+
+    let (complete, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("reopen exact journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Existing);
+    assert_eq!(complete.phase(), CampaignGcJournalPhase::Complete);
+    drop(complete);
+    assert!(matches!(
+        DirectoryCampaignGcJournal::create(&root, &different),
+        Err(CampaignGcJournalError::PlanMismatch)
+    ));
+}
+
+#[test]
+fn external_journal_rejects_incomplete_and_corrupt_state() {
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let incomplete = temp.path().join("incomplete");
+    fs::create_dir(&incomplete).expect("create incomplete journal");
+    assert!(matches!(
+        DirectoryCampaignGcJournal::open(&incomplete),
+        Err(CampaignGcJournalError::Incomplete)
+    ));
+
+    let prepared = journal_plan_fixture(0x51);
+    let complete = temp.path().join("complete");
+    let (journal, _) =
+        DirectoryCampaignGcJournal::create(&complete, &prepared).expect("create complete journal");
+    drop(journal);
+    fs::write(complete.join("state-v1"), b"corrupt").expect("corrupt journal state");
+    assert!(matches!(
+        DirectoryCampaignGcJournal::open(&complete),
+        Err(CampaignGcJournalError::InvalidState)
+    ));
+}
+
+fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
+    let blobs = Arc::new(MemoryBlobBackend::new("journal-primary", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let orphan_bytes = b"journal orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store journal orphan");
+    let mut ledger = MemoryAssignmentLedger::default();
+    let physical = CampaignGcPhysicalStore::new("journal-primary", blobs.as_ref())
+        .expect("journal physical store");
+    plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
+        &[physical],
+    )
+    .expect("prepare journal plan")
 }
 
 fn content_id_manifest_order(left: &ContentId, right: &ContentId) -> std::cmp::Ordering {

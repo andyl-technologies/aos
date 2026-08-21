@@ -679,9 +679,39 @@ strictly ordered. Any incomplete visitor prefix is discarded. Because apply
 later revalidates every generation, mutations between these non-destructive
 phases only make the plan stale; they cannot authorize deletion.
 
-Persisting these streamed manifests outside the inventoried store, excluding a
-campaign transaction across its children-before-ref publication window, and
-the interruption-safe destructive apply journal remain open.
+The daemon now persists the exact header and both streamed manifests in an
+external directory journal that is not part of any inventoried blob leaf. The
+directory also contains an exclusively locked operational `lock` file and the
+registered `crucible.campaign.gc-journal-state` schema v1. The canonical state
+body is:
+
+```text
+"crucible.campaign.gc-journal-state.v1\0"
+plan_id[32]
+phase:u8  # 1 Planned, 2 Applying, 3 Complete
+checksum[32]
+```
+
+`checksum` is `CampaignHash::derive(
+"crucible.campaign.gc-journal-state.v1", preceding_state_bytes)`. Journal
+creation writes and fsyncs `plan-v1`, `roots-v1`, and `candidates-v1`, then
+publishes checksummed `state-v1` by write-fsync-rename-directory-fsync and
+fsyncs the containing parent. Reopen locks the directory, re-fsyncs visible
+directory metadata, strictly decodes all records, recomputes the plan/manifest
+bindings, and accepts an existing journal only for the exact same inputs. A
+crash before initial state publication leaves an incomplete directory that
+fails closed. `Applying` means at least one deletion may have occurred, so an
+interrupted journal is durable recovery evidence and requires a fresh plan
+rather than reuse of its now-stale generations.
+
+Campaign repository mutations now also acquire the ref backend's shared
+publication-lifecycle fence before their first immutable child write and retain
+it through the final ref comparison. Ref inventory takes the exclusive side.
+The memory backend composes an in-process reader/writer lock; directory-backed
+repositories sharing a root compose the same rule through
+`.ref-admin/publication-lock`. This excludes the children-before-ref race before
+root inventory or apply begins. Composed-store fencing and destructive apply
+under exact ref, ledger, and physical-generation revalidation remain open.
 
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
@@ -715,17 +745,18 @@ materialization never removes the semantic configuration or thin replay path.
 
 The implemented memory and directory leaves now provide both the exclusive
 physical inventory generation/idempotent exact-candidate deletion primitive and
-the exclusive authoritative-ref inventory generation needed by that apply
-step. The assignment ledger likewise provides one exclusive, persistent
+the exclusive authoritative-ref inventory generation and publication-lifecycle
+fence needed by that apply step. The assignment ledger likewise provides one exclusive, persistent
 generation over its combined operational root inventory. Directory generations
 survive restart; memory generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon
 maintenance owner. The canonical bounded v1 plan header now binds these
-generations to constructed root and candidate manifests. No campaign
+generations to constructed root and candidate manifests, and the external
+journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
-manifest ownership, the complete transaction/store-graph fence, and
-interruption-safe apply have been implemented and revalidated.
+manifest ownership, the complete composed-store fence, and interruption-safe
+apply have been implemented and revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

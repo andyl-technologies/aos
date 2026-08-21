@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::admin::{
     InventoryCounter, persistent_inventory_generation, persistent_ref_inventory_generation,
@@ -225,6 +225,7 @@ fn new_memory_inventory_instance(name: &str) -> [u8; 32] {
 #[derive(Debug)]
 pub struct MemoryRefBackend {
     inventory_instance: [u8; 32],
+    publication: RwLock<()>,
     state: Mutex<MemoryRefState>,
 }
 
@@ -240,6 +241,7 @@ impl MemoryRefBackend {
     pub fn new() -> Self {
         Self {
             inventory_instance: new_memory_ref_instance(),
+            publication: RwLock::new(()),
             state: Mutex::new(MemoryRefState {
                 refs: BTreeMap::new(),
                 generation: 1,
@@ -255,6 +257,13 @@ impl Default for MemoryRefBackend {
 }
 
 impl MutableRefBackend for MemoryRefBackend {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+        let guard = self.publication.read().map_err(|_| StoreError::Poisoned {
+            operation: "memory-ref-publication-guard",
+        })?;
+        Ok(Box::new(MemoryRefPublicationGuard { _guard: guard }))
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-read-ref",
@@ -283,18 +292,29 @@ impl MutableRefBackend for MemoryRefBackend {
 
 impl RefStoreAdmin for MemoryRefBackend {
     fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let publication = self.publication.write().map_err(|_| StoreError::Poisoned {
+            operation: "memory-ref-publication-fence",
+        })?;
         let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-ref-inventory-fence",
         })?;
         Ok(Box::new(MemoryRefInventoryFence {
             instance: self.inventory_instance,
+            _publication: publication,
             state,
         }))
     }
 }
 
+struct MemoryRefPublicationGuard<'a> {
+    _guard: RwLockReadGuard<'a, ()>,
+}
+
+impl RefPublicationGuard for MemoryRefPublicationGuard<'_> {}
+
 struct MemoryRefInventoryFence<'a> {
     instance: [u8; 32],
+    _publication: RwLockWriteGuard<'a, ()>,
     state: MutexGuard<'a, MemoryRefState>,
 }
 

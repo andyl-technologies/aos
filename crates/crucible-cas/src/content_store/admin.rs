@@ -251,6 +251,15 @@ pub trait RefInventoryFence {
     ) -> Result<RefInventorySummary, StoreError>;
 }
 
+/// Shared lifetime guard for one children-before-ref publication transaction.
+///
+/// A repository acquires this guard before its first immutable child write and
+/// retains it through the authoritative ref comparison. Ref inventory acquires
+/// the exclusive side of the same backend lifecycle lock. That ordering keeps
+/// a GC apply from deleting newly written children while their publishing
+/// transaction is waiting to make the ref authoritative.
+pub trait RefPublicationGuard {}
+
 /// Separate administrative capability for an authoritative ref backend.
 pub trait RefStoreAdmin: Send + Sync {
     /// Acquires exclusive inventory authority for the complete namespace.

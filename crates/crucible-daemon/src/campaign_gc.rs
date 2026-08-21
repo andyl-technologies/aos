@@ -21,9 +21,14 @@
 //!   blob_generation[32] | objects:u64be | logical_bytes:u64be
 //! ```
 
+mod journal;
 mod manifest;
 mod planner;
 
+pub use journal::{
+    CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
+    CampaignGcJournalTransition, DirectoryCampaignGcJournal,
+};
 pub use manifest::{
     CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcManifestError,
     CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,

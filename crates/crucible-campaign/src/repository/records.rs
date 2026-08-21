@@ -2370,9 +2370,17 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn lock_mutation(&self) -> Result<MutexGuard<'_, ()>, CampaignRepositoryError> {
-        self.mutation_lock
+    pub(super) fn lock_mutation(
+        &self,
+    ) -> Result<RepositoryMutationGuard<'_>, CampaignRepositoryError> {
+        let local = self
+            .mutation_lock
             .lock()
-            .map_err(|_| CampaignRepositoryError::Poisoned)
+            .map_err(|_| CampaignRepositoryError::Poisoned)?;
+        let publication = self.refs.acquire_publication_guard()?;
+        Ok(RepositoryMutationGuard {
+            _local: local,
+            _publication: publication,
+        })
     }
 }

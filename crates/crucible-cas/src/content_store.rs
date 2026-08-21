@@ -29,7 +29,7 @@ mod memory;
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     InventoryGeneration, PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration,
-    RefInventoryRecord, RefInventorySummary, RefStoreAdmin,
+    RefInventoryRecord, RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
 };
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
@@ -808,6 +808,18 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
 /// Authoritative mutable-reference backend.
 pub trait MutableRefBackend: Send + Sync {
+    /// Acquires shared authority for one children-before-ref publication.
+    ///
+    /// The returned guard must remain live from before the transaction's first
+    /// immutable child write until its final authoritative ref comparison.
+    /// Administrative ref inventory acquires the exclusive side of the same
+    /// lifecycle fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the publication lifecycle cannot be fenced.
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError>;
+
     /// Reads one named ref.
     ///
     /// # Errors
