@@ -1,17 +1,20 @@
-//! Thin local client for authenticated lazy-campaign inspection.
+//! Thin local client for authenticated lazy-campaign inspection and control.
 
 use super::*;
 
 use std::os::unix::net::UnixStream;
 
 use crucible_campaign::{
-    CampaignClient, CampaignName, CampaignPrincipal, CampaignService, CampaignServiceFailureSource,
-    CampaignSnapshotId, CampaignState, GetCampaignRequest, WatchCampaignRequest,
+    ActiveAttemptPolicy, ApplyCampaignCommandRequest, BudgetGrant, CampaignClient,
+    CampaignCommandId, CampaignControlAction, CampaignName, CampaignPolicyId, CampaignPrincipal,
+    CampaignService, CampaignServiceFailureSource, CampaignSnapshotId, CampaignState,
+    ControlRequest, GetCampaignRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
 
 const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
+const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 
 #[derive(Serialize)]
 struct CampaignHeadReport {
@@ -26,9 +29,28 @@ struct CampaignHeadReport {
     advanced: Option<bool>,
 }
 
+#[derive(Serialize)]
+struct CampaignMutationReport {
+    schema: &'static str,
+    operation: &'static str,
+    campaign: String,
+    command: String,
+    prior_snapshot: String,
+    new_snapshot: String,
+    replayed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct CampaignMutationBasisRef<'a> {
+    name: &'a str,
+    expected: &'a str,
+    command: &'a str,
+}
+
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
     let principal = CampaignPrincipal::new(args.principal.clone())
         .map_err(|error| usage_error(format!("invalid campaign principal: {error}")))?;
+    validate_campaign_command(&args.command)?;
     let stream = UnixStream::connect(&args.socket).map_err(|error| {
         CliError::Io(io::Error::new(
             error.kind(),
@@ -41,10 +63,45 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     let service = LoopbackCampaignService::new(stream)
         .map_err(|error| backend_error(format!("campaign transport setup failed: {error}")))?;
     let client = CampaignClient::new(service);
-    let report = query_campaign_head(&client, principal, &args.command)?;
+    let rendered = match &args.command {
+        CampaignCommand::Status(_) | CampaignCommand::Watch(_) => {
+            let report = query_campaign_head(&client, principal, &args.command)?;
+            render_campaign_head(&report, cli.output_format())?
+        }
+        _ => {
+            let report = apply_campaign_mutation(&client, principal, &args.command)?;
+            render_campaign_mutation(&report, cli.output_format())?
+        }
+    };
 
-    println!("{}", render_campaign_head(&report, cli.output_format())?);
+    println!("{rendered}");
     Ok(())
+}
+
+fn validate_campaign_command(command: &CampaignCommand) -> Result<(), CliError> {
+    match command {
+        CampaignCommand::Status(status) => campaign_name(&status.name).map(|_| ()),
+        CampaignCommand::Watch(watch) => {
+            campaign_name(&watch.name)?;
+            watch
+                .after
+                .as_deref()
+                .map(CampaignSnapshotId::parse)
+                .transpose()
+                .map_err(|error| usage_error(format!("invalid campaign watch cursor: {error}")))?;
+            Ok(())
+        }
+        _ => {
+            let (basis, _, _) = campaign_mutation_spec(command)?;
+            campaign_name(basis.name)?;
+            CampaignCommandId::parse(basis.command)
+                .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?;
+            CampaignSnapshotId::parse(basis.expected).map_err(|error| {
+                usage_error(format!("invalid campaign snapshot precondition: {error}"))
+            })?;
+            Ok(())
+        }
+    }
 }
 
 fn query_campaign_head<S>(
@@ -100,6 +157,128 @@ where
                 state: campaign_state_label(response.state()),
                 advanced: Some(response.advanced()),
             })
+        }
+        _ => Err(backend_error(
+            "campaign mutation reached the read-only command path",
+        )),
+    }
+}
+
+fn apply_campaign_mutation<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    command: &CampaignCommand,
+) -> Result<CampaignMutationReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let (basis, operation, action) = campaign_mutation_spec(command)?;
+    let campaign = campaign_name(basis.name)?;
+    let command_id = CampaignCommandId::parse(basis.command)
+        .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?;
+    let expected_snapshot = CampaignSnapshotId::parse(basis.expected)
+        .map_err(|error| usage_error(format!("invalid campaign snapshot precondition: {error}")))?;
+    let control = ControlRequest {
+        command: command_id,
+        expected_snapshot,
+        action,
+    };
+    let request = ApplyCampaignCommandRequest::new(principal, campaign.clone(), control)
+        .map_err(|error| usage_error(format!("invalid campaign mutation request: {error}")))?;
+    let response = client
+        .apply_campaign_command(&request)
+        .map_err(|error| backend_error(format!("campaign {operation} failed: {error}")))?;
+
+    Ok(CampaignMutationReport {
+        schema: CAMPAIGN_MUTATION_REPORT_SCHEMA,
+        operation,
+        campaign: campaign.as_str().to_owned(),
+        command: command_id.to_string(),
+        prior_snapshot: response.prior_snapshot().to_string(),
+        new_snapshot: response.new_snapshot().to_string(),
+        replayed: response.replayed(),
+    })
+}
+
+fn campaign_mutation_spec(
+    command: &CampaignCommand,
+) -> Result<
+    (
+        CampaignMutationBasisRef<'_>,
+        &'static str,
+        CampaignControlAction,
+    ),
+    CliError,
+> {
+    match command {
+        CampaignCommand::Resume(basis) => Ok((
+            mutation_basis_ref(basis),
+            "resume",
+            CampaignControlAction::Resume,
+        )),
+        CampaignCommand::Pause(pause) => Ok((
+            mutation_basis_ref(&pause.basis),
+            "pause",
+            CampaignControlAction::Pause(pause.active.control_policy()),
+        )),
+        CampaignCommand::Stop(stop) => Ok((
+            mutation_basis_ref(&stop.basis),
+            if stop.seal { "seal" } else { "stop" },
+            if stop.seal {
+                CampaignControlAction::Seal
+            } else {
+                CampaignControlAction::Complete
+            },
+        )),
+        CampaignCommand::Unseal(basis) => Ok((
+            mutation_basis_ref(basis),
+            "unseal",
+            CampaignControlAction::Unseal,
+        )),
+        CampaignCommand::Budget(budget) => {
+            let CampaignBudgetCommand::Add(add) = &budget.operation;
+            let grant = BudgetGrant::new(add.proposals, add.attempts)
+                .map_err(|error| usage_error(format!("invalid campaign budget grant: {error}")))?;
+            Ok((
+                CampaignMutationBasisRef {
+                    name: &budget.name,
+                    expected: &budget.expected,
+                    command: &budget.command,
+                },
+                "budget-add",
+                CampaignControlAction::GrantBudget(grant),
+            ))
+        }
+        CampaignCommand::Steer(steer) => {
+            let policy = CampaignPolicyId::parse(&steer.policy)
+                .map_err(|error| usage_error(format!("invalid campaign policy ID: {error}")))?;
+            Ok((
+                mutation_basis_ref(&steer.basis),
+                "steer",
+                CampaignControlAction::ActivatePolicy(policy),
+            ))
+        }
+        CampaignCommand::Status(_) | CampaignCommand::Watch(_) => Err(backend_error(
+            "campaign read reached the mutation command path",
+        )),
+    }
+}
+
+fn mutation_basis_ref(basis: &CampaignMutationBasisArgs) -> CampaignMutationBasisRef<'_> {
+    CampaignMutationBasisRef {
+        name: &basis.name,
+        expected: &basis.expected,
+        command: &basis.command,
+    }
+}
+
+impl CampaignPausePolicyArg {
+    const fn control_policy(self) -> ActiveAttemptPolicy {
+        match self {
+            Self::Drain => ActiveAttemptPolicy::Drain,
+            Self::Checkpoint => ActiveAttemptPolicy::ExactCheckpoint,
+            Self::Retry => ActiveAttemptPolicy::CancelAndRetry,
         }
     }
 }
@@ -163,6 +342,36 @@ fn render_campaign_head(
             }
             Ok(output.trim_end().to_owned())
         }
+    }
+}
+
+fn render_campaign_mutation(
+    report: &CampaignMutationReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Json => serde_json::to_string_pretty(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Table => Ok([
+            format!("{:<15} {}", "campaign", report.campaign),
+            format!("{:<15} {}", "operation", report.operation),
+            format!("{:<15} {}", "command", report.command),
+            format!("{:<15} {}", "prior_snapshot", report.prior_snapshot),
+            format!("{:<15} {}", "new_snapshot", report.new_snapshot),
+            format!("{:<15} {}", "replayed", report.replayed),
+        ]
+        .join("\n")),
+        OutputFormat::Markdown => Ok(format!(
+            "| Field | Value |\n| --- | --- |\n| campaign | {} |\n| operation | {} |\n| command | {} |\n| prior_snapshot | {} |\n| new_snapshot | {} |\n| replayed | {} |",
+            report.campaign,
+            report.operation,
+            report.command,
+            report.prior_snapshot,
+            report.new_snapshot,
+            report.replayed
+        )),
     }
 }
 
@@ -278,9 +487,21 @@ mod tests {
 
         fn apply_campaign_command(
             &self,
-            _request: &ApplyCampaignCommandRequest,
+            request: &ApplyCampaignCommandRequest,
         ) -> Result<ApplyCampaignCommandResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            assert!(matches!(
+                request.command().action,
+                CampaignControlAction::Pause(ActiveAttemptPolicy::ExactCheckpoint)
+            ));
+            Ok(ApplyCampaignCommandResponse::new(
+                request,
+                CampaignCommandResult {
+                    prior_snapshot: request.command().expected_snapshot,
+                    new_snapshot: snapshot("mutated"),
+                    replayed: false,
+                },
+            )
+            .expect("fixed campaign mutation response"))
         }
 
         fn submit_branch_request(
@@ -319,6 +540,35 @@ mod tests {
     }
 
     #[test]
+    fn campaign_mutation_report_renders_exact_transition_basis() {
+        let report = CampaignMutationReport {
+            schema: CAMPAIGN_MUTATION_REPORT_SCHEMA,
+            operation: "pause",
+            campaign: "example".to_owned(),
+            command: hash("pause").to_hex(),
+            prior_snapshot: snapshot("prior").to_string(),
+            new_snapshot: snapshot("next").to_string(),
+            replayed: true,
+        };
+
+        let json = render_campaign_mutation(&report, OutputFormat::Json).expect("JSON report");
+        let decoded: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(decoded["schema"], CAMPAIGN_MUTATION_REPORT_SCHEMA);
+        assert_eq!(decoded["prior_snapshot"], report.prior_snapshot);
+        assert_eq!(decoded["new_snapshot"], report.new_snapshot);
+        assert_eq!(decoded["replayed"], true);
+
+        let table = render_campaign_mutation(&report, OutputFormat::Table).expect("table report");
+        assert!(table.contains("operation       pause"));
+        assert!(table.contains("replayed        true"));
+
+        let markdown =
+            render_campaign_mutation(&report, OutputFormat::Markdown).expect("Markdown report");
+        assert!(markdown.contains("| prior_snapshot |"));
+        assert!(markdown.contains("| new_snapshot |"));
+    }
+
+    #[test]
     fn campaign_status_and_watch_use_the_checked_loopback_transport() {
         let status = CampaignCommand::Status(CampaignStatusArgs {
             name: "example".to_owned(),
@@ -336,6 +586,132 @@ mod tests {
         assert_eq!(watch_report.operation, "watch");
         assert_eq!(watch_report.state, "running");
         assert_eq!(watch_report.advanced, Some(true));
+    }
+
+    #[test]
+    fn campaign_mutation_uses_the_checked_loopback_transport() {
+        let command = CampaignCommand::Pause(CampaignPauseArgs {
+            basis: mutation_basis("pause"),
+            active: CampaignPausePolicyArg::Checkpoint,
+        });
+        let report = mutate_over_loopback(&command);
+
+        assert_eq!(report.operation, "pause");
+        assert_eq!(report.command, hash("pause").to_hex());
+        assert_eq!(report.prior_snapshot, snapshot("current").to_string());
+        assert_eq!(report.new_snapshot, snapshot("mutated").to_string());
+        assert!(!report.replayed);
+    }
+
+    #[test]
+    fn campaign_mutation_actions_preserve_exact_operator_intent() {
+        let resume = CampaignCommand::Resume(mutation_basis("resume"));
+        assert!(matches!(
+            campaign_mutation_spec(&resume).expect("resume mutation").2,
+            CampaignControlAction::Resume
+        ));
+
+        for (active, expected) in [
+            (CampaignPausePolicyArg::Drain, ActiveAttemptPolicy::Drain),
+            (
+                CampaignPausePolicyArg::Checkpoint,
+                ActiveAttemptPolicy::ExactCheckpoint,
+            ),
+            (
+                CampaignPausePolicyArg::Retry,
+                ActiveAttemptPolicy::CancelAndRetry,
+            ),
+        ] {
+            let pause = CampaignCommand::Pause(CampaignPauseArgs {
+                basis: mutation_basis("pause"),
+                active,
+            });
+            assert!(matches!(
+                campaign_mutation_spec(&pause).expect("pause mutation").2,
+                CampaignControlAction::Pause(policy) if policy == expected
+            ));
+        }
+
+        let stop = CampaignCommand::Stop(CampaignStopArgs {
+            basis: mutation_basis("stop"),
+            seal: false,
+        });
+        assert!(matches!(
+            campaign_mutation_spec(&stop).expect("stop mutation").2,
+            CampaignControlAction::Complete
+        ));
+        let seal = CampaignCommand::Stop(CampaignStopArgs {
+            basis: mutation_basis("seal"),
+            seal: true,
+        });
+        assert!(matches!(
+            campaign_mutation_spec(&seal).expect("seal mutation").2,
+            CampaignControlAction::Seal
+        ));
+
+        let unseal = CampaignCommand::Unseal(mutation_basis("unseal"));
+        assert!(matches!(
+            campaign_mutation_spec(&unseal).expect("unseal mutation").2,
+            CampaignControlAction::Unseal
+        ));
+
+        let budget = CampaignCommand::Budget(CampaignBudgetArgs {
+            name: "example".to_owned(),
+            expected: snapshot("current").to_string(),
+            command: hash("budget").to_hex(),
+            operation: CampaignBudgetCommand::Add(CampaignBudgetAddArgs {
+                attempts: 11,
+                proposals: 13,
+            }),
+        });
+        assert!(matches!(
+            campaign_mutation_spec(&budget).expect("budget mutation").2,
+            CampaignControlAction::GrantBudget(grant)
+                if grant.attempts() == 11 && grant.proposals() == 13
+        ));
+        let empty_budget = CampaignCommand::Budget(CampaignBudgetArgs {
+            name: "example".to_owned(),
+            expected: snapshot("current").to_string(),
+            command: hash("empty-budget").to_hex(),
+            operation: CampaignBudgetCommand::Add(CampaignBudgetAddArgs {
+                attempts: 0,
+                proposals: 0,
+            }),
+        });
+        assert!(campaign_mutation_spec(&empty_budget).is_err());
+
+        let steer = CampaignCommand::Steer(CampaignSteerArgs {
+            basis: mutation_basis("steer"),
+            policy: policy("next").to_string(),
+        });
+        assert!(matches!(
+            campaign_mutation_spec(&steer).expect("steer mutation").2,
+            CampaignControlAction::ActivatePolicy(next) if next == policy("next")
+        ));
+    }
+
+    #[test]
+    fn campaign_inputs_fail_before_transport_setup() {
+        let bad_watch = CampaignCommand::Watch(CampaignWatchArgs {
+            name: "example".to_owned(),
+            after: Some("not-a-snapshot".to_owned()),
+        });
+        assert!(validate_campaign_command(&bad_watch).is_err());
+
+        let mut bad_command_basis = mutation_basis("bad-command");
+        bad_command_basis.command = "not-a-command".to_owned();
+        assert!(validate_campaign_command(&CampaignCommand::Resume(bad_command_basis)).is_err());
+
+        let empty_budget = CampaignCommand::Budget(CampaignBudgetArgs {
+            name: "example".to_owned(),
+            expected: snapshot("current").to_string(),
+            command: hash("empty-budget-validation").to_hex(),
+            operation: CampaignBudgetCommand::Add(CampaignBudgetAddArgs {
+                attempts: 0,
+                proposals: 0,
+            }),
+        });
+        assert!(validate_campaign_command(&empty_budget).is_err());
     }
 
     #[test]
@@ -380,6 +756,69 @@ mod tests {
                 ..
             })
         ));
+
+        let expected = snapshot("current").to_string();
+        let command = hash("pause").to_hex();
+        let pause = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "pause",
+            "example",
+            "--expected",
+            &expected,
+            "--command",
+            &command,
+            "--active",
+            "checkpoint",
+        ])
+        .expect("campaign pause arguments");
+        assert!(matches!(
+            pause.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Pause(CampaignPauseArgs {
+                    active: CampaignPausePolicyArg::Checkpoint,
+                    ..
+                }),
+                ..
+            })
+        ));
+
+        let budget = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "budget",
+            "example",
+            "--expected",
+            &expected,
+            "--command",
+            &hash("budget").to_hex(),
+            "add",
+            "11",
+            "--proposals",
+            "13",
+        ])
+        .expect("campaign budget arguments");
+        assert!(matches!(
+            budget.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Budget(CampaignBudgetArgs {
+                    operation: CampaignBudgetCommand::Add(CampaignBudgetAddArgs {
+                        attempts: 11,
+                        proposals: 13,
+                    }),
+                    ..
+                }),
+                ..
+            })
+        ));
     }
 
     fn query_over_loopback(command: &CampaignCommand) -> CampaignHeadReport {
@@ -398,6 +837,36 @@ mod tests {
         .expect("checked campaign query");
         server.join().expect("campaign server thread");
         report
+    }
+
+    fn mutate_over_loopback(command: &CampaignCommand) -> CampaignMutationReport {
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+                .expect("serve one campaign mutation");
+        });
+        let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
+        let client = CampaignClient::new(service);
+        let report = apply_campaign_mutation(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            command,
+        )
+        .expect("checked campaign mutation");
+        server.join().expect("campaign server thread");
+        report
+    }
+
+    fn mutation_basis(label: &str) -> CampaignMutationBasisArgs {
+        CampaignMutationBasisArgs {
+            name: "example".to_owned(),
+            expected: snapshot("current").to_string(),
+            command: hash(label).to_hex(),
+        }
+    }
+
+    fn hash(label: &str) -> CampaignHash {
+        CampaignHash::derive("crucible-cli-campaign-test", label.as_bytes())
     }
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
