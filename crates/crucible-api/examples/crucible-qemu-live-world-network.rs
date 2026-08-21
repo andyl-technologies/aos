@@ -27,6 +27,41 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_from_checkpoint,
 };
 
+const ETHERNET_PAYLOAD_OFFSET: usize = 14;
+const GUEST_ACK_PAYLOAD: &[u8] = b"crucible-network-ack-v1";
+const CHECKPOINT_PAYLOAD: &[u8] = b"crucible-network-checkpoint-v1";
+
+fn ethernet_frame_has_payload(frame: &[u8], payload: &[u8]) -> bool {
+    frame.get(ETHERNET_PAYLOAD_OFFSET..ETHERNET_PAYLOAD_OFFSET + payload.len()) == Some(payload)
+}
+
+fn outcome_difference(left: &crucible::QuantumOutcome, right: &crucible::QuantumOutcome) -> String {
+    format!(
+        "configuration={} frontier={} advanced_node={} resolved_events={} decisions={} event_log_entries={} event_log_segment_bytes={} event_log_segment_text={} event_log_segment_hash={} event_log_offset={} scheduler_quiescence={} left_frontier={:?} right_frontier={:?} left_advanced_node={:?} right_advanced_node={:?} left_resolved_events={:?} right_resolved_events={:?} left_decisions={:?} right_decisions={:?} left_scheduler_quiescence={:?} right_scheduler_quiescence={:?}",
+        left.configuration == right.configuration,
+        left.frontier == right.frontier,
+        left.advanced_node == right.advanced_node,
+        left.resolved_events == right.resolved_events,
+        left.decisions == right.decisions,
+        left.event_log_entries == right.event_log_entries,
+        left.event_log_segment_bytes == right.event_log_segment_bytes,
+        left.event_log_segment_text == right.event_log_segment_text,
+        left.event_log_segment_hash == right.event_log_segment_hash,
+        left.event_log_offset == right.event_log_offset,
+        left.scheduler_quiescence == right.scheduler_quiescence,
+        left.frontier,
+        right.frontier,
+        left.advanced_node,
+        right.advanced_node,
+        left.resolved_events,
+        right.resolved_events,
+        left.decisions,
+        right.decisions,
+        left.scheduler_quiescence,
+        right.scheduler_quiescence,
+    )
+}
+
 /// Creates a minimal VM description whose artifacts come from backend config.
 ///
 /// `kernel`, `root_image`, and `initrd` are absent here because every node in
@@ -107,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_root_image_format(ProductionRootImageFormat::Raw)
         .with_initrd(initrd)
         .with_kernel_cmdline_prefix("console=ttyS0 quiet net.ifnames=0 ipv6.disable=1 init=/init")
-        .with_run_ceiling_icount(12_000_000_000)
+        .with_run_ceiling_icount(64_000_000_000)
         .with_quantum_budget(4_000_000_000)
         // The canonical cursor preserves every partial 4B-instruction turn.
         // Host load can therefore make the real-time execution exceed the old
@@ -117,6 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut configuration = crucible::Configuration::genesis(scenario.clone());
     let mut network_decisions = 0_usize;
     let mut delivered_frames = 0_usize;
+    let mut guest_acknowledgements = 0_usize;
     let mut selected_branch = None;
     let mut checkpoint_frontier = VirtualTime::default();
     let link_rng_domain = crucible::RngStreamId::for_link(String::new()).domain;
@@ -158,6 +194,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .count(),
         );
+        // Only the guest fixture emits this payload, and it does so after QEMU
+        // has accepted a routed peer frame through its production NIC. This is
+        // the end-to-end receipt proof; a scheduler BackendInput alone does not
+        // prove that the plugin injected anything into the guest.
+        guest_acknowledgements = guest_acknowledgements.saturating_add(
+            outcome
+                .resolved_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        crucible::ScheduledEventPayload::BackendInput(input)
+                            if ethernet_frame_has_payload(&input.payload, GUEST_ACK_PAYLOAD)
+                    )
+                })
+                .count(),
+        );
         // Search frontiers describe alternate decisions reachable from the
         // current execution. Selecting the exact choice object, rather than
         // reconstructing it by name, preserves all replay metadata. The guest
@@ -175,35 +228,85 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if override_decision.choice.name == "loss-fire"
                 )
             });
-        if network_decisions > 0 && delivered_frames > 0 && selected_branch.is_some() {
+        if network_decisions > 0
+            && delivered_frames > 0
+            && guest_acknowledgements > 0
+            && selected_branch.is_some()
+        {
             println!("completed_quantum={quantum}");
             break;
         }
     }
     let selected_branch = selected_branch.ok_or_else(|| {
         format!(
-            "no live loss branch after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames}"
+            "no live loss branch after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames} guest_acknowledgements={guest_acknowledgements}"
         )
     })?;
-    if network_decisions == 0 || delivered_frames == 0 {
+    if network_decisions == 0 || delivered_frames == 0 || guest_acknowledgements == 0 {
         return Err(format!(
-            "no complete guest-output route after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames}"
+            "no guest-observed production route after 12 quanta: network_decisions={network_decisions} delivered_frames={delivered_frames} guest_acknowledgements={guest_acknowledgements}"
         )
         .into());
     }
-    // Capture a production closure, advance the original processes once, then
-    // prove a newly launched restore returns the identical complete outcome.
-    // Comparing the full value covers scheduler state, routed events, decisions,
-    // evidence entries, segment bytes, offset, and quiescence together.
+    // Capture a production closure, then advance until the guest's checkpoint
+    // marker arrives and causes a fresh link decision. Round-robin scheduling
+    // can put an unrelated VM first, so proving only one equal next outcome
+    // would permit an inert false green. Comparing the complete bounded sequence
+    // covers scheduler state, routed events, decisions, evidence entries,
+    // segment bytes, offsets, and quiescence at every intermediate turn.
     let checkpoint_configuration = configuration.clone();
     let execution_closure = lifecycle
         .capture_checkpoint(&checkpoint_configuration)?
         .ok_or("production lifecycle did not return an exact execution closure")?;
-    let uninterrupted = lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint_configuration.clone(),
-        control: Vec::new(),
-    })?;
+    let mut uninterrupted_configuration = checkpoint_configuration.clone();
+    let mut uninterrupted_outcomes = Vec::new();
+    let mut continued_checkpoint_frames = 0_usize;
+    let mut continued_network_decisions = 0_usize;
+    for _ in 0..16_u64 {
+        let outcome = lifecycle.drive_quantum(QuantumRequest {
+            configuration: uninterrupted_configuration,
+            control: Vec::new(),
+        })?;
+        uninterrupted_configuration = outcome.configuration.clone();
+        continued_checkpoint_frames = continued_checkpoint_frames.saturating_add(
+            outcome
+                .resolved_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        crucible::ScheduledEventPayload::BackendInput(input)
+                            if ethernet_frame_has_payload(&input.payload, CHECKPOINT_PAYLOAD)
+                    )
+                })
+                .count(),
+        );
+        continued_network_decisions = continued_network_decisions.saturating_add(
+            outcome
+                .decisions
+                .iter()
+                .filter(|decision| {
+                    matches!(
+                        decision,
+                        crucible::Decision::RngDraw(draw)
+                            if draw.stream.domain == link_rng_domain
+                    )
+                })
+                .count(),
+        );
+        uninterrupted_outcomes.push(outcome);
+        if continued_checkpoint_frames > 0 && continued_network_decisions > 0 {
+            break;
+        }
+    }
     lifecycle.shutdown()?;
+    if continued_checkpoint_frames == 0 || continued_network_decisions == 0 {
+        return Err(format!(
+            "checkpoint continuation remained inert for {} quanta: checkpoint_frames={continued_checkpoint_frames} network_decisions={continued_network_decisions}",
+            uninterrupted_outcomes.len()
+        )
+        .into());
+    }
 
     let mut checkpoint = Checkpoint::new(
         checkpoint_configuration.id(),
@@ -219,71 +322,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         &config,
         &checkpoint,
     )?;
-    let restored_outcome = restored.drive_quantum(QuantumRequest {
-        configuration: checkpoint_configuration,
-        control: Vec::new(),
-    })?;
+    let mut restored_configuration = checkpoint_configuration;
+    let mut restored_outcomes = Vec::with_capacity(uninterrupted_outcomes.len());
+    for _ in 0..uninterrupted_outcomes.len() {
+        let outcome = restored.drive_quantum(QuantumRequest {
+            configuration: restored_configuration,
+            control: Vec::new(),
+        })?;
+        restored_configuration = outcome.configuration.clone();
+        restored_outcomes.push(outcome);
+    }
     restored.shutdown()?;
-    if restored_outcome != uninterrupted {
-        let decision_divergence = uninterrupted
-            .decisions
+    if restored_outcomes != uninterrupted_outcomes {
+        let divergence = uninterrupted_outcomes
             .iter()
-            .zip(&restored_outcome.decisions)
-            .position(|(left, right)| left != right);
-        let decision_pair = decision_divergence.map(|index| {
-            (
-                index,
-                uninterrupted.decisions.get(index),
-                restored_outcome.decisions.get(index),
-            )
-        });
-        let entry_divergence = uninterrupted
-            .event_log_entries
-            .iter()
-            .zip(&restored_outcome.event_log_entries)
-            .position(|(left, right)| left != right);
-        let entry_pair = entry_divergence.map(|index| {
-            (
-                index,
-                uninterrupted.event_log_entries.get(index),
-                restored_outcome.event_log_entries.get(index),
-            )
-        });
-        let uninterrupted_decision_tail = uninterrupted
-            .decisions
-            .iter()
-            .rev()
-            .take(2)
-            .collect::<Vec<_>>();
-        let restored_decision_tail = restored_outcome
-            .decisions
-            .iter()
-            .rev()
-            .take(2)
-            .collect::<Vec<_>>();
+            .zip(&restored_outcomes)
+            .position(|(left, right)| left != right)
+            .unwrap_or_else(|| uninterrupted_outcomes.len().min(restored_outcomes.len()));
         return Err(format!(
-            "durable exact restore diverged on the next live-QEMU quantum: \
-             frontier={:?}/{:?}, advanced_node={:?}/{:?}, decisions={}/{}, \
-             resolved_events={}/{}, event_entries={}/{}, offsets={:?}/{:?}, \
-             configuration_equal={}, segment_equal={}, quiescence_equal={}, \
-             first_decision_divergence={decision_pair:?}, \
-             first_event_divergence={entry_pair:?}, \
-             decision_tails={uninterrupted_decision_tail:?}/{restored_decision_tail:?}",
-            uninterrupted.frontier,
-            restored_outcome.frontier,
-            uninterrupted.advanced_node,
-            restored_outcome.advanced_node,
-            uninterrupted.decisions.len(),
-            restored_outcome.decisions.len(),
-            uninterrupted.resolved_events.len(),
-            restored_outcome.resolved_events.len(),
-            uninterrupted.event_log_entries.len(),
-            restored_outcome.event_log_entries.len(),
-            uninterrupted.event_log_offset,
-            restored_outcome.event_log_offset,
-            uninterrupted.configuration == restored_outcome.configuration,
-            uninterrupted.event_log_segment_bytes == restored_outcome.event_log_segment_bytes,
-            uninterrupted.scheduler_quiescence == restored_outcome.scheduler_quiescence,
+            "durable exact restore diverged in the live-QEMU continuation at outcome {divergence}: uninterrupted_count={} restored_count={} difference={}",
+            uninterrupted_outcomes.len(),
+            restored_outcomes.len(),
+            outcome_difference(
+                &uninterrupted_outcomes[divergence],
+                &restored_outcomes[divergence],
+            ),
         )
         .into());
     }
@@ -354,8 +417,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("topology=two-vm-hostless-world-link");
     println!("network_decisions={network_decisions}");
     println!("delivered_frames={delivered_frames}");
+    println!("guest_acknowledgements={guest_acknowledgements}");
     println!("search_branch=loss-fire");
     println!("branch_decisions_match=true");
     println!("exact_restore_next_quantum_match=true");
+    println!(
+        "checkpoint_continuation_quanta={}",
+        uninterrupted_outcomes.len()
+    );
+    println!("checkpoint_packet_continuation={continued_checkpoint_frames}");
+    println!("checkpoint_fault_decision_continuation={continued_network_decisions}");
     Ok(())
 }

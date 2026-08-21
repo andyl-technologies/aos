@@ -39,6 +39,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   };
+  pluginLiveCallbacks = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  };
   pluginNetworkRx = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
@@ -79,8 +83,8 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
       {
-        label = "delivery key helper";
-        needle = "pub fn delivery_key(&self) -> FrameDeliveryKey";
+        label = "delivery keys reconstructed from the shared ring";
+        needle = "ledger.push_back(view.inbound_entries[slot].delivery_key())";
       }
       {
         label = "exact delivery ceiling helper";
@@ -91,24 +95,24 @@
         needle = "earliest_possible_delivery_icount == Some(max_advance_icount)";
       }
       {
-        label = "passed-delivery floor tracked";
-        needle = "passed_delivery_floor";
+        label = "plugin-owned inbound consumption baseline";
+        needle = "struct QemuInboundConsumptionBaseline";
       }
       {
-        label = "preview before commit";
-        needle = "fn preview_due_inbound_since";
+        label = "host observes rather than drains inbound";
+        needle = "fn observe_inbound_consumption";
       }
       {
         label = "late frame error";
         needle = "DeliveryAlreadyPassed";
       }
       {
-        label = "commit mismatch error";
-        needle = "DequeuedUnexpectedDelivery";
+        label = "missing plugin consumption fails closed";
+        needle = "InboundFrameNotConsumedAtDelivery";
       }
       {
-        label = "deterministic due-frame order";
-        needle = "sort_by_key(QemuDueInboundFrame::delivery_key)";
+        label = "untracked ring wrap fails closed";
+        needle = "InboundDeliveryHistoryOverwritten";
       }
       {
         label = "device I/O freeze report type";
@@ -147,16 +151,24 @@
         needle = "qemu_quantum_deliver_frame_fails_loud_on_sequence_overflow";
       }
       {
-        label = "overshoot rejection test";
-        needle = "qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery";
+        label = "delivery horizon clamping test";
+        needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
       }
       {
         label = "late no-consume test";
         needle = "qemu_quantum_rejects_late_inbound_frame_without_consuming";
       }
       {
-        label = "mid-quantum late no-consume test";
-        needle = "qemu_quantum_rejects_mid_quantum_late_frame_without_consuming";
+        label = "due frames remain plugin-owned test";
+        needle = "qemu_quantum_rejects_due_frame_not_consumed_by_plugin";
+      }
+      {
+        label = "unconsumed mid-quantum publication test";
+        needle = "qemu_quantum_rejects_unconsumed_mid_quantum_publication";
+      }
+      {
+        label = "ledgered mid-quantum publication test";
+        needle = "qemu_quantum_accepts_ledgered_mid_quantum_publication";
       }
       {
         label = "device I/O freeze report test";
@@ -227,6 +239,20 @@
         needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+      {
+        label = "plugin sole-consumer boundary injection";
+        needle = "fn inject_due_network_inbound(";
+      }
+      {
+        label = "busy-boundary production RX injection";
+        needle = "self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?";
+      }
+      {
+        label = "busy-boundary RX unit proof";
+        needle = "busy_boundary_injects_and_commits_inbound_before_reached_publication";
+      }
+    ]
     ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
       {
         label = "production unwrap";
@@ -239,6 +265,14 @@
       {
         label = "hard-coded host shell";
         needle = "/bin/sh";
+      }
+      {
+        label = "host-side inbound dequeue helper";
+        needle = "fn drain_due_inbound_since";
+      }
+      {
+        label = "host-side inbound dequeue operation";
+        needle = "dequeue inbound frame";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

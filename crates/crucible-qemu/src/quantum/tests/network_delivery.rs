@@ -38,6 +38,7 @@ fn qemu_quantum_deliver_frame_assigns_router_sequences() {
         Ok(pending) => pending,
         Err(error) => panic!("router-delivered frames should authorize exact horizon: {error}"),
     };
+    let consumed = plugin_consume_inbound(&mut hot_path, 2);
     if let Err(error) = slot.publish_reached_icount(1, 0) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
@@ -47,10 +48,9 @@ fn qemu_quantum_deliver_frame_assigns_router_sequences() {
     };
 
     assert_eq!(
-        report
-            .due_inbound_frames
+        consumed
             .iter()
-            .map(QemuDueInboundFrame::delivery_key)
+            .map(FrameEntry::delivery_key)
             .collect::<Vec<_>>(),
         vec![
             frame(1, 31, 0, b"first").delivery_key(),
@@ -58,13 +58,13 @@ fn qemu_quantum_deliver_frame_assigns_router_sequences() {
         ]
     );
     assert_eq!(
-        report
-            .due_inbound_frames
+        consumed
             .iter()
-            .map(|frame| frame.payload.as_slice())
+            .map(|frame| frame.payload().expect("test frame payload is valid"))
             .collect::<Vec<_>>(),
         vec![b"first".as_slice(), b"second".as_slice()]
     );
+    assert_eq!(report.inbound_frames_consumed, 2);
 }
 
 #[test]

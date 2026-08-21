@@ -1,0 +1,423 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 55c096523..9dd88089e 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -1055,6 +1055,22 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+                 break;
+             }
+ 
++            if (unlikely(icount_crucible_rr_snapshot_continuation())) {
++                uint32_t canonical_insns = cflags & CF_COUNT_MASK;
++
++                /*
++                 * Direct chains and budget-shaped TBs are process-local cache
++                 * state. Give both sides of an exact snapshot the same bounded
++                 * block shape while preserving a smaller scheduler budget.
++                 */
++                if (canonical_insns == 0 || canonical_insns > 32) {
++                    canonical_insns = 32;
++                }
++                cflags &= ~CF_COUNT_MASK;
++                cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | canonical_insns;
++                last_tb = NULL;
++            }
++
+             if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
+                          fault_boundary)) {
+                 cflags &= ~CF_COUNT_MASK;
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index bb7e73138..219cadef1 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -52,6 +52,7 @@ static bool icount_sleep = true;
+ /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
+ #define MAX_ICOUNT_SHIFT 10
+ static uint64_t crucible_rr_switch_quantum;
++static bool crucible_rr_snapshot_continuation;
+ 
+ bool icount_align_option;
+ 
+@@ -105,6 +106,12 @@ uint64_t icount_crucible_rr_cursor_position(void)
+     return timers_state.crucible_rr_cursor_position;
+ }
+ 
++bool icount_crucible_rr_snapshot_continuation(void)
++{
++    return icount_crucible_rr_switch_quantum() != 0 &&
++        crucible_rr_snapshot_continuation;
++}
++
+ void icount_crucible_rr_snapshot_resume_prepare(void)
+ {
+     if (icount_crucible_rr_switch_quantum() != 0 &&
+@@ -116,6 +123,7 @@ void icount_crucible_rr_snapshot_resume_prepare(void)
+          * vCPU or discard a nonzero intra-turn position.
+          */
+         timers_state.crucible_rr_selection_pending = true;
++        crucible_rr_snapshot_continuation = true;
+     }
+ }
+ 
+diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
+index 7712e6f19..447be11ac 100644
+--- a/hw/net/virtio-net.c
++++ b/hw/net/virtio-net.c
+@@ -17,6 +17,7 @@
+ #include "qemu/log.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/module.h"
++#include "qemu/accel.h"
+ #include "hw/virtio/virtio.h"
+ #include "net/net.h"
+ #include "net/checksum.h"
+@@ -48,6 +49,7 @@
+ #include "net_rx_pkt.h"
+ #include "hw/virtio/vhost.h"
+ #include "system/qtest.h"
++#include "system/cpu-timers.h"
+ 
+ #define VIRTIO_NET_VM_VERSION    11
+ 
+@@ -382,6 +384,13 @@ static void virtio_net_drop_tx_queue_data(VirtIODevice *vdev, VirtQueue *vq)
+     }
+ }
+ 
++static void virtio_net_tx_bh(void *opaque);
++
++static bool virtio_net_crucible_sync_tx(void)
++{
++    return icount_enabled() && strcmp(current_accel_name(), "sim") == 0;
++}
++
+ static void virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
+ {
+     VirtIONet *n = VIRTIO_NET(vdev);
+@@ -417,6 +426,13 @@ static void virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
+             if (q->tx_timer) {
+                 timer_mod(q->tx_timer,
+                                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + n->tx_timeout);
++            } else if (virtio_net_crucible_sync_tx()) {
++                /*
++                 * tx_waiting is VMState, but the scheduled state of tx_bh is
++                 * not.  Resume the deterministic backend synchronously so a
++                 * save/load boundary cannot move guest TX in icount space.
++                 */
++                virtio_net_tx_bh(q);
+             } else {
+                 replay_bh_schedule_event(q->tx_bh);
+             }
+@@ -2707,7 +2723,11 @@ static void virtio_net_tx_complete(NetClientState *nc, ssize_t len)
+          */
+         virtio_queue_set_notification(q->tx_vq, 0);
+         if (q->tx_bh) {
+-            replay_bh_schedule_event(q->tx_bh);
++            if (virtio_net_crucible_sync_tx()) {
++                virtio_net_tx_bh(q);
++            } else {
++                replay_bh_schedule_event(q->tx_bh);
++            }
+         } else {
+             timer_mod(q->tx_timer,
+                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + n->tx_timeout);
+@@ -2873,7 +2893,17 @@ static void virtio_net_handle_tx_bh(VirtIODevice *vdev, VirtQueue *vq)
+         return;
+     }
+     virtio_queue_set_notification(vq, 0);
+-    replay_bh_schedule_event(q->tx_bh);
++    if (virtio_net_crucible_sync_tx()) {
++        /*
++         * The plugin observes guest TX at an instruction coordinate.  A BH is
++         * dispatched by the host main loop and can therefore combine a
++         * different number of descriptors after an exact VMState restore.
++         * Drain from the guest kick while the vCPU coordinate is still exact.
++         */
++        virtio_net_tx_bh(q);
++    } else {
++        replay_bh_schedule_event(q->tx_bh);
++    }
+ }
+ 
+ static void virtio_net_tx_timer(void *opaque)
+@@ -2953,12 +2983,20 @@ static void virtio_net_tx_bh(void *opaque)
+                  * broken */
+     }
+ 
+-    /* If we flush a full burst of packets, assume there are
+-     * more coming and immediately reschedule */
++flush_again:
++    /* If we flush a full burst of packets, assume there are more coming. */
+     if (ret >= n->tx_burst) {
+-        replay_bh_schedule_event(q->tx_bh);
+-        q->tx_waiting = 1;
+-        return;
++        if (virtio_net_crucible_sync_tx()) {
++            ret = virtio_net_flush_tx(q);
++            if (ret == -EBUSY || ret == -EINVAL) {
++                return;
++            }
++            goto flush_again;
++        } else {
++            replay_bh_schedule_event(q->tx_bh);
++            q->tx_waiting = 1;
++            return;
++        }
+     }
+ 
+     /* If less than a full burst, re-enable notification and flush
+@@ -2970,8 +3008,12 @@ static void virtio_net_tx_bh(void *opaque)
+         return;
+     } else if (ret > 0) {
+         virtio_queue_set_notification(q->tx_vq, 0);
+-        replay_bh_schedule_event(q->tx_bh);
+-        q->tx_waiting = 1;
++        if (virtio_net_crucible_sync_tx()) {
++            goto flush_again;
++        } else {
++            replay_bh_schedule_event(q->tx_bh);
++            q->tx_waiting = 1;
++        }
+     }
+ }
+ 
+diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
+index fbcf68f0e..e019245ab 100644
+--- a/hw/virtio/virtio-pci.c
++++ b/hw/virtio/virtio-pci.c
+@@ -327,19 +327,24 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+      * deterministic icount; synchronous completion without ioeventfd is
+      * ordinary QEMU device behaviour.  No QEMU record/replay (RFC-0010 NG-6).
+      *
+-     * Scope this ioctl-level policy to virtio-rng and virtio-blk.  virtio-rng's
+-     * entropy completion has no other deterministic anchor -- its delivery
+-     * icount is the leak S6 hits.  A standard file-backed virtio-blk guest must
++     * Scope this ioctl-level policy to virtio-rng, virtio-blk, and virtio-net.
++     * The virtio-rng entropy completion has no other deterministic anchor --
++     * its delivery icount is the leak S6 hits.  A standard file-backed
++     * virtio-blk guest must
+      * enter the generic notification path before patch 0040 can dispatch its
+      * request inline; otherwise the vCPU can park before QEMU submits the AIO.
+-     * Both devices preserve their existing completion paths.
++     * virtio-net must likewise preserve the guest's exact transmit icount
++     * across a cold VMState restore instead of handing its kick to a
++     * host-timed main-loop notifier.  All three devices preserve their
++     * existing completion paths.
+      */
+     if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {
+         VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
+ 
+         if (vdev != NULL &&
+             (vdev->device_id == VIRTIO_ID_RNG ||
+-             vdev->device_id == VIRTIO_ID_BLOCK)) {
++             vdev->device_id == VIRTIO_ID_BLOCK ||
++             vdev->device_id == VIRTIO_ID_NET)) {
+             return false;
+         }
+     }
+diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+index 0b17824e8..67a72a014 100644
+--- a/hw/virtio/virtio.c
++++ b/hw/virtio/virtio.c
+@@ -2540,24 +2540,27 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
+ 
+     trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);
+     /*
+-     * virtio-9p and virtio-blk enable host notifiers even when the accelerator
+-     * cannot use ioeventfd.  Under Crucible sim those notifiers defer a request
+-     * kick to the main loop, which cannot run while the vCPU owns the
+-     * deterministic quantum.  The guest can then block forever before a raw 9p
+-     * request reaches SLOT_9P_IO or an ordinary file-backed disk request is
++     * virtio-9p, virtio-blk, and virtio-net enable host notifiers even when the
++     * accelerator cannot use ioeventfd.  Under Crucible sim those notifiers
++     * defer a request kick to the main loop, so its observation coordinate can
++     * depend on host dispatch.  The guest can also block forever before a raw
++     * 9p request reaches SLOT_9P_IO or an ordinary file-backed disk request is
+      * submitted.
+      *
+-     * Dispatch sim+icount 9p and block kicks through their ordinary inline
+-     * device handlers.  Their completion paths remain unchanged: shmem devices
+-     * still complete at their deterministic delivery icount, while a standard
+-     * file-backed virtio-blk device completes through QEMU's AIO context.
+-     * Every non-sim launch retains its existing notifier behavior.
++     * Dispatch sim+icount 9p, block, and network kicks through their ordinary
++     * inline device handlers.  Their completion paths remain unchanged: shmem
++     * devices still complete at their deterministic delivery icount, a
++     * standard file-backed virtio-blk device completes through QEMU's AIO
++     * context, and network TX crosses the registered plugin callback at the
++     * guest's kick icount.  Every non-sim launch retains its existing notifier
++     * behavior.
+      */
+     if (vq->host_notifier_enabled &&
+         !(icount_enabled() &&
+           strcmp(current_accel_name(), "sim") == 0 &&
+           (vdev->device_id == VIRTIO_ID_9P ||
+-           vdev->device_id == VIRTIO_ID_BLOCK))) {
++           vdev->device_id == VIRTIO_ID_BLOCK ||
++           vdev->device_id == VIRTIO_ID_NET))) {
+         event_notifier_set(&vq->host_notifier);
+     } else if (vq->handle_output) {
+         vq->handle_output(vdev, vq);
+@@ -2914,6 +2917,36 @@ static const VMStateDescription vmstate_virtio_packed_virtqueues = {
+     }
+ };
+ 
++static bool virtio_crucible_queue_signal_state_needed(void *opaque)
++{
++    return icount_crucible_rr_switch_quantum() != 0 &&
++        icount_enabled() && strcmp(current_accel_name(), "sim") == 0;
++}
++
++static const VMStateDescription vmstate_crucible_queue_signal = {
++    .name = "virtio/crucible-queue-signal",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT16(signalled_used, struct VirtQueue),
++        VMSTATE_BOOL(signalled_used_valid, struct VirtQueue),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static const VMStateDescription vmstate_virtio_crucible_queue_signals = {
++    .name = "virtio/crucible-queue-signals",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = &virtio_crucible_queue_signal_state_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT_VARRAY_POINTER_KNOWN(vq, struct VirtIODevice,
++                      VIRTIO_QUEUE_MAX, 0, vmstate_crucible_queue_signal,
++                      VirtQueue),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_ringsize = {
+     .name = "ringsize_state",
+     .version_id = 1,
+@@ -3058,6 +3091,7 @@ static const VMStateDescription vmstate_virtio = {
+         &vmstate_virtio_started,
+         &vmstate_virtio_packed_virtqueues,
+         &vmstate_virtio_disabled,
++        &vmstate_virtio_crucible_queue_signals,
+         NULL
+     }
+ };
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 01b653017..af29e5f6d 100644
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1380,6 +1380,7 @@ int qemu_plugin_net_can_receive(void);
+  * typedef qemu_plugin_net_tx_cb_t - shmem network TX callback
+  * @data: Ethernet frame bytes emitted by the guest
+  * @len: byte length of @data
++ * @emit_icount: committed raw icount at the device transmit boundary
+  * @userdata: a pointer supplied when the callback was registered
+  *
+  * Called synchronously from QEMU's network transmit path before the frame is
+@@ -1388,6 +1389,7 @@ int qemu_plugin_net_can_receive(void);
+  */
+ typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *data,
+                                        size_t len,
++                                       uint64_t emit_icount,
+                                        void *userdata);
+ 
+ /**
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index f8761d2d4..84ff4dc3c 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -81,6 +81,7 @@ int64_t icount_round(int64_t count);
+ uint64_t icount_crucible_rr_switch_quantum(void);
+ uint64_t icount_crucible_rr_current_vcpu(void);
+ uint64_t icount_crucible_rr_cursor_position(void);
++bool icount_crucible_rr_snapshot_continuation(void);
+ void icount_crucible_rr_snapshot_resume_prepare(void);
+ void icount_crucible_rr_initialize_genesis(CPUState *cpu);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+diff --git a/migration/savevm.c b/migration/savevm.c
+index ec35791af..19859de11 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -53,6 +53,7 @@
+ #include "system/cpu-timers.h"
+ #include "exec/memory.h"
+ #include "exec/target_page.h"
++#include "exec/tb-flush.h"
+ #include "trace.h"
+ #include "qemu/iov.h"
+ #include "qemu/job.h"
+@@ -3510,6 +3511,15 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
+     ret = 0;
+ 
+     icount_crucible_rr_snapshot_resume_prepare();
++    if (icount_crucible_rr_snapshot_continuation()) {
++        /*
++         * A translated block can be shortened by the icount budget that was
++         * active when it was first generated. Translation-cache history is
++         * process-local, so resume both sides of an exact snapshot from an
++         * empty cache before either can execute more guest instructions.
++         */
++        tb_flush(first_cpu);
++    }
+ 
+  the_end:
+     bdrv_drain_all_end();
+@@ -3677,6 +3687,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+         return false;
+     }
+ 
++    if (icount_crucible_rr_snapshot_continuation()) {
++        /* Match the successful save path before the loaded VM is resumed. */
++        tb_flush(first_cpu);
++    }
++
+     return true;
+ 
+ err_drain:
+diff --git a/net/net.c b/net/net.c
+index 1add21d43..727bd63a4 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -51,6 +51,7 @@
+ #include "qemu/option.h"
+ #include "qemu/keyval.h"
+ #include "qapi/error.h"
++#include "system/cpu-timers.h"
+ #include "qapi/opts-visitor.h"
+ #include "system/runstate.h"
+ #include "net/colo-compare.h"
+@@ -98,14 +99,21 @@ static bool crucible_net_tx_callback_ready(NetClientState *sender)
+ 
+ static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)
+ {
++    int64_t emit_icount;
++    ssize_t submitted_len;
++
+     if (data == NULL || len == 0 || len > SSIZE_MAX) {
+         return -1;
+     }
+-    if (crucible_net_tx_cb(data, len, crucible_net_tx_userdata) != 0) {
++    submitted_len = (ssize_t)len;
++    emit_icount = icount_get_raw();
++    if (emit_icount < 0 ||
++        crucible_net_tx_cb(data, len, (uint64_t)emit_icount,
++                           crucible_net_tx_userdata) != 0) {
+         return -1;
+     }
+ 
+-    return (ssize_t)len;
++    return submitted_len;
+ }
+ 
+ static int nb_nics;
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 166600d1d..875eee08c 100644
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -209,6 +209,7 @@ static int crucible_rr_cursor_state_post_load(void *opaque, int version_id)
+         !qemu_get_cpu(state->crucible_rr_current_vcpu)) {
+         return -EINVAL;
+     }
++    icount_crucible_rr_snapshot_resume_prepare();
+     state->crucible_rr_selection_pending = true;
+     return 0;
+ }

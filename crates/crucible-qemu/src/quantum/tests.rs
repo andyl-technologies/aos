@@ -65,7 +65,7 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
     assert_eq!(report.ceiling, icount(10));
     assert_eq!(report.final_state.current_icount, icount(10));
     assert_eq!(report.outcome, AdvanceOutcome::ReachedHorizon);
-    assert!(report.due_inbound_frames.is_empty());
+    assert_eq!(report.inbound_frames_consumed, 0);
     assert!(report.emitted_frames.is_empty());
     assert!(assert_qemu_quantum_hot_path_is_shmem_only(&report.operations).is_ok());
     assert!(
@@ -234,6 +234,7 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
         Ok(pending) => pending,
         Err(error) => panic!("exact delivery horizon should be authorized: {error}"),
     };
+    let consumed = plugin_consume_inbound(&mut hot_path, 3);
     if let Err(error) = slot.publish_reached_icount(5, 0) {
         panic!("plugin should reach exact delivery icount: {error}");
     }
@@ -243,10 +244,9 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
     };
 
     assert_eq!(
-        report
-            .due_inbound_frames
+        consumed
             .iter()
-            .map(QemuDueInboundFrame::delivery_key)
+            .map(FrameEntry::delivery_key)
             .collect::<Vec<_>>(),
         vec![
             frame(5, 1, 7, b"first").delivery_key(),
@@ -255,10 +255,9 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
         ]
     );
     assert_eq!(
-        report
-            .due_inbound_frames
+        consumed
             .iter()
-            .map(|frame| frame.payload.as_slice())
+            .map(|frame| frame.payload().expect("test frame payload is valid"))
             .collect::<Vec<_>>(),
         vec![
             b"first".as_slice(),
@@ -266,6 +265,7 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
             b"third".as_slice(),
         ]
     );
+    assert_eq!(report.inbound_frames_consumed, 3);
     assert_eq!(inbound_ring.read_index(), 3);
 }
 
@@ -301,6 +301,7 @@ fn qemu_quantum_accepts_frame_published_at_current_boundary() {
         Ok(pending) => pending,
         Err(error) => panic!("current-boundary delivery should be authorized: {error}"),
     };
+    let consumed = plugin_consume_inbound(&mut hot_path, 1);
     if let Err(error) = slot.publish_reached_icount(5, 0) {
         panic!("plugin should remain at the exact delivery boundary: {error}");
     }
@@ -309,12 +310,53 @@ fn qemu_quantum_accepts_frame_published_at_current_boundary() {
         Err(error) => panic!("current-boundary delivery should finish: {error}"),
     };
 
-    assert_eq!(report.due_inbound_frames.len(), 1);
+    assert_eq!(report.inbound_frames_consumed, 1);
     assert_eq!(
-        report.due_inbound_frames[0].delivery_key(),
+        consumed[0].delivery_key(),
         frame(5, 31, 1, b"current-boundary").delivery_key()
     );
     assert_eq!(inbound_ring.read_index(), 1);
+}
+
+#[test]
+fn qemu_quantum_rejects_due_frame_not_consumed_by_plugin() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+    let expected = frame(5, 31, 1, b"plugin-owned");
+    assert!(
+        hot_path
+            .enqueue_inbound_frame(QemuInboundFrame {
+                delivery_icount: icount(5),
+                src_node: expected.src_node,
+                sequence: expected.seq,
+                payload: expected.payload().unwrap_or_default().to_vec(),
+            })
+            .is_ok()
+    );
+    let pending = hot_path
+        .start_quantum(horizon(5))
+        .unwrap_or_else(|error| panic!("delivery quantum should start: {error}"));
+    slot.publish_reached_icount(5, 0)
+        .unwrap_or_else(|error| panic!("plugin boundary should publish: {error}"));
+
+    assert_eq!(
+        hot_path.finish_quantum(pending),
+        Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
+            current_icount: 5,
+            frame: expected.delivery_key(),
+        })
+    );
+    assert_eq!(inbound_ring.read_index(), 0);
 }
 
 #[test]
@@ -345,6 +387,7 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     };
     assert_eq!(pending.requested_horizon, icount(6));
     assert_eq!(pending.ceiling, icount(5));
+    let consumed = plugin_consume_inbound(&mut hot_path, 1);
     if let Err(error) = slot.publish_reached_icount(5, 0) {
         panic!("plugin should stop at the delivery boundary: {error}");
     }
@@ -355,7 +398,11 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
 
     assert_eq!(report.ceiling, icount(5));
     assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(5) });
-    assert_eq!(report.due_inbound_frames.len(), 1);
+    assert_eq!(report.inbound_frames_consumed, 1);
+    assert_eq!(
+        consumed[0].delivery_key(),
+        frame(5, 31, 7, &[1, 2, 3]).delivery_key()
+    );
     assert_eq!(inbound_ring.read_index(), 1);
 }
 
@@ -399,7 +446,7 @@ fn qemu_quantum_rejects_late_inbound_frame_without_consuming() {
 }
 
 #[test]
-fn qemu_quantum_rejects_mid_quantum_late_frame_without_consuming() {
+fn qemu_quantum_rejects_unconsumed_mid_quantum_publication() {
     let slot = NodeSlot::default();
     let inbound_ring = RingHeader::new();
     let outbound_ring = RingHeader::new();
@@ -428,13 +475,52 @@ fn qemu_quantum_rejects_mid_quantum_late_frame_without_consuming() {
 
     assert_eq!(
         hot_path.finish_quantum(pending),
-        Err(QemuQuantumError::DeliveryAlreadyPassed {
-            passed_delivery_floor_icount: 10,
+        Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
             current_icount: 10,
-            frame: frame(5, 31, 7, b"late-mid-quantum").delivery_key(),
+            frame: frame(5, 31, 7, b"").delivery_key(),
         })
     );
     assert_eq!(inbound_ring.read_index(), 0);
+}
+
+#[test]
+fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = hot_path
+        .start_quantum(horizon(10))
+        .unwrap_or_else(|error| panic!("quantum should start without inbound frames: {error}"));
+    hot_path
+        .enqueue_inbound_frame(QemuInboundFrame {
+            delivery_icount: icount(5),
+            src_node: 31,
+            sequence: 7,
+            payload: b"mid-quantum".to_vec(),
+        })
+        .unwrap_or_else(|error| panic!("host publication should join the ledger: {error}"));
+    let consumed = plugin_consume_inbound(&mut hot_path, 1);
+    slot.publish_reached_icount(10, 0)
+        .unwrap_or_else(|error| panic!("plugin report should publish: {error}"));
+
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("ledgered publication should finish: {error}"));
+    assert_eq!(report.inbound_frames_consumed, 1);
+    assert_eq!(
+        consumed[0].delivery_key(),
+        frame(5, 31, 7, b"").delivery_key()
+    );
 }
 
 fn hot_path<'a>(
@@ -525,6 +611,24 @@ fn enqueue_raw(ring: &RingHeader, entries: &mut [FrameEntry], frame: FrameEntry)
     if let Err(error) = ring.enqueue(entries, &frame) {
         panic!("test frame should enqueue: {error}");
     }
+}
+
+fn plugin_consume_inbound(
+    hot_path: &mut QemuQuantumShmemHotPath<'_>,
+    count: usize,
+) -> Vec<FrameEntry> {
+    let mut frames = (0..count)
+        .map(|_| {
+            hot_path
+                .view
+                .inbound_ring
+                .dequeue(hot_path.view.inbound_entries)
+                .unwrap_or_else(|error| panic!("plugin dequeue should succeed: {error}"))
+                .unwrap_or_else(|| panic!("plugin dequeue should find a published frame"))
+        })
+        .collect::<Vec<_>>();
+    frames.sort_by_key(FrameEntry::delivery_key);
+    frames
 }
 
 fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
