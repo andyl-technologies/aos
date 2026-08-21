@@ -388,7 +388,12 @@ archive operation requires durable state.
 An exact RAM manifest maps stable `(RAMBlockId, page-or-extent-index)` keys to
 logical content IDs and compact zero/repeated/base/delta runs. Disk manifests
 use immutable backing identities plus changed extent IDs. Opaque device VMState
-remains an authenticated blob.
+remains an authenticated blob. The initial exact-checkpoint root is a generic
+two-child envelope over canonical QEMU/Apache metadata and that opaque VMState
+blob. Generic closure walkers can therefore retain and verify both child IDs
+without interpreting QEMU bytes; the daemon owner additionally checks the
+fixed root body against the decoded snapshot identity, configuration, and exact
+child lengths.
 
 Millions of logical pages must not imply millions of S3 or filesystem objects.
 `PackedStore` groups logical object bodies into immutable multi-megabyte packs

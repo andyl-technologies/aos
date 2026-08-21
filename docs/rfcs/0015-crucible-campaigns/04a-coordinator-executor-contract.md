@@ -1518,9 +1518,12 @@ capture begins. Success leaves QEMU paused. Failure after sealing also closes
 further modeled progress and retains the session for guarded reap or
 quarantine. The returned authenticated `QemuVmSnapshot` MUST be durably
 published before the session is finished and its resource guard is released.
-The current checkpoint lands this capture/ownership contract; durable
-publication and restart-resume ledger composition remain mandatory before the
-campaign supervisor may report exact-checkpoint pause complete.
+The daemon now prepares a no-write, content-addressed root over canonical
+snapshot metadata and a streamed opaque VMState child, publishes both children
+before that root, and requires exact durable placement receipts. Assignment-
+ledger staging of the expected root, restart recovery, resume materialization,
+and supervisor replacement of the active reservation remain mandatory before
+the campaign supervisor may report exact-checkpoint pause complete.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

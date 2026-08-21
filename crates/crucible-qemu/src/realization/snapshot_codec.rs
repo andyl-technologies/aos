@@ -7,7 +7,10 @@ use crate::{QemuHostIoCheckpoint, QemuNodeContinuationCheckpoint, QemuReplayOrac
 use crucible::{Checkpoint, ContentHash};
 
 const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v1\0";
-const MAX_BYTES: usize = 1_610_612_736;
+const MAX_PAYLOAD_BYTES: usize = 1_610_612_736;
+
+/// Maximum canonical byte length of one complete QEMU VM snapshot metadata record.
+pub const MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES: u64 = (MAGIC.len() + MAX_PAYLOAD_BYTES) as u64;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,7 +101,7 @@ impl QemuVmSnapshot {
         let mut payload = Vec::new();
         ciborium::ser::into_writer(&wire, &mut payload)
             .map_err(|_| QemuVmSnapshotCodecError::Malformed)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_PAYLOAD_BYTES {
             return Err(QemuVmSnapshotCodecError::Limit);
         }
         let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len());
@@ -118,7 +121,7 @@ impl QemuVmSnapshot {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(QemuVmSnapshotCodecError::Version)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_PAYLOAD_BYTES {
             return Err(QemuVmSnapshotCodecError::Limit);
         }
         let wire: SnapshotWire =
