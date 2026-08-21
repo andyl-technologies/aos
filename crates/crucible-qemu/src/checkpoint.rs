@@ -7,10 +7,20 @@
 
 use crucible::{ContentHash, NodeId, PreemptionDecision, VirtualTime};
 use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
-use crucible_shmem::{RegionHeaderSnapshot, SpscRingError, SpscRingSnapshot};
+use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
+pub(crate) mod bounded_cbor;
 mod host_io_codec;
 pub use host_io_codec::QemuHostIoCheckpointCodecError;
+mod node_codec;
+pub use node_codec::QemuNodeCheckpointCodecError;
+use node_codec::{
+    MAX_NETWORK_QUEUE_FRAMES, MAX_NODE_CONTINUATION_BYTES, MAX_NODE_CONTINUATION_FRAMES,
+    MAX_NODE_CONTINUATION_PAYLOAD_BYTES, MAX_NODE_CONTINUATION_RING_BYTES, NodeContinuationReader,
+    admit_node_resource, checked_node_encoded_len, map_ring_decode_error, map_ring_encode_error,
+    ring_canonical_len, write_node_continuation_blob, write_node_continuation_bytes,
+    write_node_continuation_count,
+};
 
 /// Complete host block-device continuation paired with QEMU VMState.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,129 +62,6 @@ pub struct QemuNetworkTransportCheckpoint {
     pub(crate) next_router_inbound_sequence: u64,
     pub(crate) next_host_outbound_sequence: u64,
     pub(crate) next_plugin_outbound_sequence: u64,
-}
-
-impl QemuNetworkTransportCheckpoint {
-    pub(crate) fn empty() -> Self {
-        Self {
-            inbound: SpscRingSnapshot { frames: Vec::new() },
-            outbound: SpscRingSnapshot { frames: Vec::new() },
-            queue_capacity: crucible_shmem::DEFAULT_QUEUE_CAPACITY,
-            router_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
-            next_router_inbound_sequence: 0,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 0,
-        }
-    }
-
-    pub(crate) fn bind_outbound_sequence(
-        &mut self,
-        next_host_sequence: u64,
-    ) -> Result<(), QemuNodeCheckpointCodecError> {
-        let mut expected = next_host_sequence;
-        for frame in &self.outbound.frames {
-            if u64::from(frame.seq) != expected {
-                return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-            }
-            expected = expected
-                .checked_add(1)
-                .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
-        }
-        if expected > u64::from(u32::MAX) {
-            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-        }
-        self.next_host_outbound_sequence = next_host_sequence;
-        self.next_plugin_outbound_sequence = expected;
-        Ok(())
-    }
-
-    pub(crate) fn validate_outbound_sequences(&self) -> Result<(), QemuNodeCheckpointCodecError> {
-        if self.outbound.frames.len() > self.queue_capacity as usize {
-            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-        }
-        let mut expected = self.next_host_outbound_sequence;
-        for frame in &self.outbound.frames {
-            if frame.delivery_state() != Ok(crucible_shmem::FrameDeliveryState::Pending) {
-                return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-            }
-            if u64::from(frame.seq) != expected {
-                return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-            }
-            expected = expected
-                .checked_add(1)
-                .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
-        }
-        if expected != self.next_plugin_outbound_sequence
-            || self.next_plugin_outbound_sequence > u64::from(u32::MAX)
-        {
-            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_inbound_sequences(&self) -> Result<(), QemuNodeCheckpointCodecError> {
-        if self.queue_capacity == 0
-            || !self.queue_capacity.is_power_of_two()
-            || self.queue_capacity > MAX_NETWORK_QUEUE_FRAMES
-            || self.inbound.frames.len() > self.queue_capacity as usize
-            || self.next_router_inbound_sequence > u64::from(u32::MAX) + 1
-        {
-            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-        }
-        let Some(first) = self.inbound.frames.first() else {
-            return Ok(());
-        };
-        let mut expected = u64::from(first.seq);
-        for frame in &self.inbound.frames {
-            if frame.src_node != self.router_slot || u64::from(frame.seq) != expected {
-                return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-            }
-            expected = expected
-                .checked_add(1)
-                .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
-        }
-        if expected != self.next_router_inbound_sequence {
-            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-        }
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), QemuNodeCheckpointCodecError> {
-        self.validate_inbound_sequences()?;
-        self.validate_outbound_sequences()?;
-        self.inbound
-            .canonical_len()
-            .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
-        self.outbound
-            .canonical_len()
-            .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
-        self.retained_inbound_head()?;
-        Ok(())
-    }
-
-    fn retained_inbound_head(
-        &self,
-    ) -> Result<Option<crucible_shmem::FrameDeliveryKey>, QemuNodeCheckpointCodecError> {
-        let mut retained = None;
-        for (index, frame) in self.inbound.frames.iter().enumerate() {
-            let state = frame
-                .delivery_state()
-                .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
-            if state == crucible_shmem::FrameDeliveryState::Retained {
-                if index != 0 || retained.is_some() {
-                    return Err(QemuNodeCheckpointCodecError::NetworkTransport);
-                }
-                retained = Some(frame.delivery_key());
-            }
-        }
-        Ok(retained)
-    }
-
-    /// Returns the next plugin-owned network TX sequence after restore.
-    #[must_use]
-    pub const fn next_plugin_outbound_sequence(&self) -> u64 {
-        self.next_plugin_outbound_sequence
-    }
 }
 
 impl QemuLive9pIoServicerCheckpoint {
@@ -326,7 +213,7 @@ impl QemuNodeContinuationCheckpoint {
             "pending frame count",
             0,
             self.pending_network_outputs.len(),
-            MAX_NODE_CONTINUATION_FRAMES,
+            MAX_NODE_CONTINUATION_FRAMES as u64,
         )?;
         let preemption = self
             .pending_preemption
@@ -337,7 +224,7 @@ impl QemuNodeContinuationCheckpoint {
                 "preemption",
                 0,
                 preemption.len(),
-                MAX_NODE_CONTINUATION_PAYLOAD_BYTES,
+                MAX_NODE_CONTINUATION_PAYLOAD_BYTES as u64,
             )?;
         }
         let encoded_len = self.encoded_len(preemption.as_deref(), inbound_len, outbound_len)?;
@@ -348,8 +235,8 @@ impl QemuNodeContinuationCheckpoint {
                 field: "node continuation",
                 current: 0,
                 requested: encoded_len as u64,
-                configured: MAX_NODE_CONTINUATION_BYTES as u64,
-                hard: MAX_NODE_CONTINUATION_BYTES as u64,
+                configured: MAX_NODE_CONTINUATION_BYTES,
+                hard: MAX_NODE_CONTINUATION_BYTES,
             }
         })?;
         write_node_continuation_bytes(
@@ -427,24 +314,12 @@ impl QemuNodeContinuationCheckpoint {
         self.network_transport
             .inbound
             .append_canonical_bytes(&mut bytes)
-            .map_err(|error| {
-                map_ring_encode_error(
-                    error,
-                    "network inbound ring",
-                    MAX_NODE_CONTINUATION_RING_BYTES,
-                )
-            })?;
+            .map_err(|error| map_ring_encode_error(error, "network inbound ring"))?;
         write_node_continuation_count(&mut bytes, outbound_len, "network outbound ring")?;
         self.network_transport
             .outbound
             .append_canonical_bytes(&mut bytes)
-            .map_err(|error| {
-                map_ring_encode_error(
-                    error,
-                    "network outbound ring",
-                    MAX_NODE_CONTINUATION_RING_BYTES,
-                )
-            })?;
+            .map_err(|error| map_ring_encode_error(error, "network outbound ring"))?;
         write_node_continuation_bytes(
             &mut bytes,
             &self
@@ -499,7 +374,12 @@ impl QemuNodeContinuationCheckpoint {
                 ("frame destination", frame.destination.name.as_bytes()),
                 ("frame payload", frame.payload.as_slice()),
             ] {
-                admit_node_resource(role, 0, blob.len(), MAX_NODE_CONTINUATION_PAYLOAD_BYTES)?;
+                admit_node_resource(
+                    role,
+                    0,
+                    blob.len(),
+                    MAX_NODE_CONTINUATION_PAYLOAD_BYTES as u64,
+                )?;
                 length = checked_node_encoded_len(length, 8 + blob.len(), role)?;
             }
             length = checked_node_encoded_len(length, 16, "pending frame coordinates")?;
@@ -577,8 +457,8 @@ impl QemuNodeContinuationCheckpoint {
                 retired: reader.u64("frame emit icount")?,
             };
             let sequence = reader.u64("frame sequence")?;
-            let payload =
-                reader.owned_blob_bounded("frame payload", MAX_NODE_CONTINUATION_PAYLOAD_BYTES)?;
+            let payload = reader
+                .owned_blob_bounded("frame payload", MAX_NODE_CONTINUATION_PAYLOAD_BYTES as u64)?;
             pending_network_outputs.push(crate::QemuNodeEmittedFrame {
                 source,
                 destination,
@@ -589,10 +469,16 @@ impl QemuNodeContinuationCheckpoint {
         }
         let queue_capacity = reader.u32("network queue capacity")?;
         let router_slot = reader.u32("network router slot")?;
-        if queue_capacity == 0
-            || !queue_capacity.is_power_of_two()
-            || queue_capacity > MAX_NETWORK_QUEUE_FRAMES
-        {
+        if queue_capacity > MAX_NETWORK_QUEUE_FRAMES {
+            return Err(QemuNodeCheckpointCodecError::ResourceLimit {
+                field: "network queue capacity",
+                current: 0,
+                requested: u64::from(queue_capacity),
+                configured: u64::from(MAX_NETWORK_QUEUE_FRAMES),
+                hard: u64::from(MAX_NETWORK_QUEUE_FRAMES),
+            });
+        }
+        if queue_capacity == 0 || !queue_capacity.is_power_of_two() {
             return Err(QemuNodeCheckpointCodecError::NetworkTransport);
         }
         let inbound = SpscRingSnapshot::from_canonical_bytes(
@@ -631,333 +517,6 @@ impl QemuNodeContinuationCheckpoint {
             return Err(QemuNodeCheckpointCodecError::FaultSequence);
         }
         Ok(checkpoint)
-    }
-}
-
-const MAX_NODE_CONTINUATION_FRAMES: usize = 1 << 20;
-const MAX_NODE_CONTINUATION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-const MAX_NETWORK_QUEUE_FRAMES: u32 = 1_048_576;
-const MAX_NODE_CONTINUATION_BYTES: usize = 1_610_612_736;
-const MAX_NODE_CONTINUATION_RING_BYTES: usize = MAX_NODE_CONTINUATION_BYTES;
-
-/// Failure to decode a persisted QEMU node continuation.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum QemuNodeCheckpointCodecError {
-    /// The codec version or magic does not match.
-    #[error("unsupported QEMU node continuation format")]
-    Unsupported,
-    /// A named field is malformed or truncated.
-    #[error("malformed QEMU node continuation field: {0}")]
-    Malformed(&'static str),
-    /// A collection or payload exceeds its compiled bound.
-    #[error("QEMU node continuation field exceeds its bound: {0}")]
-    Limit(&'static str),
-    /// A bounded encode or decode allocation cannot be admitted.
-    #[error(
-        "QEMU node continuation resource `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
-    )]
-    ResourceLimit {
-        /// Resource field that rejected the operation.
-        field: &'static str,
-        /// Bytes or entries already retained by the operation.
-        current: u64,
-        /// Additional bytes or entries requested.
-        requested: u64,
-        /// Active configured ceiling.
-        configured: u64,
-        /// Compiled hard ceiling.
-        hard: u64,
-    },
-    /// The decoded continuation belongs to another execution.
-    #[error("QEMU node continuation execution binding mismatch")]
-    ExecutionBinding,
-    /// Logical time is behind raw QEMU time.
-    #[error("QEMU node continuation has invalid logical time calibration")]
-    LogicalTime,
-    /// A pending preemption decision is malformed.
-    #[error("QEMU node continuation has an invalid preemption decision")]
-    Preemption,
-    /// A shared-memory network ring snapshot is malformed.
-    #[error("QEMU node continuation has an invalid network transport")]
-    NetworkTransport,
-    /// Fault transport sequence cursors are invalid.
-    #[error("QEMU node continuation has invalid fault sequence cursors")]
-    FaultSequence,
-    /// Bytes follow the complete encoded value.
-    #[error("QEMU node continuation has trailing bytes")]
-    Trailing,
-}
-
-fn ring_canonical_len(
-    ring: &SpscRingSnapshot,
-    role: &'static str,
-) -> Result<usize, QemuNodeCheckpointCodecError> {
-    ring.canonical_len()
-        .map_err(|error| map_ring_encode_error(error, role, MAX_NODE_CONTINUATION_RING_BYTES))
-}
-
-fn map_ring_encode_error(
-    error: SpscRingError,
-    field: &'static str,
-    configured: usize,
-) -> QemuNodeCheckpointCodecError {
-    let requested = match error {
-        SpscRingError::SnapshotAllocationFailed { count } => Some(count),
-        SpscRingError::SnapshotPayloadAllocationFailed { len }
-        | SpscRingError::SnapshotByteAllocationFailed { len }
-        | SpscRingError::SnapshotLengthOverflow { len } => Some(len),
-        SpscRingError::SnapshotFrameCountOverflow { count } => {
-            return QemuNodeCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count,
-                configured: configured as u64,
-                hard: MAX_NODE_CONTINUATION_RING_BYTES as u64,
-            };
-        }
-        SpscRingError::SnapshotTooLarge { len, .. } => Some(len),
-        _ => None,
-    };
-    requested.map_or(
-        QemuNodeCheckpointCodecError::NetworkTransport,
-        |requested| QemuNodeCheckpointCodecError::ResourceLimit {
-            field,
-            current: 0,
-            requested: requested as u64,
-            configured: configured as u64,
-            hard: MAX_NODE_CONTINUATION_RING_BYTES as u64,
-        },
-    )
-}
-
-fn map_ring_decode_error(
-    error: SpscRingError,
-    field: &'static str,
-    configured_frames: u32,
-) -> QemuNodeCheckpointCodecError {
-    match error {
-        SpscRingError::SnapshotAllocationFailed { count }
-        | SpscRingError::SnapshotTooLarge { len: count, .. } => {
-            QemuNodeCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count as u64,
-                configured: u64::from(configured_frames),
-                hard: u64::from(MAX_NETWORK_QUEUE_FRAMES),
-            }
-        }
-        SpscRingError::SnapshotFrameCountOverflow { count } => {
-            QemuNodeCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count,
-                configured: u64::from(configured_frames),
-                hard: u64::from(MAX_NETWORK_QUEUE_FRAMES),
-            }
-        }
-        SpscRingError::SnapshotPayloadAllocationFailed { len } => {
-            QemuNodeCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: len as u64,
-                configured: crucible_shmem::MAX_FRAME_DATA as u64,
-                hard: crucible_shmem::MAX_FRAME_DATA as u64,
-            }
-        }
-        _ => QemuNodeCheckpointCodecError::NetworkTransport,
-    }
-}
-
-fn admit_node_resource(
-    field: &'static str,
-    current: usize,
-    requested: usize,
-    configured: usize,
-) -> Result<usize, QemuNodeCheckpointCodecError> {
-    let total =
-        current
-            .checked_add(requested)
-            .ok_or(QemuNodeCheckpointCodecError::ResourceLimit {
-                field,
-                current: current as u64,
-                requested: requested as u64,
-                configured: configured as u64,
-                hard: configured as u64,
-            })?;
-    if total > configured {
-        return Err(QemuNodeCheckpointCodecError::ResourceLimit {
-            field,
-            current: current as u64,
-            requested: requested as u64,
-            configured: configured as u64,
-            hard: configured as u64,
-        });
-    }
-    Ok(total)
-}
-
-fn checked_node_encoded_len(
-    current: usize,
-    requested: usize,
-    role: &'static str,
-) -> Result<usize, QemuNodeCheckpointCodecError> {
-    admit_node_resource(role, current, requested, MAX_NODE_CONTINUATION_BYTES)
-}
-
-fn write_node_continuation_bytes(
-    bytes: &mut Vec<u8>,
-    value: &[u8],
-    role: &'static str,
-) -> Result<(), QemuNodeCheckpointCodecError> {
-    admit_node_resource(role, bytes.len(), value.len(), MAX_NODE_CONTINUATION_BYTES)?;
-    bytes.try_reserve_exact(value.len()).map_err(|_| {
-        QemuNodeCheckpointCodecError::ResourceLimit {
-            field: role,
-            current: bytes.len() as u64,
-            requested: value.len() as u64,
-            configured: MAX_NODE_CONTINUATION_BYTES as u64,
-            hard: MAX_NODE_CONTINUATION_BYTES as u64,
-        }
-    })?;
-    bytes.extend_from_slice(value);
-    Ok(())
-}
-
-fn write_node_continuation_count(
-    bytes: &mut Vec<u8>,
-    count: usize,
-    role: &'static str,
-) -> Result<(), QemuNodeCheckpointCodecError> {
-    let count = u64::try_from(count).map_err(|_| QemuNodeCheckpointCodecError::ResourceLimit {
-        field: role,
-        current: bytes.len() as u64,
-        requested: u64::MAX,
-        configured: MAX_NODE_CONTINUATION_BYTES as u64,
-        hard: MAX_NODE_CONTINUATION_BYTES as u64,
-    })?;
-    write_node_continuation_bytes(bytes, &count.to_le_bytes(), role)
-}
-
-fn write_node_continuation_blob(
-    bytes: &mut Vec<u8>,
-    value: &[u8],
-    role: &'static str,
-) -> Result<(), QemuNodeCheckpointCodecError> {
-    write_node_continuation_count(bytes, value.len(), role)?;
-    write_node_continuation_bytes(bytes, value, role)
-}
-
-struct NodeContinuationReader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> NodeContinuationReader<'a> {
-    fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, QemuNodeCheckpointCodecError> {
-        if !bytes.starts_with(magic) {
-            return Err(QemuNodeCheckpointCodecError::Unsupported);
-        }
-        Ok(Self {
-            bytes,
-            offset: magic.len(),
-        })
-    }
-
-    fn take(
-        &mut self,
-        length: usize,
-        role: &'static str,
-    ) -> Result<&'a [u8], QemuNodeCheckpointCodecError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(QemuNodeCheckpointCodecError::Limit(role))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(QemuNodeCheckpointCodecError::Malformed(role))?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn fixed<const N: usize>(
-        &mut self,
-        role: &'static str,
-    ) -> Result<[u8; N], QemuNodeCheckpointCodecError> {
-        let mut value = [0_u8; N];
-        value.copy_from_slice(self.take(N, role)?);
-        Ok(value)
-    }
-
-    fn byte(&mut self, role: &'static str) -> Result<u8, QemuNodeCheckpointCodecError> {
-        Ok(self.take(1, role)?[0])
-    }
-
-    fn u64(&mut self, role: &'static str) -> Result<u64, QemuNodeCheckpointCodecError> {
-        Ok(u64::from_le_bytes(self.fixed(role)?))
-    }
-
-    fn u32(&mut self, role: &'static str) -> Result<u32, QemuNodeCheckpointCodecError> {
-        Ok(u32::from_le_bytes(self.fixed(role)?))
-    }
-
-    fn count(
-        &mut self,
-        role: &'static str,
-        maximum: usize,
-    ) -> Result<usize, QemuNodeCheckpointCodecError> {
-        let count = usize::try_from(self.u64(role)?)
-            .map_err(|_| QemuNodeCheckpointCodecError::Limit(role))?;
-        if count > maximum {
-            return Err(QemuNodeCheckpointCodecError::Limit(role));
-        }
-        Ok(count)
-    }
-
-    fn blob(&mut self, role: &'static str) -> Result<&'a [u8], QemuNodeCheckpointCodecError> {
-        self.blob_bounded(role, MAX_NODE_CONTINUATION_PAYLOAD_BYTES)
-    }
-
-    fn blob_bounded(
-        &mut self,
-        role: &'static str,
-        maximum: usize,
-    ) -> Result<&'a [u8], QemuNodeCheckpointCodecError> {
-        let length = self.count(role, maximum)?;
-        self.take(length, role)
-    }
-
-    fn string(&mut self, role: &'static str) -> Result<String, QemuNodeCheckpointCodecError> {
-        String::from_utf8(self.owned_blob_bounded(role, MAX_NODE_CONTINUATION_PAYLOAD_BYTES)?)
-            .map_err(|_| QemuNodeCheckpointCodecError::Malformed(role))
-    }
-
-    fn owned_blob_bounded(
-        &mut self,
-        role: &'static str,
-        maximum: usize,
-    ) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
-        let value = self.blob_bounded(role, maximum)?;
-        let mut owned = Vec::new();
-        owned.try_reserve_exact(value.len()).map_err(|_| {
-            QemuNodeCheckpointCodecError::ResourceLimit {
-                field: role,
-                current: 0,
-                requested: value.len() as u64,
-                configured: maximum as u64,
-                hard: maximum as u64,
-            }
-        })?;
-        owned.extend_from_slice(value);
-        Ok(owned)
-    }
-
-    fn finish(self) -> Result<(), QemuNodeCheckpointCodecError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(QemuNodeCheckpointCodecError::Trailing)
-        }
     }
 }
 
@@ -1017,4 +576,4 @@ impl QemuHostIoCheckpoint {
 
 #[cfg(test)]
 #[path = "checkpoint/tests.rs"]
-mod tests;
+pub(crate) mod tests;

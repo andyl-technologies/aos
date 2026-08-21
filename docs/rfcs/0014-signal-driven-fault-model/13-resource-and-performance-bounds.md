@@ -184,6 +184,16 @@ record bound is a typed terminal result; retaining fewer records is allowed only
 under an authored observability policy that still preserves every transition,
 decision, effect, and referenced full-value artifact required for explanation.
 
+Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
+envelopes premeasure their representation before allocation, admit the aggregate
+against `fat_checkpoint_bytes` and its 64 GiB hard ceiling, reserve fallibly
+once, and encode into that reservation. The scheduler-facing network queue
+encoder additionally enforces `network_queue_frames` and the 8 GiB
+`network_queue_bytes` hard ceiling. Decode applies the same aggregate admission
+before parsing nested collections;
+allocation or representation failure is a LIMIT-2 outcome carrying the exact
+current, requested, configured, and hard values rather than a process abort.
+
 ## 13.8 Search and minimization limits
 
 | Field | Default | Hard ceiling |

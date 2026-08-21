@@ -11,14 +11,18 @@ use super::{
 };
 use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crucible::model::{
-    ContentHash, FaultObservation, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionState,
-    ReferencedSignalEvent, ResolvedBindingAction,
+    ContentHash, FaultObservation, FaultResourceLimitError, FaultRuntimeCheckpoint,
+    FaultSignalPlan, HostFaultActionState, ReferencedSignalEvent, ResolvedBindingAction,
 };
 use crucible::{BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::DequeuedFaultEvent;
 
+use crate::checkpoint::bounded_cbor::{
+    BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
+};
+
 const MAGIC: &[u8] = b"crucible.production-fault-runtime.v3\0";
-const MAX_BYTES: usize = 1_610_612_736;
+const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +93,13 @@ impl ProductionFaultRuntimeCheckpoint {
     pub fn to_canonical_bytes(
         &self,
     ) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
+        self.to_canonical_bytes_with_limit(MAX_BYTES)
+    }
+
+    fn to_canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
         let wire = CheckpointWire {
             runtime: self
                 .runtime
@@ -131,16 +142,8 @@ impl ProductionFaultRuntimeCheckpoint {
                 .collect::<Result<_, ProductionFaultRuntimeCheckpointCodecError>>()?,
             identity: self.identity,
         };
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&wire, &mut payload)
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Malformed)?;
-        if payload.len() > MAX_BYTES {
-            return Err(ProductionFaultRuntimeCheckpointCodecError::Limit);
-        }
-        let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&payload);
-        Ok(bytes)
+        encode_prefixed(&wire, MAGIC, "production fault checkpoint", maximum)
+            .map_err(map_bounded_cbor_error)
     }
 
     /// Decodes and authenticates a complete production fault continuation.
@@ -158,17 +161,20 @@ impl ProductionFaultRuntimeCheckpoint {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(ProductionFaultRuntimeCheckpointCodecError::Version)?;
-        if payload.len() > MAX_BYTES {
-            return Err(ProductionFaultRuntimeCheckpointCodecError::Limit);
-        }
-        plan.resource_limits()
-            .reserve(
+        admit_input(bytes, "production fault checkpoint", MAX_BYTES)
+            .map_err(map_bounded_cbor_error)?;
+        let requested = u64::try_from(bytes.len()).map_err(|_| {
+            resource_limit(
                 "fat_checkpoint_bytes",
                 0,
-                u64::try_from(bytes.len())
-                    .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Limit)?,
+                u64::MAX,
+                plan.resource_limits().fat_checkpoint_bytes,
+                HARD_FAT_CHECKPOINT_BYTES,
             )
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Limit)?;
+        })?;
+        plan.resource_limits()
+            .reserve("fat_checkpoint_bytes", 0, requested)
+            .map_err(map_plan_resource_error)?;
         let wire: CheckpointWire = ciborium::de::from_reader(payload)
             .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Malformed)?;
         let runtime = wire
@@ -247,12 +253,85 @@ pub enum ProductionFaultRuntimeCheckpointCodecError {
     /// Cross-owner indexes, ledgers, event state, or identity are inconsistent.
     #[error("invalid production fault-runtime checkpoint state")]
     Invalid,
-    /// The aggregate exceeds a compiled or plan-authored resource ceiling.
-    #[error("production fault-runtime checkpoint exceeds its size limit")]
-    Limit,
+    /// A bounded envelope allocation cannot be admitted.
+    #[error(
+        "production fault-runtime resource `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
+    )]
+    ResourceLimit {
+        /// Resource field that rejected the operation.
+        field: &'static str,
+        /// Bytes already retained by the operation.
+        current: u64,
+        /// Additional bytes requested.
+        requested: u64,
+        /// Active configured ceiling.
+        configured: u64,
+        /// Compiled hard ceiling.
+        hard: u64,
+    },
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical production fault-runtime checkpoint")]
     Noncanonical,
+}
+
+fn map_bounded_cbor_error(error: BoundedCborError) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        BoundedCborError::Malformed => ProductionFaultRuntimeCheckpointCodecError::Malformed,
+        BoundedCborError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+    }
+}
+
+fn map_plan_resource_error(
+    error: FaultResourceLimitError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        FaultResourceLimitError::Exceeded {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        }
+        | FaultResourceLimitError::UsageOverflow {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+        FaultResourceLimitError::ConfiguredAboveHard {
+            field,
+            configured,
+            hard,
+        } => resource_limit(field, 0, configured, configured, hard),
+        FaultResourceLimitError::Zero { field } => resource_limit(field, 0, 1, 0, 0),
+        FaultResourceLimitError::UnknownField { field } => resource_limit(field, 0, 1, 0, 0),
+        FaultResourceLimitError::Representation { field, value } => {
+            resource_limit(field, 0, value, value, value)
+        }
+    }
+}
+
+const fn resource_limit(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    configured: u64,
+    hard: u64,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+        field,
+        current,
+        requested,
+        configured,
+        hard,
+    }
 }
 
 fn encode_network(
@@ -413,6 +492,16 @@ mod tests {
         let plan = FaultSignalPlan::empty();
         let seed = ContentHash::from_bytes(b"empty checkpoint seed");
         let checkpoint = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
+
+        assert!(matches!(
+            checkpoint.to_canonical_bytes_with_limit(64),
+            Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+                field: "production fault checkpoint",
+                configured: 64,
+                hard: 68_719_476_736,
+                ..
+            })
+        ));
 
         let bytes = checkpoint
             .to_canonical_bytes()
