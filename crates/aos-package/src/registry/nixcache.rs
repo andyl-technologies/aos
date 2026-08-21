@@ -1005,7 +1005,7 @@ fn cache_stack_contains_endpoint(value: &TomlValue, expected: &str) -> bool {
     value
         .get("endpoint")
         .and_then(TomlValue::as_str)
-        .is_some_and(|endpoint| endpoint == expected)
+        .is_some_and(|endpoint| cache_endpoints_match(endpoint, expected))
         || value
             .get("members")
             .and_then(TomlValue::as_array)
@@ -1014,6 +1014,10 @@ fn cache_stack_contains_endpoint(value: &TomlValue, expected: &str) -> bool {
                     .iter()
                     .any(|member| cache_stack_contains_endpoint(member, expected))
             })
+}
+
+fn cache_endpoints_match(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
 }
 
 /// Returns whether the registry references at least one cacheable store path.
@@ -1162,6 +1166,15 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
             if let Some(images) = platform.get("images").and_then(TomlValue::as_array) {
                 for image in images {
                     if let Some(path) = image.get("store_path").and_then(TomlValue::as_str) {
+                        paths.insert(path.to_string());
+                    }
+                    if let Some(path) = image
+                        .get("delivery")
+                        .and_then(|delivery| delivery.get("image_info"))
+                        .and_then(|metadata| metadata.get("store_path"))
+                        .and_then(TomlValue::as_str)
+                        .filter(|path| !path.is_empty())
+                    {
                         paths.insert(path.to_string());
                     }
                 }
@@ -1537,6 +1550,9 @@ store_path = "/nix/store/img111-system-image"
 nar_hash = "sha256:image"
 nar_size = 2
 
+[versions.platforms.x86_64-linux.images.delivery.image_info]
+store_path = "/nix/store/info111-system-image-info"
+
 [versions.platforms.x86_64-linux.config_module.config_output]
 store_path = "/nix/store/cfg111-kernel-config"
 nar_hash = "sha256:config"
@@ -1557,6 +1573,7 @@ references = []
             vec![
                 "/nix/store/cfg111-kernel-config".to_string(),
                 "/nix/store/img111-system-image".to_string(),
+                "/nix/store/info111-system-image-info".to_string(),
                 "/nix/store/lib111-config-base-lib".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
@@ -1651,6 +1668,27 @@ name = "test"
         let content = std::fs::read_to_string(tmp.path().join("registry.toml")).unwrap();
         assert!(content.contains("[caches]"));
         assert!(content.contains("endpoint = \"https://cache.example\""));
+    }
+
+    #[test]
+    fn upsert_registry_cache_treats_trailing_slashes_as_equivalent() {
+        let tmp = TempDir::new().unwrap();
+        let original = r#"[caches]
+kind = "try"
+
+[[caches.members]]
+endpoint = "https://cache.example/"
+
+[registry]
+name = "test"
+"#;
+        std::fs::write(tmp.path().join("registry.toml"), original).unwrap();
+
+        assert!(!upsert_registry_cache(tmp.path(), "https://cache.example", 100).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("registry.toml")).unwrap(),
+            original,
+        );
     }
 
     #[tokio::test]

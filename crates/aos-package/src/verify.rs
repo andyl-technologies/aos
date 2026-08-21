@@ -7,6 +7,9 @@
 //!   `.nar.zst` as downloaded — catches corrupted or tampered transfers.
 //! - **Layer 4b** ([`verify_nar_hash`]): SHA-256 of the *decompressed* NAR
 //!   stream — catches a valid-zstd-but-wrong-content substitution.
+//! - **Image extraction** ([`extract_regular_file_nar`]): accepts only one
+//!   canonical, non-executable regular-file root and writes its bytes without
+//!   importing the object into a Nix store.
 //! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
 //!   and size must match a *blessed* NAR in the signed `store/` realisation
 //!   graph (RFC-0005) - unlike 4a/4b, whose expected values come from the
@@ -24,7 +27,7 @@
 //! hashing is streaming, so arbitrarily large NARs never reside in memory.
 
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 
@@ -169,6 +172,145 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
             actual,
         }
         .into());
+    }
+    Ok(())
+}
+
+/// Extracts a verified regular-file NAR into `output` without using the Nix store.
+///
+/// The decoder accepts only the canonical NAR shape for one non-executable root
+/// regular file. Directories, symlinks, executable files, non-zero padding,
+/// trailing archive data, and sizes that disagree with signed metadata are
+/// rejected. Callers must authenticate and verify the compressed download and
+/// NAR hash before invoking this function.
+///
+/// # Errors
+///
+/// Returns an error when decompression fails, the NAR is malformed or has an
+/// unsupported root type, either signed size disagrees, or writing fails.
+pub fn extract_regular_file_nar(
+    path: &Path,
+    mut output: impl Write,
+    expected_file_size: u64,
+    expected_nar_size: u64,
+) -> Result<()> {
+    let file = File::open(path)
+        .with_context(|| format!("opening {} for NAR extraction", path.display()))?;
+    let reader = BufReader::new(file);
+    let decoder = zstd::stream::read::Decoder::new(reader)
+        .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
+    let mut reader = CountingReader::new(decoder);
+
+    expect_nix_string(&mut reader, b"nix-archive-1", "archive magic")?;
+    expect_nix_string(&mut reader, b"(", "root opening marker")?;
+    expect_nix_string(&mut reader, b"type", "root type attribute")?;
+    expect_nix_string(&mut reader, b"regular", "regular-file root type")?;
+    expect_nix_string(&mut reader, b"contents", "non-executable file contents")?;
+
+    let content_size = read_u64(&mut reader, "file content size")?;
+    if content_size != expected_file_size {
+        bail!(
+            "NAR regular-file size {content_size} does not match signed image size {expected_file_size}"
+        );
+    }
+    copy_exact(&mut reader, &mut output, content_size)?;
+    read_zero_padding(&mut reader, content_size, "file contents")?;
+    expect_nix_string(&mut reader, b")", "root closing marker")?;
+
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        bail!("NAR contains trailing archive data");
+    }
+    if reader.bytes_read() != expected_nar_size {
+        bail!(
+            "decompressed NAR size {} does not match signed NAR size {expected_nar_size}",
+            reader.bytes_read()
+        );
+    }
+    output.flush().context("flushing extracted NAR file")?;
+    Ok(())
+}
+
+struct CountingReader<R> {
+    inner: R,
+    bytes_read: u64,
+}
+
+impl<R> CountingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            bytes_read: 0,
+        }
+    }
+
+    fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.bytes_read = self
+            .bytes_read
+            .checked_add(count as u64)
+            .ok_or_else(|| std::io::Error::other("NAR byte count overflow"))?;
+        Ok(count)
+    }
+}
+
+fn read_u64(reader: &mut impl Read, label: &str) -> Result<u64> {
+    let mut encoded = [0_u8; 8];
+    reader
+        .read_exact(&mut encoded)
+        .with_context(|| format!("reading NAR {label}"))?;
+    Ok(u64::from_le_bytes(encoded))
+}
+
+fn expect_nix_string(reader: &mut impl Read, expected: &[u8], label: &str) -> Result<()> {
+    let size = read_u64(reader, label)?;
+    if size != expected.len() as u64 {
+        bail!("NAR {label} has an unexpected length");
+    }
+    let mut actual = vec![0_u8; expected.len()];
+    reader
+        .read_exact(&mut actual)
+        .with_context(|| format!("reading NAR {label}"))?;
+    if actual != expected {
+        bail!("NAR {label} is not the required regular-file encoding");
+    }
+    read_zero_padding(reader, size, label)
+}
+
+fn read_zero_padding(reader: &mut impl Read, size: u64, label: &str) -> Result<()> {
+    let padding = (8 - size % 8) % 8;
+    let mut bytes = [0_u8; 7];
+    reader
+        .read_exact(&mut bytes[..padding as usize])
+        .with_context(|| format!("reading NAR {label} padding"))?;
+    if bytes[..padding as usize].iter().any(|byte| *byte != 0) {
+        bail!("NAR {label} has non-zero padding");
+    }
+    Ok(())
+}
+
+fn copy_exact(reader: &mut impl Read, writer: &mut impl Write, size: u64) -> Result<()> {
+    let mut remaining = size;
+    let mut buffer = [0_u8; 1024 * 1024];
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(buffer.len() as u64))
+            .context("converting NAR read size")?;
+        let count = reader
+            .read(&mut buffer[..wanted])
+            .context("reading NAR regular-file contents")?;
+        if count == 0 {
+            bail!("NAR ended before its declared regular-file contents");
+        }
+        writer
+            .write_all(&buffer[..count])
+            .context("writing extracted NAR regular file")?;
+        remaining -= count as u64;
     }
     Ok(())
 }
@@ -444,6 +586,93 @@ mod tests {
     /// SHA-256 of "hello\n".
     const HELLO_SHA256: &str =
         "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
+
+    fn push_nix_string(encoded: &mut Vec<u8>, value: &[u8]) {
+        encoded.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(value);
+        encoded.resize(encoded.len().next_multiple_of(8), 0);
+    }
+
+    fn regular_file_nar(contents: &[u8], executable: bool) -> Vec<u8> {
+        let mut nar = Vec::new();
+        for token in [
+            b"nix-archive-1".as_slice(),
+            b"(".as_slice(),
+            b"type".as_slice(),
+            b"regular".as_slice(),
+        ] {
+            push_nix_string(&mut nar, token);
+        }
+        if executable {
+            push_nix_string(&mut nar, b"executable");
+            push_nix_string(&mut nar, b"");
+        }
+        push_nix_string(&mut nar, b"contents");
+        push_nix_string(&mut nar, contents);
+        push_nix_string(&mut nar, b")");
+        nar
+    }
+
+    fn compressed_nar(nar: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let compressed = zstd::stream::encode_all(nar, 1).unwrap();
+        file.write_all(&compressed).unwrap();
+        file
+    }
+
+    #[test]
+    fn extract_regular_file_nar_streams_exact_contents() {
+        let contents = b"one canonical image file";
+        let nar = regular_file_nar(contents, false);
+        let compressed = compressed_nar(&nar);
+        let mut extracted = Vec::new();
+
+        extract_regular_file_nar(
+            compressed.path(),
+            &mut extracted,
+            contents.len() as u64,
+            nar.len() as u64,
+        )
+        .unwrap();
+
+        assert_eq!(extracted, contents);
+    }
+
+    #[test]
+    fn extract_regular_file_nar_rejects_executable_roots() {
+        let nar = regular_file_nar(b"image", true);
+        let compressed = compressed_nar(&nar);
+        let error = extract_regular_file_nar(compressed.path(), Vec::new(), 5, nar.len() as u64)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("non-executable file contents"));
+    }
+
+    #[test]
+    fn extract_regular_file_nar_rejects_trailing_archive_data() {
+        let mut nar = regular_file_nar(b"image", false);
+        nar.push(0);
+        let compressed = compressed_nar(&nar);
+        let error = extract_regular_file_nar(compressed.path(), Vec::new(), 5, nar.len() as u64)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("trailing archive data"));
+    }
+
+    #[test]
+    fn extract_regular_file_nar_rejects_signed_size_disagreement() {
+        let nar = regular_file_nar(b"image", false);
+        let compressed = compressed_nar(&nar);
+        let file_error =
+            extract_regular_file_nar(compressed.path(), Vec::new(), 4, nar.len() as u64)
+                .unwrap_err();
+        assert!(file_error.to_string().contains("signed image size"));
+
+        let nar_error =
+            extract_regular_file_nar(compressed.path(), Vec::new(), 5, nar.len() as u64 + 1)
+                .unwrap_err();
+        assert!(nar_error.to_string().contains("signed NAR size"));
+    }
 
     #[test]
     fn sha256_stream_empty() {

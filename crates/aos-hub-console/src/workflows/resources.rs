@@ -8,6 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
@@ -929,6 +930,11 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
     let visibility = RwSignal::new(registry.visibility.clone());
     let crawl_policy = RwSignal::new(registry.crawl_policy.clone());
     let llms = RwSignal::new(registry.llms_txt_body.clone());
+    let llms_mode = RwSignal::new(if registry.llms_txt_body.trim().is_empty() {
+        LlmsMode::Automatic
+    } else {
+        LlmsMode::Custom
+    });
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -938,13 +944,20 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
     let plan_slug = slug.clone();
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
+        let llms_txt_body = match llms_override(llms_mode.get_untracked(), &llms.get_untracked()) {
+            Ok(body) => body,
+            Err(detail) => {
+                error.set(Some(detail));
+                return;
+            }
+        };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("registry-update");
         let request = aos_proto_types::PlanUpdateRegistryRequest {
             slug: plan_slug.clone(),
             visibility: visibility.get_untracked(),
             crawl_policy: crawl_policy.get_untracked(),
-            llms_txt_body: llms.get_untracked(),
+            llms_txt_body,
             trust_keys: registry.trust_keys.clone(),
             update_mask: vec![
                 "visibility".into(),
@@ -972,6 +985,7 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             busy.set(false);
         });
     };
+    let llms_url = format!("/{slug}/llms.txt");
     let apply_client = client;
     let destination = format!("/{slug}/-/settings");
     let on_apply = Callback::new(move |()| {
@@ -995,7 +1009,23 @@ fn RegistryEditor(client: ApiClient, registry: aos_proto_types::Registry) -> imp
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><label class="full-field"><span>"llms.txt body"</span><textarea rows="8" prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="resource-identity"><div><span>"Registry"</span><code>{slug}</code></div><div><span>"Index"</span><StatusBadge state=registry.index_state.clone() positive=registry.index_state == "fresh"/></div><div><span>"Version"</span><code>{registry.resource_version}</code></div></div><form class="editor-form" on:submit=on_plan><label><span>"Visibility"</span><select prop:value=move || visibility.get() on:change=move |event| visibility.set(event_target_value(&event))><VisibilityOptions value=visibility/></select></label><label><span>"Crawler policy"</span><select prop:value=move || crawl_policy.get() on:change=move |event| crawl_policy.set(event_target_value(&event))><option value="allow_all">"Allow all"</option><option value="allow_no_ai">"Allow search; deny AI crawlers"</option><option value="deny_all">"Deny all"</option></select></label><fieldset class="full-field choice-field"><legend>"llms.txt"</legend><label class="choice-row"><input type="radio" name="llms-mode" value="automatic" prop:checked=move || llms_mode.get() == LlmsMode::Automatic on:change=move |_| llms_mode.set(LlmsMode::Automatic)/><span><strong>"Automatic"</strong>" — generated from the signed package and channel index."</span></label><label class="choice-row"><input type="radio" name="llms-mode" value="custom" prop:checked=move || llms_mode.get() == LlmsMode::Custom on:change=move |_| llms_mode.set(LlmsMode::Custom)/><span><strong>"Custom override"</strong>" — serve operator-authored Markdown verbatim."</span></label>{move || (llms_mode.get() == LlmsMode::Custom).then(|| view! { <label class="llms-custom"><span>"Custom Markdown"</span><textarea rows="8" required prop:value=move || llms.get() on:input=move |event| llms.set(event_target_value(&event))></textarea></label> })}{move || (visibility.get() == "public").then(|| view! { <p class="field-note">"Public document: "<a href=llms_url.clone() target="_blank">{llms_url.clone()}</a></p> })}</fieldset><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review update"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LlmsMode {
+    Automatic,
+    Custom,
+}
+
+fn llms_override(mode: LlmsMode, body: &str) -> Result<String, String> {
+    match mode {
+        LlmsMode::Automatic => Ok(String::new()),
+        LlmsMode::Custom if body.trim().is_empty() => {
+            Err("Enter a custom llms.txt body or select automatic generation".to_string())
+        }
+        LlmsMode::Custom => Ok(body.to_string()),
+    }
 }
 
 #[component]
@@ -1304,12 +1334,6 @@ fn TopologyDelete(
     view! { <section class="panel danger-panel"><p class="section-kicker">"Destructive operation"</p><h2>{format!("Delete {kind}")}</h2><p>"The server plan enumerates dependent placements, routes, grants, integrations, and retention roots. No dependent resource is silently removed."</p><form class="editor-form" on:submit=on_plan><label><span>{format!("Type `{stable_id}` to continue")}</span><input autocomplete="off" prop:value=move || confirmation.get() on:input=move |event| confirmation.set(event_target_value(&event))/></label><div class="form-actions"><button class="danger-button" type="submit" disabled=move || busy.get()>"Review deletion"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
-fn navigate(path: &str) {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().set_href(path);
-    }
-}
-
 fn cache_path(slug: &str) -> String {
     match slug.split_once('/') {
         Some((organization, cache)) => format!("/-/org/{organization}/caches/{cache}"),
@@ -1341,7 +1365,7 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_inventory_path, cache_path};
+    use super::{cache_inventory_path, cache_path, llms_override, LlmsMode};
 
     #[test]
     fn cache_routes_preserve_ownership_scope() {
@@ -1349,5 +1373,15 @@ mod tests {
         assert_eq!(cache_inventory_path("acme/main"), "/-/org/acme/caches");
         assert_eq!(cache_path("nix"), "/-/caches/nix");
         assert_eq!(cache_inventory_path("nix"), "/-/caches");
+    }
+
+    #[test]
+    fn llms_mode_projects_automatic_and_custom_updates() {
+        assert_eq!(llms_override(LlmsMode::Automatic, "ignored").unwrap(), "");
+        assert_eq!(
+            llms_override(LlmsMode::Custom, "# Registry\n").unwrap(),
+            "# Registry\n"
+        );
+        assert!(llms_override(LlmsMode::Custom, "  \n").is_err());
     }
 }

@@ -286,6 +286,14 @@ impl Database {
                 )
                 .unchecked(),
                 delete("registry_publication_multipart_uploads", registry_id),
+                Statement::new(
+                    "DELETE FROM registry_publication_object_evidence
+                     WHERE publication_id IN (
+                       SELECT publication_id FROM registry_publications
+                       WHERE registry_id = ?1)",
+                    vals![registry_id],
+                )
+                .unchecked(),
                 delete("registry_publication_placements", registry_id),
                 delete("registry_publication_objects", registry_id),
                 delete("registry_placement_publication_watermarks", registry_id),

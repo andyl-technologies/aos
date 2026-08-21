@@ -981,9 +981,14 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 compatible_targets: Vec<ImageTarget>| {
         let sha256 = hex::encode(Sha256::digest(bytes));
         let info_sha256 = hex::encode(Sha256::digest(info));
+        let store_hash = if format == "raw" {
+            "0".repeat(32)
+        } else {
+            "1".repeat(32)
+        };
         ImageEntry {
             format: format.to_string(),
-            store_path: format!("/var/lib/store/{}-image-{format}", &sha256[..32]),
+            store_path: format!("/var/lib/store/{store_hash}-image-{format}"),
             nar_hash: format!("sha256:{sha256}"),
             nar_size: bytes.len() as u64,
             delivery: ImageDelivery {
@@ -1009,6 +1014,9 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 image_info: ImageInfoReference {
                     filename: "image-info.json".to_string(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".to_string(),
                     byte_size: info.len() as u64,
                     sha256: info_sha256,
@@ -1095,6 +1103,22 @@ fn write_seed_image_objects(
             std::fs::create_dir_all(path.parent().context("image object path has a parent")?)?;
             std::fs::write(path, bytes)?;
         }
+        let store_hash = aos_registry_surface::store::store_path_hash(&image.store_path)?;
+        let nar_key = format!("nar/{store_hash}-{}.nar", image.delivery.sha256);
+        std::fs::write(
+            root.join(format!("{store_hash}.narinfo")),
+            format!(
+                "StorePath: {}\nURL: {nar_key}\nCompression: none\nFileHash: sha256:{}\nFileSize: {}\nNarHash: {}\nNarSize: {}\n",
+                image.store_path,
+                image.delivery.sha256,
+                disk.len(),
+                image.nar_hash,
+                image.nar_size,
+            ),
+        )?;
+        let nar_path = root.join(&nar_key);
+        std::fs::create_dir_all(nar_path.parent().context("image NAR path has a parent")?)?;
+        std::fs::write(nar_path, disk)?;
     }
     let catalog_digest = aos_registry_surface::manifest::image_catalog_digest(
         "demo",
