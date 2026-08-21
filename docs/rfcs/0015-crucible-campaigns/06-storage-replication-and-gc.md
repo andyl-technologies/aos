@@ -782,6 +782,55 @@ additionally declares that the later physical retention plan must retain or
 materialize one complete portable exact closure for that configuration; the
 semantic pin alone does not select an arbitrary operational checkpoint.
 
+The single-host daemon makes that physical choice through a separate,
+single-writer exact-pin materialization journal. Selection admission reads and
+authenticates the complete current semantic pin projection, requires the target
+configuration to be `Exact`, loads the complete `ExactCheckpointId` root and
+metadata through the exact-checkpoint store, and requires the checkpoint's
+modeled configuration identity to equal the pin target before the first journal
+write. The selected value binds the campaign name, configuration, latest
+accepted pin fact, and exact-checkpoint root. It is operational owner state and
+does not advance the campaign ref or alter modeled campaign identity.
+
+The registered
+`crucible.executor.exact-pin-materialization-selection` schema v1 is stored at
+`<journal>/records/<first-two-key-hex>/<key-hex>`. One journal admits at most
+64,000,000 records and one record admits at most 4 KiB. Its canonical body is:
+
+```text
+"crucible.executor.exact-pin-materialization-selection.v1\0"
+campaign_length:u16be | campaign UTF-8
+configuration:CampaignHash[32]
+pin_fact_length:u16be | canonical CampaignFactId UTF-8
+checkpoint_length:u16be | canonical ExactCheckpointId UTF-8
+checksum:CampaignHash[32]
+```
+
+The key material is
+`campaign_length:u16be || campaign || configuration[32]`. Derive `key` as
+`H("crucible.executor.exact-pin-materialization-selection-key.v1", key_material)`
+and the checksum as
+`H("crucible.executor.exact-pin-materialization-selection.v1", body_without_checksum)`,
+where `H(domain, bytes)` is `CampaignHash::derive(domain, bytes)`.
+Lengths, UTF-8, typed IDs, the checksum, filename, shard, and reconstructed key
+MUST all validate before the record is trusted. Replacement is
+staging-file/fsync/rename/directory-fsync atomic. A lifetime nonblocking
+exclusive writer lock excludes a second cooperating daemon; the journal root
+MUST live outside every blob leaf inventoried by campaign GC.
+
+GC acquires the authoritative ref fence and exact-pin journal fence together.
+For each fenced `campaigns/<name>` snapshot it authenticates the snapshot-bound
+pin projection without rereading the mutable ref. Every current `Exact` pin
+MUST have a selection whose campaign, configuration, and latest pin fact match;
+otherwise planning/apply fails closed. Its checkpoint becomes a logical GC
+root. A journal record whose fact is no longer the current `Exact` projection
+is stale and MUST NOT become a root, so unpin or repin cannot leak an old exact
+closure. Explicit journal clear reclaims its bounded namespace but is not
+required for liveness correctness. Apply reacquires both fences and recomputes
+the exact root manifest before deletion. The manifest identity plus held fences
+binds the complete selected checkpoint set; no additional selection-generation
+field is required in the v1 GC header.
+
 On the single-host executor, the lineage-qualified operational assignment
 ledger is the owner of result-publication roots. It streams the expected
 `ObservationId` from every authenticated `publishing` record and the retained
@@ -953,15 +1002,16 @@ retaining the live object and shared physical pack. Transform/S3 leaf
 administration and policy-aware eviction of extra reachable cache copies remain
 open beyond this physical-leaf apply.
 
-The single-host daemon composes both sources into one streaming local retention
-inventory: semantic-pin records first, then durable observation and checkpoint
-roots. Assignment-ledger roots are lineage-qualified and host-local rather than
-campaign-name-qualified, so a planner aggregating several campaign refs
-enumerates the ledger once. Duplicate operational roots may be emitted by
-distinct ledger records and are deduplicated by content identity by the physical
-planner. Visitor output is tentative until terminal enumeration succeeds. This
-inventory is not itself a deletion plan: applying deletion still requires the
-snapshot and complete physical inventory generation checks below.
+The single-host daemon composes these sources into one logical root inventory:
+authoritative refs, current exact-pin selections, durable observation and
+checkpoint publication roots, and pending write-back roots. Assignment-ledger
+roots are lineage-qualified and host-local rather than campaign-name-qualified,
+so a planner aggregating several campaign refs enumerates the ledger once.
+Duplicate operational roots may be emitted by distinct records and are
+deduplicated by content identity by the physical planner. Visitor output is
+tentative until terminal enumeration succeeds. This inventory is not itself a
+deletion plan: applying deletion still requires the snapshot and complete
+physical inventory generation checks below.
 
 GC is planned per logical reachability and physical tier. It reports:
 
@@ -998,11 +1048,12 @@ journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
-revalidated. The implemented single-host physical-leaf apply satisfies that rule.
-The packed leaf separately provides generation-bound repack plan/apply and
-logical candidate deletion under its exclusive lifecycle fence; composed tiers
-and exact-materialization policy still require their additional fences before
-global deletion.
+revalidated. The implemented single-host physical-leaf apply and exact-pin
+selection fence satisfy that rule for memory, directory, and packed leaves. The
+packed leaf separately provides generation-bound repack plan/apply and logical
+candidate deletion under its exclusive lifecycle fence; composed transform/S3
+tiers and policy-aware reachable-cache eviction still require their additional
+administration before global deletion.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

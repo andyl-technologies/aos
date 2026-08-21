@@ -365,8 +365,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the current projection and its exact thin configuration/scenario artifacts;
   the daemon composes those records with a separately held, exclusive
   assignment-ledger fence that streams observation and checkpoint roots under
-  one restart-stable generation. Exact-pin materialization selection and
-  generation-bound physical plan/apply remain part of T-CAM-8.3.
+  one restart-stable generation. A bounded, checksummed, restart-safe
+  single-writer exact-pin journal now authenticates one complete checkpoint
+  against the current exact pin fact and modeled configuration. GC consumes it
+  under the authoritative ref and selection fences, rejects missing or stale
+  current selections, and revalidates the exact root manifest before apply.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -793,8 +796,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   and physical basis, deletes under the leaf fence, and leaves interrupted
   journals recovery-required. A restart regression applies
   that path to a sparse packed leaf and proves logical deletion retains the live
-  object and shared pack. Exact-pin materialization selection, transform/S3
-  administration, policy-aware reachable-cache eviction, and full
+  object and shared pack. Exact-pin materialization selection is now
+  restart-safe, exact-configuration/fact-bound, and consumed by both planning
+  and apply; stale records cease to root checkpoint closures after unpin.
+  Transform/S3 administration, policy-aware reachable-cache eviction, and full
   operator-flight tests remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage

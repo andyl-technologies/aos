@@ -16,6 +16,7 @@ use crucible_cas::content_store::{
     RefCasOutcome, RefName, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 
+use super::apply::CampaignGcApplySources;
 use super::*;
 use super::{
     apply_single_host_campaign_gc_with_physical as apply_single_host_campaign_gc,
@@ -326,7 +327,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         .expect("store live object");
     assert_eq!(
         refs.compare_exchange(
-            &RefName::new("campaigns/gc-live").expect("ref name"),
+            &RefName::new("retained/gc-live").expect("ref name"),
             None,
             live_id,
         )
@@ -347,6 +348,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         &repository,
         refs.as_ref(),
         &mut ledger,
+        None,
         None,
         hash("crucible.test.gc.store-graph.v1", 9),
         &[physical],
@@ -452,6 +454,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         refs.as_ref(),
         &mut ledger,
         Some(graph.as_ref()),
+        None,
         graph_id,
         &[archive_physical, staging_physical],
     )
@@ -479,9 +482,13 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut gc_journal,
-            refs.as_ref(),
-            &mut ledger,
-            Some(graph.as_ref()),
+            CampaignGcApplySources::new(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                Some(graph.as_ref()),
+                None,
+            ),
             graph_id,
             &[archive_physical, staging_physical],
         ),
@@ -572,9 +579,13 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
 
     let report = apply_single_host_campaign_gc(
         &mut journal,
-        fixture.refs.as_ref(),
-        &mut fixture.ledger,
-        None,
+        CampaignGcApplySources::new(
+            &fixture.repository,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            None,
+            None,
+        ),
         fixture.graph,
         &[physical],
     )
@@ -590,9 +601,13 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
 
     let replay = apply_single_host_campaign_gc(
         &mut journal,
-        fixture.refs.as_ref(),
-        &mut fixture.ledger,
-        None,
+        CampaignGcApplySources::new(
+            &fixture.repository,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            None,
+            None,
+        ),
         fixture.graph,
         &[physical],
     )
@@ -618,7 +633,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
     ref_fixture
         .refs
         .compare_exchange(
-            &RefName::new("campaigns/new-root").expect("new ref"),
+            &RefName::new("retained/new-root").expect("new ref"),
             None,
             orphan,
         )
@@ -628,9 +643,13 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut ref_journal,
-            ref_fixture.refs.as_ref(),
-            &mut ref_fixture.ledger,
-            None,
+            CampaignGcApplySources::new(
+                &ref_fixture.repository,
+                ref_fixture.refs.as_ref(),
+                &mut ref_fixture.ledger,
+                None,
+                None,
+            ),
             ref_fixture.graph,
             &[physical],
         ),
@@ -656,9 +675,13 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut blob_journal,
-            blob_fixture.refs.as_ref(),
-            &mut blob_fixture.ledger,
-            None,
+            CampaignGcApplySources::new(
+                &blob_fixture.repository,
+                blob_fixture.refs.as_ref(),
+                &mut blob_fixture.ledger,
+                None,
+                None,
+            ),
             blob_fixture.graph,
             &[physical],
         ),
@@ -687,6 +710,7 @@ fn stale_ledger_generation_fails_before_deletion() {
         refs.as_ref(),
         &mut ledger,
         None,
+        None,
         graph,
         &[physical],
     )
@@ -700,9 +724,7 @@ fn stale_ledger_generation_fails_before_deletion() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut journal,
-            refs.as_ref(),
-            &mut ledger,
-            None,
+            CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None,),
             graph,
             &[physical],
         ),
@@ -727,9 +749,13 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut journal,
-            fixture.refs.as_ref(),
-            &mut fixture.ledger,
-            None,
+            CampaignGcApplySources::new(
+                &fixture.repository,
+                fixture.refs.as_ref(),
+                &mut fixture.ledger,
+                None,
+                None,
+            ),
             fixture.graph,
             &[physical],
         ),
@@ -740,9 +766,13 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut journal,
-            fixture.refs.as_ref(),
-            &mut fixture.ledger,
-            None,
+            CampaignGcApplySources::new(
+                &fixture.repository,
+                fixture.refs.as_ref(),
+                &mut fixture.ledger,
+                None,
+                None,
+            ),
             fixture.graph,
             &[physical],
         ),
@@ -775,7 +805,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
         .expect("store live directory object");
     refs.compare_exchange(
-        &RefName::new("campaigns/directory-gc").expect("directory ref"),
+        &RefName::new("retained/directory-gc").expect("directory ref"),
         None,
         live_id,
     )
@@ -793,6 +823,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         refs.as_ref(),
         &mut ledger,
         None,
+        None,
         graph,
         &[physical],
     )
@@ -805,17 +836,22 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
     drop(refs);
     drop(blobs);
 
-    let blobs = DirectoryBlobBackend::new("directory-primary", &blob_root);
-    let refs = DirectoryRefBackend::new(&ref_root);
+    let blobs = Arc::new(DirectoryBlobBackend::new("directory-primary", &blob_root));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen directory ledger");
     let mut journal =
         DirectoryCampaignGcJournal::open(&journal_root).expect("reopen directory journal");
-    let physical =
-        CampaignGcPhysicalStore::new("directory-primary", &blobs).expect("reopened physical store");
-    let report =
-        apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, None, graph, &[physical])
-            .expect("apply after restart");
+    let physical = CampaignGcPhysicalStore::new("directory-primary", blobs.as_ref())
+        .expect("reopened physical store");
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
     assert!(blobs.contains(live_id).expect("live placement"));
     assert!(!blobs.contains(orphan).expect("orphan placement"));
@@ -858,7 +894,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
         .expect("store live packed object");
     refs.compare_exchange(
-        &RefName::new("campaigns/packed-gc").expect("packed ref"),
+        &RefName::new("retained/packed-gc").expect("packed ref"),
         None,
         live_id,
     )
@@ -880,9 +916,15 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
 
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open packed ledger");
     assert_eq!(admin.physical().len(), 1);
-    let prepared =
-        super::plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, &admin)
-            .expect("plan packed GC");
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan packed GC");
     assert_eq!(
         prepared.plan().store_graph(),
         CampaignHash::from_bytes(admin.configuration_id().as_bytes())
@@ -922,8 +964,10 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     assert!(matches!(
         super::apply_single_host_campaign_gc(
             &mut journal,
+            &repository,
             refs.as_ref(),
             &mut ledger,
+            None,
             None,
             &different_admin,
         ),
@@ -943,13 +987,22 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
 
     let (graph, admin) =
         StoreGraph::build_with_admin(graph_config()).expect("restart packed graph");
-    let refs = DirectoryRefBackend::new(&ref_root);
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen packed ledger");
     let mut journal =
         DirectoryCampaignGcJournal::open(&journal_root).expect("reopen packed GC journal");
-    let report =
-        super::apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, None, &admin)
-            .expect("apply packed GC after restart");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply packed GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
     assert!(graph.contains(live_id).expect("live packed placement"));
     assert!(!graph.contains(orphan).expect("orphan packed placement"));
@@ -964,6 +1017,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
 struct ApplyFixture {
     blobs: Arc<MemoryBlobBackend>,
     refs: Arc<MemoryRefBackend>,
+    repository: CampaignRepository,
     ledger: MemoryAssignmentLedger,
     prepared: CampaignGcPreparedPlan,
     graph: CampaignHash,
@@ -989,6 +1043,7 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
         refs.as_ref(),
         &mut ledger,
         None,
+        None,
         graph,
         &[physical],
     )
@@ -996,6 +1051,7 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
     ApplyFixture {
         blobs,
         refs,
+        repository,
         ledger,
         prepared,
         graph,
@@ -1094,6 +1150,7 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
         &repository,
         refs.as_ref(),
         &mut ledger,
+        None,
         None,
         hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
         &[physical],

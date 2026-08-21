@@ -87,6 +87,7 @@ crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	3	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
+crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
 crucible.qemu.vm-snapshot	2	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.exact-checkpoint-root	2	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
