@@ -53,10 +53,10 @@ pub const MAX_CACHE_NARINFO_BYTES: usize = 256 * 1024;
 /// then indexed into bounded maps. This ceiling keeps those simultaneous
 /// structures comfortably inside the Worker isolate memory limit. Native
 /// deployments retain the larger general-purpose ceiling above.
-pub const WORKER_MAX_SURFACE_LIST_OBJECTS: usize = 10_000;
+pub const WORKER_MAX_SURFACE_LIST_OBJECTS: usize = 20_000;
 
 /// Maximum aggregate key bytes retained by a Worker inventory operation.
-pub const WORKER_MAX_SURFACE_LIST_PATH_BYTES: usize = 1024 * 1024;
+pub const WORKER_MAX_SURFACE_LIST_PATH_BYTES: usize = 2 * 1024 * 1024;
 
 /// Maximum keys retained in one Worker listing page.
 pub const WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS: usize = 256;

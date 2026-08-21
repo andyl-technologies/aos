@@ -9100,7 +9100,10 @@ struct PinnedPublication {
     root: std::os::fd::OwnedFd,
 }
 
-const MAX_PUBLICATION_OBJECTS: usize = 10_000;
+// A complete 258-package origin plus paired narinfo/NAR cache objects is
+// currently just over ten thousand files. Keep admission bounded while
+// retaining enough headroom for normal registry growth between releases.
+const MAX_PUBLICATION_OBJECTS: usize = 20_000;
 const MAX_PUBLICATION_ENTRIES: usize = 20_000;
 const MAX_PUBLICATION_PATH_BYTES: usize = 512;
 const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
