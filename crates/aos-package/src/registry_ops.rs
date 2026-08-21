@@ -4521,6 +4521,11 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
         path
     } else {
         let (input_file, input_path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        // qemu-img must write through the already-open descriptor so path
+        // replacement cannot redirect verification. Pre-size the bounded raw
+        // target and use -n to suppress target creation and overwrite prompts.
+        raw.set_len(image.virtual_size_bytes)
+            .context("sizing pinned raw-image verification file")?;
         let (output_file, output_path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
         let qemu_img = std::env::var_os("AOS_QEMU_IMG")
             .map(PathBuf::from)
@@ -4531,7 +4536,7 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
             image.format.as_str()
         };
         let status = Command::new(qemu_img)
-            .args(["convert", "-f", input_format, "-O", "raw"])
+            .args(["convert", "-n", "-f", input_format, "-O", "raw"])
             .arg(&input_path)
             .arg(&output_path)
             .status()
