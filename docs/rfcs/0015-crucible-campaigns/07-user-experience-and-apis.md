@@ -121,7 +121,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 ## 07.3 CLI lifecycle
 
 ```text
-crucible campaign create NAME --scenario SCENARIO --policy POLICY
+crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin
 crucible campaign validate NAME|POLICY
 crucible campaign start NAME [--workers N] [--memory SIZE]
 crucible campaign pause NAME --expected SNAPSHOT --command COMMAND \
@@ -132,41 +132,54 @@ crucible campaign unseal NAME --expected SNAPSHOT --command COMMAND
 crucible campaign budget NAME --expected SNAPSHOT --command COMMAND \
   add ATTEMPTS [--proposals PROPOSALS]
 crucible campaign steer NAME --expected SNAPSHOT --command COMMAND --policy POLICY
-crucible campaign derive NAME@SNAPSHOT NEW_NAME [--policy POLICY]
+crucible campaign derive SOURCE --snapshot SNAPSHOT TARGET [--policy POLICY.bin]
 ```
 
-`create` stores canonical scenario/policy objects and creates the first snapshot
-and named ref. `start` attaches local execution resources and changes desired
-state through a recorded command. `pause` stops new proposals/reservations and applies
+The current `create` command accepts strict canonical `CampaignLineage` and
+`CampaignPolicy` bodies. Their verifier-backed scenario/configuration artifacts
+and transitive generator closure must already be imported by the daemon's
+narrow immutable importer; large artifacts never travel through the control
+message. It creates the first snapshot and named ref or exactly replays the
+authenticated genesis basis. `derive` similarly names one exact authenticated
+source snapshot and may activate an already imported compatible canonical
+policy. `start` attaches local execution resources and changes desired state
+through a recorded command. `pause` stops new proposals/reservations and applies
 the selected active-attempt behavior. `stop --seal` prevents accidental future
 budget grants until an explicit unseal command.
 
 Operational flags such as `--workers` and `--memory` are daemon attachment
 configuration and do not alter policy identity.
 
-The current lifecycle-mutation porcelain implements `resume`, `pause`, `stop`,
-`unseal`, additive `budget`, and `steer` over the same checked local
-campaign-service client as status/watch. `--command` is the caller's exact
+The current lifecycle-mutation porcelain implements `create`, `derive`,
+`resume`, `pause`, `stop`, `unseal`, additive `budget`, and `steer` over the same
+checked local campaign-service client as status/watch. `--command` is the caller's exact
 64-character lowercase hexadecimal idempotency key and `--expected` is the
 exact snapshot precondition; neither is generated or silently refreshed by the
 CLI. An exact retry therefore returns the original transition, while command
 reuse or a stale
 precondition remains visible. Every successful format includes campaign,
-operation, command ID, prior snapshot, new snapshot, and replay status. Start's
-local resource attachment plus create/validate/derive/branch porcelain remain
-open even though their lower service/repository primitives exist in part.
+operation, command ID, prior snapshot, new snapshot, and replay status. Create
+and derive report their exact lineage/policy or source basis, accepted snapshot,
+and replay status. Start's local resource attachment, verifier-backed import and
+validation porcelain, and richer manifest authoring remain open.
 
 Semantic alternatives use a separate command:
 
 ```text
-crucible campaign branch NAME --at CONFIG --point SELECTOR \
-  --values VALUE[,VALUE...] [--attempts N]
-crucible campaign branch NAME --at CONFIG --point SELECTOR \
-  --all [--attempts N]
+crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
+  --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
+  --opportunity OPPORTUNITY --domain DOMAIN --value VALUE [--value VALUE ...] \
+  [--proposals N] [--attempts N] [--stop CONDITION]
 ```
 
-`branch` publishes an additive `BranchRequest` with an operator cause and a
-bounded finite candidate source. The values are validated against the choice
+The current `branch` command publishes an additive finite `BranchRequest` with
+an exact operator command cause. Values use the closed `true`, `false`,
+`i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
+`next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, or `events:N`.
+The request carries exact parent-artifact, opportunity, domain, and semantic
+branch-point IDs so repository admission can authenticate the complete basis;
+selector resolution and generated `--all` authoring remain richer future
+porcelain over the same record. The values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain
 below the configured exhaustive-cardinality ceiling. A request may target one
