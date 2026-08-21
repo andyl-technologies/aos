@@ -356,6 +356,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   are implemented. Concrete capture-result wiring and resume materialization
   remain open. The fixed worker pool and its linear
   publication/reconciliation path are implemented.
+  The repository owner now also implements the core schema-v5 pin transaction:
+  graph-scoped target validation, exact command replay and reuse rejection,
+  pins/accounting/coordination root projection, tombstoned unpin intent, and
+  imported-history recomputation. The user-facing service/loopback/CLI binding
+  and GC retention-plan consumer remain part of T-CAM-8.3.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

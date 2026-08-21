@@ -693,6 +693,39 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
         ObjectEnvelope::from_canonical_bytes(&legacy_envelope_with_credited_body.canonical_bytes())
             .is_err()
     );
+
+    let pin = CampaignFact::PinCommandAccepted(PinRequest {
+        command,
+        expected_snapshot,
+        change: PinChange::new(
+            ConfigurationId::from_hash(hash("pin-configuration")),
+            Some(PinRetention::Exact),
+            "retain reproducer",
+        )
+        .expect("pin change"),
+    });
+    assert_eq!(
+        &pin.canonical_bytes()[..std::mem::size_of::<u32>()],
+        &5_u32.to_be_bytes()
+    );
+    let pin_envelope = ObjectEnvelope::for_fact(&pin).expect("pin fact envelope");
+    assert_eq!(pin_envelope.content_id().schema_version(), 5);
+    assert_eq!(pin_envelope.children().len(), 1);
+    assert_eq!(
+        CampaignFact::from_canonical_bytes(pin_envelope.body()).expect("canonical pin fact"),
+        pin
+    );
+    let prior_envelope_with_pin_body = crucible_cas::content_envelope::ContentEnvelope::new(
+        CampaignRecordKind::Fact.schema_name(),
+        4,
+        pin_envelope.children().clone(),
+        pin.canonical_bytes(),
+    )
+    .expect("mismatched prior pin envelope");
+    assert!(
+        ObjectEnvelope::from_canonical_bytes(&prior_envelope_with_pin_body.canonical_bytes())
+            .is_err()
+    );
 }
 
 #[test]
@@ -1440,7 +1473,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     );
     let current_envelope_with_prior_body = crucible_cas::content_envelope::ContentEnvelope::new(
         CampaignRecordKind::Fact.schema_name(),
-        4,
+        CampaignRecordKind::Fact.schema_version(),
         legacy_fact_children,
         legacy_fact_bytes,
     )

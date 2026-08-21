@@ -1388,7 +1388,9 @@ impl CampaignRepository {
                 CampaignFact::ControlRequested(prior_request) if prior_request == *request => {
                     return self.find_command_result(current_content, request, true);
                 }
-                CampaignFact::ControlRequested(_) | CampaignFact::BranchRequestIssued(_) => {
+                CampaignFact::ControlRequested(_)
+                | CampaignFact::BranchRequestIssued(_)
+                | CampaignFact::PinCommandAccepted(_) => {
                     return Err(CampaignRepositoryError::CommandReuse);
                 }
                 _ => return Err(integrity("command-index-value-is-not-mutation-fact")),
@@ -1465,6 +1467,122 @@ impl CampaignRepository {
             current_content,
             next_content,
             Some(&request.action),
+            MAX_SIMPLE_SUCCESSOR_GROWTH,
+        )?;
+
+        match self
+            .refs
+            .compare_exchange(&campaign_ref, Some(current_content), next_content)?
+        {
+            RefCasOutcome::Advanced { .. } => {
+                self.promote_local_successor(current_content, next_content, checkpoint);
+                Ok(CampaignCommandResult {
+                    prior_snapshot: current_id,
+                    new_snapshot: CampaignSnapshotId::from_content_id(next_content)?,
+                    replayed: false,
+                })
+            }
+            RefCasOutcome::Conflict { current, .. } => {
+                Err(CampaignRepositoryError::RefConflict { current })
+            }
+        }
+    }
+
+    /// Applies one idempotent semantic configuration-pin mutation.
+    ///
+    /// Command lookup precedes stale-precondition checking, so an exact replay
+    /// returns the snapshot that first accepted the request even after later
+    /// mutations. Removing a pin writes an authenticated tombstone into the
+    /// pins projection rather than erasing campaign history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for command-ID reuse, a stale precondition, a target
+    /// outside the authoritative graph, object publication failure, or final
+    /// ref CAS conflict.
+    pub fn apply_pin(
+        &self,
+        name: &str,
+        request: &PinRequest,
+    ) -> Result<CampaignCommandResult, CampaignRepositoryError> {
+        let _guard = self.lock_mutation()?;
+        let campaign_ref = campaign_ref(name)?;
+        let current_content = self
+            .refs
+            .read_ref(&campaign_ref)?
+            .ok_or(CampaignRepositoryError::NotFound)?;
+        let current = self.read_snapshot(current_content)?;
+        self.validate_complete_head(current_content)?;
+
+        let command_key = map_key_hash("accounting.command", request.command.as_hash());
+        if let Some(fact_content) = self
+            .merkle
+            .get(current.snapshot.roots().accounting, command_key)?
+        {
+            let fact = self.read_fact(fact_content)?;
+            match fact {
+                CampaignFact::PinCommandAccepted(prior_request) if prior_request == *request => {
+                    return self.find_pin_result(current_content, request, true);
+                }
+                CampaignFact::ControlRequested(_)
+                | CampaignFact::BranchRequestIssued(_)
+                | CampaignFact::PinCommandAccepted(_) => {
+                    return Err(CampaignRepositoryError::CommandReuse);
+                }
+                _ => return Err(integrity("command-index-value-is-not-mutation-fact")),
+            }
+        }
+
+        let current_id = CampaignSnapshotId::from_content_id(current_content)?;
+        if request.expected_snapshot != current_id {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.expected_snapshot,
+                current: current_id,
+            });
+        }
+
+        let configuration = request.change.configuration();
+        let configuration_content = self
+            .merkle
+            .get(
+                current.snapshot.roots().graph,
+                map_key_hash("graph.configuration", configuration.as_hash()),
+            )?
+            .ok_or_else(|| integrity("pin-configuration-is-not-in-campaign-graph"))?;
+        let artifact = self.read_configuration_artifact(configuration_content)?;
+        if artifact.configuration() != configuration {
+            return Err(integrity("pin-configuration-index-mismatch"));
+        }
+
+        let pin_fact = CampaignFact::PinCommandAccepted(request.clone());
+        let pin_content = self.put_fact(&pin_fact)?;
+        let accounting = self.merkle.insert(
+            current.snapshot.roots().accounting,
+            command_key,
+            pin_content,
+        )?;
+        let pins = self.merkle.insert(
+            current.snapshot.roots().pins,
+            pin_configuration_key(configuration),
+            pin_content,
+        )?;
+
+        let mut roots = current.snapshot.roots();
+        roots.pins = pins.content_id();
+        roots.accounting = accounting.content_id();
+        roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
+        let next = CampaignSnapshot::successor(
+            current_id,
+            current.snapshot.lineage(),
+            current.snapshot.active_policy(),
+            roots,
+            CampaignFactId::from_content_id(pin_content)?,
+        )?;
+        let next_content = self.put_snapshot(&next)?;
+        let checkpoint = self.prepare_local_successor_checkpoint(
+            current_content,
+            next_content,
+            None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
         )?;
 

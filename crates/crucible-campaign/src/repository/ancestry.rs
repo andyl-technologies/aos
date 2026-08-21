@@ -99,6 +99,31 @@ impl CampaignRepository {
         })
     }
 
+    pub(super) fn find_pin_result(
+        &self,
+        content_id: ContentId,
+        request: &PinRequest,
+        replayed: bool,
+    ) -> Result<CampaignCommandResult, CampaignRepositoryError> {
+        let key = mutation_result_hash_key("pin", request.command.as_hash());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        let CampaignFact::PinCommandAccepted(candidate) = fact else {
+            return Err(integrity("pin-result-index-type-mismatch"));
+        };
+        if candidate != *request {
+            return Err(CampaignRepositoryError::CommandReuse);
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("pin-result-has-no-parent"))?;
+        Ok(CampaignCommandResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            replayed,
+        })
+    }
+
     pub(super) fn find_branch_request_result(
         &self,
         content_id: ContentId,
@@ -366,6 +391,9 @@ impl CampaignRepository {
             }
             CampaignFact::ControlRequested(request) => {
                 mutation_result_hash_key("control", request.command.as_hash())
+            }
+            CampaignFact::PinCommandAccepted(request) => {
+                mutation_result_hash_key("pin", request.command.as_hash())
             }
             CampaignFact::BranchRequestIssued(request) => {
                 mutation_result_content_key("branch-request", request.content_id())

@@ -102,8 +102,8 @@ pub use merkle::{
 pub use model::{
     ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,
     CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
-    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRetention,
-    PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation,
+    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRequest,
+    PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget, PolicyActivation,
     PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};

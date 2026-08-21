@@ -5,7 +5,7 @@ crucible.directory-ref	1	crucible-cas::content_store	mutable-ref	gate:campaign-s
 crucible.campaign.lineage	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.policy	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.snapshot	2	crucible-campaign::object	campaign-snapshot	gate:campaign-model,gate:content-address
-crucible.campaign.fact	4	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
+crucible.campaign.fact	5	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planning-view	1	crucible-campaign::object	campaign-fact	gate:campaign-model,gate:content-address
 crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.policy-artifact	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address

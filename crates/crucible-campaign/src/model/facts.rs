@@ -12,7 +12,8 @@ use super::AdmissionOrdinal;
 
 const LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
 const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
+const CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -446,6 +447,41 @@ impl Canonical for PinChange {
     }
 }
 
+/// Idempotent semantic pin mutation carrying an exact snapshot precondition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinRequest {
+    /// Stable caller-supplied command identity.
+    pub command: CampaignCommandId,
+    /// Snapshot the caller expects to mutate.
+    pub expected_snapshot: CampaignSnapshotId,
+    /// Requested semantic retention change.
+    pub change: PinChange,
+}
+
+impl PinRequest {
+    /// Returns a domain-separated digest of the exact command payload.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive("crucible.campaign-pin-request.v1", &codec::encode(self))
+    }
+}
+
+impl Canonical for PinRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.command.encode(encoder);
+        self.expected_snapshot.encode(encoder);
+        self.change.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            command: CampaignCommandId::decode(decoder)?,
+            expected_snapshot: CampaignSnapshotId::decode(decoder)?,
+            change: PinChange::decode(decoder)?,
+        })
+    }
+}
+
 /// Explicit non-modeled terminal reason that closes an admitted attempt.
 ///
 /// Operational retry failures do not use this type: they leave the attempt
@@ -532,13 +568,16 @@ pub enum CampaignFact {
     ControlRequested(ControlRequest),
     /// Semantic retention intent changed.
     PinChanged(PinChange),
+    /// Idempotent semantic retention command was accepted.
+    PinCommandAccepted(PinRequest),
 }
 
 impl CampaignFact {
     pub(crate) const fn schema_version(&self) -> u32 {
         match self {
             Self::CampaignDerived(_) => DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::ObservationCredited(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::ObservationCredited(_) => CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
+            Self::PinCommandAccepted(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
             _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
@@ -575,11 +614,11 @@ impl CampaignFact {
                 let version = u32::decode(decoder)?;
                 match version {
                     LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        CampaignFact::decode_versioned(decoder, false, false)
+                        CampaignFact::decode_versioned(decoder, false, false, false)
                             .map(|fact| Self { version, fact })
                     }
                     DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(decoder, true, false)?;
+                        let fact = CampaignFact::decode_versioned(decoder, true, false, false)?;
                         if !matches!(fact, CampaignFact::CampaignDerived(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
@@ -587,9 +626,18 @@ impl CampaignFact {
                         }
                         Ok(Self { version, fact })
                     }
-                    CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(decoder, false, true)?;
+                    CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(decoder, false, true, false)?;
                         if !matches!(fact, CampaignFact::ObservationCredited(_)) {
+                            return Err(CampaignCodecError::InvalidValue {
+                                reason: "campaign fact variant requires its original schema version",
+                            });
+                        }
+                        Ok(Self { version, fact })
+                    }
+                    CAMPAIGN_FACT_SCHEMA_VERSION => {
+                        let fact = CampaignFact::decode_versioned(decoder, false, false, true)?;
+                        if !matches!(fact, CampaignFact::PinCommandAccepted(_)) {
                             return Err(CampaignCodecError::InvalidValue {
                                 reason: "campaign fact variant requires its original schema version",
                             });
@@ -677,6 +725,10 @@ impl Canonical for CampaignFact {
                 encoder.u8(10);
                 change.encode(encoder);
             }
+            Self::PinCommandAccepted(request) => {
+                encoder.u8(14);
+                request.encode(encoder);
+            }
             Self::AttemptClosed {
                 attempt,
                 ordinal,
@@ -691,7 +743,7 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_versioned(decoder, true, true)
+        Self::decode_versioned(decoder, true, true, true)
     }
 }
 
@@ -700,6 +752,7 @@ impl CampaignFact {
         decoder: &mut Decoder<'_>,
         derivation_supported: bool,
         credited_observation_supported: bool,
+        pin_command_supported: bool,
     ) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ChoiceOpportunityDiscovered {
@@ -727,6 +780,9 @@ impl CampaignFact {
             }
             13 if credited_observation_supported => {
                 ObservationId::decode(decoder).map(Self::ObservationCredited)
+            }
+            14 if pin_command_supported => {
+                PinRequest::decode(decoder).map(Self::PinCommandAccepted)
             }
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-fact",

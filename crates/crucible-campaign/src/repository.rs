@@ -20,25 +20,25 @@ use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
     AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest,
     BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
-    CampaignDerivation, CampaignFact, CampaignHash, CampaignLineage, CampaignLineageId,
-    CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId, CampaignSnapshot,
-    CampaignSnapshotId, CampaignState, CampaignStoreError, CandidateGeneratorAlgorithm,
-    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, CanonicalFrontierPlanner,
-    ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
-    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjection, ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch,
-    DebuggerAuthorityKey, DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection,
-    ExpansionCredit, ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
-    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
-    NonModeledAttemptDisposition, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
-    PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
-    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
-    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
-    RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
-    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    CampaignDerivation, CampaignFact, CampaignFactId, CampaignHash, CampaignLineage,
+    CampaignLineageId, CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId,
+    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStoreError,
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource,
+    CanonicalFrontierPlanner, ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId,
+    ChoiceOpportunity, ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId,
+    ConfigurationId, ContinuationProjection, ControlRequest, CoverageProjection,
+    CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey, DebuggerSubmission,
+    ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit, ExpansionState,
+    ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
+    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
+    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, PurePlannerEngine, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -800,6 +800,10 @@ fn mutation_result_hash_key(namespace: &str, id: CampaignHash) -> CampaignHash {
 
 fn mutation_result_content_key(namespace: &str, id: ContentId) -> CampaignHash {
     map_key_content(&format!("coordination.result.{namespace}"), id)
+}
+
+fn pin_configuration_key(configuration: ConfigurationId) -> CampaignHash {
+    map_key_hash("pins.configuration", configuration.as_hash())
 }
 
 fn proposal_ordinal_key(request: BranchRequestId, ordinal: u64) -> CampaignHash {

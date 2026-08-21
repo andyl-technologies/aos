@@ -1,7 +1,10 @@
 //! Imported-history, closure, identity, and owner-validation repository tests.
 
 use super::*;
-use crate::{ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation, IntegerValue};
+use crate::{
+    CampaignCommandId, ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation,
+    IntegerValue, PinChange, PinRetention,
+};
 
 fn generated_integer_request(
     repository: &CampaignRepository,
@@ -3459,6 +3462,202 @@ fn command_replay_precedes_stale_check_and_preserves_response() {
         repository.apply_control("test", &reused),
         Err(CampaignRepositoryError::CommandReuse)
     ));
+}
+
+#[test]
+fn pin_command_projects_retention_and_replays_exactly_after_later_mutation() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("pin-replay", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-command")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Thin), "triage")
+            .expect("pin change"),
+    };
+
+    let accepted = repository
+        .apply_pin("pin-replay", &request)
+        .expect("accept pin");
+    repository.evict_local_checkpoint(accepted.new_snapshot.content_id());
+    let accepted_head = repository.head("pin-replay").expect("accepted head");
+    let pin_content = repository
+        .merkle
+        .get(
+            accepted_head.snapshot().roots().pins,
+            pin_configuration_key(lineage.genesis()),
+        )
+        .expect("read pin projection")
+        .expect("pin projection value");
+    assert_eq!(
+        repository.read_fact(pin_content).expect("pin fact"),
+        CampaignFact::PinCommandAccepted(request.clone())
+    );
+
+    let resume = command(
+        "pin-replay-resume",
+        accepted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    repository
+        .apply_control("pin-replay", &resume)
+        .expect("later mutation");
+
+    let replay = repository
+        .apply_pin("pin-replay", &request)
+        .expect("replay pin");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+    let reused = PinRequest {
+        command: request.command,
+        expected_snapshot: request.expected_snapshot,
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Exact), "retain")
+            .expect("changed pin"),
+    };
+    assert!(matches!(
+        repository.apply_pin("pin-replay", &reused),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let reused_as_control = ControlRequest {
+        command: request.command,
+        expected_snapshot: repository
+            .head("pin-replay")
+            .expect("current head")
+            .snapshot_id(),
+        action: CampaignControlAction::Complete,
+    };
+    assert!(matches!(
+        repository.apply_control("pin-replay", &reused_as_control),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let current = repository.head("pin-replay").expect("head before unpin");
+    let unpin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"unpin-command")),
+        expected_snapshot: current.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), None, "resolved").expect("unpin change"),
+    };
+    repository
+        .apply_pin("pin-replay", &unpin)
+        .expect("accept unpin");
+    let unpinned = repository.head("pin-replay").expect("unpinned head");
+    let tombstone = repository
+        .merkle
+        .get(
+            unpinned.snapshot().roots().pins,
+            pin_configuration_key(lineage.genesis()),
+        )
+        .expect("read unpin projection")
+        .expect("unpin tombstone");
+    assert_eq!(
+        repository.read_fact(tombstone).expect("unpin fact"),
+        CampaignFact::PinCommandAccepted(unpin)
+    );
+}
+
+#[test]
+fn pin_rejects_stale_or_nonauthoritative_configuration_before_writes() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("pin-invalid", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let missing = ConfigurationId::from_hash(CampaignHash::derive("test", b"missing-config"));
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"missing-pin")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(missing, Some(PinRetention::Thin), "missing").expect("pin change"),
+    };
+    let before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.apply_pin("pin-invalid", &request),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "pin-configuration-is-not-in-campaign-graph"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        before
+    );
+    assert_eq!(
+        repository.head("pin-invalid").expect("head").snapshot_id(),
+        genesis.snapshot_id()
+    );
+
+    let stale = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"stale-pin")),
+        expected_snapshot: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            2,
+            b"stale-pin-snapshot",
+        ))
+        .expect("stale snapshot id"),
+        change: PinChange::new(lineage.genesis(), None, "stale").expect("unpin change"),
+    };
+    assert!(matches!(
+        repository.apply_pin("pin-invalid", &stale),
+        Err(CampaignRepositoryError::Stale { .. })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after stale request"),
+        before
+    );
+}
+
+#[test]
+fn imported_pin_transition_requires_the_exact_pin_projection() {
+    let (repository, lineage, policy) = fixture();
+    let source = repository
+        .create("pin-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    repository
+        .create("pin-forged", &lineage, &policy, &BTreeMap::new())
+        .expect("create target");
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"imported-pin")),
+        expected_snapshot: source.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Exact), "reproduce")
+            .expect("pin change"),
+    };
+    let accepted = repository
+        .apply_pin("pin-source", &request)
+        .expect("accept source pin");
+    let accepted_head = repository.head("pin-source").expect("accepted head");
+    let transition = accepted_head
+        .snapshot()
+        .transition()
+        .expect("pin transition");
+    let mut roots = accepted_head.snapshot().roots();
+    roots.pins = source.snapshot().roots().pins;
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        source.snapshot().active_policy(),
+        roots,
+        transition,
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    let target_ref = campaign_ref("pin-forged").expect("target ref");
+    repository
+        .refs
+        .compare_exchange(&target_ref, Some(source.content_id()), forged_content)
+        .expect("advance forged ref");
+    repository.evict_local_checkpoint(forged_content);
+
+    assert!(matches!(
+        repository.head("pin-forged"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "pin-transition-pins-root-mismatch"
+        })
+    ));
+    assert_eq!(accepted.prior_snapshot, source.snapshot_id());
 }
 
 #[test]
