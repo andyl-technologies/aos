@@ -211,3 +211,161 @@ fn empty_policy_is_explicitly_deny_all() {
         Err(CampaignAuthorizationError::Unauthorized)
     );
 }
+
+#[test]
+fn versioned_toml_policy_parses_exact_identity_and_scope() {
+    let policy = UnixPeerCampaignPolicy::from_toml_bytes(
+        br#"
+schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = 1000
+group_id = 100
+principal = "operator:alice"
+
+[[bindings]]
+user_id = 1001
+group_id = 100
+principal = "operator:auditor"
+
+[[grants]]
+principal = "operator:alice"
+operation = "apply-campaign-command"
+campaign = "network/recovery"
+
+[[grants]]
+principal = "operator:auditor"
+operation = "get-campaign-snapshot"
+campaign = "*"
+"#,
+    )
+    .expect("parse deployment policy");
+    let operator = policy
+        .resolve_campaign_principal(credentials(9, 1000, 100))
+        .expect("resolve operator");
+    let auditor = policy
+        .resolve_campaign_principal(credentials(10, 1001, 100))
+        .expect("resolve auditor");
+    assert_eq!(operator, principal("operator:alice"));
+    assert_eq!(auditor, principal("operator:auditor"));
+    assert_eq!(
+        policy.authorize(
+            &operator,
+            CampaignServiceOperation::ApplyCampaignCommand,
+            &campaign("network/recovery"),
+            CampaignHash::derive("campaign-policy-test", b"apply"),
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        policy.authorize(
+            &operator,
+            CampaignServiceOperation::ApplyCampaignCommand,
+            &campaign("other"),
+            CampaignHash::derive("campaign-policy-test", b"other"),
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+    assert_eq!(
+        policy.authorize(
+            &auditor,
+            CampaignServiceOperation::GetCampaignSnapshot,
+            &campaign("other"),
+            CampaignHash::derive("campaign-policy-test", b"snapshot"),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn versioned_toml_policy_rejects_schema_fields_operations_and_size() {
+    let unsupported = br#"
+schema = "crucible.campaign-local-policy"
+version = 2
+"#;
+    assert!(matches!(
+        UnixPeerCampaignPolicy::from_toml_bytes(unsupported),
+        Err(UnixPeerCampaignPolicyLoadError::UnsupportedSchema)
+    ));
+    let unknown_field = br#"
+schema = "crucible.campaign-local-policy"
+version = 1
+authority = "self-asserted"
+"#;
+    assert!(matches!(
+        UnixPeerCampaignPolicy::from_toml_bytes(unknown_field),
+        Err(UnixPeerCampaignPolicyLoadError::Toml { .. })
+    ));
+    let unknown_operation = br#"
+schema = "crucible.campaign-local-policy"
+version = 1
+[[bindings]]
+user_id = 1000
+group_id = 100
+principal = "operator"
+[[grants]]
+principal = "operator"
+operation = "delete-everything"
+campaign = "*"
+"#;
+    assert!(matches!(
+        UnixPeerCampaignPolicy::from_toml_bytes(unknown_operation),
+        Err(UnixPeerCampaignPolicyLoadError::UnknownOperation { .. })
+    ));
+    assert!(matches!(
+        UnixPeerCampaignPolicy::from_toml_bytes(&vec![b' '; MAX_CAMPAIGN_POLICY_BYTES + 1]),
+        Err(UnixPeerCampaignPolicyLoadError::TooLarge)
+    ));
+}
+
+#[test]
+fn policy_operation_labels_cover_the_closed_service_vocabulary() {
+    let labels = [
+        ("create-campaign", CampaignServiceOperation::CreateCampaign),
+        ("derive-campaign", CampaignServiceOperation::DeriveCampaign),
+        ("get-campaign", CampaignServiceOperation::GetCampaign),
+        (
+            "get-campaign-snapshot",
+            CampaignServiceOperation::GetCampaignSnapshot,
+        ),
+        ("watch-campaign", CampaignServiceOperation::WatchCampaign),
+        (
+            "query-campaign-graph",
+            CampaignServiceOperation::QueryCampaignGraph,
+        ),
+        (
+            "get-campaign-graph-object",
+            CampaignServiceOperation::GetCampaignGraphObject,
+        ),
+        (
+            "query-campaign-choices",
+            CampaignServiceOperation::QueryCampaignChoices,
+        ),
+        (
+            "query-campaign-frontier",
+            CampaignServiceOperation::QueryCampaignFrontier,
+        ),
+        (
+            "get-campaign-frontier-object",
+            CampaignServiceOperation::GetCampaignFrontierObject,
+        ),
+        (
+            "get-campaign-choice-object",
+            CampaignServiceOperation::GetCampaignChoiceObject,
+        ),
+        (
+            "apply-campaign-command",
+            CampaignServiceOperation::ApplyCampaignCommand,
+        ),
+        ("pin-campaign", CampaignServiceOperation::PinCampaign),
+        (
+            "submit-branch-request",
+            CampaignServiceOperation::SubmitBranchRequest,
+        ),
+    ];
+    for (label, operation) in labels {
+        assert_eq!(parse_operation(label), Some(operation));
+    }
+    assert_eq!(parse_operation("future-operation"), None);
+}

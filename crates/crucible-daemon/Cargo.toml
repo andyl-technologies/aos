@@ -16,7 +16,9 @@ crucible-campaign = { path = "../crucible-campaign" }
 crucible-cas = { workspace = true }
 crucible-qemu = { path = "../crucible-qemu" }
 rustix = { workspace = true, features = ["net"] }
+serde = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double"] }

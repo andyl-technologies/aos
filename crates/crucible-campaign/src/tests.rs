@@ -386,6 +386,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
+    let campaign_policy = rows
+        .get("crucible.campaign-local-policy")
+        .unwrap_or_else(|| panic!("missing local campaign policy schema"));
+    assert_eq!(campaign_policy[1], "1");
+    assert_eq!(campaign_policy[2], "crucible-daemon::campaign_policy");
+    assert_eq!(campaign_policy[3], "deployment-config");
     for schema in [
         "crucible.campaign.gc-plan",
         "crucible.campaign.gc-root-manifest",

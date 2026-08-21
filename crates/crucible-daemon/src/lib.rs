@@ -8,7 +8,8 @@
 //! deterministic decision stream.
 //!
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
-//! runtime-state records; [`campaign_loopback`] provides the strict local
+//! runtime-state records; [`campaign_endpoint`] owns the exact local Unix
+//! socket namespace; [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
@@ -42,6 +43,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod campaign_endpoint;
 pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_policy;
@@ -69,6 +71,9 @@ pub use assignment_ledger::{
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
     DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
+pub use campaign_endpoint::{
+    CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ManagedCampaignLoopbackListener,
+};
 pub use campaign_gc::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
@@ -92,9 +97,10 @@ pub use campaign_loopback::{
     serve_loopback_campaign_once_with_timeouts,
 };
 pub use campaign_policy::{
-    CampaignAccessGrant, CampaignAccessScope, MAX_CAMPAIGN_ACCESS_GRANTS,
-    MAX_CAMPAIGN_PEER_BINDINGS, UnixPeerCampaignBinding, UnixPeerCampaignIdentity,
-    UnixPeerCampaignPolicy, UnixPeerCampaignPolicyError,
+    CAMPAIGN_POLICY_SCHEMA, CAMPAIGN_POLICY_SCHEMA_VERSION, CampaignAccessGrant,
+    CampaignAccessScope, MAX_CAMPAIGN_ACCESS_GRANTS, MAX_CAMPAIGN_PEER_BINDINGS,
+    MAX_CAMPAIGN_POLICY_BYTES, UnixPeerCampaignBinding, UnixPeerCampaignIdentity,
+    UnixPeerCampaignPolicy, UnixPeerCampaignPolicyError, UnixPeerCampaignPolicyLoadError,
 };
 pub use campaign_retention::{
     LocalCampaignRetentionError, LocalCampaignRetentionRoot, LocalCampaignRetentionSummary,

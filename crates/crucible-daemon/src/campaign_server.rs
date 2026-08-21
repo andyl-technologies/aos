@@ -1,10 +1,10 @@
 //! Bounded authenticated listener for the local campaign service.
 //!
-//! This module owns only an already-bound Unix listener and a fixed worker
-//! pool. Socket-path creation, permissions, and deployment policy loading stay
-//! with the daemon bootstrap. Every accepted connection is authenticated once
-//! through Linux peer credentials before the existing canonical service
-//! protocol is allowed to dispatch repository work.
+//! This module owns a fixed worker pool over either an externally bound Unix
+//! listener or the crate's managed filesystem endpoint. Every accepted
+//! connection is authenticated once through Linux peer credentials before the
+//! existing canonical service protocol is allowed to dispatch repository
+//! work. Deployment policy construction remains an explicit bootstrap input.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use crucible_campaign::{CampaignPrincipalAuthorizer, CampaignRepository};
 
+use crate::campaign_endpoint::{CampaignEndpointGuard, ManagedCampaignLoopbackListener};
 use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
@@ -215,6 +216,7 @@ impl CampaignLoopbackServerReport {
 /// Fixed-worker authenticated local campaign listener.
 pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     listener: UnixListener,
+    _endpoint_guard: Option<CampaignEndpointGuard>,
     repository: Arc<CampaignRepository>,
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
@@ -243,9 +245,59 @@ where
         authorizer: Arc<A>,
         config: CampaignLoopbackServerConfig,
     ) -> Result<Self, CampaignLoopbackListenerError> {
+        Self::new_inner(
+            listener,
+            None,
+            repository,
+            principal_resolver,
+            authorizer,
+            config,
+        )
+    }
+
+    /// Consumes a managed endpoint and retains its exact namespace authority
+    /// through listener shutdown.
+    ///
+    /// This is the production constructor for a filesystem-addressed local
+    /// campaign service. The listener is dropped before its endpoint guard, so
+    /// exact-inode cleanup occurs only after acceptance has stopped. A crash
+    /// leaves a same-owner stale socket that the next managed bind recovers
+    /// under the lifetime namespace lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLoopbackListenerError::Io`] when the managed listener
+    /// cannot be switched to bounded nonblocking acceptance.
+    pub fn from_managed_listener(
+        listener: ManagedCampaignLoopbackListener,
+        repository: Arc<CampaignRepository>,
+        principal_resolver: Arc<R>,
+        authorizer: Arc<A>,
+        config: CampaignLoopbackServerConfig,
+    ) -> Result<Self, CampaignLoopbackListenerError> {
+        let (listener, guard) = listener.into_parts();
+        Self::new_inner(
+            listener,
+            Some(guard),
+            repository,
+            principal_resolver,
+            authorizer,
+            config,
+        )
+    }
+
+    fn new_inner(
+        listener: UnixListener,
+        endpoint_guard: Option<CampaignEndpointGuard>,
+        repository: Arc<CampaignRepository>,
+        principal_resolver: Arc<R>,
+        authorizer: Arc<A>,
+        config: CampaignLoopbackServerConfig,
+    ) -> Result<Self, CampaignLoopbackListenerError> {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
+            _endpoint_guard: endpoint_guard,
             repository,
             principal_resolver,
             authorizer,
