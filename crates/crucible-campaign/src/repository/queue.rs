@@ -1,12 +1,16 @@
 //! Bounded rebuildable input pages for the local attempt queue.
 //!
 //! Queue pages are operational projections over one authenticated campaign
-//! snapshot. They contain admitted semantic attempts that do not yet have a
-//! canonical observation. The cursor is deliberately snapshot-bound: a head
-//! advance makes it stale, forcing the supervisor to rebuild against the new
-//! observation and accounting roots.
+//! snapshot. They contain admitted semantic attempts that have neither a
+//! canonical observation nor an explicit non-modeled terminal disposition.
+//! The cursor is deliberately snapshot-bound: a head advance makes it stale,
+//! forcing the supervisor to rebuild against the new observation and
+//! accounting roots.
 
 use super::*;
+
+/// Maximum accounting entries consumed by one claimable-attempt page.
+pub const MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS: usize = 10_000;
 
 /// Process-local worker slot identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -105,6 +109,15 @@ impl AttemptQueue {
         self.by_attempt.len()
     }
 
+    /// Returns the exact reservation currently held by one worker slot.
+    #[must_use]
+    pub fn reservation_for_slot(&self, worker_slot: WorkerSlotId) -> Option<AttemptReservation> {
+        self.by_slot
+            .get(&worker_slot)
+            .and_then(|attempt| self.by_attempt.get(attempt))
+            .copied()
+    }
+
     /// Reserves the first unleased attempt in one canonical projection page.
     ///
     /// Repeating a claim for a slot that already owns a reservation returns the
@@ -200,7 +213,7 @@ impl AttemptQueueCursor {
     }
 }
 
-/// One bounded page of admitted attempts without canonical observations.
+/// One bounded page of admitted attempts without either terminal owner result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimableAttemptPage {
     snapshot: CampaignSnapshotId,
@@ -236,7 +249,7 @@ impl ClaimableAttemptPage {
 }
 
 impl CampaignRepository {
-    /// Projects one bounded page of admitted attempts lacking observations.
+    /// Projects one bounded page of admitted attempts lacking terminal results.
     ///
     /// The scan limit bounds accounting entries examined, rather than results,
     /// because the accounting root also contains admissions, ordinals, and
@@ -288,6 +301,10 @@ impl CampaignRepository {
                     map_key_content("observations.attempt", attempt_id.content_id()),
                 )?
                 .is_none()
+                && self
+                    .merkle
+                    .get(roots.accounting, non_modeled_attempt_key(attempt_id))?
+                    .is_none()
             {
                 attempts.push(attempt_id);
             }

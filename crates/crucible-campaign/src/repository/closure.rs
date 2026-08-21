@@ -300,6 +300,20 @@ impl CampaignRepository {
                                 choice_cache,
                             )?;
                         }
+                        CampaignFact::AttemptClosed {
+                            attempt,
+                            ordinal,
+                            disposition,
+                        } => {
+                            self.validate_attempt_closed_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                attempt,
+                                ordinal,
+                                disposition,
+                            )?;
+                        }
                         _ => {
                             return Err(integrity("snapshot-transition-type-is-not-implemented"));
                         }

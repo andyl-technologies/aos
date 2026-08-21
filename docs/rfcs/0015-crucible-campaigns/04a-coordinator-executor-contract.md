@@ -1191,6 +1191,21 @@ incorporate the authenticated observation through the snapshot owner
 transaction. Partial immutable writes remain recoverable under the publishing
 root and cannot create campaign meaning.
 
+The single-host coordinator uses a bounded `CampaignExecutorDriver` to connect
+the snapshot claim projection to this component protocol. It retains at most
+the configured `AttemptQueue` reservation count, scans at most 10,000
+accounting entries per step, and performs no component call while holding the
+repository mutation owner. A completed response is independently authenticated
+against the exact request and then admitted by the snapshot owner. Retryable
+`backpressure` and `unavailable-input` responses release the current lease and
+retry under a fresh assignment ID, as required by the immutable response
+ledger. `unauthorized` is a local configuration/authority stop and creates no
+semantic fact. In this one-executor deployment only, stable `incompatible`
+means no eligible executor remains and atomically publishes the exact
+`AttemptClosed(PermanentlyIncompatible)` ordinal disposition. That transition
+is replayable before staleness, excludes the attempt from future claim pages,
+and conflicts with modeled observation publication.
+
 The supervisor actor takes at most one queued assignment through a linear token
 and releases its mutable state before guest execution, candidate preflight, and
 immutable publication. Long guest or storage work never holds the borrow needed
@@ -1461,7 +1476,8 @@ conformance gates pass.
 ## 04a.8 Recovery and conformance
 
 After restart, the coordinator reconstructs claimable work as admitted attempts
-without canonical observations. The executor discards stale process handles,
+without canonical observations or explicit non-modeled terminal dispositions.
+The executor discards stale process handles,
 reconciles any surviving local processes under a new daemon epoch, inventories
 authenticated materializations, and accepts idempotent resubmission. No durable
 worker lease is required for the single-host implementation.
