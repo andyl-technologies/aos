@@ -66,6 +66,15 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
 
+    let mut prior_version = bytes.clone();
+    let version_index = b"crucible.ninep-snapshot.v".len();
+    assert_eq!(prior_version[version_index], b'2');
+    prior_version[version_index] = b'1';
+    assert_eq!(
+        NinepSnapshot::from_canonical_bytes(&prior_version),
+        Err(NinepSnapshotCodecError::Version)
+    );
+
     let mut trailing = bytes;
     trailing.push(0);
     assert_eq!(

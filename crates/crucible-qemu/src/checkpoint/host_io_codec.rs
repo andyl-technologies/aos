@@ -6,16 +6,23 @@ use super::{
     QemuHostIoCheckpoint, QemuLive9pIoServicerCheckpoint, QemuLiveBlockIoServicerCheckpoint,
 };
 use crucible::ContentHash;
-use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
+use crucible_device::{
+    BlockSnapshot, BlockSnapshotCodecError, NinepRequestOpportunity, NinepSnapshot,
+    NinepSnapshotCodecError,
+};
 use crucible_shmem::{
     RegionHeaderSnapshot, SpscRingError, SpscRingSnapshot, validate_setup_region_header,
 };
 
 use super::bounded_cbor::{
     BoundedCborError, BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
+    map_decode_error,
 };
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v2\0";
+mod resource;
+use resource::*;
+
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v3\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 
@@ -172,7 +179,8 @@ impl QemuHostIoCheckpoint {
             .ok_or(QemuHostIoCheckpointCodecError::Version)?;
         admit_input(bytes, "host-I/O checkpoint", maximum).map_err(map_bounded_cbor_error)?;
         let wire: HostIoWire = ciborium::de::from_reader(payload)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Malformed)?;
+            .map_err(map_decode_error)
+            .map_err(map_bounded_cbor_error)?;
         validate_bindings(&wire)?;
         if wire.execution_binding != execution_binding.bytes {
             return Err(QemuHostIoCheckpointCodecError::ExecutionBinding);
@@ -306,7 +314,7 @@ fn encode_block(
             checkpoint
                 .device
                 .to_canonical_bytes()
-                .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+                .map_err(map_block_snapshot_error)?,
         )?,
         requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
             map_host_ring_error(
@@ -341,7 +349,7 @@ fn decode_block(
         vm_slot: wire.vm_slot,
         size_bytes: wire.size_bytes,
         device: BlockSnapshot::from_canonical_bytes(wire.device.as_slice())
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+            .map_err(map_block_snapshot_error)?,
         requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
                 map_host_ring_error(error, "block requests", region_header.queue_capacity)
@@ -399,7 +407,7 @@ fn encode_ninep(
             checkpoint
                 .device
                 .to_canonical_bytes()
-                .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+                .map_err(map_ninep_snapshot_error)?,
         )?,
         requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
             map_host_ring_error(
@@ -437,7 +445,7 @@ fn decode_ninep(
         region_header,
         vm_slot: wire.vm_slot,
         device: NinepSnapshot::from_canonical_bytes(wire.device.as_slice())
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+            .map_err(map_ninep_snapshot_error)?,
         requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
                 map_host_ring_error(error, "9p requests", region_header.queue_capacity)
@@ -472,79 +480,6 @@ fn validate_region_and_rings(
         return Err(QemuHostIoCheckpointCodecError::Invalid);
     }
     Ok(())
-}
-
-fn map_host_ring_error(
-    error: SpscRingError,
-    field: &'static str,
-    configured_frames: u32,
-) -> QemuHostIoCheckpointCodecError {
-    match error {
-        SpscRingError::SnapshotAllocationFailed { count }
-        | SpscRingError::SnapshotTooLarge { len: count, .. } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count as u64,
-                configured: u64::from(configured_frames),
-                hard: 1_048_576,
-            }
-        }
-        SpscRingError::SnapshotFrameCountOverflow { count } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count,
-                configured: u64::from(configured_frames),
-                hard: 1_048_576,
-            }
-        }
-        SpscRingError::SnapshotPayloadAllocationFailed { len } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: len as u64,
-                configured: crucible_shmem::MAX_FRAME_DATA as u64,
-                hard: crucible_shmem::MAX_FRAME_DATA as u64,
-            }
-        }
-        SpscRingError::SnapshotByteAllocationFailed { len }
-        | SpscRingError::SnapshotLengthOverflow { len } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: len as u64,
-                configured: MAX_BYTES,
-                hard: MAX_BYTES,
-            }
-        }
-        _ => QemuHostIoCheckpointCodecError::Nested,
-    }
-}
-
-fn map_bounded_cbor_error(error: BoundedCborError) -> QemuHostIoCheckpointCodecError {
-    match error {
-        BoundedCborError::Malformed => QemuHostIoCheckpointCodecError::Malformed,
-        BoundedCborError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => QemuHostIoCheckpointCodecError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        },
-    }
-}
-
-fn bounded_bytes(
-    bytes: Vec<u8>,
-) -> Result<BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>, QemuHostIoCheckpointCodecError> {
-    BoundedVec::new(bytes).map_err(map_bounded_cbor_error)
 }
 
 fn encode_counter(
