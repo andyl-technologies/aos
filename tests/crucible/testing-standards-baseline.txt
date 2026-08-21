@@ -54,6 +54,7 @@ crucible-qemu	src/supervision/ninep_io_gate	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu	src/supervision/network_io_gate	retry	1
 crucible-qemu	src/supervision/network_io_gate/drive	retry	1
+crucible-qemu	src/supervision/network_io_gate/drive/retry	retry	1
 crucible-qemu	src/supervision/network_io_gate/error	retry	1
 crucible-qemu	src/supervision/network_io_gate/support	retry	1
 crucible-qemu	src/supervision/network_io_gate/tests	retry	1

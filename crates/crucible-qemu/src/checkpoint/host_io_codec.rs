@@ -7,7 +7,9 @@ use super::{
 };
 use crucible::ContentHash;
 use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
-use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot, validate_setup_region_header};
+use crucible_shmem::{
+    RegionHeaderSnapshot, SpscRingError, SpscRingSnapshot, validate_setup_region_header,
+};
 
 const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v1\0";
 const MAX_BYTES: usize = 1_610_612_736;
@@ -205,6 +207,22 @@ pub enum QemuHostIoCheckpointCodecError {
     /// The checkpoint exceeds a compiled resource ceiling.
     #[error("QEMU host-I/O checkpoint exceeds its size limit")]
     Limit,
+    /// A bounded ring allocation cannot be admitted.
+    #[error(
+        "QEMU host-I/O resource `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
+    )]
+    ResourceLimit {
+        /// Resource field that rejected the operation.
+        field: &'static str,
+        /// Bytes or entries already retained by the operation.
+        current: u64,
+        /// Additional bytes or entries requested.
+        requested: u64,
+        /// Active configured ceiling.
+        configured: u64,
+        /// Compiled hard ceiling.
+        hard: u64,
+    },
     /// The checkpoint requires a host service unavailable on this platform.
     #[error("QEMU host-I/O checkpoint is unsupported on this platform")]
     Platform,
@@ -256,14 +274,20 @@ fn encode_block(
             .device
             .to_canonical_bytes()
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: checkpoint
-            .requests
-            .canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        responses: checkpoint
-            .responses
-            .canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+        requests: checkpoint.requests.canonical_bytes().map_err(|error| {
+            map_host_ring_error(
+                error,
+                "block requests",
+                checkpoint.region_header.queue_capacity,
+            )
+        })?,
+        responses: checkpoint.responses.canonical_bytes().map_err(|error| {
+            map_host_ring_error(
+                error,
+                "block responses",
+                checkpoint.region_header.queue_capacity,
+            )
+        })?,
         frames_processed: u64::try_from(checkpoint.frames_processed)
             .map_err(|_| QemuHostIoCheckpointCodecError::Limit)?,
         frames_delivered: u64::try_from(checkpoint.frames_delivered)
@@ -286,10 +310,13 @@ fn decode_block(
         size_bytes: wire.size_bytes,
         device: BlockSnapshot::from_canonical_bytes(&wire.device)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity).map_err(
+            |error| map_host_ring_error(error, "block requests", region_header.queue_capacity),
+        )?,
         responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+            .map_err(|error| {
+                map_host_ring_error(error, "block responses", region_header.queue_capacity)
+            })?,
         frames_processed: usize::try_from(wire.frames_processed)
             .map_err(|_| QemuHostIoCheckpointCodecError::Limit)?,
         frames_delivered: usize::try_from(wire.frames_delivered)
@@ -338,14 +365,20 @@ fn encode_ninep(
             .device
             .to_canonical_bytes()
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: checkpoint
-            .requests
-            .canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        responses: checkpoint
-            .responses
-            .canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+        requests: checkpoint.requests.canonical_bytes().map_err(|error| {
+            map_host_ring_error(
+                error,
+                "9p requests",
+                checkpoint.region_header.queue_capacity,
+            )
+        })?,
+        responses: checkpoint.responses.canonical_bytes().map_err(|error| {
+            map_host_ring_error(
+                error,
+                "9p responses",
+                checkpoint.region_header.queue_capacity,
+            )
+        })?,
         pending_fault_opportunities: checkpoint.pending_fault_opportunities.clone(),
         frames_processed: u64::try_from(checkpoint.frames_processed)
             .map_err(|_| QemuHostIoCheckpointCodecError::Limit)?,
@@ -368,10 +401,13 @@ fn decode_ninep(
         vm_slot: wire.vm_slot,
         device: NinepSnapshot::from_canonical_bytes(&wire.device)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity).map_err(
+            |error| map_host_ring_error(error, "9p requests", region_header.queue_capacity),
+        )?,
         responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+            .map_err(|error| {
+                map_host_ring_error(error, "9p responses", region_header.queue_capacity)
+            })?,
         pending_fault_opportunities: wire.pending_fault_opportunities,
         frames_processed: usize::try_from(wire.frames_processed)
             .map_err(|_| QemuHostIoCheckpointCodecError::Limit)?,
@@ -397,6 +433,54 @@ fn validate_region_and_rings(
         return Err(QemuHostIoCheckpointCodecError::Invalid);
     }
     Ok(())
+}
+
+fn map_host_ring_error(
+    error: SpscRingError,
+    field: &'static str,
+    configured_frames: u32,
+) -> QemuHostIoCheckpointCodecError {
+    match error {
+        SpscRingError::SnapshotAllocationFailed { count }
+        | SpscRingError::SnapshotTooLarge { len: count, .. } => {
+            QemuHostIoCheckpointCodecError::ResourceLimit {
+                field,
+                current: 0,
+                requested: count as u64,
+                configured: u64::from(configured_frames),
+                hard: 1_048_576,
+            }
+        }
+        SpscRingError::SnapshotFrameCountOverflow { count } => {
+            QemuHostIoCheckpointCodecError::ResourceLimit {
+                field,
+                current: 0,
+                requested: count,
+                configured: u64::from(configured_frames),
+                hard: 1_048_576,
+            }
+        }
+        SpscRingError::SnapshotPayloadAllocationFailed { len } => {
+            QemuHostIoCheckpointCodecError::ResourceLimit {
+                field,
+                current: 0,
+                requested: len as u64,
+                configured: crucible_shmem::MAX_FRAME_DATA as u64,
+                hard: crucible_shmem::MAX_FRAME_DATA as u64,
+            }
+        }
+        SpscRingError::SnapshotByteAllocationFailed { len }
+        | SpscRingError::SnapshotLengthOverflow { len } => {
+            QemuHostIoCheckpointCodecError::ResourceLimit {
+                field,
+                current: 0,
+                requested: len as u64,
+                configured: MAX_BYTES as u64,
+                hard: MAX_BYTES as u64,
+            }
+        }
+        _ => QemuHostIoCheckpointCodecError::Nested,
+    }
 }
 
 #[cfg(target_os = "linux")]

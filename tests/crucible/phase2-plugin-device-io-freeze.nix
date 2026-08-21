@@ -9,17 +9,23 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginDeviceIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginIdleLoopContract =
-    pluginIdleLoop
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
+  pluginDeviceIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+  };
+  pluginDeviceIoContract =
+    pluginDeviceIo
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io_test.rs;
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
+  pluginIdleLoopContract = pluginIdleLoop;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-shmem/src/lib.rs
-    ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
-  ]);
+  shmemSources = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  };
   shmemNodeSlotTests = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -49,7 +55,7 @@
       content = pluginDeviceIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
+      label = "crates/crucible-qemu-plugin/src/idle_loop module";
       content = pluginIdleLoop;
     }
   ];
@@ -104,7 +110,7 @@
         needle = "DeviceIoFreezeError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/device_io.rs" pluginDeviceIo [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/device_io module and tests" pluginDeviceIoContract [
       {
         label = "freeze state type";
         needle = "pub struct PluginDeviceIoFreeze";
@@ -198,7 +204,7 @@
         needle = "device_io_foreign_token_with_target_pending_is_fail_loud";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs and tests/wake_cases.rs" pluginIdleLoopContract [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoopContract [
       {
         label = "idle plan carries device I/O hold";
         needle = "device_io_holding_ticks";
@@ -228,7 +234,7 @@
         needle = "idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/{lib.rs,shmem/frame_node.rs}" shmemSources [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node module" shmemSources [
       {
         label = "mark device I/O active";
         needle = "pub fn mark_device_io_active";
