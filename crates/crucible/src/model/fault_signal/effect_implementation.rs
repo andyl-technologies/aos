@@ -11,6 +11,9 @@ use std::fmt;
 
 use super::*;
 
+mod production_effects;
+use production_effects::{PRODUCTION_NETWORK_EFFECTS, PRODUCTION_STORAGE_EFFECTS};
+
 /// Production proof binding for one advertised effect kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProductionConformanceEvidence {
@@ -225,7 +228,6 @@ const STORAGE_MUTATION_EVIDENCE: &[&str] = &[
     "ResolvedBlockExecutionDirective",
     "ResolvedNinepRequestDirective",
 ];
-
 /// Returns the complete implementation registry for the production network adapter.
 ///
 /// The registry lives with the closed effect vocabulary so every production
@@ -270,13 +272,14 @@ pub fn production_host_fault_adapter_manifests()
 fn production_effect_registry(
     adapter: FaultAdapter,
 ) -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
+    let effects = match adapter {
+        FaultAdapter::Network => PRODUCTION_NETWORK_EFFECTS,
+        FaultAdapter::Storage => PRODUCTION_STORAGE_EFFECTS,
+        FaultAdapter::Node => &[],
+    };
     let registry = EffectImplementationRegistry::new(
         adapter,
-        EffectKind::all()
-            .iter()
-            .copied()
-            .filter(|effect| effect.descriptor().adapter == adapter)
-            .map(production_contract),
+        effects.iter().copied().map(production_contract),
     )?;
     registry.require_complete()?;
     Ok(registry)
@@ -453,6 +456,26 @@ mod tests {
                 observed_state: &["state_digest"],
             },
         }
+    }
+
+    #[test]
+    fn production_registration_is_explicit_and_vocabulary_growth_fails_closed() {
+        assert_eq!(PRODUCTION_NETWORK_EFFECTS.len(), 31);
+        assert_eq!(PRODUCTION_STORAGE_EFFECTS.len(), 20);
+        assert!(production_effect_registry(FaultAdapter::Network).is_ok());
+        assert!(production_effect_registry(FaultAdapter::Storage).is_ok());
+        assert_eq!(
+            PRODUCTION_NETWORK_EFFECTS
+                .iter()
+                .chain(PRODUCTION_STORAGE_EFFECTS)
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            EffectKind::all()
+                .iter()
+                .copied()
+                .filter(|effect| effect.descriptor().adapter != FaultAdapter::Node)
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]
