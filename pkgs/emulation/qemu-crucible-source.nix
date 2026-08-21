@@ -32,7 +32,7 @@
       # characterization store paths.
       && !lib.hasPrefix characterizationGoldens pathString;
   };
-  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+  cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix;
   crucibleCargoDeps = fetchCargoDeps {
     src = crucibleSource;
     sourceRoot = "source/crates";

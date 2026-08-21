@@ -44,7 +44,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   };
 
   # The perf substrate is split across a `perf/` module directory (each file is

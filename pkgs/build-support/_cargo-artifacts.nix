@@ -38,6 +38,7 @@ in {
   mkCargoDummySource = {
     srcRoot,
     name ? "cargo-dummy-source",
+    cargoRoot ? null,
   }: let
     rustTargets = collectRustTargets srcRoot "";
     manifestSource = builtins.path {
@@ -70,13 +71,14 @@ in {
         {
           name = "install";
           script = ''
-            mkdir -p "$out"
-            cp -R "${manifestSource}/." "$out/"
-            chmod -R u+w "$out"
+            destination="$out${lib.optionalString (cargoRoot != null) "/${cargoRoot}"}"
+            mkdir -p "$destination"
+            cp -R "${manifestSource}/." "$destination/"
+            chmod -R u+w "$destination"
             while IFS= read -r relative; do
               test -n "$relative" || continue
-              mkdir -p "$out/$(dirname "$relative")"
-              printf 'fn main() {}\n' > "$out/$relative"
+              mkdir -p "$destination/$(dirname "$relative")"
+              printf '#![allow(dead_code)]\nfn main() {}\n' > "$destination/$relative"
             done < ${rustTargetsFile}
           '';
         }

@@ -13,7 +13,7 @@
   cargoDeps = fetchCargoDeps {
     inherit src;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ./crucible/_cargo-deps-hash.nix;
   };
   targetTriple =
     {
@@ -46,7 +46,9 @@
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
+      cargoRoot = "crates";
     };
+    cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest --bin crucible-guest"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"

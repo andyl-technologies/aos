@@ -14,7 +14,7 @@
   cargoDeps = fetchCargoDeps {
     inherit src;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../tools/crucible/_cargo-deps-hash.nix;
   };
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
@@ -27,7 +27,9 @@
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-qemu-plugin-dummy-source";
+      cargoRoot = "crates";
     };
+    cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"

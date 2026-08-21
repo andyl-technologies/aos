@@ -10,6 +10,7 @@
   rust,
   openssl,
   pkg-config,
+  protobuf,
   qemu-crucible,
   crucible-qemu-plugin,
   linux-crucible,
@@ -39,7 +40,7 @@
     if stdenv.hostPlatform.system == "x86_64-linux"
     then "x86_64"
     else "aarch64";
-  cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+  cargoDepsHash = import ./_cargo-deps-hash.nix;
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   cargoDeps = fetchCargoDeps {
@@ -48,25 +49,8 @@
     hash = cargoDepsHash;
   };
   packages = import ./_packages.nix;
-  nonCrucibleWorkspacePackages = [
-    "aos"
-    "aos-core"
-    "aos-net"
-    "aos-proto"
-    "aos-proto-types"
-    "aos-server"
-    "aos-cache"
-    "aos-remote"
-    "aos-doc"
-    "aos-package"
-    "aos-hub-core"
-    "aos-hub"
-    "aos-registry-surface"
-    "aos-registry-spa"
-    "aos-hub-worker"
-    "aos-profile"
-    "aos-systemd"
-  ];
+  workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
+  nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;
   gplSidePackages = ["crucible-qemu-plugin" "crucible-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
   workspaceCargoFlags = builtins.concatStringsSep " " (
@@ -110,10 +94,11 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    PROTOC = "${protobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [rust.dev pkg-config openssl];
+    nativeInputs = map toString [rust.dev pkg-config openssl protobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -124,12 +109,15 @@
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "crucible-apache-host-dummy-source";
+      cargoRoot = "crates";
     };
+    cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags}"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
-    buildDeps = [rust.dev pkg-config openssl];
+    buildDeps = [rust.dev pkg-config openssl protobuf];
     runtimeDeps = [openssl];
   };
   debugGatewayArtifactContract = {
@@ -144,7 +132,9 @@
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "crucible-debug-gateway-dummy-source";
+      cargoRoot = "crates";
     };
+    cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
@@ -161,11 +151,15 @@
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    passthru = {
+      cargoArtifacts = controllerArtifacts;
+      cargoDeps = cargoDeps;
+    };
 
     cargoFlags = workspaceCargoFlags;
     cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [rust.dev pkg-config openssl];
+    buildDeps = [rust.dev pkg-config openssl protobuf];
     runtimeDeps = [openssl];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
