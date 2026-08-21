@@ -470,7 +470,11 @@
     memoryMib = 128;
     vcpuCount = 2;
     requireGuestPass = false;
-    runTimeoutSeconds = 600;
+    # The drop-one fanout deliberately runs many independent QEMU probes under
+    # the same Nix build. Keep a finite wall-clock bound while allowing the
+    # canonical 500M-instruction migration probe to make progress under that
+    # aggregate CPU contention.
+    runTimeoutSeconds = 1200;
     execBoundaryPluginPackage = execBoundaryPlugin;
     realtimeDeadlineProbe = index == 3;
     rrSwitchQuantum = traceQuantum;
