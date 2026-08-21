@@ -234,12 +234,12 @@ pub use quantum::{
     QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
-    QemuBackendRealizationExecutor, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
-    QemuCachedAncestor, QemuVmBakeExecutor, QemuVmRealization, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
-    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,
-    bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,
-    resume_qemu_vm, start_qemu_vm,
+    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuBackendRealizationExecutor,
+    QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot, QemuCachedAncestor,
+    QemuVmBakeExecutor, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
+    QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest,
+    QemuVmSnapshot, QemuVmSnapshotCodecError, bake_qemu_genesis_vm, check_qemu_replay_oracle,
+    fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm,
 };
 #[cfg(target_os = "linux")]
 pub use realization::{

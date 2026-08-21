@@ -313,6 +313,33 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], "crucible-daemon::assignment_ledger");
         assert_eq!(record[3], "operational-record");
     }
+    for (schema, version, owner, kind) in [
+        (
+            "crucible.qemu.vm-snapshot",
+            "2",
+            "crucible-qemu::realization",
+            "device-state",
+        ),
+        (
+            "crucible.qemu.vmstate",
+            "1",
+            "crucible-daemon::exact_checkpoint_store",
+            "device-state",
+        ),
+        (
+            "crucible.executor.exact-checkpoint-root",
+            "2",
+            "crucible-daemon::exact_checkpoint_store",
+            "exact-manifest",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing exact-checkpoint schema {schema}"));
+        assert_eq!(record[1], version);
+        assert_eq!(record[2], owner);
+        assert_eq!(record[3], kind);
+    }
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));

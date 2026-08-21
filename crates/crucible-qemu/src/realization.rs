@@ -19,7 +19,7 @@ use crate::{
 mod backend_executor;
 pub use backend_executor::QemuBackendRealizationExecutor;
 mod snapshot_codec;
-pub use snapshot_codec::QemuVmSnapshotCodecError;
+pub use snapshot_codec::{MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuVmSnapshotCodecError};
 #[cfg(target_os = "linux")]
 mod node_executor;
 #[cfg(target_os = "linux")]

@@ -315,8 +315,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   driver, and concrete session wiring remain open. Real-node exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
-  paused VMState/host-I/O capture. Durable publication, assignment-ledger
-  recovery, and supervisor replacement of the active reservation remain open.
+  paused VMState/host-I/O capture. The daemon now prepares and durably publishes
+  a registered exact-checkpoint root over canonical snapshot metadata and a
+  bounded, streamed opaque VMState child, with no writes during preparation and
+  children-before-root durable receipts. Assignment-ledger root staging,
+  restart-resume recovery, and supervisor replacement of the active reservation
+  remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable

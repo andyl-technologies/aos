@@ -22,6 +22,7 @@
 //! [`executor_worker`] resolves accepted assignments, delegates execution, and
 //! publishes immutable observation candidates; [`executor_pool`] owns the
 //! fixed worker threads and their short supervisor reconciliation phases;
+//! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
 //! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
@@ -45,6 +46,7 @@ pub mod crucible_artifact;
 pub mod crucible_execution;
 pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
+pub mod exact_checkpoint_store;
 pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_pool;
@@ -103,6 +105,12 @@ pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
     QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
+};
+pub use exact_checkpoint_store::{
+    EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION, ExactCheckpointId,
+    ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
+    LoadedExactCheckpoint, PreparedExactCheckpoint, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
+    QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

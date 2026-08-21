@@ -268,6 +268,40 @@ staging:
 - compact long delta chains without changing configuration identity;
 - verify complete artifact length, chunk order, and whole-object digest.
 
+The single-node exact-checkpoint foundation uses three registered immutable
+objects. `crucible.qemu.vm-snapshot@device-state.2` is the owner-decoded
+storage profile for canonical `QemuVmSnapshotV1` metadata and Apache
+continuation bytes. Device-state version 1 remains reserved for opaque QEMU
+VMState, so the two leaf roles cannot alias one logical content ID.
+`crucible.qemu.vmstate@device-state.1` is the opaque QEMU qcow2 VMState byte
+stream. `crucible.executor.exact-checkpoint-root@exact-manifest.2` is a generic
+content envelope with exactly these sorted children:
+
+```text
+snapshot-metadata -> crucible.qemu.vm-snapshot@device-state.2
+qemu-vmstate      -> crucible.qemu.vmstate@device-state.1
+```
+
+Its fixed 80-byte body contains the 32-byte aggregate snapshot identity, the
+32-byte materialized configuration identity, and big-endian `u64` metadata and
+VMState byte lengths. The root therefore authenticates one exact pairing rather
+than two independently reusable objects. Preparation validates and hashes both
+children without writes. Publication places metadata and VMState first,
+requires durable receipts for both, and places the root last. The caller MUST
+durably stage the expected root in its bounded assignment ledger before the
+first put; that later ledger composition is the retention root across
+publication and restart. A failed put may leave unreachable immutable children
+for GC, but may not make an incomplete root visible.
+
+The store admits only durable, conditional-create, streaming-read and
+streaming-put backends. The VMState source is finite and reopenable and is
+rejected from its declared length before it is opened when outside the exact
+attempt ceiling. Restore copies the complete authenticated stream into staging
+storage and may expose it to QEMU only after EOF, exact length, and digest have
+all been observed. The first implementation streams the complete qcow2 object;
+extent manifests and changed-state capture remain the required hot-path
+optimization rather than a correctness precondition.
+
 The public cross-process snapshot protocol may describe RAM blocks, page or
 extent indexes, opaque artifact streams, and digests. It may not expose QEMU
 private structures. Apache storage code treats QEMU blobs as opaque bytes.
