@@ -252,7 +252,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        "f1b7aae549fc320f35b5ab48a69da6b6c3cfac57224a8bed96d36bbaadbb82e6"
+        "ca7198fa080f09a40df4c9142425566ad40958c1d9d8c30404749aee642614bb"
     );
     assert_eq!(decoded.campaign(), &fixture.campaign);
     assert_eq!(decoded.configuration(), fixture.configuration);

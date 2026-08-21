@@ -839,6 +839,22 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             .expect("occurrence lookup"),
         Some(observed.observation.content_id())
     );
+    let finding_request = QueryCampaignFindingsRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("finding-publication").expect("campaign"),
+        published.new_snapshot,
+        None,
+        MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    )
+    .expect("finding query request");
+    let finding_page = crate::CampaignClient::new(RepositoryCampaignService::new(
+        &repository,
+        AllowCampaignQueries,
+    ))
+    .query_campaign_findings(&finding_request)
+    .expect("authenticated finding page");
+    assert_eq!(finding_page.entries(), std::slice::from_ref(&stored));
+    assert_eq!(finding_page.next_after(), None);
     repository.evict_local_checkpoint(published.new_snapshot.content_id());
     assert_eq!(
         repository

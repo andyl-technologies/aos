@@ -244,6 +244,14 @@ QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
 
+QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
+                                 optional after_signature_key | limit
+QueryCampaignFindingsResponseV1 = version | request_digest |
+                                  CampaignSnapshotV2 |
+                                  findings[FindingV1] |
+                                  optional next_after_signature_key |
+                                  MerkleScanProofV1
+
 MerkleLookupProofV1 = node_count:u64 |
                       nodes[node_id | canonical MerkleNodeV1 envelope bytes]
 GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
@@ -397,6 +405,9 @@ watch_request_digest =
 query_graph_request_digest =
   H("crucible.campaign-service.query-campaign-graph.v1",
     QueryCampaignGraphRequestV1)
+query_findings_request_digest =
+  H("crucible.campaign-service.query-campaign-findings.v1",
+    QueryCampaignFindingsRequestV1)
 get_graph_object_request_digest =
   H("crucible.campaign-service.get-campaign-graph-object.v1",
     GetCampaignGraphObjectRequestV1)
@@ -528,6 +539,25 @@ any other root ID MUST deny this operation. The operation does not grant any
 object body named by those IDs; object reads remain separately authorized, so
 sensitive checkpoint content is not carried in this response.
 
+`QueryCampaignFindings` applies the same current-head, authenticated-snapshot,
+minimal-proof, exact-node-set, range, lookahead, and EOF rules to
+`roots.findings`. Its exclusive cursor is the deterministic signature-index
+key, and `limit` is in `1..=4`. For signature cluster key `c`, that key is
+`H("crucible.campaign-map-key.v1", u64be(len("findings.signature")) ||
+"findings.signature" || c)`. Each proof leaf value MUST equal the content ID
+reconstructed from the complete corresponding `FindingV1` body, and its key
+MUST equal the body signature's derived cluster key transformed by that exact
+formula. The checked client rejects substitution, reordering, false EOF,
+foreign snapshots, and unused proof nodes before exposing a finding.
+
+This operation intentionally grants the complete anchoring snapshot metadata,
+the returned canonical finding bodies and IDs, and the Merkle metadata needed
+to authenticate them. Evidence, observation, reproduction, checkpoint, and
+other child object bodies named by a finding remain separately authorized. The
+four-entry bound leaves room for four independently bounded 4-MiB finding
+bodies and at most 385 visited 64-KiB proof nodes under the 64-MiB
+component-message limit.
+
 `GetCampaignGraphObject` is that separate graph-body capability. It accepts one
 exact current-snapshot graph key and returns only a strict
 `ConfigurationArtifact` or `ChoiceOpportunity` envelope. The response
@@ -628,12 +658,11 @@ domain to equal the graph-authenticated opportunity and declaration domain
 before rendering legality, producer, cause, budget, stop, and continuation
 state. This composition grants only the union of those two existing operation
 capabilities and introduces no generic object read. Arbitrary non-graph object
-reads, paged finding inspection, and proposal/attempt/finding explanations are
-still open. The strict local transport frames exactly one canonical request or
-response as:
+reads and proposal/attempt/finding explanations are still open. The strict
+local transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV13 = "CRUCCS13" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV14 = "CRUCCS14" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -663,10 +692,12 @@ kind = 1 (GetCampaignRequestV1) |
       26 (GetCampaignFrontierObjectRequestV1) |
       27 (GetCampaignFrontierObjectResponseV1) |
       28 (PinCampaignRequestV1) |
-      29 (PinCampaignResponseV1)
+      29 (PinCampaignResponseV1) |
+      30 (QueryCampaignFindingsRequestV1) |
+      31 (QueryCampaignFindingsResponseV1)
 ```
 
-Loopback frame versions 1 through 12 are rejected rather than reinterpreted
+Loopback frame versions 1 through 13 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
@@ -746,7 +777,7 @@ Unknown fields, schema versions, operation labels, or noncanonical principals
 and campaign names reject the complete policy. `campaign = "*"` is the only
 wildcard. The closed operation labels are `create-campaign`,
 `derive-campaign`, `get-campaign`, `get-campaign-snapshot`, `watch-campaign`,
-`query-campaign-graph`, `get-campaign-graph-object`,
+`query-campaign-graph`, `query-campaign-findings`, `get-campaign-graph-object`,
 `query-campaign-choices`, `query-campaign-frontier`,
 `get-campaign-frontier-object`, `get-campaign-choice-object`,
 `apply-campaign-command`, `pin-campaign`, and `submit-branch-request`.

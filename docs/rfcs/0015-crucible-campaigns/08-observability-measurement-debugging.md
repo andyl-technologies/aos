@@ -257,6 +257,14 @@ class, relevant target/opportunity, and canonical causal evidence. It excludes
 executor, PID, wall time, and materialization tier. Rediscovery unions occurrence
 observations into one cluster.
 
+The checked `QueryCampaignFindings` service reads at most four complete
+finding records in deterministic signature-index order from one exact current
+snapshot. Its minimal Merkle range proof authenticates every body identity,
+signature key, continuation cursor, and EOF before the API or CLI exposes the
+page. Authorization grants those finding bodies and the complete anchoring
+snapshot metadata, but not the observation, reproduction, evidence, or exact
+checkpoint bodies they name.
+
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
   schedule)` reproduction artifact and verify it before publication.
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be

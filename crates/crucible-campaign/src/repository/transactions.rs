@@ -415,6 +415,24 @@ impl CampaignRepository {
             })
     }
 
+    pub(crate) fn scan_findings_page(
+        &self,
+        root: ContentId,
+        after: Option<CampaignHash>,
+        limit: usize,
+    ) -> Result<(MerkleMapPage, MerkleMapPageProof), CampaignRepositoryError> {
+        self.merkle
+            .scan_with_proof(root, after, limit)
+            .map_err(|error| match error {
+                CampaignStoreError::InvalidMerkle {
+                    reason: "page-cursor-not-in-root",
+                } => CampaignRepositoryError::InvalidRequest {
+                    reason: "campaign-finding-query-cursor-is-not-in-index",
+                },
+                error => error.into(),
+            })
+    }
+
     pub(crate) fn graph_object_with_proof(
         &self,
         root: ContentId,

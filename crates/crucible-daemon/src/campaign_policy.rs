@@ -344,6 +344,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "get-campaign-snapshot" => Some(CampaignServiceOperation::GetCampaignSnapshot),
         "watch-campaign" => Some(CampaignServiceOperation::WatchCampaign),
         "query-campaign-graph" => Some(CampaignServiceOperation::QueryCampaignGraph),
+        "query-campaign-findings" => Some(CampaignServiceOperation::QueryCampaignFindings),
         "get-campaign-graph-object" => Some(CampaignServiceOperation::GetCampaignGraphObject),
         "query-campaign-choices" => Some(CampaignServiceOperation::QueryCampaignChoices),
         "query-campaign-frontier" => Some(CampaignServiceOperation::QueryCampaignFrontier),

@@ -1086,7 +1086,7 @@ impl CampaignRepository {
         Ok(artifact)
     }
 
-    pub(super) fn read_finding(&self, id: ContentId) -> Result<Finding, CampaignRepositoryError> {
+    pub(crate) fn read_finding(&self, id: ContentId) -> Result<Finding, CampaignRepositoryError> {
         self.read_finding_cached(id, &mut ChoiceValidationCache::default())
     }
 
