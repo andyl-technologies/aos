@@ -1471,6 +1471,27 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   cursor. Other accelerators retain upstream scheduler state.
 - **Risk:** D.
 
+### crucible-deterministic-network-kick — preserve exact network continuation
+
+- **Patch:** `0108-crucible-deterministic-network-kick.patch`.
+- **Enforces:** [DET-1], [PLUG-23], [PLUG-24], [QEMU-43].
+- **Mechanism:** sim-mode virtio-net queue kicks and serialized `tx_waiting`
+  resumes drain deferred transmit bottom halves synchronously and publish the
+  committed raw transmit icount. An optional sim-only VMState subsection
+  preserves each virtqueue notification cursor, and exact snapshot handling
+  flushes translation history symmetrically on source and restore while using
+  bounded cache-independent translation-block shapes without direct chaining.
+- **Micro-test:** the production two-node live-network gate requires a real
+  guest acknowledgement, then compares uninterrupted and fresh-process-restored
+  quanta until both a packet and new fault decisions occur. The per-patch
+  micro-test also requires the optional VMState fields and retains stock-mode
+  negative controls.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — synchronous kicks, the VMState
+  subsection, and translation-history handling are admitted only by precise
+  sim mode with the Crucible time-control boundary. Ordinary QEMU networking
+  and migration retain upstream behavior.
+- **Risk:** D.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.

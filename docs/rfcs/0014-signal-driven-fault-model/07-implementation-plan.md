@@ -499,6 +499,12 @@ produce live patched-QEMU architectural or device evidence.
   startup cannot choose the serialized cursor origin, preserve the serialized
   owner across loop-local restarts of a partial turn, and retain a cursor loaded
   from VMState.
+- [x] **T-QEMU-0108** Implement
+  [`crucible-deterministic-network-kick`](14-qemu-fault-patches/59-deterministic-network-kick.md):
+  preserve the virtqueue notification cursor in exact sim-mode VMState and
+  consume guest-to-router kicks synchronously, so uninterrupted and
+  fresh-process-restored worlds retain identical packet, interrupt, scheduler,
+  and fault-decision continuation.
 - [x] **T-QEMU-0060** Implement
   [`crucible-block-typed-errors`](14-qemu-fault-patches/14-block-typed-errors.md):
   the closed block result ABI, exact Linux errno translation, malformed-result
