@@ -304,6 +304,12 @@ struct CampaignArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignCommand {
+    /// Create a named campaign from canonical imported lineage and policy records.
+    Create(CampaignCreateArgs),
+    /// Derive a new named campaign from one exact source snapshot.
+    Derive(CampaignDeriveArgs),
+    /// Submit one finite additive operator branch request.
+    Branch(CampaignBranchArgs),
     /// Print the current authenticated campaign head and lifecycle state.
     Status(CampaignStatusArgs),
     /// Return the latest coalesced head after an optional snapshot cursor.
@@ -326,6 +332,77 @@ enum CampaignCommand {
     Budget(CampaignBudgetArgs),
     /// Activate an imported compatible policy for future work.
     Steer(CampaignSteerArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCreateArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Canonical binary CampaignLineage record whose artifacts are already imported.
+    #[arg(long, value_name = "FILE", required = true)]
+    lineage: PathBuf,
+    /// Canonical binary CampaignPolicy record whose generators are already imported.
+    #[arg(long, value_name = "FILE", required = true)]
+    policy: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignDeriveArgs {
+    /// Existing source campaign name.
+    #[arg(value_name = "SOURCE")]
+    source: String,
+    /// Exact authenticated source snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// New target campaign name.
+    #[arg(value_name = "TARGET")]
+    target: String,
+    /// Optional canonical binary CampaignPolicy to activate in the derived campaign.
+    #[arg(long, value_name = "FILE")]
+    policy: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignBranchArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this additive request expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Exact lowercase hexadecimal operator idempotency key.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+    /// Semantic branch-point ID.
+    #[arg(long, value_name = "BRANCH_POINT", required = true)]
+    branch_point: String,
+    /// Exact parent configuration-artifact ID.
+    #[arg(long, value_name = "CONFIGURATION_ARTIFACT", required = true)]
+    parent: String,
+    /// Exact choice-opportunity ID reached at the parent.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Exact effective choice-domain ID.
+    #[arg(long, value_name = "DOMAIN", required = true)]
+    domain: String,
+    /// Finite value: true, false, i64:N, u64:N, or discrete:ALTERNATIVE_ID.
+    #[arg(
+        long = "value",
+        value_name = "VALUE",
+        required = true,
+        action = ArgAction::Append
+    )]
+    values: Vec<String>,
+    /// Maximum proposals, defaulting to the number of distinct finite values.
+    #[arg(long, value_name = "COUNT")]
+    proposals: Option<u64>,
+    /// Maximum newly admitted attempts.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    attempts: u64,
+    /// Stop: next-choice, terminal, boundary:NAME, virtual-time-ns:N, or events:N.
+    #[arg(long, value_name = "CONDITION", default_value = "next-choice")]
+    stop: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

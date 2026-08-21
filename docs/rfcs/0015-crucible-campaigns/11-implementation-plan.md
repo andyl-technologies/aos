@@ -408,7 +408,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged finding queries,
-  rich frontier explanation, create/derive/branch/start-attachment porcelain,
+  rich frontier explanation, verifier-backed import/validation and
+  start-attachment porcelain,
   and richer filtered/aggregated CLI views remain open. The CLI wiring uses the
   checked local Unix-stream client for authenticated `status`, one-shot
   resumable `watch`, exact immutable pages of graph keys, discovered choice
@@ -669,7 +670,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 
 - [ ] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
   budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
-  `fork` only as a deprecated compatibility alias for `branch` if needed.
+  `fork` only as a deprecated compatibility alias for `branch` if needed. The
+  checked local client now exposes canonical create/derive inputs and exact
+  finite operator branch requests in addition to lifecycle control; manifest
+  authoring, verifier-backed import/validation, start attachment, selector
+  resolution, and generated-source branch porcelain remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed
