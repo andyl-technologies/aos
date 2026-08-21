@@ -211,10 +211,13 @@ crucible campaign watch NAME [--after CURSOR]
 crucible campaign graph NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
 crucible campaign choices NAME --snapshot SNAPSHOT [--after OPPORTUNITY] [--limit N]
 crucible campaign frontier NAME --snapshot SNAPSHOT [--after REQUEST] [--limit N]
-crucible campaign inspect NAME@SNAPSHOT
-crucible campaign compare NAME CONFIG_A CONFIG_B
+crucible campaign graph-object NAME --snapshot SNAPSHOT --key HASH
+crucible campaign choice-object NAME --snapshot SNAPSHOT --opportunity ID --kind declaration|domain
+crucible campaign frontier-object NAME --snapshot SNAPSHOT --request ID
+crucible campaign snapshot NAME --snapshot SNAPSHOT
+crucible campaign compare NAME --left SNAPSHOT --right SNAPSHOT
+crucible campaign explain NAME --snapshot SNAPSHOT --opportunity ID --request ID
 crucible campaign findings NAME
-crucible campaign explain NAME PROPOSAL|ATTEMPT|CONFIG|FINDING
 ```
 
 The read-only porcelain implements `status`, a one-shot resumable `watch`, and
@@ -230,9 +233,14 @@ immutable snapshot and accepts only the cursor type returned by that operation:
 a graph key hash, choice-opportunity ID, or branch-request ID. The output echoes
 the exact snapshot and next cursor. Graph pages carry and verify the bounded
 Merkle proof specified below before rendering; choice and frontier pages verify
-their snapshot-bound nested-index proofs through the same checked client. The
-lifecycle mutations described in §07.3 use that same transport; findings,
-explanation, comparison, and rich filtered/aggregated inspection remain open.
+their snapshot-bound nested-index proofs through the same checked client.
+Snapshot inspection and comparison independently validate every requested
+historical snapshot against the named campaign. The initial `explain` operation
+joins one authenticated choice declaration with one authenticated frontier
+request, rejects a mismatched opportunity or domain, and reports exact legality,
+producer, cause, budget, stop, and continuation fields. The lifecycle mutations
+described in §07.3 use that same transport; findings, proposal/attempt/finding
+explanations, and rich filtered/aggregated inspection remain open.
 
 A concise status view includes:
 

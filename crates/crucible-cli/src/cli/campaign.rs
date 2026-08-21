@@ -2,11 +2,16 @@
 
 use super::*;
 
+#[path = "campaign/explain.rs"]
+mod explain;
 #[path = "campaign/object.rs"]
 mod object;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
 
+use explain::{
+    query_campaign_explanation, render_campaign_explanation, validate_campaign_explain_command,
+};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
@@ -169,6 +174,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_snapshot(&client, principal, &args.command)?;
             render_campaign_snapshot(&report, cli.output_format())?
         }
+        CampaignCommand::Explain(_) => {
+            let report = query_campaign_explanation(&client, principal, &args.command)?;
+            render_campaign_explanation(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_) | CampaignCommand::Choices(_) | CampaignCommand::Frontier(_) => {
             let report = query_campaign_page(&client, principal, &args.command)?;
             render_campaign_page(&report, cli.output_format())?
@@ -291,6 +300,10 @@ fn prepare_campaign_command(
         }
         CampaignCommand::Snapshot(_) | CampaignCommand::Compare(_) => {
             validate_campaign_snapshot_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::Explain(_) => {
+            validate_campaign_explain_command(command)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -852,6 +865,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Watch(_)
         | CampaignCommand::Snapshot(_)
         | CampaignCommand::Compare(_)
+        | CampaignCommand::Explain(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
@@ -1156,6 +1170,11 @@ mod tests {
         snapshots: BTreeMap<CampaignSnapshotId, CampaignSnapshot>,
         object_key: CampaignHash,
         object: ObjectEnvelope,
+        declaration: SelectableDeclaration,
+        domain: ChoiceDomain,
+        opportunity: ChoiceOpportunity,
+        branch_request: BranchRequest,
+        frontier_projection: ContinuationProjection,
     }
 
     impl CampaignService for FixedHeadService {
@@ -1407,16 +1426,70 @@ mod tests {
 
         fn get_campaign_frontier_object(
             &self,
-            _request: &GetCampaignFrontierObjectRequest,
+            request: &GetCampaignFrontierObjectRequest,
         ) -> Result<GetCampaignFrontierObjectResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            assert_eq!(request.request(), self.frontier_projection.request());
+            let exploration = self.snapshot.roots().exploration;
+            let anchor =
+                CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b"");
+            let (_, index_proof) = self
+                .map
+                .get_with_proof(exploration, anchor)
+                .expect("frontier explanation index proof");
+            let frontier_index = self
+                .map
+                .get(exploration, anchor)
+                .expect("frontier explanation index lookup")
+                .expect("frontier explanation index root");
+            let (_, object_proof) = self
+                .map
+                .get_with_proof(
+                    frontier_index,
+                    CampaignHash::from_bytes(request.request().content_id().digest()),
+                )
+                .expect("frontier explanation membership proof");
+            Ok(GetCampaignFrontierObjectResponse::new(
+                request,
+                self.snapshot.clone(),
+                self.frontier_projection,
+                self.branch_request.clone(),
+                index_proof,
+                object_proof,
+            )
+            .expect("bound frontier explanation response"))
         }
 
         fn get_campaign_choice_object(
             &self,
-            _request: &GetCampaignChoiceObjectRequest,
+            request: &GetCampaignChoiceObjectRequest,
         ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            assert_eq!(
+                request.opportunity(),
+                self.opportunity.id().expect("explanation opportunity ID")
+            );
+            let (_, proof) = self
+                .map
+                .get_with_proof(
+                    self.snapshot.roots().graph,
+                    CampaignChoiceEntry::new(request.opportunity()).graph_key(),
+                )
+                .expect("choice explanation membership proof");
+            let object = match request.kind() {
+                CampaignChoiceObjectKind::Declaration => {
+                    CampaignChoiceObject::Declaration(self.declaration.clone())
+                }
+                CampaignChoiceObjectKind::Domain => {
+                    CampaignChoiceObject::Domain(self.domain.clone())
+                }
+            };
+            Ok(GetCampaignChoiceObjectResponse::new(
+                request,
+                self.snapshot.clone(),
+                self.opportunity.clone(),
+                object,
+                proof,
+            )
+            .expect("bound choice explanation response"))
         }
 
         fn apply_campaign_command(
@@ -1722,6 +1795,94 @@ mod tests {
     }
 
     #[test]
+    fn campaign_explain_joins_two_checked_proof_bearing_records() {
+        let (service, snapshot, _) = graph_page_service();
+        let opportunity = service
+            .opportunity
+            .id()
+            .expect("explanation opportunity ID");
+        let request = service.branch_request.id().expect("explanation request ID");
+        let command = CampaignCommand::Explain(CampaignExplainArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            opportunity: opportunity.to_string(),
+            request: request.to_string(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve explanation choice request");
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve explanation frontier request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_explanation(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked campaign explanation");
+        server.join().expect("campaign server thread");
+
+        let rendered =
+            render_campaign_explanation(&report, OutputFormat::Json).expect("explanation JSON");
+        let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(decoded["schema"], "crucible.cli.campaign-explanation.v1");
+        assert_eq!(decoded["opportunity"]["id"], opportunity.to_string());
+        assert_eq!(decoded["legality"]["domain_kind"], "boolean");
+        assert_eq!(decoded["legality"]["required"], true);
+        assert_eq!(decoded["cause"]["request"], request.to_string());
+        assert_eq!(decoded["cause"]["continuation_state"], "ready");
+        assert_eq!(decoded["cause"]["finite_values"][0], "true");
+    }
+
+    #[test]
+    fn campaign_explain_rejects_individually_authenticated_unrelated_records() {
+        let (service, _, _) = graph_page_service();
+        let (service, snapshot) = mismatch_explanation_frontier(service);
+        let opportunity = service
+            .opportunity
+            .id()
+            .expect("explanation opportunity ID");
+        let request = service
+            .branch_request
+            .id()
+            .expect("mismatched explanation request ID");
+        let command = CampaignCommand::Explain(CampaignExplainArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            opportunity: opportunity.to_string(),
+            request: request.to_string(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve mismatched explanation choice request");
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve mismatched explanation frontier request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let error = query_campaign_explanation(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect_err("unrelated explanation records must fail closed");
+        server.join().expect("campaign server thread");
+        assert!(
+            error
+                .to_string()
+                .contains("do not share one opportunity and domain")
+        );
+    }
+
+    #[test]
     fn campaign_create_derive_and_branch_use_checked_loopback_transport() {
         let (lineage_record, policy_record) = campaign_records();
         let principal = CampaignPrincipal::new("operator").expect("campaign principal");
@@ -1952,6 +2113,15 @@ mod tests {
             right: "not-a-snapshot".to_owned(),
         });
         assert!(validate_campaign_command(&bad_compare).is_err());
+        let bad_explain = CampaignCommand::Explain(CampaignExplainArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            opportunity: branch_request("explain-validation")
+                .opportunity()
+                .to_string(),
+            request: "not-a-branch-request".to_owned(),
+        });
+        assert!(validate_campaign_command(&bad_explain).is_err());
 
         let bad_graph_cursor = CampaignCommand::Graph(CampaignPageArgs {
             name: "example".to_owned(),
@@ -2112,6 +2282,36 @@ mod tests {
             compare_command.command,
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::Compare(_),
+                ..
+            })
+        ));
+        let explanation_request = branch_request("explanation-parser");
+        let explanation_request_id = explanation_request
+            .id()
+            .expect("explanation request ID")
+            .to_string();
+        let explanation_opportunity = explanation_request.opportunity().to_string();
+        let explain_command = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "explain",
+            "example",
+            "--snapshot",
+            &left_snapshot,
+            "--opportunity",
+            &explanation_opportunity,
+            "--request",
+            &explanation_request_id,
+        ])
+        .expect("campaign explanation arguments");
+        assert!(matches!(
+            explain_command.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Explain(_),
                 ..
             })
         ));
@@ -2532,6 +2732,7 @@ mod tests {
         let backend = Arc::new(MemoryBlobBackend::new("cli-graph-page", u64::MAX));
         let map = MerkleMap::new(backend);
         let mut root = map.empty().expect("empty graph root");
+        let empty = root.content_id();
         let scenario_artifact = ScenarioArtifactId::parse(&format!(
             "crucible.campaign.scenario-artifact@{}",
             ContentId::for_bytes(ObjectKind::Scenario, 1, b"cli-graph-scenario").encode()
@@ -2558,16 +2759,86 @@ mod tests {
                 ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"second"),
             )
             .expect("second graph insertion");
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let declaration = SelectableDeclaration::new(
+            "product.network.retry",
+            ChoiceSource::Workload {
+                producer: "network-product".to_owned(),
+            },
+            domain.clone(),
+            ChoiceValue::Boolean(false),
+            ChoiceClassContext::new(BTreeSet::from(["network-recovery".to_owned()]))
+                .expect("choice class"),
+            BTreeSet::from(["network".to_owned()]),
+            true,
+        )
+        .expect("selectable declaration");
+        let opportunity = ChoiceOpportunity::new(
+            configuration.scenario(),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: hash("explanation-scheduler"),
+                producer: hash("explanation-producer"),
+            },
+            "network-retry",
+            None,
+        )
+        .expect("choice opportunity");
+        let opportunity_id = opportunity.id().expect("choice opportunity ID");
+        let domain_id = domain.id().expect("choice domain ID");
+        root = map
+            .insert(
+                root.content_id(),
+                CampaignChoiceEntry::new(opportunity_id).graph_key(),
+                opportunity_id.content_id(),
+            )
+            .expect("choice opportunity graph insertion");
+        let branch_request = BranchRequest::new(
+            opportunity.branch_point_id(configuration.configuration()),
+            configuration.id().expect("configuration artifact ID"),
+            opportunity_id,
+            domain_id,
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+                .expect("finite explanation source"),
+            BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("explanation-command"))),
+            BranchBudget::new(1, 1).expect("explanation branch budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("explanation branch request");
+        let request_id = branch_request.id().expect("explanation request ID");
+        let frontier_projection = ContinuationProjection::new(
+            request_id,
+            branch_request.branch_point(),
+            ContinuationState::Ready,
+        );
+        let frontier_index = map
+            .insert(
+                empty,
+                CampaignHash::from_bytes(request_id.content_id().digest()),
+                frontier_projection
+                    .id()
+                    .expect("frontier projection ID")
+                    .content_id(),
+            )
+            .expect("frontier explanation index");
+        let exploration = map
+            .insert(
+                empty,
+                CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b""),
+                frontier_index.content_id(),
+            )
+            .expect("frontier explanation anchor");
         let roots = CampaignRoots {
             graph: root.content_id(),
-            exploration: root.content_id(),
-            observations: root.content_id(),
-            corpus: root.content_id(),
-            coverage: root.content_id(),
-            findings: root.content_id(),
-            pins: root.content_id(),
-            accounting: root.content_id(),
-            coordination: root.content_id(),
+            exploration: exploration.content_id(),
+            observations: empty,
+            corpus: empty,
+            coverage: empty,
+            findings: empty,
+            pins: empty,
+            accounting: empty,
+            coordination: empty,
         };
         let historical = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
             .expect("historical graph snapshot");
@@ -2596,10 +2867,86 @@ mod tests {
                 snapshots,
                 object_key,
                 object,
+                declaration,
+                domain,
+                opportunity,
+                branch_request,
+                frontier_projection,
             },
             snapshot_id,
             historical_id,
         )
+    }
+
+    fn mismatch_explanation_frontier(
+        mut service: GraphPageService,
+    ) -> (GraphPageService, CampaignSnapshotId) {
+        let foreign_opportunity = ChoiceOpportunityId::parse(&format!(
+            "crucible.campaign.choice-opportunity@{}",
+            ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"foreign-explanation-opportunity",
+            )
+            .encode()
+        ))
+        .expect("foreign explanation opportunity ID");
+        let prior = &service.branch_request;
+        let branch_request = BranchRequest::new(
+            prior.branch_point(),
+            prior.parent(),
+            foreign_opportunity,
+            prior.domain(),
+            prior.source().clone(),
+            prior.cause(),
+            prior.budget(),
+            prior.stop().clone(),
+        )
+        .expect("mismatched explanation branch request");
+        let request_id = branch_request.id().expect("mismatched request ID");
+        let frontier_projection = ContinuationProjection::new(
+            request_id,
+            branch_request.branch_point(),
+            ContinuationState::Ready,
+        );
+        let empty = service
+            .map
+            .empty()
+            .expect("empty mismatch root")
+            .content_id();
+        let frontier_index = service
+            .map
+            .insert(
+                empty,
+                CampaignHash::from_bytes(request_id.content_id().digest()),
+                frontier_projection
+                    .id()
+                    .expect("mismatched projection ID")
+                    .content_id(),
+            )
+            .expect("mismatched frontier index");
+        let exploration = service
+            .map
+            .insert(
+                empty,
+                CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b""),
+                frontier_index.content_id(),
+            )
+            .expect("mismatched frontier anchor");
+        let mut roots = service.snapshot.roots();
+        roots.exploration = exploration.content_id();
+        let snapshot = CampaignSnapshot::genesis(
+            service.snapshot.lineage(),
+            service.snapshot.active_policy(),
+            roots,
+        )
+        .expect("mismatched explanation snapshot");
+        let snapshot_id = snapshot.id().expect("mismatched explanation snapshot ID");
+        service.snapshot = snapshot.clone();
+        service.snapshots = BTreeMap::from([(snapshot_id, snapshot)]);
+        service.branch_request = branch_request;
+        service.frontier_projection = frontier_projection;
+        (service, snapshot_id)
     }
 
     fn mutation_basis(label: &str) -> CampaignMutationBasisArgs {
