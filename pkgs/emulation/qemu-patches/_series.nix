@@ -1010,7 +1010,7 @@ let
       file = "0108-crucible-deterministic-network-kick.patch";
       branchSubject = "crucible: preserve deterministic network continuation";
       branchCommit = "51e99862db3d19451032cdd2ef7ceaa440e44d4b";
-      branchTree = "8c79ff5d07b2009e71166ab1bd6854df23705fd5";
+      branchTree = "04b7dbc328e54051b90e98bbcbf40e1a891b96f1";
       catalogName = "crucible-deterministic-network-kick";
       class = "D";
       enforces = "DET-1,PLUG-23,PLUG-24,QEMU-43";
