@@ -409,9 +409,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged finding queries,
   rich frontier explanation, create/derive/branch/start-attachment porcelain,
-  and richer CLI wiring remain open. The CLI wiring uses the checked local
-  Unix-stream client for authenticated `status`, one-shot resumable `watch`,
-  and exact-command,
+  and richer filtered/aggregated CLI views remain open. The CLI wiring uses the
+  checked local Unix-stream client for authenticated `status`, one-shot
+  resumable `watch`, exact immutable pages of graph keys, discovered choice
+  opportunities, and continuation states, and exact-command,
   snapshot-preconditioned `resume`, `pause`, `stop`/`seal`, `unseal`, additive
   budget, and policy steering. Every mutation reports its prior/new snapshots,
   command ID, and replay status through the common table, Markdown, JSON, and
@@ -671,7 +672,9 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   `fork` only as a deprecated compatibility alias for `branch` if needed.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
-  JSON.
+  JSON. The first snapshot-bound graph/frontier/choices page and its exact typed
+  cursor are now exposed through the checked local client in table, Markdown,
+  JSON, and JSONL; rich views plus findings/explain/compare remain open.
 - [ ] **T-CAM-8.3** Implement pin/unpin, replay/debug, export/import,
   push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage

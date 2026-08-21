@@ -195,25 +195,31 @@ use the distinct terms.
 ```text
 crucible campaign status NAME [--json]
 crucible campaign watch NAME [--after CURSOR]
-crucible campaign graph NAME [--around CONFIG] [--depth N]
-crucible campaign frontier NAME [--state ready|waiting|open]
-crucible campaign choices NAME [SELECTOR]
+crucible campaign graph NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
+crucible campaign choices NAME --snapshot SNAPSHOT [--after OPPORTUNITY] [--limit N]
+crucible campaign frontier NAME --snapshot SNAPSHOT [--after REQUEST] [--limit N]
 crucible campaign inspect NAME@SNAPSHOT
 crucible campaign compare NAME CONFIG_A CONFIG_B
 crucible campaign findings NAME
 crucible campaign explain NAME PROPOSAL|ATTEMPT|CONFIG|FINDING
 ```
 
-The first read-only porcelain checkpoint implements `status` and a one-shot
-resumable `watch` over the authenticated local campaign-service Unix socket.
-Both commands require the socket path and the principal expected from the
-daemon's peer policy, validate strict request-bound responses through the
-checked client, and render table, Markdown, pretty JSON, or JSONL through the
-common CLI output selector. `watch --after` returns the latest coalesced head
-and an `advanced` flag; callers repeat it with the returned snapshot cursor to
-follow a campaign without treating the transport as authoritative state.
-The lifecycle mutations described in §07.3 use that same transport; the richer
-paged inspection commands below remain open.
+The read-only porcelain implements `status`, a one-shot resumable `watch`, and
+one immutable page of `graph`, `choices`, or `frontier` over the authenticated
+local campaign-service Unix socket. Every command requires the socket path and
+the principal expected from the daemon's peer policy, validates strict
+request-bound responses through the checked client, and renders table,
+Markdown, pretty JSON, or JSONL through the common CLI output selector. `watch
+--after` returns the latest coalesced head and an `advanced` flag; callers repeat
+it with the returned snapshot cursor to follow a campaign without treating the
+transport as authoritative state. Each page command instead requires an exact
+immutable snapshot and accepts only the cursor type returned by that operation:
+a graph key hash, choice-opportunity ID, or branch-request ID. The output echoes
+the exact snapshot and next cursor. Graph pages carry and verify the bounded
+Merkle proof specified below before rendering; choice and frontier pages verify
+their snapshot-bound nested-index proofs through the same checked client. The
+lifecycle mutations described in §07.3 use that same transport; findings,
+explanation, comparison, and rich filtered/aggregated inspection remain open.
 
 A concise status view includes:
 

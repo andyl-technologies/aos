@@ -308,6 +308,12 @@ enum CampaignCommand {
     Status(CampaignStatusArgs),
     /// Return the latest coalesced head after an optional snapshot cursor.
     Watch(CampaignWatchArgs),
+    /// Read one authenticated page from the temporal graph.
+    Graph(CampaignPageArgs),
+    /// Read one authenticated page of discovered choice opportunities.
+    Choices(CampaignPageArgs),
+    /// Read one authenticated page of continuation states.
+    Frontier(CampaignPageArgs),
     /// Begin or resume issuing campaign work.
     Resume(CampaignMutationBasisArgs),
     /// Pause new work under an explicit active-attempt policy.
@@ -337,6 +343,22 @@ struct CampaignWatchArgs {
     /// Last observed campaign snapshot cursor.
     #[arg(long, value_name = "SNAPSHOT")]
     after: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPageArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that anchors the immutable page.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exclusive cursor returned by the preceding page.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<String>,
+    /// Maximum entries returned in this page.
+    #[arg(long, value_name = "COUNT", default_value_t = 8)]
+    limit: u32,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
