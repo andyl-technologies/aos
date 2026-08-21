@@ -61,7 +61,7 @@ in {
           TimeoutStartSec = "180s";
           PrivateTmp = true;
           ProtectSystem = "strict";
-          ReadWritePaths = ["/nix" "/run/aos"];
+          ReadWritePaths = ["/nix" "/run/aos" "/var/lib/apm"];
           NoNewPrivileges = true;
         };
       };
