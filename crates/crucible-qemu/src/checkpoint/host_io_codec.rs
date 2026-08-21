@@ -6,16 +6,23 @@ use super::{
     QemuHostIoCheckpoint, QemuLive9pIoServicerCheckpoint, QemuLiveBlockIoServicerCheckpoint,
 };
 use crucible::ContentHash;
-use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
+use crucible_device::{
+    BlockSnapshot, BlockSnapshotCodecError, NinepRequestOpportunity, NinepSnapshot,
+    NinepSnapshotCodecError,
+};
 use crucible_shmem::{
     RegionHeaderSnapshot, SpscRingError, SpscRingSnapshot, validate_setup_region_header,
 };
 
 use super::bounded_cbor::{
-    BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
+    BoundedCborError, BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
+    map_decode_error,
 };
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v1\0";
+mod resource;
+use resource::*;
+
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v3\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 
@@ -25,7 +32,7 @@ struct HostIoWire {
     execution_binding: [u8; 32],
     block: Option<BlockWire>,
     ninep: Option<NinepWire>,
-    accelerator: Option<Vec<u8>>,
+    accelerator: Option<BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -36,9 +43,9 @@ struct BlockWire {
     region_header: RegionHeaderWire,
     vm_slot: u32,
     size_bytes: u64,
-    device: Vec<u8>,
-    requests: Vec<u8>,
-    responses: Vec<u8>,
+    device: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
+    requests: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
+    responses: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
     frames_processed: u64,
     frames_delivered: u64,
 }
@@ -50,10 +57,10 @@ struct NinepWire {
     tree: [u8; 32],
     region_header: RegionHeaderWire,
     vm_slot: u32,
-    device: Vec<u8>,
-    requests: Vec<u8>,
-    responses: Vec<u8>,
-    pending_fault_opportunities: Vec<(u64, NinepRequestOpportunity, bool)>,
+    device: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
+    requests: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
+    responses: BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>,
+    pending_fault_opportunities: BoundedVec<(u64, NinepRequestOpportunity, bool), 1_048_576>,
     frames_processed: u64,
     frames_delivered: u64,
 }
@@ -128,6 +135,20 @@ impl QemuHostIoCheckpoint {
         encode_checkpoint(self, MAX_BYTES)
     }
 
+    /// Encodes the continuation under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHostIoCheckpointCodecError`] under the same conditions as
+    /// [`Self::to_canonical_bytes`], and when the canonical representation
+    /// exceeds `maximum`.
+    pub fn to_canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, QemuHostIoCheckpointCodecError> {
+        encode_checkpoint(self, maximum)
+    }
+
     /// Decodes and authenticates every Apache-side device continuation.
     ///
     /// # Errors
@@ -138,12 +159,28 @@ impl QemuHostIoCheckpoint {
         bytes: &[u8],
         execution_binding: ContentHash,
     ) -> Result<Self, QemuHostIoCheckpointCodecError> {
+        Self::from_canonical_bytes_with_limit(bytes, execution_binding, MAX_BYTES)
+    }
+
+    /// Decodes a continuation under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuHostIoCheckpointCodecError`] under the same conditions as
+    /// [`Self::from_canonical_bytes`], and before decoding when `bytes` exceeds
+    /// `maximum`.
+    pub fn from_canonical_bytes_with_limit(
+        bytes: &[u8],
+        execution_binding: ContentHash,
+        maximum: u64,
+    ) -> Result<Self, QemuHostIoCheckpointCodecError> {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(QemuHostIoCheckpointCodecError::Version)?;
-        admit_input(bytes, "host-I/O checkpoint", MAX_BYTES).map_err(map_bounded_cbor_error)?;
+        admit_input(bytes, "host-I/O checkpoint", maximum).map_err(map_bounded_cbor_error)?;
         let wire: HostIoWire = ciborium::de::from_reader(payload)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Malformed)?;
+            .map_err(map_decode_error)
+            .map_err(map_bounded_cbor_error)?;
         validate_bindings(&wire)?;
         if wire.execution_binding != execution_binding.bytes {
             return Err(QemuHostIoCheckpointCodecError::ExecutionBinding);
@@ -156,7 +193,9 @@ impl QemuHostIoCheckpoint {
             #[cfg(target_os = "linux")]
             accelerator: wire
                 .accelerator
-                .map(|encoded| crate::QemuLiveAcceleratorCheckpoint::from_canonical_bytes(&encoded))
+                .map(|encoded| {
+                    crate::QemuLiveAcceleratorCheckpoint::from_canonical_bytes(encoded.as_slice())
+                })
                 .transpose()
                 .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
         };
@@ -164,7 +203,11 @@ impl QemuHostIoCheckpoint {
         if wire.accelerator.is_some() {
             return Err(QemuHostIoCheckpointCodecError::Platform);
         }
-        if checkpoint.to_canonical_bytes()?.as_slice() != bytes {
+        if checkpoint
+            .to_canonical_bytes_with_limit(maximum)?
+            .as_slice()
+            != bytes
+        {
             return Err(QemuHostIoCheckpointCodecError::Noncanonical);
         }
         Ok(checkpoint)
@@ -267,24 +310,26 @@ fn encode_block(
         region_header: checkpoint.region_header.into(),
         vm_slot: checkpoint.vm_slot,
         size_bytes: checkpoint.size_bytes,
-        device: checkpoint
-            .device
-            .to_canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: checkpoint.requests.canonical_bytes().map_err(|error| {
+        device: bounded_bytes(
+            checkpoint
+                .device
+                .to_canonical_bytes()
+                .map_err(map_block_snapshot_error)?,
+        )?,
+        requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
             map_host_ring_error(
                 error,
                 "block requests",
                 checkpoint.region_header.queue_capacity,
             )
-        })?,
-        responses: checkpoint.responses.canonical_bytes().map_err(|error| {
+        })?)?,
+        responses: bounded_bytes(checkpoint.responses.canonical_bytes().map_err(|error| {
             map_host_ring_error(
                 error,
                 "block responses",
                 checkpoint.region_header.queue_capacity,
             )
-        })?,
+        })?)?,
         frames_processed: encode_counter(checkpoint.frames_processed, "block frames processed")?,
         frames_delivered: encode_counter(checkpoint.frames_delivered, "block frames delivered")?,
     })
@@ -303,15 +348,19 @@ fn decode_block(
         region_header,
         vm_slot: wire.vm_slot,
         size_bytes: wire.size_bytes,
-        device: BlockSnapshot::from_canonical_bytes(&wire.device)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity).map_err(
-            |error| map_host_ring_error(error, "block requests", region_header.queue_capacity),
-        )?,
-        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
+        device: BlockSnapshot::from_canonical_bytes(wire.device.as_slice())
+            .map_err(map_block_snapshot_error)?,
+        requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
-                map_host_ring_error(error, "block responses", region_header.queue_capacity)
+                map_host_ring_error(error, "block requests", region_header.queue_capacity)
             })?,
+        responses: SpscRingSnapshot::from_canonical_bytes(
+            wire.responses.as_slice(),
+            queue_capacity,
+        )
+        .map_err(|error| {
+            map_host_ring_error(error, "block responses", region_header.queue_capacity)
+        })?,
         frames_processed: decode_counter(wire.frames_processed, "block frames processed")?,
         frames_delivered: decode_counter(wire.frames_delivered, "block frames delivered")?,
     };
@@ -354,25 +403,30 @@ fn encode_ninep(
         tree: checkpoint.tree.bytes,
         region_header: checkpoint.region_header.into(),
         vm_slot: checkpoint.vm_slot,
-        device: checkpoint
-            .device
-            .to_canonical_bytes()
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: checkpoint.requests.canonical_bytes().map_err(|error| {
+        device: bounded_bytes(
+            checkpoint
+                .device
+                .to_canonical_bytes()
+                .map_err(map_ninep_snapshot_error)?,
+        )?,
+        requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
             map_host_ring_error(
                 error,
                 "9p requests",
                 checkpoint.region_header.queue_capacity,
             )
-        })?,
-        responses: checkpoint.responses.canonical_bytes().map_err(|error| {
+        })?)?,
+        responses: bounded_bytes(checkpoint.responses.canonical_bytes().map_err(|error| {
             map_host_ring_error(
                 error,
                 "9p responses",
                 checkpoint.region_header.queue_capacity,
             )
-        })?,
-        pending_fault_opportunities: checkpoint.pending_fault_opportunities.clone(),
+        })?)?,
+        pending_fault_opportunities: BoundedVec::new(
+            checkpoint.pending_fault_opportunities.clone(),
+        )
+        .map_err(map_bounded_cbor_error)?,
         frames_processed: encode_counter(checkpoint.frames_processed, "9p frames processed")?,
         frames_delivered: encode_counter(checkpoint.frames_delivered, "9p frames delivered")?,
     })
@@ -390,16 +444,20 @@ fn decode_ninep(
         tree: ContentHash { bytes: wire.tree },
         region_header,
         vm_slot: wire.vm_slot,
-        device: NinepSnapshot::from_canonical_bytes(&wire.device)
-            .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity).map_err(
-            |error| map_host_ring_error(error, "9p requests", region_header.queue_capacity),
-        )?,
-        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
+        device: NinepSnapshot::from_canonical_bytes(wire.device.as_slice())
+            .map_err(map_ninep_snapshot_error)?,
+        requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
-                map_host_ring_error(error, "9p responses", region_header.queue_capacity)
+                map_host_ring_error(error, "9p requests", region_header.queue_capacity)
             })?,
-        pending_fault_opportunities: wire.pending_fault_opportunities,
+        responses: SpscRingSnapshot::from_canonical_bytes(
+            wire.responses.as_slice(),
+            queue_capacity,
+        )
+        .map_err(|error| {
+            map_host_ring_error(error, "9p responses", region_header.queue_capacity)
+        })?,
+        pending_fault_opportunities: wire.pending_fault_opportunities.into_inner(),
         frames_processed: decode_counter(wire.frames_processed, "9p frames processed")?,
         frames_delivered: decode_counter(wire.frames_delivered, "9p frames delivered")?,
     };
@@ -422,73 +480,6 @@ fn validate_region_and_rings(
         return Err(QemuHostIoCheckpointCodecError::Invalid);
     }
     Ok(())
-}
-
-fn map_host_ring_error(
-    error: SpscRingError,
-    field: &'static str,
-    configured_frames: u32,
-) -> QemuHostIoCheckpointCodecError {
-    match error {
-        SpscRingError::SnapshotAllocationFailed { count }
-        | SpscRingError::SnapshotTooLarge { len: count, .. } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count as u64,
-                configured: u64::from(configured_frames),
-                hard: 1_048_576,
-            }
-        }
-        SpscRingError::SnapshotFrameCountOverflow { count } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: count,
-                configured: u64::from(configured_frames),
-                hard: 1_048_576,
-            }
-        }
-        SpscRingError::SnapshotPayloadAllocationFailed { len } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: len as u64,
-                configured: crucible_shmem::MAX_FRAME_DATA as u64,
-                hard: crucible_shmem::MAX_FRAME_DATA as u64,
-            }
-        }
-        SpscRingError::SnapshotByteAllocationFailed { len }
-        | SpscRingError::SnapshotLengthOverflow { len } => {
-            QemuHostIoCheckpointCodecError::ResourceLimit {
-                field,
-                current: 0,
-                requested: len as u64,
-                configured: MAX_BYTES,
-                hard: MAX_BYTES,
-            }
-        }
-        _ => QemuHostIoCheckpointCodecError::Nested,
-    }
-}
-
-fn map_bounded_cbor_error(error: BoundedCborError) -> QemuHostIoCheckpointCodecError {
-    match error {
-        BoundedCborError::Malformed => QemuHostIoCheckpointCodecError::Malformed,
-        BoundedCborError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => QemuHostIoCheckpointCodecError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        },
-    }
 }
 
 fn encode_counter(
@@ -520,14 +511,16 @@ fn decode_counter(
 #[cfg(target_os = "linux")]
 fn encode_accelerator(
     checkpoint: &QemuHostIoCheckpoint,
-) -> Result<Option<Vec<u8>>, QemuHostIoCheckpointCodecError> {
+) -> Result<Option<BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>>, QemuHostIoCheckpointCodecError> {
     checkpoint
         .accelerator
         .as_ref()
         .map(|state| {
-            state
-                .to_canonical_bytes()
-                .map_err(|_| QemuHostIoCheckpointCodecError::Nested)
+            bounded_bytes(
+                state
+                    .to_canonical_bytes()
+                    .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
+            )
         })
         .transpose()
 }
@@ -535,6 +528,6 @@ fn encode_accelerator(
 #[cfg(not(target_os = "linux"))]
 fn encode_accelerator(
     _checkpoint: &QemuHostIoCheckpoint,
-) -> Result<Option<Vec<u8>>, QemuHostIoCheckpointCodecError> {
+) -> Result<Option<BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>>, QemuHostIoCheckpointCodecError> {
     Ok(None)
 }

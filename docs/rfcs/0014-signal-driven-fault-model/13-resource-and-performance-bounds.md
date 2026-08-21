@@ -109,12 +109,14 @@ materialize fixed-size shared-memory frame slots until copying into an already
 configured destination ring. This prevents a small zero-payload checkpoint from
 requesting gigabytes of decoded heap while preserving the full configured frame
 ceiling. The enclosing QEMU node continuation measures both canonical rings
-before allocating, applies the same 1,610,612,736-byte aggregate ceiling on
-encode and decode, reserves the outer encoding fallibly once, and streams each
-ring into that allocation without a ring-sized temporary copy. Rejection reports
-`current`, `requested`, `configured`, and compiled `hard` values. Its
-production-envelope tests round-trip both the full 1,048,576-frame queue
-capacity and a populated ring beyond the obsolete 64 MiB boundary.
+before allocating, applies the authored `fat_checkpoint_bytes` ceiling and
+64 GiB hard ceiling symmetrically on encode and decode, reserves the outer
+encoding fallibly once, and streams each ring into that allocation without a
+ring-sized temporary copy. Each individual network ring is additionally capped
+at the 8 GiB `network_queue_bytes` hard ceiling. Rejection reports `current`,
+`requested`, `configured`, and compiled `hard` values. Its production-envelope
+tests round-trip both the full 1,048,576-frame queue capacity and a populated
+ring beyond the obsolete 64 MiB boundary.
 
 ## 13.5 Storage and 9p limits
 
@@ -185,14 +187,21 @@ under an authored observability policy that still preserves every transition,
 decision, effect, and referenced full-value artifact required for explanation.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
-envelopes premeasure their representation before allocation, admit the aggregate
-against `fat_checkpoint_bytes` and its 64 GiB hard ceiling, reserve fallibly
-once, and encode into that reservation. The scheduler-facing network queue
-encoder additionally enforces `network_queue_frames` and the 8 GiB
-`network_queue_bytes` hard ceiling. Decode applies the same aggregate admission
-before parsing nested collections;
-allocation or representation failure is a LIMIT-2 outcome carrying the exact
-current, requested, configured, and hard values rather than a process abort.
+envelopes admit their representation against `fat_checkpoint_bytes` and its
+64 GiB hard ceiling before final allocation. Nested owners retain independent
+typed bounds; sequence decoders use fallible reservation even for indefinite
+hostile CBOR, and the complete VM snapshot uses a length-delimited envelope that
+borrows nested inputs rather than first materializing duplicate vectors. The
+scheduler-facing network queue encoder additionally enforces
+`network_queue_frames` and the 8 GiB `network_queue_bytes` hard ceiling. Durable
+store and fresh-process load apply the identical authored ceiling to every
+large continuation and to the aggregate content-addressed closure. Allocation
+or representation failure is a LIMIT-2 outcome carrying the exact current,
+requested, configured, and hard values rather than a process abort. The raised
+resource policy is carried only by the versioned node-v7, host-I/O-v3,
+block-snapshot-v2, 9p-snapshot-v2, I/O-core-v2, production-runtime-v4, and
+VM-snapshot-v2 formats; VM snapshot identity uses the
+`exact-snapshot.v5` domain, so old policy identities cannot alias new artifacts.
 
 ## 13.8 Search and minimization limits
 

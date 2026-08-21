@@ -33,6 +33,13 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
             ..
         })
     ));
+    let mut old_version = bytes;
+    old_version[..b"crucible.qemu-host-io-checkpoint.v3\0".len()]
+        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v2\0");
+    assert_eq!(
+        QemuHostIoCheckpoint::from_canonical_bytes(&old_version, binding),
+        Err(QemuHostIoCheckpointCodecError::Version)
+    );
 }
 
 #[test]
@@ -349,6 +356,13 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         ),
         Err(QemuNodeCheckpointCodecError::ExecutionBinding)
     );
+    let mut old_version = bytes.clone();
+    old_version[..b"crucible.qemu-node-continuation.v7\0".len()]
+        .copy_from_slice(b"crucible.qemu-node-continuation.v6\0");
+    assert_eq!(
+        QemuNodeContinuationCheckpoint::from_compact_binary(&old_version, binding),
+        Err(QemuNodeCheckpointCodecError::Unsupported)
+    );
     bytes.push(0);
     assert_eq!(
         QemuNodeContinuationCheckpoint::from_compact_binary(&bytes, binding),
@@ -400,7 +414,7 @@ fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
 
 #[test]
 fn node_continuation_decode_reports_typed_collection_resource_limit() {
-    const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v6\0";
+    const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v7\0";
     let checkpoint = node_checkpoint_with_inbound_ring(1, 0);
     let mut bytes = checkpoint
         .to_compact_binary()
