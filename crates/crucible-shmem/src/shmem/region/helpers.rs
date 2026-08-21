@@ -323,8 +323,15 @@ pub(super) fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {
     write_u32_at(bytes, FRAME_ENTRY_SRC_NODE_OFFSET, frame.src_node);
     write_u32_at(bytes, FRAME_ENTRY_SEQ_OFFSET, frame.seq);
     write_u16_at(bytes, FRAME_ENTRY_LEN_OFFSET, frame.len);
+    bytes[FRAME_ENTRY_DELIVERY_STATE_OFFSET] =
+        frame.delivery_state().map_or(u8::MAX, |state| state as u8);
     bytes[FRAME_ENTRY_PAD_OFFSET..FRAME_ENTRY_PAD_OFFSET + frame._pad.len()]
         .copy_from_slice(&frame._pad);
+    write_u32_at(
+        bytes,
+        FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
+        frame.delivery_attempts(),
+    );
     bytes[FRAME_ENTRY_DATA_OFFSET..FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA]
         .copy_from_slice(&frame.data);
 }

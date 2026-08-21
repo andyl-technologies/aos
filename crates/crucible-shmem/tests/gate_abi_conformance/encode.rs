@@ -214,6 +214,11 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DELIVERY_STATE_OFFSET,
         state.frame.delivery_state,
     );
+    write_u32(
+        &mut bytes,
+        GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
+        state.frame.delivery_attempts,
+    );
     bytes[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
         ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + state.frame.payload.len()]
         .copy_from_slice(&state.frame.payload);

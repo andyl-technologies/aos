@@ -197,6 +197,18 @@
         needle = "NetworkRxDeliveryOutcome::Retained";
       }
       {
+        label = "bounded RX attempt limit";
+        needle = "NETWORK_RX_DELIVERY_ATTEMPT_LIMIT";
+      }
+      {
+        label = "deterministic RX retry interval";
+        needle = "NETWORK_RX_RETRY_INTERVAL_ICOUNT";
+      }
+      {
+        label = "canonical retained retry coordinate";
+        needle = "retained_retry_icount";
+      }
+      {
         label = "future delivery gate";
         needle = "frame.delivery_icount > current_icount";
       }
@@ -227,6 +239,14 @@
       {
         label = "backpressure canonical retention test";
         needle = "network_rx_retains_canonical_frame_under_guest_backpressure";
+      }
+      {
+        label = "bounded attempt terminal test";
+        needle = "network_rx_fails_loudly_at_canonical_delivery_attempt_limit";
+      }
+      {
+        label = "deterministically spaced retained retry test";
+        needle = "network_rx_retries_canonically_retained_past_frame";
       }
       {
         label = "future frame no delivery test";

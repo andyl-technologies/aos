@@ -38,6 +38,10 @@ pkgs.mkDerivation {
         static const uint8_t probe_payload[] = "crucible-network-probe-v1";
         static const uint8_t reply_payload[] = "crucible-network-reply-v1";
         static const uint8_t ack_payload[] = "crucible-network-ack-v1";
+        static const uint8_t backpressure_payload[] =
+          "crucible-network-backpressure-v1";
+        static const uint8_t backpressure_ack_payload[] =
+          "crucible-network-backpressure-ack-v1";
         static const uint8_t checkpoint_payload[] =
           "crucible-network-checkpoint-v1";
         static const uint8_t continuation_payload[] =
@@ -170,6 +174,11 @@ pkgs.mkDerivation {
                                 sizeof(reply_payload) - 1)) {
               response_payload = ack_payload;
               response_payload_len = sizeof(ack_payload) - 1;
+              response_destination = router_mac;
+            } else if (payload_matches(frame, received, backpressure_payload,
+                                       sizeof(backpressure_payload) - 1)) {
+              response_payload = backpressure_ack_payload;
+              response_payload_len = sizeof(backpressure_ack_payload) - 1;
               response_destination = router_mac;
             } else if (payload_matches(frame, received, probe_payload,
                                        sizeof(probe_payload) - 1)) {

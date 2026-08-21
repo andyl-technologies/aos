@@ -212,7 +212,7 @@
     ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
-        needle = "pub const ABI_VERSION: u32 = 15;";
+        needle = "pub const ABI_VERSION: u32 = 16;";
       }
       {
         label = "coverage queue bounded by map cardinality";
