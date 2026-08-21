@@ -186,9 +186,6 @@ fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnap
         ("inbox", snapshot.inbox_capacity, snapshot.inbox.len()),
         ("outbox", snapshot.outbox_capacity, snapshot.outbox.len()),
     ] {
-        if capacity == 0 || !capacity.is_power_of_two() {
-            return Err(IoCoreSnapshotCodecError::Invalid("queue capacity"));
-        }
         if capacity > HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 {
             return Err(io_core_resource_limit(
                 field,
@@ -196,6 +193,9 @@ fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnap
                 capacity,
                 HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
             ));
+        }
+        if capacity == 0 || !capacity.is_power_of_two() {
+            return Err(IoCoreSnapshotCodecError::Invalid("queue capacity"));
         }
         if length > usize::try_from(capacity).unwrap_or(usize::MAX) {
             return Err(io_core_configured_resource_limit(

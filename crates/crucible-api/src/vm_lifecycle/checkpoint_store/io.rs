@@ -46,15 +46,21 @@ mod tests {
 
     #[test]
     fn bounded_file_read_accepts_exact_limit_and_rejects_larger_input() {
-        let directory = tempfile::tempdir().expect("create bounded-read directory");
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create bounded-read directory: {error}"));
         let path = directory.path().join("checkpoint");
-        fs::write(&path, b"12345678").expect("write bounded-read fixture");
+        fs::write(&path, b"12345678")
+            .unwrap_or_else(|error| panic!("write bounded-read fixture: {error}"));
 
         assert_eq!(
-            read_bounded_file(&path, 8).expect("read exact-limit checkpoint"),
+            read_bounded_file(&path, 8)
+                .unwrap_or_else(|error| panic!("read exact-limit checkpoint: {error}")),
             b"12345678"
         );
-        let error = read_bounded_file(&path, 7).expect_err("reject over-limit checkpoint");
+        let error = match read_bounded_file(&path, 7) {
+            Ok(_) => panic!("over-limit checkpoint should be rejected"),
+            Err(error) => error,
+        };
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

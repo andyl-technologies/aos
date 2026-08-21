@@ -30,11 +30,12 @@
       qemu_package_version=${qemuPackage.version}
     '';
   tPatch12PatchNames =
-    if builtins.elem patchName [
-      "0060-crucible-block-typed-errors.patch"
-              "0061-crucible-block-discard.patch"
-              "0062-crucible-block-transport-reset.patch"
-    ]
+    if
+      builtins.elem patchName [
+        "0060-crucible-block-typed-errors.patch"
+        "0061-crucible-block-discard.patch"
+        "0062-crucible-block-transport-reset.patch"
+      ]
     then [patchName]
     else [
       "0015-crucible-blk-shmem.patch"
@@ -42,29 +43,31 @@
       "0017-crucible-blk-write-sentinel.patch"
     ];
   patchContextNames =
-    if builtins.elem patchName [
-      "0060-crucible-block-typed-errors.patch"
-      "0061-crucible-block-discard.patch"
-      "0062-crucible-block-transport-reset.patch"
-    ]
+    if
+      builtins.elem patchName [
+        "0060-crucible-block-typed-errors.patch"
+        "0061-crucible-block-discard.patch"
+        "0062-crucible-block-transport-reset.patch"
+      ]
     then series.patchFiles
-    else [
-      "0001-crucible-sim-accel.patch"
-      "0002-crucible-rr-fingerprint-helpers.patch"
-      "0003-crucible-icount-no-realtime.patch"
-      "0004-crucible-no-warp-with-plugin.patch"
-      "0005-crucible-det-glib-prng.patch"
-      "0006-crucible-clock-deadline.patch"
-      "0007-crucible-block-rtc-read.patch"
-      "0008-crucible-det-getrandom.patch"
-      "0009-crucible-net-deterministic.patch"
-      "0010-crucible-plugin-time-advance.patch"
-      "0011-crucible-plugin-icount-raw.patch"
-      "0012-crucible-plugin-vcpu-exit.patch"
-      "0013-crucible-plugin-wake-fd.patch"
-      "0014-crucible-plugin-tcg-exec-cb.patch"
-    ]
-    ++ tPatch12PatchNames;
+    else
+      [
+        "0001-crucible-sim-accel.patch"
+        "0002-crucible-rr-fingerprint-helpers.patch"
+        "0003-crucible-icount-no-realtime.patch"
+        "0004-crucible-no-warp-with-plugin.patch"
+        "0005-crucible-det-glib-prng.patch"
+        "0006-crucible-clock-deadline.patch"
+        "0007-crucible-block-rtc-read.patch"
+        "0008-crucible-det-getrandom.patch"
+        "0009-crucible-net-deterministic.patch"
+        "0010-crucible-plugin-time-advance.patch"
+        "0011-crucible-plugin-icount-raw.patch"
+        "0012-crucible-plugin-vcpu-exit.patch"
+        "0013-crucible-plugin-wake-fd.patch"
+        "0014-crucible-plugin-tcg-exec-cb.patch"
+      ]
+      ++ tPatch12PatchNames;
   taskIds =
     if patchName == "0060-crucible-block-typed-errors.patch"
     then ["T-QEMU-0060"]
@@ -217,93 +220,93 @@
     )
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
     ++ failuresFor "tests/crucible/phase1-qemu-block-shmem.c" microtestSource ([
-      {
-        label = "patched driver include";
-        needle = "#include \"block/crucible-shmem.c\"";
-      }
-      {
-        label = "plugin callback registration exercised";
-        needle = "plugin_callback_registration_exercised=true";
-      }
-      {
-        label = "pending sentinel exercised";
-        needle = "zero_length_success_distinct_from_pending=true";
-      }
-      {
-        label = "poll cadence exercised";
-        needle = "poll_sleep_cadence_scheduled=true";
-      }
-      {
-        label = "deterministic completion exercised";
-        needle = "deterministic_completion_offsets=true";
-      }
-      {
-        label = "stock negative control";
-        needle = "stock_negative_control_block_symbols_absent=true";
-      }
-    ]
-    ++ lib.optionals (patchName == "0060-crucible-block-typed-errors.patch") [
-      {
-        label = "typed errno mapping exercised";
-        needle = "typed_error_errno_mapping_exact=true";
-      }
-      {
-        label = "typed errno range rejection exercised";
-        needle = "typed_error_out_of_range_fails_closed=true";
-      }
-    ]
-    ++ lib.optionals (patchName == "0061-crucible-block-discard.patch") [
-      {
-        label = "payload-free discard exercised";
-        needle = "discard_payload_free=true";
-      }
-    ]
-    ++ lib.optionals (patchName == "0062-crucible-block-transport-reset.patch") [
-      {
-        label = "transactional reset exercised";
-        needle = "transport_reset_transactional=true";
-      }
-      {
-        label = "exact reset recovery exercised";
-        needle = "transport_reset_recovery_exact=true";
-      }
-      {
-        label = "reset reserved bytes rejected";
-        needle = "transport_reset_reserved_rejected=true";
-      }
-      {
-        label = "declared topology notification exercised";
-        needle = "transport_reset_topology_notified=true";
-      }
-      {
-        label = "event commit rejection exercised transactionally";
-        needle = "transport_reset_commit_rejection_transactional=true";
-      }
-      {
-        label = "paired QEMU/plugin VMState exercised";
-        needle = "transport_reset_vmstate_paired=true";
-      }
-      {
-        label = "bounded VMState decoder exercised before allocation";
-        needle = "transport_reset_vmstate_oversize_rejected_preallocation=true";
-      }
-      {
-        label = "closed reset error range exercised";
-        needle = "transport_reset_error_range_exact=true";
-      }
-      {
-        label = "preserved retry recovery admission exercised";
-        needle = "transport_reset_preserve_retry_admitted=true";
-      }
-      {
-        label = "drop-completion sentinel exercised";
-        needle = "transport_reset_drop_sentinel_exact=true";
-      }
-      {
-        label = "discard range failure exercised";
-        needle = "discard_range_checks_fail_closed=true";
-      }
-    ])
+        {
+          label = "patched driver include";
+          needle = "#include \"block/crucible-shmem.c\"";
+        }
+        {
+          label = "plugin callback registration exercised";
+          needle = "plugin_callback_registration_exercised=true";
+        }
+        {
+          label = "pending sentinel exercised";
+          needle = "zero_length_success_distinct_from_pending=true";
+        }
+        {
+          label = "poll cadence exercised";
+          needle = "poll_sleep_cadence_scheduled=true";
+        }
+        {
+          label = "deterministic completion exercised";
+          needle = "deterministic_completion_offsets=true";
+        }
+        {
+          label = "stock negative control";
+          needle = "stock_negative_control_block_symbols_absent=true";
+        }
+      ]
+      ++ lib.optionals (patchName == "0060-crucible-block-typed-errors.patch") [
+        {
+          label = "typed errno mapping exercised";
+          needle = "typed_error_errno_mapping_exact=true";
+        }
+        {
+          label = "typed errno range rejection exercised";
+          needle = "typed_error_out_of_range_fails_closed=true";
+        }
+      ]
+      ++ lib.optionals (patchName == "0061-crucible-block-discard.patch") [
+        {
+          label = "payload-free discard exercised";
+          needle = "discard_payload_free=true";
+        }
+      ]
+      ++ lib.optionals (patchName == "0062-crucible-block-transport-reset.patch") [
+        {
+          label = "transactional reset exercised";
+          needle = "transport_reset_transactional=true";
+        }
+        {
+          label = "exact reset recovery exercised";
+          needle = "transport_reset_recovery_exact=true";
+        }
+        {
+          label = "reset reserved bytes rejected";
+          needle = "transport_reset_reserved_rejected=true";
+        }
+        {
+          label = "declared topology notification exercised";
+          needle = "transport_reset_topology_notified=true";
+        }
+        {
+          label = "event commit rejection exercised transactionally";
+          needle = "transport_reset_commit_rejection_transactional=true";
+        }
+        {
+          label = "paired QEMU/plugin VMState exercised";
+          needle = "transport_reset_vmstate_paired=true";
+        }
+        {
+          label = "bounded VMState decoder exercised before allocation";
+          needle = "transport_reset_vmstate_oversize_rejected_preallocation=true";
+        }
+        {
+          label = "closed reset error range exercised";
+          needle = "transport_reset_error_range_exact=true";
+        }
+        {
+          label = "preserved retry recovery admission exercised";
+          needle = "transport_reset_preserve_retry_admitted=true";
+        }
+        {
+          label = "drop-completion sentinel exercised";
+          needle = "transport_reset_drop_sentinel_exact=true";
+        }
+        {
+          label = "discard range failure exercised";
+          needle = "discard_range_checks_fail_closed=true";
+        }
+      ])
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
         label = "block shmem patch catalog";
@@ -410,12 +413,12 @@ in
             grep -q 'qemu_plugin_register_blk_cb' include/qemu/qemu-plugin.h
             grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
             ${lib.optionalString (!(builtins.elem patchName [
-              "0060-crucible-block-typed-errors.patch"
-      "0061-crucible-block-discard.patch"
-      "0062-crucible-block-transport-reset.patch"
-            ])) ''
-              grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
-            ''}
+                "0060-crucible-block-typed-errors.patch"
+                "0061-crucible-block-discard.patch"
+                "0062-crucible-block-transport-reset.patch"
+              ])) ''
+                grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
+              ''}
 
             mkdir -p fixture/include/block fixture/include/migration fixture/include/qapi fixture/include/qemu fixture/include/qobject fixture/include/system
             cat > fixture/include/qemu/osdep.h <<'OSDEP_FIXTURE'
@@ -962,18 +965,18 @@ in
             zero_length_success_distinct_from_pending=true
             pending_sentinel=-2
             ${lib.optionalString (patchName == "0060-crucible-block-typed-errors.patch") ''typed_error_errno_mapping_exact=true''}
-            ${lib.optionalString (patchName == "0061-crucible-block-discard.patch") ''discard_payload_free=true
-            discard_range_checks_fail_closed=true''}
-            ${lib.optionalString (patchName == "0062-crucible-block-transport-reset.patch") ''transport_reset_transactional=true
-            transport_reset_recovery_exact=true
-            transport_reset_reserved_rejected=true
-            transport_reset_topology_notified=true
-            transport_reset_commit_rejection_transactional=true
-            transport_reset_vmstate_paired=true
-            transport_reset_vmstate_oversize_rejected_preallocation=true
-            transport_reset_error_range_exact=true
-            transport_reset_preserve_retry_admitted=true
-            transport_reset_drop_sentinel_exact=true''}
+            ${lib.optionalString (patchName == "0061-crucible-block-discard.patch") ''                discard_payload_free=true
+                            discard_range_checks_fail_closed=true''}
+            ${lib.optionalString (patchName == "0062-crucible-block-transport-reset.patch") ''              transport_reset_transactional=true
+                          transport_reset_recovery_exact=true
+                          transport_reset_reserved_rejected=true
+                          transport_reset_topology_notified=true
+                          transport_reset_commit_rejection_transactional=true
+                          transport_reset_vmstate_paired=true
+                          transport_reset_vmstate_oversize_rejected_preallocation=true
+                          transport_reset_error_range_exact=true
+                          transport_reset_preserve_retry_admitted=true
+                          transport_reset_drop_sentinel_exact=true''}
             apply_clean_patch_fuzz=0
             RESULT
           '';

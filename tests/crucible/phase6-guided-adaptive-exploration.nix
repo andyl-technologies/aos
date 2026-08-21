@@ -317,7 +317,9 @@
         ];
       };
     }
-    .${taskId};
+    .${
+      taskId
+    };
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 

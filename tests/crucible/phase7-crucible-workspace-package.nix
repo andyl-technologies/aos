@@ -8,6 +8,8 @@
 
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  expectedCargoDepsHash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
@@ -48,8 +50,8 @@
         needle = "cargoDeps = fetchCargoVendor";
       }
       {
-        label = "pinned vendored dependency hash binding";
-        needle = "cargoDepsHash = \"sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=\";";
+        label = "central vendored dependency hash binding";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
@@ -57,7 +59,11 @@
       }
       {
         label = "non-Crucible workspace excludes";
-        needle = "nonCrucibleWorkspacePackages = [";
+        needle = "nonCrucibleWorkspacePackages = builtins.filter";
+      }
+      {
+        label = "workspace membership comes from Cargo metadata";
+        needle = "workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
       }
       {
         label = "workspace cargo flags";
@@ -152,6 +158,7 @@
         needle = "crucibleWorkspacePackage = import ./phase7-crucible-workspace-package.nix";
       }
     ]
+    ++ lib.optional (cargoDepsHash != expectedCargoDepsHash) "pkgs/tools/crucible/_cargo-deps-hash.nix: expected pinned vendored dependency hash `${expectedCargoDepsHash}`, got `${cargoDepsHash}`"
     ++ inventoryFailures;
 in
   if failures != []

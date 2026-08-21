@@ -33,73 +33,73 @@
   bspRunLoop =
     if guestIdle
     then ''
-              /* Install an interrupt gate for the remapped PIT IRQ. */
-              movl $irq0, %eax
-              movw %ax, idt + (0x20 * 8)
-              movw %cs, %ax
-              movw %ax, idt + (0x20 * 8) + 2
-              movb $0, idt + (0x20 * 8) + 4
-              movb $0x8e, idt + (0x20 * 8) + 5
-              movl $irq0, %eax
-              shrl $16, %eax
-              movw %ax, idt + (0x20 * 8) + 6
-              lidt idtr
+        /* Install an interrupt gate for the remapped PIT IRQ. */
+        movl $irq0, %eax
+        movw %ax, idt + (0x20 * 8)
+        movw %cs, %ax
+        movw %ax, idt + (0x20 * 8) + 2
+        movb $0, idt + (0x20 * 8) + 4
+        movb $0x8e, idt + (0x20 * 8) + 5
+        movl $irq0, %eax
+        shrl $16, %eax
+        movw %ax, idt + (0x20 * 8) + 6
+        lidt idtr
 
-              /* Remap the 8259 PIC and unmask only IRQ0. */
-              movb $0x11, %al
-              outb %al, $0x20
-              outb %al, $0xa0
-              movb $0x20, %al
-              outb %al, $0x21
-              movb $0x28, %al
-              outb %al, $0xa1
-              movb $0x04, %al
-              outb %al, $0x21
-              movb $0x02, %al
-              outb %al, $0xa1
-              movb $0x01, %al
-              outb %al, $0x21
-              outb %al, $0xa1
-              movb $0xfe, %al
-              outb %al, $0x21
-              movb $0xff, %al
-              outb %al, $0xa1
+        /* Remap the 8259 PIC and unmask only IRQ0. */
+        movb $0x11, %al
+        outb %al, $0x20
+        outb %al, $0xa0
+        movb $0x20, %al
+        outb %al, $0x21
+        movb $0x28, %al
+        outb %al, $0xa1
+        movb $0x04, %al
+        outb %al, $0x21
+        movb $0x02, %al
+        outb %al, $0xa1
+        movb $0x01, %al
+        outb %al, $0x21
+        outb %al, $0xa1
+        movb $0xfe, %al
+        outb %al, $0x21
+        movb $0xff, %al
+        outb %al, $0xa1
 
-              /* PIT channel 0, mode 2, roughly 100 Hz. */
-              movb $0x34, %al
-              outb %al, $0x43
-              movw $11932, %ax
-              outb %al, $0x40
-              movb %ah, %al
-              outb %al, $0x40
+        /* PIT channel 0, mode 2, roughly 100 Hz. */
+        movb $0x34, %al
+        outb %al, $0x43
+        movw $11932, %ax
+        outb %al, $0x40
+        movb %ah, %al
+        outb %al, $0x40
 
-            bsp_idle:
-              sti
-              hlt
-              jmp bsp_idle
+      bsp_idle:
+        sti
+        hlt
+        jmp bsp_idle
     ''
     else ''
-              movl $0x51f15eed, %eax
-            bsp_busy:
-              roll $13, %eax
-              xorl $0x9e3779b9, %eax
-              addl $0x6d2b79f5, %eax
-              jmp bsp_busy
+        movl $0x51f15eed, %eax
+      bsp_busy:
+        roll $13, %eax
+        xorl $0x9e3779b9, %eax
+        addl $0x6d2b79f5, %eax
+        jmp bsp_busy
     '';
   apRunLoop =
     if guestIdle
     then ''
-            ap_idle:
-              hlt
-              jmp ap_idle
+      ap_idle:
+        hlt
+        jmp ap_idle
     ''
     else ''
-              movw $0x51f1, %ax
-            ap_busy:
-              rolw $5, %ax
-              xorw $0x79b9, %ax
-              addw $0x5eed, %ax
-              jmp ap_busy
+        movw $0x51f1, %ax
+      ap_busy:
+        rolw $5, %ax
+        xorw $0x79b9, %ax
+        addw $0x5eed, %ax
+        jmp ap_busy
     '';
   guestActivity =
     if guestIdle
@@ -107,7 +107,10 @@
     else if startAps
     then "all-vcpus-busy"
     else "bsp-busy-aps-halted";
-  guestDeadline = if guestIdle then "periodic-pit-channel-0" else "none";
+  guestDeadline =
+    if guestIdle
+    then "periodic-pit-channel-0"
+    else "none";
 in
   assert guestVcpus >= 1 && guestVcpus <= 4;
   # A diskless multiboot guest that optionally starts application processors.
@@ -116,7 +119,15 @@ in
   # executing a fixed register-only loop. These modes keep scheduler proofs
   # independent of Linux boot policy.
     pkgs.mkDerivation {
-      pname = "crucible-live-plugin-quantum-${toString guestVcpus}vcpu-${if guestIdle then "idle" else "busy"}-${if startAps then "smp" else "bsp-only"}-guest";
+      pname = "crucible-live-plugin-quantum-${toString guestVcpus}vcpu-${
+        if guestIdle
+        then "idle"
+        else "busy"
+      }-${
+        if startAps
+        then "smp"
+        else "bsp-only"
+      }-guest";
       version = "0";
       src = null;
 
@@ -223,7 +234,11 @@ in
             guest_format=multiboot-elf32
             guest_vcpus=${toString guestVcpus}
             guest_ap_startup=${apStartup}
-            ${if guestIdle then "guest_idle=all-vcpus-hlt" else "guest_idle=false"}
+            ${
+              if guestIdle
+              then "guest_idle=all-vcpus-hlt"
+              else "guest_idle=false"
+            }
             guest_activity=${guestActivity}
             guest_deadline=${guestDeadline}
             EVIDENCE

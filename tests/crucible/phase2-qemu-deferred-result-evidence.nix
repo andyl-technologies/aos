@@ -10,23 +10,23 @@
   };
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "typed deferred-result evidence validation";
-        needle = "test_validate_rule_evidence(";
-      }
-      {
-        label = "apply-operation evidence binding";
-        needle = "CRUCIBLE_NODE_FAULT_OPERATION_APPLY";
-      }
-      {
-        label = "composed second-command payload selection";
-        needle = "test_compose_mode() && result.command_sequence == 4";
-      }
-      {
-        label = "obsolete empty deferred-evidence assertion removal";
-        needle = ''-                test_fail("deferred fault completion carried premature "'';
-      }
-    ];
+    {
+      label = "typed deferred-result evidence validation";
+      needle = "test_validate_rule_evidence(";
+    }
+    {
+      label = "apply-operation evidence binding";
+      needle = "CRUCIBLE_NODE_FAULT_OPERATION_APPLY";
+    }
+    {
+      label = "composed second-command payload selection";
+      needle = "test_compose_mode() && result.command_sequence == 4";
+    }
+    {
+      label = "obsolete empty deferred-evidence assertion removal";
+      needle = ''-                test_fail("deferred fault completion carried premature "'';
+    }
+  ];
 in
   if failures != []
   then throw "Crucible deferred-result evidence microtest failed:\n${builtins.concatStringsSep "\n" failures}"
