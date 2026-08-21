@@ -35,8 +35,8 @@ use crate::{
 };
 use crucible::{BackendInput, Icount};
 use crucible_shmem::{
-    FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameDeliveryKey, FrameDeliveryState, FrameEntry,
-    RegionAllocation, RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
+    FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameDeliveryKey, FrameDeliveryState, RegionAllocation,
+    RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
 };
 
 mod error;
