@@ -1,5 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 126a4e192..78d058f06 100644
+index bf426bfd1..a63c6d1a4 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -788,6 +788,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
@@ -20,7 +20,7 @@ index 126a4e192..78d058f06 100644
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
   * @data: Ethernet frame bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index b5d153ad4..c2861bfbf 100644
+index dda655433..f8a57a500 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -238,6 +238,13 @@ uint64_t qemu_plugin_icount_raw(void)

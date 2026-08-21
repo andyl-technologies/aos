@@ -707,19 +707,11 @@ extern "C" fn capture_accelerator_registration(
     assert!(!userdata.is_null());
 }
 
-extern "C" fn live_network_send_ok(
+extern "C" fn live_network_inject_ok(
     _payload: *const u8,
     _payload_len: usize,
 ) -> std::os::raw::c_int {
     0
-}
-
-extern "C" fn live_network_flush_ok() -> std::os::raw::c_int {
-    0
-}
-
-extern "C" fn live_network_can_receive() -> std::os::raw::c_int {
-    1
 }
 
 struct RecordingSuccessfulCallbackRegistrar {
@@ -917,9 +909,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_sim_shmem_dispatch: Some(capture_sim_dispatch_registration),
                 register_time_advance_cb: Some(capture_time_advance_completion_registration),
                 register_net_tx: Some(capture_network_tx_registration),
-                net_send: Some(live_network_send_ok),
-                net_flush: Some(live_network_flush_ok),
-                net_can_receive: Some(live_network_can_receive),
+                net_inject: Some(live_network_inject_ok),
                 register_block: Some(capture_block_registration),
                 register_block_event: Some(capture_block_event_registration),
                 register_block_wait: Some(capture_block_wait_registration),
@@ -1154,8 +1144,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_sim_shmem_dispatch = Some(capture_sim_dispatch_registration);
     capabilities.register_time_advance_cb = Some(capture_time_advance_completion_registration);
     capabilities.register_net_tx = Some(capture_network_tx_registration);
-    capabilities.net_send = Some(live_network_send_ok);
-    capabilities.net_flush = Some(live_network_flush_ok);
+    capabilities.net_inject = Some(live_network_inject_ok);
     capabilities.register_block = Some(capture_block_registration);
     capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
@@ -1240,7 +1229,7 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
     let fixture = LiveInstallFixture::new();
     let state = test_state();
     let mut capabilities = test_capabilities();
-    capabilities.net_send = None;
+    capabilities.net_inject = None;
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         53,
         state.lifecycle_core().execution_model(),
@@ -1267,7 +1256,7 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
             source: OwnedCallbackRegistrationError::LiveVcpuTime {
                 source: LiveVcpuTimeCallbackError::NetworkRx {
                     source: crate::NetworkRxError::CapabilityUnavailable {
-                        symbol: crate::QEMU_PLUGIN_NET_SEND_SYMBOL,
+                        symbol: crate::QEMU_PLUGIN_NET_INJECT_SYMBOL,
                     },
                 },
             },

@@ -508,13 +508,13 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let initial_snapshot = self.view.node_slot.snapshot();
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
-        let inbound_consumption =
-            self.snapshot_inbound_consumption(initial_state.current_icount.retired)?;
+        let inbound_consumption = self.snapshot_inbound_consumption()?;
 
         self.record(QemuQuantumOperation::ComputeSchedulerCeiling);
         let earliest_delivery = inbound_consumption
             .delivery_keys
-            .first()
+            .iter()
+            .find(|key| key.delivery_icount > initial_state.current_icount.retired)
             .map(|key| key.delivery_icount);
         let effective_ceiling = earliest_delivery
             .map_or(horizon.icount.retired, |delivery_icount| {

@@ -234,10 +234,10 @@ index a9b6bb375..1622d08db 100644
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 4f866e5aa..5b5103605 100644
+index 8e3a5634e..4cf2a588a 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1680,14 +1680,78 @@ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
+@@ -1649,14 +1649,78 @@ GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
   * Returns the size of the read register. The content of @buf is in target byte
   * order. On failure returns -1.
   *
@@ -318,7 +318,7 @@ index 4f866e5aa..5b5103605 100644
  /**
   * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
   * @vcpu_index: the vCPU index to inspect
-@@ -1698,7 +1762,11 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1667,7 +1731,11 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
   *
   * Returns 0 on success and nonzero on failure. The byte stream is a stable
   * canonicalization of each named architectural register descriptor and value

@@ -254,6 +254,12 @@ pub enum QemuQuantumError {
         /// Number of delivery keys retained by the host ledger.
         ledger_live: usize,
     },
+    /// The plugin kept advancing the consumer index during every bounded snapshot attempt.
+    #[error("QEMU inbound consumption snapshot remained unstable across capacity {capacity}")]
+    InboundConsumptionSnapshotUnstable {
+        /// Maximum live entries, and therefore maximum useful snapshot retries.
+        capacity: u64,
+    },
     /// The plugin consumed a frame before its scheduler-authorized coordinate.
     #[error(
         "QEMU quantum inbound frame {frame:?} was consumed before delivery at current icount {current_icount}"

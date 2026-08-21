@@ -84,7 +84,7 @@
     ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
       {
         label = "delivery keys reconstructed from the shared ring";
-        needle = "ledger.push_back(view.inbound_entries[slot].delivery_key())";
+        needle = "ledger.push_back(self.view.inbound_entries[slot].delivery_key())";
       }
       {
         label = "exact delivery ceiling helper";
@@ -103,11 +103,11 @@
         needle = "fn observe_inbound_consumption";
       }
       {
-        label = "late frame error";
-        needle = "DeliveryAlreadyPassed";
+        label = "stable inbound snapshot retry";
+        needle = "InboundConsumptionSnapshotUnstable";
       }
       {
-        label = "missing plugin consumption fails closed";
+        label = "unexpected mid-quantum publication fails closed";
         needle = "InboundFrameNotConsumedAtDelivery";
       }
       {
@@ -155,12 +155,16 @@
         needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
       }
       {
-        label = "late no-consume test";
-        needle = "qemu_quantum_rejects_late_inbound_frame_without_consuming";
+        label = "canonical retained past-frame test";
+        needle = "qemu_quantum_accepts_canonical_retained_frame_behind_current_icount";
       }
       {
-        label = "due frames remain plugin-owned test";
-        needle = "qemu_quantum_rejects_due_frame_not_consumed_by_plugin";
+        label = "due backpressured frames remain canonical test";
+        needle = "qemu_quantum_preserves_backpressured_due_frame_for_retry";
+      }
+      {
+        label = "retained frame checkpoint continuation test";
+        needle = "qemu_network_checkpoint_restores_backpressured_inbound_for_retry";
       }
       {
         label = "unconsumed mid-quantum publication test";
@@ -191,8 +195,8 @@
         needle = "handle_network_rx_idle_callback";
       }
       {
-        label = "lossless RX flush";
-        needle = "flush_lossless_rx";
+        label = "canonical direct RX delivery";
+        needle = "try_deliver_rx";
       }
       {
         label = "delivery gate validation";
@@ -236,7 +240,7 @@
       }
       {
         label = "RX failure does not commit inbound frames";
-        needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
+        needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
@@ -249,8 +253,8 @@
         needle = "self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?";
       }
       {
-        label = "busy-boundary RX unit proof";
-        needle = "busy_boundary_injects_and_commits_inbound_before_reached_publication";
+        label = "busy-boundary canonical retention proof";
+        needle = "busy_boundary_retains_backpressured_inbound_until_guest_acceptance";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
@@ -386,12 +390,12 @@ in
             PASS
             attr_path=${attrPath}
             tasks=${taskList}
-            qemu_37=exact-delivery-total-order-and-late-fail-loud
+            qemu_37=exact-delivery-total-order-with-canonical-backpressure-retry
             qemu_38=device-io-freeze-observed-through-node-slot
             exact_delivery=authorized-at-delivery-icount
-            overshoot=past-delivery-rejected
+            overshoot=host-publication-guarded-retained-frames-retryable
             emitted_frame=emit-icount-preserved
-            plugin_rx=lossless-queue-and-flush
+            plugin_rx=direct-delivery-with-canonical-shmem-retention
             plugin_device_io=device_io_active-submit-clear-release-wake
             plugin_idle_loop=device_io_freeze-and-rx-injection
             rust_tests=crucible-qemu::quantum::tests,crucible-qemu-plugin::inbound/network_rx/device_io/idle_loop::tests

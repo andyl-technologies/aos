@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index b6357df07..c5d110133 100644
+index 64276e786..2c9a0825d 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2162,10 +2162,10 @@ int qemu_plugin_crucible_fault_register_bindings_seal(void);
+@@ -2131,10 +2131,10 @@ int qemu_plugin_crucible_fault_register_bindings_seal(void);
   * Returns 0 on success and nonzero on failure. The byte stream is a stable
   * canonicalization of each named architectural register descriptor and value
   * for @vcpu_index. The read is admitted either while a deterministic
@@ -17,7 +17,7 @@ index b6357df07..c5d110133 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
-@@ -2190,8 +2190,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2159,8 +2159,10 @@ struct qemu_plugin_rr_cursor {
   * qemu_plugin_rr_cursor() - read the current round-robin cursor
   * @out: plugin-owned cursor output
   *

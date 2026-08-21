@@ -317,7 +317,7 @@ index 4c16ae980..1284d02de 100644
                               const uint32_t *deliver_bitmask,
                               uint8_t delivery_mode, uint8_t vector_num,
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 123b602a8..14c5e7c69 100644
+index dcd51e30a..c0d54b2bf 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -960,6 +960,35 @@ void qemu_plugin_force_vcpu_exit(void);
@@ -397,7 +397,7 @@ index 000000000..769175164
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index cfb8bb24d..cc8520e40 100644
+index 5f836d131..eb8e2fe04 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -25,6 +25,7 @@

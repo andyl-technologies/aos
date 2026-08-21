@@ -25,10 +25,9 @@ thread_local! {
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
 }
-static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
-static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEST_RX_INJECT_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_LAST_LEN: AtomicU64 = AtomicU64::new(0);
-static TEST_RX_SEND_STATUS: AtomicU64 = AtomicU64::new(0);
+static TEST_RX_INJECT_STATUS: AtomicU64 = AtomicU64::new(0);
 static TEST_REENTRANT_RX_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
 
@@ -1088,37 +1087,39 @@ extern "C" fn test_register_accelerator(
 ) {
 }
 
-extern "C" fn test_net_send(payload: *const u8, payload_len: usize) -> std::os::raw::c_int {
+extern "C" fn test_net_inject(payload: *const u8, payload_len: usize) -> std::os::raw::c_int {
     if payload.is_null() && payload_len != 0 {
         return 1;
     }
-    TEST_RX_SEND_COUNT.fetch_add(1, Ordering::SeqCst);
+    TEST_RX_INJECT_COUNT.fetch_add(1, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(payload_len as u64, Ordering::SeqCst);
-    TEST_RX_SEND_STATUS.load(Ordering::SeqCst) as std::os::raw::c_int
+    TEST_RX_INJECT_STATUS.load(Ordering::SeqCst) as std::os::raw::c_int
 }
 
-extern "C" fn test_net_flush() -> std::os::raw::c_int {
-    TEST_RX_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
-    0
-}
-
-extern "C" fn test_net_can_receive() -> std::os::raw::c_int {
-    1
-}
-
-extern "C" fn test_reentrant_net_flush() -> std::os::raw::c_int {
+extern "C" fn test_reentrant_net_inject(
+    payload: *const u8,
+    payload_len: usize,
+) -> std::os::raw::c_int {
+    let injection_status = test_net_inject(payload, payload_len);
+    if injection_status != 0 {
+        return injection_status;
+    }
     let state = TEST_REENTRANT_RX_STATE.load(Ordering::Acquire);
     if state.is_null() {
         return 1;
     }
-    crucible_qemu_plugin_live_publish_icount_cb(0, state.cast());
-    let payload = b"flush-tx";
-    let status =
-        crucible_qemu_plugin_live_network_tx_cb(payload.as_ptr(), payload.len(), 0, state.cast());
+    crucible_qemu_plugin_live_publish_icount_cb(TEST_ICOUNT_RAW.get(), state.cast());
+    let tx_payload = b"flush-tx";
+    let status = crucible_qemu_plugin_live_network_tx_cb(
+        tx_payload.as_ptr(),
+        tx_payload.len(),
+        TEST_ICOUNT_RAW.get(),
+        state.cast(),
+    );
     if status != 0 {
         return status;
     }
-    test_net_flush()
+    0
 }
 
 extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
