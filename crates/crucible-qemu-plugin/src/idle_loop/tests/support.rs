@@ -11,8 +11,8 @@ use crucible_shmem::{
 };
 
 use crate::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCapabilities, NetworkRxQueueError,
-    PluginArgs, PluginRegistrationSequence, PluginTimeControlOwnership,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, CoverageCapabilities, NetworkRxFlushOutcome,
+    NetworkRxQueueError, PluginArgs, PluginRegistrationSequence, PluginTimeControlOwnership,
 };
 
 thread_local! {
@@ -210,9 +210,9 @@ impl LosslessNetworkRxQueue for RecordingNetworkRxQueue<'_> {
         Ok(())
     }
 
-    fn flush_lossless_rx(&mut self) -> Result<(), NetworkRxQueueError> {
+    fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError> {
         self.flush_count += 1;
-        Ok(())
+        Ok(NetworkRxFlushOutcome::Delivered)
     }
 }
 

@@ -40,10 +40,11 @@ use crate::single_vm_fingerprint::{
 };
 
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuNodeChild,
-    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    CrucibleShmemNetworkDevice, LaunchProfileCandidate, QemuLaunchArtifact,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 pub use config::PluginFingerprintRunnerConfig;
 use crucible::{
@@ -657,7 +658,8 @@ impl PluginFingerprintRunner {
             RUNNER_NODE,
             kernel,
             self.launch_artifact("firmware", &self.config.firmware),
-        );
+        )
+        .with_crucible_shmem_network(CrucibleShmemNetworkDevice::new());
         match &self.config.initrd {
             Some(initrd) => vm.with_initrd(self.launch_artifact("initrd", initrd)),
             None => vm,
