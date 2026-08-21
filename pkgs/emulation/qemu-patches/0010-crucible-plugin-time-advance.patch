@@ -48,7 +48,7 @@ index d90db9b39..c3ff6d123 100644
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 128f8c346..a15113654 100644
+index eed7f3d1e..3c33f10ad 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -728,6 +728,56 @@ const void *qemu_plugin_request_time_control(void);
@@ -128,7 +128,7 @@ index b7955d80e..6b7aaa201 100644
   * CPU Ticks and Clock
   */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index f6ad1d0dc..1e1fe2ea0 100644
+index 13b26db35..5ae490ca6 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -102,6 +102,14 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)

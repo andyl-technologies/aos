@@ -373,7 +373,7 @@ index 02dfd45e3..819a46860 100644
      uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
      unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d8dac0f09..47fcd42f2 100644
+index 8cf4a4450..88bc19986 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1042,6 +1042,23 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -457,7 +457,7 @@ index 1ca44fbd7..094f118ac 100644
      /* if there is a dump in background, we should wait until the dump
       * finished */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 39e92ceab..fa0964588 100644
+index 2014d9585..b181e40ee 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -335,6 +335,103 @@ void qemu_plugin_force_vcpu_exit(void)

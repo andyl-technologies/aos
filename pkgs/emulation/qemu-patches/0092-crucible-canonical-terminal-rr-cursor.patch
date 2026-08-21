@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 66e49aaf6..01b653017 100644
+index 1d52484d1..65df26295 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2194,7 +2194,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2163,7 +2163,10 @@ struct qemu_plugin_rr_cursor {
   * RR owner or from an exact deterministic plugin boundary, where QEMU reads
   * the authoritative committed cursor even if no vCPU is current. At exact
   * raw-zero genesis before the first selection, it reports the canonical next

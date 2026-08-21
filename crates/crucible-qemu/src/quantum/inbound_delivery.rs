@@ -18,27 +18,15 @@ use super::{
 impl QemuQuantumShmemHotPath<'_> {
     pub(super) fn snapshot_inbound_consumption(
         &mut self,
-        current_icount: u64,
     ) -> Result<QemuInboundConsumptionBaseline, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObserveInboundConsumption);
-        let read_idx = self.view.inbound_ring.read_index();
-        let write_idx = self.view.inbound_ring.write_index();
-        let ring_ledger = inbound_delivery_ledger_from_view(&self.view)?;
+        let (read_idx, write_idx, ring_ledger) = inbound_delivery_snapshot_from_view(&self.view)?;
         if self.inbound_delivery_ledger.get() != &ring_ledger {
             *self.inbound_delivery_ledger.get_mut() = ring_ledger;
         }
         let ledger = self.inbound_delivery_ledger.get();
         let delivery_keys = ledger.iter().copied().collect::<Vec<_>>();
 
-        for entry in &delivery_keys {
-            if entry.delivery_icount < current_icount {
-                return Err(QemuQuantumError::DeliveryAlreadyPassed {
-                    passed_delivery_floor_icount: current_icount,
-                    current_icount,
-                    frame: *entry,
-                });
-            }
-        }
         Ok(QemuInboundConsumptionBaseline {
             read_idx,
             write_idx,
@@ -102,11 +90,12 @@ impl QemuQuantumShmemHotPath<'_> {
                 });
             }
         }
-        if let Some(frame) = ledger
-            .iter()
-            .skip(consumed as usize)
-            .find(|frame| frame.delivery_icount <= current_icount)
-        {
+        if let Some(frame) = ledger.iter().enumerate().find_map(|(index, frame)| {
+            (index >= consumed as usize
+                && index >= baseline.delivery_keys.len()
+                && frame.delivery_icount <= current_icount)
+                .then_some(frame)
+        }) {
             return Err(QemuQuantumError::InboundFrameNotConsumedAtDelivery {
                 current_icount,
                 frame: *frame,
@@ -160,14 +149,61 @@ impl QemuQuantumShmemHotPath<'_> {
 pub(super) fn inbound_delivery_ledger_from_view(
     view: &QemuQuantumShmemView<'_>,
 ) -> Result<VecDeque<FrameDeliveryKey>, QemuQuantumError> {
+    inbound_delivery_snapshot_from_view(view).map(|(_, _, ledger)| ledger)
+}
+
+fn inbound_delivery_snapshot_from_view(
+    view: &QemuQuantumShmemView<'_>,
+) -> Result<(u64, u64, VecDeque<FrameDeliveryKey>), QemuQuantumError> {
     let capacity = inbound_ring_capacity(view.inbound_entries)?;
-    let read_idx = view.inbound_ring.read_index();
-    let write_idx = view.inbound_ring.write_index();
-    let live = inbound_live_count(read_idx, write_idx, capacity)?;
-    let mut ledger = VecDeque::with_capacity(live as usize);
-    for offset in 0..live {
-        let slot = ((read_idx.wrapping_add(offset)) & (capacity - 1)) as usize;
-        ledger.push_back(view.inbound_entries[slot].delivery_key());
+    stable_inbound_delivery_snapshot(
+        capacity,
+        || view.inbound_ring.read_index(),
+        || view.inbound_ring.write_index(),
+        |slot| view.inbound_entries[slot].delivery_key(),
+    )
+}
+
+fn stable_inbound_delivery_snapshot(
+    capacity: u64,
+    mut read_index: impl FnMut() -> u64,
+    mut write_index: impl FnMut() -> u64,
+    mut entry_key: impl FnMut(usize) -> FrameDeliveryKey,
+) -> Result<(u64, u64, VecDeque<FrameDeliveryKey>), QemuQuantumError> {
+    for _ in 0..=capacity {
+        let read_idx = read_index();
+        let write_idx = write_index();
+        let live = inbound_live_count(read_idx, write_idx, capacity)?;
+        let mut ledger = VecDeque::with_capacity(live as usize);
+        for offset in 0..live {
+            let slot = ((read_idx.wrapping_add(offset)) & (capacity - 1)) as usize;
+            ledger.push_back(entry_key(slot));
+        }
+        if read_index() == read_idx {
+            return Ok((read_idx, write_idx, ledger));
+        }
     }
-    Ok(ledger)
+    Err(QemuQuantumError::InboundConsumptionSnapshotUnstable { capacity })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inbound_snapshot_retries_if_plugin_consumes_during_capture() {
+        let reads = [0_u64, 1, 1, 1];
+        let mut next_read = reads.into_iter();
+        let key = FrameDeliveryKey {
+            delivery_icount: 7,
+            src_node: 31,
+            seq: 0,
+        };
+
+        let snapshot =
+            stable_inbound_delivery_snapshot(2, || next_read.next().unwrap_or(1), || 1, |_| key)
+                .unwrap_or_else(|error| panic!("snapshot should retry to coherence: {error}"));
+
+        assert_eq!(snapshot, (1, 1, VecDeque::new()));
+    }
 }

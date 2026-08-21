@@ -12,10 +12,10 @@ index bb261cab9..d605fed76 100644
      const QemuCrucibleFaultRule *rule);
  const uint8_t *qemu_crucible_fault_rule_target_hash(
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1c39e5e95..55bf38fd1 100644
+index 0db640157..e904e6d70 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2295,15 +2295,16 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
+@@ -2264,15 +2264,16 @@ int qemu_plugin_crucible_lifecycle_set_process_generation(
  /**
   * struct qemu_plugin_crucible_fault_event - one real rule occurrence
   *
@@ -35,7 +35,7 @@ index 1c39e5e95..55bf38fd1 100644
      uint64_t event_sequence;
      uint64_t rule_command_sequence;
      uint64_t observed_icount;
-@@ -2430,6 +2431,16 @@ QEMU_PLUGIN_API
+@@ -2399,6 +2400,16 @@ QEMU_PLUGIN_API
  int qemu_plugin_crucible_fault_event_peek(
      struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
  

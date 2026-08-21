@@ -92,10 +92,10 @@ index e3112d324..02dfd45e3 100644
   * Construct a qemu_plugin_meminfo_t.
   */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c53bd5fb7..d23f7bfc4 100644
+index a11fc9505..c62471c50 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1413,6 +1413,139 @@ QEMU_PLUGIN_API
+@@ -1382,6 +1382,139 @@ QEMU_PLUGIN_API
  int qemu_plugin_crucible_device_state_schema_sha256(
      uint8_t digest_out[32], uint64_t *sections_out);
  

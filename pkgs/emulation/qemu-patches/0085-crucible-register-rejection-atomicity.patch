@@ -108,10 +108,10 @@ index 952a779b0..5cd7c7eac 100644
  bool qemu_plugin_crucible_vmstop_admission_pending(void);
  void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1ed0485a6..e396abd72 100644
+index 13569f0ce..cc779123a 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1888,6 +1888,24 @@ struct qemu_plugin_crucible_fault_register_capability {
+@@ -1857,6 +1857,24 @@ struct qemu_plugin_crucible_fault_register_capability {
      size_t mask_bytes;
  };
  
@@ -136,7 +136,7 @@ index 1ed0485a6..e396abd72 100644
  /** Copy the immutable register target manifest for the realized CPU model. */
  QEMU_PLUGIN_API
  size_t qemu_plugin_crucible_fault_register_manifest(
-@@ -1919,6 +1937,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -1888,6 +1906,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                               size_t out_value_capacity,
                                               size_t *out_value_len);
  
@@ -157,7 +157,7 @@ index 1ed0485a6..e396abd72 100644
   * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
   * @manifest: optional plugin-owned output bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 12696a2a1..6344af085 100644
+index cedcf92e4..c68d46a9d 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -489,6 +489,11 @@ void qemu_plugin_crucible_exact_boundary_leave(void)

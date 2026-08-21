@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 47fcd42f2..855fb919f 100644
+index 88bc19986..29eb2e39c 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2122,6 +2122,19 @@ struct qemu_plugin_crucible_fault_result {
+@@ -2091,6 +2091,19 @@ struct qemu_plugin_crucible_fault_result {
      uint8_t evidence_hash[32];
  };
  

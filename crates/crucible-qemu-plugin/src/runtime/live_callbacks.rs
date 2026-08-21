@@ -31,15 +31,14 @@ use crate::{
     QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuForceVcpuExitFn, QemuIcountRawFn,
-    QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn,
-    QemuPluginNetSendFn, QemuPluginTargetArchitecture, QemuRegisterBlkCbFn,
-    QemuRegisterBlkEventCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn,
-    QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
-    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
-    QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling,
-    TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
-    handle_network_rx_idle_callback,
+    QemuAdvanceTimeNsFn, QemuCanonicalNetworkRx, QemuClockDeadlineFn, QemuForceVcpuExitFn,
+    QemuIcountRawFn, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetInjectFn,
+    QemuPluginTargetArchitecture, QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn,
+    QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn, QemuRegisterNetTxCbFn,
+    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
+    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling, TimeAdvanceCompletion,
+    VcpuHaltTracker, compute_idle_wake_plan, handle_network_rx_idle_callback,
 };
 
 use super::{
@@ -78,9 +77,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_sim_shmem_dispatch: Option<QemuRegisterSimShmemDispatchCbFn>,
     pub(crate) register_time_advance_cb: Option<QemuRegisterTimeAdvanceCbFn>,
     pub(crate) register_net_tx: Option<QemuRegisterNetTxCbFn>,
-    pub(crate) net_send: Option<QemuPluginNetSendFn>,
-    pub(crate) net_flush: Option<QemuPluginNetFlushFn>,
-    pub(crate) net_can_receive: Option<crate::QemuPluginNetCanReceiveFn>,
+    pub(crate) net_inject: Option<QemuPluginNetInjectFn>,
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
     pub(crate) register_block_event: Option<QemuRegisterBlkEventCbFn>,
     pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
@@ -154,12 +151,8 @@ impl LiveVcpuTimeCallbackRegistrar {
                 symbol: QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
             },
         )?;
-        let network_rx = QemuLosslessNetworkRxQueue::require(
-            self.capabilities.net_send,
-            self.capabilities.net_flush,
-            self.capabilities.net_can_receive,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
+        let network_rx = QemuCanonicalNetworkRx::require(self.capabilities.net_inject)
+            .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
         let register_block = self.capabilities.register_block.ok_or(
             LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
@@ -398,7 +391,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_sim_shmem_dispatch: QemuRegisterSimShmemDispatchCbFn,
     register_time_advance_cb: QemuRegisterTimeAdvanceCbFn,
     register_net_tx: QemuRegisterNetTxCbFn,
-    network_rx: QemuLosslessNetworkRxQueue,
+    network_rx: QemuCanonicalNetworkRx,
     register_block: QemuRegisterBlkCbFn,
     register_block_event: QemuRegisterBlkEventCbFn,
     register_block_wait: QemuRegisterBlkWaitCbFn,
@@ -568,10 +561,11 @@ impl StableDirectedRingHandle {
 struct LiveNetworkCallbackState {
     tx: PluginNetworkTx,
     rx: PluginNetworkRx,
-    rx_queue: QemuLosslessNetworkRxQueue,
+    rx_queue: QemuCanonicalNetworkRx,
     outbound: StableDirectedRingHandle,
     inbound: StableDirectedRingHandle,
     tx_callback_active: AtomicBool,
+    rx_delivery_active: AtomicBool,
 }
 
 impl LiveNetworkCallbackState {
@@ -579,7 +573,7 @@ impl LiveNetworkCallbackState {
         vm_slot: u32,
         outbound: MappedDirectedRingMut<'_>,
         inbound: MappedDirectedRingMut<'_>,
-        rx_queue: QemuLosslessNetworkRxQueue,
+        rx_queue: QemuCanonicalNetworkRx,
         next_tx_sequence: u32,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         let tx = PluginNetworkTx::from_directed_ring_with_sequence(
@@ -606,6 +600,7 @@ impl LiveNetworkCallbackState {
             outbound: StableDirectedRingHandle::new(outbound)?,
             inbound: StableDirectedRingHandle::new(inbound)?,
             tx_callback_active: AtomicBool::new(false),
+            rx_delivery_active: AtomicBool::new(false),
         })
     }
 }
@@ -811,7 +806,7 @@ impl LiveVcpuTimeCallbackState {
         vm_slot: u32,
         outbound: MappedDirectedRingMut<'_>,
         inbound: MappedDirectedRingMut<'_>,
-        rx_queue: QemuLosslessNetworkRxQueue,
+        rx_queue: QemuCanonicalNetworkRx,
         next_tx_sequence: u32,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         self.network = Some(LiveNetworkCallbackState::new(
@@ -1582,39 +1577,58 @@ impl LiveVcpuTimeCallbackState {
         let Some(network) = self.network.as_ref() else {
             return Ok(());
         };
+        if network
+            .rx_delivery_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // Direct QEMU RX can synchronously re-enter a progress callback.
+            // The outer attempt still owns the canonical ring head, so the
+            // nested callback must not deliver that same frame recursively.
+            return Ok(());
+        }
+        let _active = NetworkRxDeliveryActiveGuard(&network.rx_delivery_active);
         let preview = {
             let inbound = network.inbound.inbound();
-            PluginInboundFrames::reject_already_passed_ring_heads(
-                [inbound],
-                passed_delivery_floor_icount,
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-            PluginInboundFrames::preview_deliverable_since(
-                [inbound],
-                current_icount,
-                passed_delivery_floor_icount,
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
+            PluginInboundFrames::preview_deliverable_since([inbound], current_icount, 0)
+                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
         };
-        if !preview.frames().is_empty() {
+        let injection = if preview.frames().is_empty() {
+            None
+        } else {
             let mut rx_queue = network.rx_queue;
-            handle_network_rx_idle_callback(
-                &network.rx,
-                &mut rx_queue,
-                passed_delivery_floor_icount,
-                current_icount,
-                preview.frames(),
+            Some(
+                handle_network_rx_idle_callback(
+                    &network.rx,
+                    &mut rx_queue,
+                    passed_delivery_floor_icount,
+                    current_icount,
+                    preview.frames(),
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?,
             )
-            .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
+        };
+        let delivered_count = injection
+            .as_ref()
+            .map_or(0, |result| result.delivered_frame_keys().len());
+        let delivered_frames = &preview.frames()[..delivered_count];
+        if injection.as_ref().is_some_and(|result| {
+            result.delivered_frame_keys()
+                != delivered_frames
+                    .iter()
+                    .map(FrameEntry::delivery_key)
+                    .collect::<Vec<_>>()
+        }) {
+            return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
         }
         let inbound = network.inbound.inbound();
-        let committed = PluginInboundFrames::drain_deliverable_since(
+        let committed = PluginInboundFrames::commit_delivered_prefix(
             [inbound],
             current_icount,
-            passed_delivery_floor_icount,
+            delivered_frames,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-        if committed.frames() != preview.frames() {
+        if committed.frames() != delivered_frames {
             return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
         }
         Ok(())
@@ -2082,6 +2096,14 @@ fn raw_icount_publication_is_superseded(
 struct NetworkTxActiveGuard<'a>(&'a AtomicBool);
 
 impl Drop for NetworkTxActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+struct NetworkRxDeliveryActiveGuard<'a>(&'a AtomicBool);
+
+impl Drop for NetworkRxDeliveryActiveGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }

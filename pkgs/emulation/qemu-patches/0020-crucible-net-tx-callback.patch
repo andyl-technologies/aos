@@ -1,10 +1,10 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index f782458ac..158bb4f66 100644
+index f8b4b7f77..f568f186a 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1036,6 +1036,33 @@ int qemu_plugin_net_flush(void);
+@@ -1005,6 +1005,33 @@ void qemu_plugin_register_9p_cb(qemu_plugin_9p_burst_cb_t burst_start_cb,
  QEMU_PLUGIN_API
- int qemu_plugin_net_can_receive(void);
+ int qemu_plugin_net_inject(const uint8_t *data, size_t len);
  
 +/**
 + * typedef qemu_plugin_net_tx_cb_t - shmem network TX callback

@@ -49,11 +49,15 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&network_tx, "pub type QemuRegisterNetTxCbFn");
     assert_contains(&network_tx, "resolve_qemu_register_net_tx_cb_symbol");
 
-    let network_rx =
-        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_rx.rs"))?;
-    assert_contains(&network_rx, "resolve_qemu_net_send_symbol");
-    assert_contains(&network_rx, "resolve_qemu_net_flush_symbol");
-    assert_contains(&network_rx, "resolve_qemu_net_can_receive_symbol");
+    let network_rx = format!(
+        "{}\n{}",
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/network_rx.rs"))?,
+        fs::read_to_string(
+            root.join("crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs"),
+        )?,
+    );
+    assert_contains(&network_rx, "resolve_qemu_net_inject_symbol");
+    assert_contains(&network_rx, "QEMU_PLUGIN_NET_INJECT_SYMBOL");
 
     let whitebox_doorbell =
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;

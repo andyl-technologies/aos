@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index e396abd72..b6357df07 100644
+index cc779123a..64276e786 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1666,16 +1666,20 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -1635,16 +1635,20 @@ int qemu_plugin_crucible_device_state_schema_sha256(
  
  #define QEMU_PLUGIN_CRUCIBLE_RAM_REGION_NAME_MAX 256
  

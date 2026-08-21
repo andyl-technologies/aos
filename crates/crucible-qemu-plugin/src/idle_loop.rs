@@ -14,12 +14,12 @@ use crucible_shmem::{
 };
 
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, InboundFrameError,
-    InboundFrameRing, LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection,
-    PendingIdleAdvance, PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze,
-    PluginInboundFrames, PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion,
-    handle_network_rx_idle_callback, shmem_ordering::PluginShmemOrdering,
+    CanonicalNetworkRx, ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport,
+    InboundFrameError, InboundFrameRing, NetworkRxError, NetworkRxInjection, PendingIdleAdvance,
+    PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
+    PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance, QueuedIdleAdvanceError,
+    SchedulerCeiling, TimeAdvanceCompletion, handle_network_rx_idle_callback,
+    shmem_ordering::PluginShmemOrdering,
 };
 
 /// The source that determined the node's next idle wake.
@@ -595,35 +595,32 @@ impl PluginIdleHotLoop {
         rx_queue: &mut Q,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError>
     where
-        Q: LosslessNetworkRxQueue + ?Sized,
+        Q: CanonicalNetworkRx + ?Sized,
     {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
-        PluginInboundFrames::reject_already_passed_ring_heads(
-            inbound_rings.iter().copied(),
-            request.plan.current_icount,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let (advance, pending_advance) =
             Self::advance_after_scheduler_wake(slot, clock, queued_idle_advance, &request)?;
         let inbound_batch = PluginInboundFrames::preview_deliverable_since(
             inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            0,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let injected_frames = inbound_batch.into_frames();
+        let pending_frames = inbound_batch.into_frames();
         let network_rx_injection = handle_network_rx_idle_callback(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
-            &injected_frames,
+            &pending_frames,
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
-        let committed_batch = PluginInboundFrames::drain_deliverable_since(
-            inbound_rings,
+        let delivered_count = network_rx_injection.delivered_frame_keys().len();
+        let injected_frames = pending_frames[..delivered_count].to_vec();
+        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
+            inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            &injected_frames,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         if committed_batch.frames() != injected_frames.as_slice() {
@@ -672,14 +669,9 @@ impl PluginIdleHotLoop {
         rx_queue: &mut Q,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError>
     where
-        Q: LosslessNetworkRxQueue + ?Sized,
+        Q: CanonicalNetworkRx + ?Sized,
     {
         let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
-        PluginInboundFrames::reject_already_passed_ring_heads(
-            inbound_rings.iter().copied(),
-            request.plan.current_icount,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let (advance, completed_advance) = Self::finish_advance_after_completion(
             slot,
             clock,
@@ -690,22 +682,24 @@ impl PluginIdleHotLoop {
         let inbound_batch = PluginInboundFrames::preview_deliverable_since(
             inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            0,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let injected_frames = inbound_batch.into_frames();
+        let pending_frames = inbound_batch.into_frames();
         let network_rx_injection = handle_network_rx_idle_callback(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
-            &injected_frames,
+            &pending_frames,
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
-        let committed_batch = PluginInboundFrames::drain_deliverable_since(
-            inbound_rings,
+        let delivered_count = network_rx_injection.delivered_frame_keys().len();
+        let injected_frames = pending_frames[..delivered_count].to_vec();
+        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
+            inbound_rings.iter().copied(),
             clock.current_icount(),
-            request.plan.current_icount,
+            &injected_frames,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         if committed_batch.frames() != injected_frames.as_slice() {

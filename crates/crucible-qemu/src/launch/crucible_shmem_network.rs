@@ -4,7 +4,7 @@
 //! otherwise unconnected emulated QEMU hub. The carried
 //! `0020-crucible-net-tx-callback` patch diverts guest TX frames to the loaded
 //! Crucible plugin before the hub sees them, and the plugin delivers scheduled
-//! RX frames through the lossless queue exported by
+//! RX frames through the direct, backpressure-reporting export provided by
 //! `0009-crucible-net-deterministic`.
 //!
 //! The hub has no host network backend. It exists only to give the NIC the peer
