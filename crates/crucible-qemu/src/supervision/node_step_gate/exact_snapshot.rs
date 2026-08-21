@@ -505,5 +505,26 @@ fn copy_exact_gate_artifact(
             source,
         }
     })?;
-    Ok(())
+    fs::File::open(destination_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| QemuLiveNodeStepGateError::SnapshotArtifactCopy {
+            source_path: source_path.to_path_buf(),
+            destination_path: destination_path.to_path_buf(),
+            source,
+        })?;
+    let parent = destination_path.parent().ok_or_else(|| {
+        QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "snapshot destination {} has no parent",
+                destination_path.display()
+            ),
+        }
+    })?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| QemuLiveNodeStepGateError::SnapshotArtifactCopy {
+            source_path: source_path.to_path_buf(),
+            destination_path: destination_path.to_path_buf(),
+            source,
+        })
 }

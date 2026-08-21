@@ -53,14 +53,12 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
 
     let capture_directory = config.run_directory.join("retained-network-capture");
     let restore_directory = config.run_directory.join("retained-network-restore");
-    for directory in [&capture_directory, &restore_directory] {
-        fs::create_dir_all(directory).map_err(|source| {
-            QemuLiveNodeStepGateError::PrepareRunDirectory {
-                path: directory.clone(),
-                source,
-            }
-        })?;
-    }
+    fs::create_dir_all(&capture_directory).map_err(|source| {
+        QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: capture_directory.clone(),
+            source,
+        }
+    })?;
 
     let capture_config = config
         .clone()
@@ -115,16 +113,16 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
-    let envelope_path = capture_directory.join("crucible-retained-network-snapshot.cbor");
+    let envelope_path = restore_directory.join("crucible-retained-network-snapshot.cbor");
     let envelope = snapshot.to_canonical_bytes().map_err(|error| {
         QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: format!("encode retained canonical snapshot envelope failed: {error}"),
         }
     })?;
-    persist_snapshot_envelope(&envelope_path, &envelope)?;
-    copy_exact_gate_artifact(
+    persist_snapshot_closure(
         &capture_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME),
-        &restore_directory.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        &restore_directory,
+        &envelope,
     )?;
     source.force_crash_and_reap_for_gate().map_err(|error| {
         QemuLiveNodeStepGateError::node_op("force crash retained network source", error)
@@ -274,23 +272,63 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
     })
 }
 
-fn persist_snapshot_envelope(path: &Path, bytes: &[u8]) -> Result<(), QemuLiveNodeStepGateError> {
-    let mut file =
-        fs::File::create(path).map_err(|source| QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
-            path: path.to_path_buf(),
-            source,
-        })?;
+fn persist_snapshot_closure(
+    vmstate_source: &Path,
+    destination: &Path,
+    envelope: &[u8],
+) -> Result<(), QemuLiveNodeStepGateError> {
     let parent =
-        path.parent()
+        destination
+            .parent()
             .ok_or_else(|| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("snapshot envelope path {} has no parent", path.display()),
+                reason: format!(
+                    "retained checkpoint directory {} has no parent",
+                    destination.display()
+                ),
             })?;
+    let file_name = destination.file_name().ok_or_else(|| {
+        QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "retained checkpoint directory {} has no file name",
+                destination.display()
+            ),
+        }
+    })?;
+    let staging = parent.join(format!(".{}.staging", file_name.to_string_lossy()));
+    fs::create_dir(&staging).map_err(|source| QemuLiveNodeStepGateError::PrepareRunDirectory {
+        path: staging.clone(),
+        source,
+    })?;
+
+    let envelope_path = staging.join("crucible-retained-network-snapshot.cbor");
+    let mut envelope_file = fs::File::create(&envelope_path).map_err(|source| {
+        QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
+            path: envelope_path.clone(),
+            source,
+        }
+    })?;
+    envelope_file
+        .write_all(envelope)
+        .and_then(|()| envelope_file.sync_all())
+        .map_err(|source| QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
+            path: envelope_path,
+            source,
+        })?;
+
+    let vmstate_path = staging.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    copy_exact_gate_artifact(vmstate_source, &vmstate_path)?;
+    fs::File::open(&staging)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
+            path: staging.clone(),
+            source,
+        })?;
+    fs::rename(&staging, destination).map_err(|source| {
+        QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
+            path: destination.to_path_buf(),
+            source,
+        }
+    })?;
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|source| QemuLiveNodeStepGateError::SnapshotEnvelopeIo {
