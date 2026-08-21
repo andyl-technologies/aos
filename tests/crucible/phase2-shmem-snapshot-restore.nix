@@ -31,7 +31,7 @@
       }
       {
         label = "snapshot padding canonicalization";
-        needle = "canonical._pad = [0; 5];";
+        needle = "canonical._pad = [0; 1];";
       }
       {
         label = "unused payload canonicalization";
@@ -97,11 +97,15 @@
       }
       {
         label = "corrupt snapshot frame rejection test";
-        needle = "canonical_bytes_reject_corrupt_snapshot_frame_length";
+        needle = "canonical_decoder_rejects_corrupt_snapshot_frame_length";
       }
       {
         label = "unused payload negative control";
         needle = "frame_with_unused_tail";
+      }
+      {
+        label = "compact snapshot amplification control";
+        needle = "canonical_decoder_keeps_minimal_frames_compact";
       }
     ]
     ++ forbiddenFor "crates/crucible-shmem/tests/snapshot_restore.rs" snapshotTest [

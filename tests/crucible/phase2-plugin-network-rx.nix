@@ -333,6 +333,10 @@
         needle = "PluginInboundFrames::commit_delivered_prefix";
       }
       {
+        label = "backpressure transfers canonical retained ownership";
+        needle = "PluginInboundFrames::mark_retained_head";
+      }
+      {
         label = "commit mismatch fail-loud";
         needle = "CommittedBatchMismatch";
       }
@@ -353,6 +357,10 @@
       {
         label = "idle RX delivery failure no-commit test";
         needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
+      }
+      {
+        label = "idle RX backpressure retained-head test";
+        needle = "idle_loop_rx_backpressure_marks_canonical_head_retained";
       }
       {
         label = "queue observes idle status before republish";
@@ -470,6 +478,14 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-plugin-network-rx-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              idle_loop_rx_backpressure_marks_canonical_head_retained \
               -- --test-threads=1
           '';
         }
