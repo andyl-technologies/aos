@@ -3560,6 +3560,89 @@ fn pin_command_projects_retention_and_replays_exactly_after_later_mutation() {
 }
 
 #[test]
+fn pin_retention_inventory_is_snapshot_bound_and_reconstructs_after_cache_eviction() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("pin-retention", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let thin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-thin")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(
+            lineage.genesis(),
+            Some(PinRetention::Thin),
+            "retain semantic replay inputs",
+        )
+        .expect("thin pin"),
+    };
+    let accepted = repository
+        .apply_pin("pin-retention", &thin)
+        .expect("accept thin pin");
+    repository.evict_local_checkpoint(accepted.new_snapshot.content_id());
+
+    let mut roots = Vec::new();
+    let summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit thin retention roots after cache eviction");
+    assert_eq!(summary.snapshot(), accepted.new_snapshot);
+    assert_eq!(summary.entries(), 1);
+    assert_eq!(summary.thin_pins(), 1);
+    assert_eq!(summary.exact_pins(), 0);
+    assert_eq!(summary.tombstones(), 0);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].request(), &thin);
+    assert_eq!(roots[0].retention(), PinRetention::Thin);
+    assert_eq!(roots[0].configuration_artifact(), lineage.genesis_content());
+    assert_eq!(roots[0].scenario_artifact(), lineage.scenario_content());
+
+    let exact = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-exact")),
+        expected_snapshot: accepted.new_snapshot,
+        change: PinChange::new(
+            lineage.genesis(),
+            Some(PinRetention::Exact),
+            "retain a portable exact closure",
+        )
+        .expect("exact pin"),
+    };
+    let exact_accepted = repository
+        .apply_pin("pin-retention", &exact)
+        .expect("upgrade pin to exact");
+    roots.clear();
+    let exact_summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit exact retention roots");
+    assert_eq!(exact_summary.snapshot(), exact_accepted.new_snapshot);
+    assert_eq!(exact_summary.entries(), 1);
+    assert_eq!(exact_summary.thin_pins(), 0);
+    assert_eq!(exact_summary.exact_pins(), 1);
+    assert_eq!(exact_summary.tombstones(), 0);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].request(), &exact);
+    assert_eq!(roots[0].retention(), PinRetention::Exact);
+
+    let unpin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-unpin")),
+        expected_snapshot: exact_accepted.new_snapshot,
+        change: PinChange::new(lineage.genesis(), None, "retention no longer required")
+            .expect("unpin"),
+    };
+    let unpinned = repository
+        .apply_pin("pin-retention", &unpin)
+        .expect("accept unpin");
+    roots.clear();
+    let unpinned_summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit unpinned projection");
+    assert_eq!(unpinned_summary.snapshot(), unpinned.new_snapshot);
+    assert_eq!(unpinned_summary.entries(), 1);
+    assert_eq!(unpinned_summary.thin_pins(), 0);
+    assert_eq!(unpinned_summary.exact_pins(), 0);
+    assert_eq!(unpinned_summary.tombstones(), 1);
+    assert!(roots.is_empty());
+}
+
+#[test]
 fn pin_rejects_stale_or_nonauthoritative_configuration_before_writes() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository

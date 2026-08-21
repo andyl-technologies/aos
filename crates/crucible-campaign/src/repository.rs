@@ -647,6 +647,7 @@ mod planner_issue;
 mod projection;
 mod queue;
 mod records;
+mod retention;
 mod supervisor;
 mod transactions;
 
@@ -665,6 +666,7 @@ pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
 };
+pub use retention::{CampaignPinRetentionRecord, CampaignPinRetentionSummary};
 pub use supervisor::{
     CampaignSupervisor, CampaignSupervisorConfigError, CampaignSupervisorError,
     CampaignSupervisorStepOutcome, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,

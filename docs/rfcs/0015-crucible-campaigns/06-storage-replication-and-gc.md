@@ -477,6 +477,17 @@ The graph membership proof is evaluated at the accepting parent snapshot, so a
 backing-store object that is not authoritative campaign knowledge cannot be
 pinned through this transaction.
 
+The local repository exposes this current projection as a snapshot-bound,
+10,000-entry paged retention inventory. It authenticates each projected fact,
+requires the projection key to match the fact's `ConfigurationId`, resolves
+that configuration through the same snapshot's graph root, and authenticates
+the exact configuration and lineage scenario artifacts required for thin
+replay. The lineage scenario artifact is validated once per inventory pass.
+Tombstones are counted but do not emit roots. An `Exact` record emits the same thin roots and
+additionally declares that the later physical retention plan must retain or
+materialize one complete portable exact closure for that configuration; the
+semantic pin alone does not select an arbitrary operational checkpoint.
+
 On the single-host executor, the lineage-qualified operational assignment
 ledger is the owner of result-publication roots. It streams the expected
 `ObservationId` from every authenticated `publishing` record and the retained
@@ -488,6 +499,16 @@ and survives restart; completion, durable pause, or an explicit
 cancellation/quarantine transition is the only way to replace it.
 These operational records do not grant the executor authority to mutate a
 campaign ref.
+
+The single-host daemon composes both sources into one streaming local retention
+inventory: semantic-pin records first, then durable observation and checkpoint
+roots. Assignment-ledger roots are lineage-qualified and host-local rather than
+campaign-name-qualified, so a planner aggregating several campaign refs
+enumerates the ledger once. Duplicate operational roots may be emitted by
+distinct ledger records and are deduplicated by content identity by the physical
+planner. Visitor output is tentative until terminal enumeration succeeds. This
+inventory is not itself a deletion plan: applying deletion still requires the
+snapshot and complete physical inventory generation checks below.
 
 GC is planned per logical reachability and physical tier. It reports:
 

@@ -361,7 +361,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   pins/accounting/coordination root projection, tombstoned unpin intent, and
   imported-history recomputation. The principal-aware user-facing service,
   versioned loopback, and exact-precondition `pin`/`unpin` CLI binding are now
-  implemented. The GC retention-plan consumer remains part of T-CAM-8.3.
+  implemented. A bounded, snapshot-bound repository visitor now authenticates
+  the current projection and its exact thin configuration/scenario artifacts;
+  the daemon composes those records with streamed assignment-ledger observation
+  and checkpoint roots. Exact-pin materialization selection and generation-bound
+  physical plan/apply remain part of T-CAM-8.3.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -720,8 +724,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   proposal/attempt/finding explanations, and richer filtered or aggregated
   views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
-  projection in GC retention plans; implement replay/debug, export/import,
-  push/pull/sync, and plan/apply GC.
+  projection in generation-bound GC retention plans. Snapshot-bound semantic
+  and operational root inventory is implemented; exact-pin materialization
+  selection and destructive physical plan/apply remain open. Implement
+  replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models.
