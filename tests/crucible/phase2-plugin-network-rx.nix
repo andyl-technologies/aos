@@ -94,7 +94,7 @@
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
         label = "network RX wording";
-        needle = "Implement RX injection via the lossless queueing path";
+        needle = "Implement RX injection via the canonical retry path";
       }
       {
         label = "idle jump ordering wording";
@@ -111,8 +111,8 @@
         needle = "PluginNetworkRx";
       }
       {
-        label = "lossless RX queue trait exported";
-        needle = "LosslessNetworkRxQueue";
+        label = "canonical RX trait exported";
+        needle = "CanonicalNetworkRx";
       }
       {
         label = "network RX injection metadata exported";
@@ -127,82 +127,54 @@
         needle = "handle_network_rx_idle_callback";
       }
       {
-        label = "QEMU RX queue exported";
-        needle = "QemuLosslessNetworkRxQueue";
+        label = "QEMU canonical RX backend exported";
+        needle = "QemuCanonicalNetworkRx";
       }
       {
-        label = "QEMU net-send symbol exported";
-        needle = "QEMU_PLUGIN_NET_SEND_SYMBOL";
-      }
-      {
-        label = "QEMU net-flush symbol exported";
-        needle = "QEMU_PLUGIN_NET_FLUSH_SYMBOL";
+        label = "QEMU net-inject symbol exported";
+        needle = "QEMU_PLUGIN_NET_INJECT_SYMBOL";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
-        label = "QEMU net-send symbol";
-        needle = "QEMU_PLUGIN_NET_SEND_SYMBOL";
+        label = "QEMU net-inject symbol";
+        needle = "QEMU_PLUGIN_NET_INJECT_SYMBOL";
       }
       {
-        label = "QEMU net-send spelling";
-        needle = "\"qemu_plugin_net_send\"";
+        label = "QEMU net-inject spelling";
+        needle = "\"qemu_plugin_net_inject\"";
       }
       {
-        label = "QEMU net-flush symbol";
-        needle = "QEMU_PLUGIN_NET_FLUSH_SYMBOL";
-      }
-      {
-        label = "QEMU net-flush spelling";
-        needle = "\"qemu_plugin_net_flush\"";
-      }
-      {
-        label = "QEMU net-can-receive diagnostic symbol";
-        needle = "QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL";
-      }
-      {
-        label = "QEMU net-send function pointer";
-        needle = "pub type QemuPluginNetSendFn";
-      }
-      {
-        label = "QEMU net-flush function pointer";
-        needle = "pub type QemuPluginNetFlushFn";
+        label = "QEMU net-inject function pointer";
+        needle = "pub type QemuPluginNetInjectFn";
       }
       {
         label = "network RX state";
         needle = "pub struct PluginNetworkRx";
       }
       {
-        label = "QEMU lossless RX queue";
-        needle = "pub struct QemuLosslessNetworkRxQueue";
+        label = "QEMU canonical RX backend";
+        needle = "pub struct QemuCanonicalNetworkRx";
       }
       {
-        label = "QEMU required queue symbols";
-        needle = "pub fn require(\n        net_send: Option<QemuPluginNetSendFn>,\n        net_flush: Option<QemuPluginNetFlushFn>,";
+        label = "QEMU required injection symbol";
+        needle = "pub fn require(net_inject: Option<QemuPluginNetInjectFn>)";
       }
       {
-        label = "QEMU queue trait impl";
-        needle = "impl LosslessNetworkRxQueue for QemuLosslessNetworkRxQueue";
+        label = "QEMU canonical RX trait impl";
+        needle = "impl CanonicalNetworkRx for QemuCanonicalNetworkRx";
       }
       {
-        label = "QEMU net-send call";
-        needle = "(self.net_send)(payload.as_ptr(), payload.len())";
+        label = "QEMU net-inject call";
+        needle = "(self.net_inject)(payload.as_ptr(), payload.len())";
       }
       {
-        label = "QEMU net-flush call";
-        needle = "(self.net_flush)()";
+        label = "canonical RX trait";
+        needle = "pub trait CanonicalNetworkRx";
       }
       {
-        label = "lossless queue trait";
-        needle = "pub trait LosslessNetworkRxQueue";
-      }
-      {
-        label = "lossless queue method";
-        needle = "queue_lossless_rx";
-      }
-      {
-        label = "lossless flush method";
-        needle = "flush_lossless_rx";
+        label = "canonical delivery method";
+        needle = "try_deliver_rx";
       }
       {
         label = "safe idle callback body";
@@ -221,8 +193,8 @@
         needle = "ordered_frames.sort_by_key(|frame| frame.delivery_key())";
       }
       {
-        label = "late delivery floor gate";
-        needle = "frame.delivery_icount < passed_delivery_floor_icount";
+        label = "canonical retention result";
+        needle = "NetworkRxDeliveryOutcome::Retained";
       }
       {
         label = "future delivery gate";
@@ -233,60 +205,48 @@
         needle = ".payload()";
       }
       {
-        label = "lossless queue call";
-        needle = ".queue_lossless_rx(payload)";
-      }
-      {
-        label = "lossless flush call";
-        needle = ".flush_lossless_rx()";
-      }
-      {
-        label = "late delivery error";
-        needle = "DeliveryAlreadyPassed";
+        label = "direct delivery call";
+        needle = ".try_deliver_rx(payload)";
       }
       {
         label = "future delivery error";
         needle = "DeliveryNotReached";
       }
       {
-        label = "queue error";
-        needle = "NetworkRxError::Queue";
+        label = "delivery error";
+        needle = "NetworkRxError::Delivery";
       }
       {
-        label = "flush error";
-        needle = "NetworkRxError::Flush";
-      }
-      {
-        label = "due queue/flush test";
-        needle = "network_rx_idle_injection_queues_due_frames_then_flushes";
+        label = "ordered direct delivery test";
+        needle = "network_rx_idle_injection_delivers_due_frames_in_order";
       }
       {
         label = "jumped-over delivery window test";
         needle = "network_rx_idle_injection_accepts_jumped_over_delivery_window";
       }
       {
-        label = "not-ready lossless queue test";
-        needle = "network_rx_lossless_queue_holds_not_ready_frame_until_flush";
+        label = "backpressure canonical retention test";
+        needle = "network_rx_retains_canonical_frame_under_guest_backpressure";
       }
       {
-        label = "future frame no queue test";
-        needle = "network_rx_rejects_future_frame_before_queue_or_flush";
+        label = "future frame no delivery test";
+        needle = "network_rx_rejects_future_frame_before_delivery";
       }
       {
-        label = "late frame no queue test";
-        needle = "network_rx_rejects_late_frame_before_queue_or_flush";
+        label = "retained past frame retry test";
+        needle = "network_rx_retries_canonically_retained_past_frame";
       }
       {
-        label = "invalid payload no queue test";
-        needle = "network_rx_rejects_invalid_payload_before_queue_or_flush";
+        label = "invalid payload no delivery test";
+        needle = "network_rx_rejects_invalid_payload_before_delivery";
       }
       {
         label = "QEMU symbol requirement test";
-        needle = "network_rx_requires_qemu_net_send_and_flush_symbols";
+        needle = "network_rx_requires_qemu_direct_injection_symbol";
       }
       {
-        label = "QEMU patch queue call test";
-        needle = "network_rx_qemu_lossless_queue_calls_patch_send_and_flush";
+        label = "QEMU direct injection test";
+        needle = "network_rx_qemu_direct_injection_transfers_delivered_frame";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
@@ -341,8 +301,8 @@
         needle = "request.plan.current_icount";
       }
       {
-        label = "commits inbound after RX queue";
-        needle = "PluginInboundFrames::drain_deliverable_since";
+        label = "commits only delivered inbound prefix";
+        needle = "PluginInboundFrames::commit_delivered_prefix";
       }
       {
         label = "commit mismatch fail-loud";
@@ -363,8 +323,8 @@
         needle = "idle_loop_rx_injection_waits_for_qemu_completion";
       }
       {
-        label = "idle RX queue failure no-commit test";
-        needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
+        label = "idle RX delivery failure no-commit test";
+        needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
       }
       {
         label = "queue observes idle status before republish";
@@ -481,7 +441,7 @@ in
               --target-dir "$TMPDIR/crucible-plugin-network-rx-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
-              idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads \
+              idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads \
               -- --test-threads=1
           '';
         }
@@ -497,12 +457,12 @@ in
             open_tasks=${openTaskList}
             status=complete
             live_gate=checks.crucible.phase2.qemuLiveNetworkIo
-            rx_injection=idle-context-lossless-queue-and-flush
-            qemu_rx_api=qemu_plugin_net_send,qemu_plugin_net_flush
+            rx_injection=idle-context-direct-delivery-canonical-ring-retention
+            qemu_rx_api=qemu_plugin_net_inject
             delivery_gate=floor-through-current-inclusive
             injection_order=delivery_icount,src_node,seq
-            idle_order=direct-advance-preview-rx-queue-commit-before-running-publish
-            queue_failure=does-not-commit-inbound-ring-read
+            idle_order=direct-advance-preview-rx-deliver-accepted-prefix-before-running-publish
+            delivery_failure=does-not-commit-inbound-ring-read
             hot_path_host_time_lock_apis=forbidden
             RESULT
           '';

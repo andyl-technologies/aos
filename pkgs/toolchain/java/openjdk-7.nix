@@ -1196,7 +1196,11 @@ in
                   sed -i "s|GJAVAH_REAL|${gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
                   chmod +x $TOOLS/gjavah-wrapper
 
-                  # Build up to and including boot JDK + stage2 bootstrap setup
+                  # Build up to and including boot JDK + stage2 bootstrap setup.
+                  # IcedTea 2.6 drives the same boot javac outputs from several
+                  # recursive make branches. Parallel execution can corrupt
+                  # javac 7's shared class-writing state and abort in
+                  # ClassWriter.writePool, so keep this legacy bootstrap serial.
                   # JAVAH_CMD is passed on the make command line to override the
                   # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
                   # in source .gmk files — it's generated at build time from BOOTDIR
@@ -1215,7 +1219,7 @@ in
                     SKIP_FASTDEBUG_BUILD=true \
                     SKIP_DEBUG_BUILD=true \
                     "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar" \
-                    -j$NIX_BUILD_CORES
+                    -j1
 
                   # Nimbus L&F is disabled via DISABLE_NIMBUS make variable (see below)
                   # because boot JDK lacks JAXB classes for the Nimbus source generator.
@@ -1252,7 +1256,7 @@ in
                   fi
 
                   # Continue the full build (make skips already-completed targets)
-                  make -j$NIX_BUILD_CORES \
+                  make -j1 \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \

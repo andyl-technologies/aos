@@ -470,13 +470,12 @@ determinism-critical.
 - **Enforces:** [DET-11], [DET-13]; eliminates E18 (network arrival timing)
   partially on the QEMU side (the rest is the scheduler + transport).
 - **Mechanism:** adds a plugin-callable **frame-injection** entry point
-  (`qemu_plugin_net_inject`) plus lossless queue/flush helpers
-  (`qemu_plugin_net_send`, `qemu_plugin_net_flush`,
-  `qemu_plugin_net_can_receive`) so an inbound frame is either delivered
-  directly at the plugin's chosen virtual-time moment or appended to QEMU's
-  incoming queue and made architecturally visible only when the plugin flushes
-  at that moment. Delivery is therefore a pure function of icount, not "as it
-  arrives on a socket."
+  (`qemu_plugin_net_inject`) whose return status distinguishes complete delivery
+  from transient guest backpressure and permanent failure. The plugin consumes
+  a frame from the bounded shared-memory ring only after complete delivery; a
+  backpressured frame remains canonical and checkpoint-visible there for retry
+  at a later idle boundary. Delivery is therefore a pure function of icount,
+  not "as it arrives on a socket."
 - **Micro-test:** inject the same frame at the same delivery icount under skewed
   producer timing across two runs; assert the guest observes it at the identical
   icount.
@@ -1834,23 +1833,20 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   upstream. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.6;
   satisfies [DET-18] (E18), [SHM-17], [INV-7].
 
-### crucible-net-flush-api — lossless RX inject + flush
+### crucible-net-flush-api — canonical, lossless RX injection
 
 - **Enforces:** [DET-18]; the RX side correctness.
 - **Mechanism:** the naive inject path (`qemu_receive_packet`) silently drops
-  frames when the receiver (virtio-net) is momentarily unready — nondeterministic
-  loss. The QEMU-side append/flush primitives are introduced by
-  `crucible-net-deterministic`: `qemu_plugin_net_send` appends to QEMU's
-  incoming queue through a callback-backed lossless append helper,
-  `qemu_plugin_net_flush` drains that queue with an observable success/failure
-  result, and `qemu_plugin_net_can_receive` is diagnostic. This item completes
-  the end-to-end co-sim integration around those primitives: the plugin flushes
-  at the start of each idle callback, then injects, so backpressure buffering
-  lives in QEMU's queue and the harness inbox stays focused on virtual-time
-  scheduling.
+  frames when the receiver (virtio-net) is momentarily unready - nondeterministic
+  loss. `qemu_plugin_net_inject` instead reports complete delivery, transient
+  backpressure, or permanent failure. The plugin advances the shared-memory read
+  index only for the completely delivered prefix. Backpressure buffering remains
+  in the bounded, checkpointed shared-memory ring; QEMU-private packet queues are
+  deliberately not used because they are neither canonical nor part of the
+  durable checkpoint protocol.
 - **Micro-test:** inject a frame while the receiver is momentarily unready; assert
-  it is not dropped and is delivered at the chosen icount when flushed; two runs
-  agree.
+  it is not dropped, remains in the canonical ring, and is delivered on a later
+  deterministic retry; two runs agree.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D (it determines RX delivery timing; a regression reintroduces
   nondeterministic loss).
@@ -2239,11 +2235,10 @@ time-control primitives the whole design rests on.
   satisfies [PATCH-17]; spec §11.4 (E18).
   - Completed by `0009-crucible-net-deterministic.patch` and
     `checks.crucible.phase1.qemuNetDeterministic`: QEMU exports
-    `qemu_plugin_net_inject`, `qemu_plugin_net_send`,
-    `qemu_plugin_net_flush`, and `qemu_plugin_net_can_receive`; direct injection
-    fails closed when the NIC cannot receive; `qemu_plugin_net_send` appends to
-    QEMU's incoming queue without guest-visible delivery even when the NIC is
-    ready; flush fails loudly while the NIC is not ready or link-down; skewed
+    `qemu_plugin_net_inject`; direct injection returns success only for complete
+    guest delivery, reports transient backpressure without taking ownership, and
+    fails loudly for missing or link-down NICs and malformed frames. The plugin
+    retains backpressured frames in the bounded canonical ring, and skewed
     producer timing observes the same guest-visible delivery icount.
 - [x] **T-PATCH-9** Implement the plugin time-control surface
   `crucible-plugin-time-advance` (+ `has_time_control`) and the event-driven
@@ -2392,13 +2387,12 @@ time-control primitives the whole design rests on.
     exact flat/iov frame capture, registered-backend bypass for guest NIC
     senders, non-NIC upstream fallback, oversized iov fail-loud behavior,
     fail-loud callback rejection, and link-down fallback semantics. The RX half
-    remains the `qemu_plugin_net_send`/`qemu_plugin_net_flush` lossless queue
-    from `crucible-net-deterministic`; the reused RX fixture proves not-ready
-    frames are retained until a deterministic flush icount, flush failure is
-    loud, and skewed producer host timing does not change guest-visible
-    delivery. The Rust plugin now exports typed resolvers for TX callback
-    registration and the RX send/flush/can-receive patch symbols; live install
-    registration remains owned by the later plugin lifecycle gates.
+    uses `qemu_plugin_net_inject` from `crucible-net-deterministic`; the reused RX
+    fixture proves not-ready frames remain caller-owned until a deterministic
+    retry, permanent failure is loud, and skewed producer host timing does not
+    change guest-visible delivery. The Rust plugin exports typed resolvers for TX
+    callback registration and direct RX injection; live install registration
+    remains owned by the later plugin lifecycle gates.
 - [x] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
   new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
   added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec

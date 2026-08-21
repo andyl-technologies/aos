@@ -174,12 +174,8 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         header: &inbound_header,
         entries: &mut inbound_entries,
     };
-    let rx_queue = QemuLosslessNetworkRxQueue::require(
-        Some(test_net_send),
-        Some(test_reentrant_net_flush),
-        Some(test_net_can_receive),
-    )
-    .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
+        .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
         test_live_state(49, 1, 0, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
@@ -194,10 +190,9 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
     LAST_QUEUED_ADVANCE_NS.set(-1);
-    TEST_RX_SEND_COUNT.store(0, Ordering::SeqCst);
-    TEST_RX_FLUSH_COUNT.store(0, Ordering::SeqCst);
+    TEST_RX_INJECT_COUNT.store(0, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);
-    TEST_RX_SEND_STATUS.store(0, Ordering::SeqCst);
+    TEST_RX_INJECT_STATUS.store(0, Ordering::SeqCst);
 
     state
         .on_vcpu_idle(0, 0)
@@ -209,7 +204,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     assert_eq!(outbound_header.write_index(), 0);
     assert_eq!(inbound_header.read_index(), 0);
     assert_eq!(slot.snapshot().current_icount, 0);
-    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 0);
 
     assert!(matches!(
         state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 8)),
@@ -218,9 +213,9 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     assert_eq!(outbound_header.write_index(), 0);
     assert_eq!(inbound_header.read_index(), 0);
     assert_eq!(slot.snapshot().current_icount, 0);
-    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 0);
 
-    TEST_RX_SEND_STATUS.store(5, Ordering::SeqCst);
+    TEST_RX_INJECT_STATUS.store(5, Ordering::SeqCst);
     assert!(matches!(
         state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7)),
         Err(LiveVcpuTimeCallbackError::NetworkRx { .. })
@@ -228,7 +223,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     assert_eq!(outbound_header.write_index(), 0);
     assert_eq!(inbound_header.read_index(), 0);
     assert_eq!(slot.snapshot().current_icount, 0);
-    TEST_RX_SEND_STATUS.store(0, Ordering::SeqCst);
+    TEST_RX_INJECT_STATUS.store(0, Ordering::SeqCst);
 
     state
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
@@ -241,13 +236,12 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     assert_eq!(outbound_entries[1].delivery_icount, 7);
     assert_eq!(outbound_entries[1].payload(), Ok(b"flush-tx".as_slice()));
     assert_eq!(inbound_header.read_index(), 1);
-    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 2);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 7);
-    assert_eq!(TEST_RX_FLUSH_COUNT.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn busy_boundary_injects_and_commits_inbound_before_reached_publication() {
+fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 7, None)
@@ -281,12 +275,8 @@ fn busy_boundary_injects_and_commits_inbound_before_reached_publication() {
         header: &inbound_header,
         entries: &mut inbound_entries,
     };
-    let rx_queue = QemuLosslessNetworkRxQueue::require(
-        Some(test_net_send),
-        Some(test_reentrant_net_flush),
-        Some(test_net_can_receive),
-    )
-    .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
+        .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
         test_live_state(50, 1, 0, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
@@ -299,21 +289,29 @@ fn busy_boundary_injects_and_commits_inbound_before_reached_publication() {
     state
         .on_vcpu_init(50, 0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_RX_SEND_COUNT.store(0, Ordering::SeqCst);
-    TEST_RX_FLUSH_COUNT.store(0, Ordering::SeqCst);
+    TEST_RX_INJECT_COUNT.store(0, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);
-    TEST_RX_SEND_STATUS.store(0, Ordering::SeqCst);
+    TEST_RX_INJECT_STATUS.store(1, Ordering::SeqCst);
+    TEST_ICOUNT_RAW.set(7);
 
     state
         .publish_current_icount(7)
-        .unwrap_or_else(|error| panic!("busy boundary should inject inbound: {error}"));
+        .unwrap_or_else(|error| panic!("backpressured boundary should remain canonical: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 7);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 1);
+
+    TEST_RX_INJECT_STATUS.store(0, Ordering::SeqCst);
+    state
+        .publish_current_icount(7)
+        .unwrap_or_else(|error| panic!("retry should transfer accepted inbound: {error}"));
+    TEST_ICOUNT_RAW.set(0);
     TEST_REENTRANT_RX_STATE.store(std::ptr::null_mut(), Ordering::Release);
 
     assert_eq!(slot.snapshot().current_icount, 7);
     assert_eq!(inbound_header.read_index(), 1);
-    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 1);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 12);
-    assert_eq!(TEST_RX_FLUSH_COUNT.load(Ordering::SeqCst), 1);
     assert_eq!(outbound_header.write_index(), 1);
     assert_eq!(outbound_entries[0].payload(), Ok(b"flush-tx".as_slice()));
 }

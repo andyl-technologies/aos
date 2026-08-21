@@ -1,24 +1,21 @@
 //! Live single-VM fingerprint runner driven by the Rust control plugin.
 //!
 //! This is the production [`SingleVmFingerprintRunner`] backend: it boots the
-//! patched QEMU binary once with the real Rust control plugin loaded and
-//! `fingerprint=on`, drives the shared-memory quantum hot path to a fixed
-//! ascending cadence of aggregate-icount targets, and reads the black-box
-//! [`FingerprintSample`] the plugin publishes into its per-node slot at each
-//! boundary. The Rust plugin — not the imported C trace plugin — is the sole
+//! patched QEMU binary with the real Rust control plugin and `fingerprint=on`,
+//! drives the shared-memory quantum hot path to ascending aggregate-icount
+//! targets, and reads each black-box [`FingerprintSample`] from the plugin's
+//! per-node slot. The Rust plugin — not the imported C trace plugin — is the sole
 //! fingerprint authority here, so the definition digest binds
 //! `rust_plugin_build_digest` (see [`definition`]).
 //!
 //! Bring-up mirrors [`crate::run_live_plugin_quantum_gate`]'s `run_one_scenario`
-//! exactly (launch profile, fd-passing spawn, host plugin setup handshake,
-//! mapped quantum hot path), adding only `.with_fingerprint(On)` and the
-//! per-target [`QemuMappedQuantumShmemHotPath::fingerprint_sample`] read.
+//! (launch profile, fd-passing spawn, setup handshake, and mapped quantum hot
+//! path), adding only `.with_fingerprint(On)` and each per-target
+//! [`QemuMappedQuantumShmemHotPath::fingerprint_sample`] read.
 //!
-//! Every cadence target is below the diskless firmware guest's idle onset, so
-//! each is reached by a busy quantum that stops exactly at the host-published
-//! ceiling. That gives an instruction-exact guest state at every boundary and a
-//! deterministic stream that reproduces byte-for-byte across the run-twice gate,
-//! including the second run under deliberate host CPU load.
+//! Every cadence target precedes guest idle onset. A busy quantum stops exactly
+//! at the host-published ceiling, yielding instruction-exact guest state and
+//! byte-for-byte replay, including under deliberate host CPU load.
 
 mod config;
 mod definition;

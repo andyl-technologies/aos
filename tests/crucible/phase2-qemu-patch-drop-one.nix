@@ -43,9 +43,6 @@
     "0006-crucible-clock-deadline.patch" = ["qemu_plugin_clock_deadline_ns"];
     "0009-crucible-net-deterministic.patch" = [
       "qemu_plugin_net_inject"
-      "qemu_plugin_net_send"
-      "qemu_plugin_net_flush"
-      "qemu_plugin_net_can_receive"
     ];
     "0010-crucible-plugin-time-advance.patch" = [
       "qemu_plugin_has_time_control"

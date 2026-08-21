@@ -2192,9 +2192,7 @@ fn install_owned_boundary(
     let register_control_boundary = resolve_qemu_register_control_boundary_cb_symbol();
     let register_sim_shmem_dispatch = resolve_qemu_register_sim_shmem_dispatch_cb_symbol();
     let register_net_tx = crate::resolve_qemu_register_net_tx_cb_symbol();
-    let net_send = crate::resolve_qemu_net_send_symbol();
-    let net_flush = crate::resolve_qemu_net_flush_symbol();
-    let net_can_receive = crate::resolve_qemu_net_can_receive_symbol();
+    let net_inject = crate::resolve_qemu_net_inject_symbol();
     let register_block = resolve_qemu_register_blk_cb_symbol();
     let register_block_event = resolve_qemu_register_blk_event_cb_symbol();
     let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
@@ -2256,9 +2254,7 @@ fn install_owned_boundary(
         register_control_boundary,
         register_sim_shmem_dispatch,
         register_net_tx,
-        net_send,
-        net_flush,
-        net_can_receive,
+        net_inject,
         register_block,
         register_block_event,
         register_block_wait,

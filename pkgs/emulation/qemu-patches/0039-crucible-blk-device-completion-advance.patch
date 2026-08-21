@@ -42,7 +42,7 @@ index 3db26a7aa..b8d9057d8 100644
      }
  }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d23f7bfc4..28b4ff7d3 100644
+index c62471c50..b37dfd519 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -240,6 +240,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
@@ -85,7 +85,7 @@ index d23f7bfc4..28b4ff7d3 100644
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index cc8520e40..ba9919fc0 100644
+index eb8e2fe04..a2a83d786 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -216,6 +216,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)

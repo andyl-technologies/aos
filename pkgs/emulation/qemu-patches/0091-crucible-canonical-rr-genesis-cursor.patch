@@ -1,8 +1,8 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index c5d110133..66e49aaf6 100644
+index 2c9a0825d..1d52484d1 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2192,7 +2192,9 @@ struct qemu_plugin_rr_cursor {
+@@ -2161,7 +2161,9 @@ struct qemu_plugin_rr_cursor {
   *
   * Returns 0 on success. The read is admitted either from the active serialized
   * RR owner or from an exact deterministic plugin boundary, where QEMU reads

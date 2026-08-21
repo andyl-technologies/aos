@@ -37,7 +37,7 @@ index e55a1f804..0a7de7063 100644
          crucible_publish_icount_cb(current_icount, crucible_sim_shmem_userdata);
      }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 14c5e7c69..9041f8843 100644
+index c0d54b2bf..ff009c2e7 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1062,6 +1062,21 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
