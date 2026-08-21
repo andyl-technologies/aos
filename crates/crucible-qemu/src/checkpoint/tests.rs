@@ -24,6 +24,15 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
         ),
         Err(QemuHostIoCheckpointCodecError::ExecutionBinding)
     );
+    assert!(matches!(
+        host_io_codec::encode_checkpoint(&checkpoint, 64),
+        Err(QemuHostIoCheckpointCodecError::ResourceLimit {
+            field: "host-I/O checkpoint",
+            configured: 64,
+            hard: 68_719_476_736,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -390,20 +399,24 @@ fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
 }
 
 #[test]
-fn node_continuation_reports_typed_aggregate_resource_limit() {
+fn node_continuation_decode_reports_typed_collection_resource_limit() {
+    const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v6\0";
+    let checkpoint = node_checkpoint_with_inbound_ring(1, 0);
+    let mut bytes = checkpoint
+        .to_compact_binary()
+        .unwrap_or_else(|error| panic!("fixture should encode: {error}"));
+    let pending_count_offset = MAGIC.len() + 32 + 4 * 8 + 1;
+    let requested = MAX_NODE_CONTINUATION_FRAMES as u64 + 1;
+    bytes[pending_count_offset..pending_count_offset + 8].copy_from_slice(&requested.to_le_bytes());
+
     assert_eq!(
-        admit_node_resource(
-            "node continuation",
-            MAX_NODE_CONTINUATION_BYTES,
-            1,
-            MAX_NODE_CONTINUATION_BYTES,
-        ),
+        QemuNodeContinuationCheckpoint::from_compact_binary(&bytes, checkpoint.execution_binding,),
         Err(QemuNodeCheckpointCodecError::ResourceLimit {
-            field: "node continuation",
-            current: MAX_NODE_CONTINUATION_BYTES as u64,
-            requested: 1,
-            configured: MAX_NODE_CONTINUATION_BYTES as u64,
-            hard: MAX_NODE_CONTINUATION_BYTES as u64,
+            field: "pending frame count",
+            current: 0,
+            requested,
+            configured: MAX_NODE_CONTINUATION_FRAMES as u64,
+            hard: MAX_NODE_CONTINUATION_FRAMES as u64,
         })
     );
 }
@@ -437,7 +450,11 @@ fn node_checkpoint_with_inbound_ring(
     }
 }
 
-fn synthetic_compact_ring(frame_count: usize, payload_len: usize, source: u32) -> SpscRingSnapshot {
+pub(crate) fn synthetic_compact_ring(
+    frame_count: usize,
+    payload_len: usize,
+    source: u32,
+) -> SpscRingSnapshot {
     const METADATA_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
     let encoded_len = 8 + frame_count * (METADATA_BYTES + payload_len);
     let mut bytes = Vec::with_capacity(encoded_len);

@@ -21,6 +21,11 @@ use aos_net::{
     TransferEvent, TransferManager, TransferManagerConfig, TransferObserver, TransferOutput,
     TransferRequest, TransferSink,
 };
+use aos_package::download::{
+    DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
+    fetch_narinfos,
+};
+use aos_package::verify::{extract_regular_file_nar, verify_download_hash, verify_nar_hash};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
 use serde::{Deserialize, Serialize};
@@ -228,6 +233,10 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
+    if !image.store_path.is_empty() {
+        return download_store_backed_image(args, &image, &output, printer).await;
+    }
+
     prepare_partial_identity(&output, &image, args.no_resume, printer)?;
     let transfer = printer.transfer("Checking partial download", image.byte_size);
     let mut destination = SecureDestination::open(&output, args.no_resume, Some(&transfer))?;
@@ -276,6 +285,117 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     let elapsed = transfer.elapsed();
     transfer.finish();
     print_download_result(&output, &image, resumed_from, elapsed, false, printer)
+}
+
+async fn download_store_backed_image(
+    args: &ImageDownloadArgs,
+    image: &SystemImage,
+    output: &Path,
+    printer: &Printer,
+) -> Result<()> {
+    if image.nar_hash.is_empty() || image.nar_size == 0 {
+        bail!("Hub returned an incomplete signed image store identity");
+    }
+    if image.cache_urls.is_empty() {
+        bail!("Hub returned no signed cache route for the selected image");
+    }
+    let mut cache_urls = Vec::with_capacity(image.cache_urls.len());
+    for value in &image.cache_urls {
+        let url = validate_cache_url(value)?;
+        cache_urls.push(url.as_str().trim_end_matches('/').to_string());
+    }
+    let (mirror_url, fallback_mirrors) = cache_urls
+        .split_first()
+        .map(|(first, rest)| (first.clone(), rest.to_vec()))
+        .context("Hub returned no usable signed cache route")?;
+
+    prepare_partial_identity(output, image, args.no_resume, printer)?;
+    let nar_cache = nar_cache_path(output)?;
+    if args.no_resume && nar_cache.exists() {
+        fs::remove_dir_all(&nar_cache)
+            .with_context(|| format!("removing {}", nar_cache.display()))?;
+    }
+    let requests = [NarDownloadRequest {
+        store_path: image.store_path.clone(),
+        mirror_url,
+        fallback_mirrors,
+    }];
+    let engine = Arc::new(default_nar_engine());
+    let resolved = fetch_narinfos(engine, &requests, 1, printer).await?;
+    let narinfo = &resolved
+        .first()
+        .context("image cache returned no narinfo")?
+        .narinfo;
+    if narinfo.store_path != image.store_path
+        || aos_package::verify::sha256_digest_hex(&narinfo.nar_hash)?
+            != aos_package::verify::sha256_digest_hex(&image.nar_hash)?
+        || narinfo.nar_size != image.nar_size
+    {
+        bail!("cache narinfo disagrees with the signed image store identity");
+    }
+
+    let downloaded = download_nars(&resolved, &nar_cache, 1, printer).await?;
+    let result = downloaded
+        .first()
+        .context("image cache returned no NAR download")?;
+    verify_download_hash(&result.local_path, &result.download_hash)?;
+    verify_nar_hash(&result.local_path, &image.nar_hash)
+        .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
+    let started = Instant::now();
+    let transfer = printer.transfer("Extracting verified image NAR", image.byte_size);
+    let mut destination = SecureDestination::open(output, true, Some(&transfer))?;
+    let sink = destination.take_sink(image.byte_size)?;
+    let mut writer = ImageExtractionWriter {
+        sink: sink.as_ref(),
+        transfer: &transfer,
+    };
+    extract_regular_file_nar(
+        &result.local_path,
+        &mut writer,
+        image.byte_size,
+        image.nar_size,
+    )?;
+    destination.restore_sink(sink)?;
+    destination.sync_all()?;
+    let actual = destination.final_sha256()?;
+    if actual != image.sha256 {
+        bail!(
+            "extracted image SHA-256 mismatch: expected {}, got {actual}",
+            image.sha256
+        );
+    }
+    destination.commit()?;
+    transfer.finish();
+    fs::remove_dir_all(&nar_cache)
+        .with_context(|| format!("removing completed NAR cache {}", nar_cache.display()))?;
+    print_download_result(output, image, 0, started.elapsed(), false, printer)
+}
+
+struct ImageExtractionWriter<'a> {
+    sink: &'a SecureImageSink,
+    transfer: &'a TransferProgress,
+}
+
+impl std::io::Write for ImageExtractionWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        TransferSink::write(self.sink, bytes).map_err(std::io::Error::other)?;
+        self.transfer.inc(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        TransferSink::flush(self.sink).map_err(std::io::Error::other)
+    }
+}
+
+fn nar_cache_path(output: &Path) -> Result<PathBuf> {
+    let partial = partial_path(output)?;
+    let filename = partial
+        .file_name()
+        .context("partial image output must name a file")?;
+    let mut cache = filename.to_os_string();
+    cache.push(".nar-cache");
+    Ok(partial.with_file_name(cache))
 }
 
 async fn download_image_bytes(
@@ -446,6 +566,10 @@ fn print_download_result(
         "release": image.release,
         "byteSize": image.byte_size,
         "sha256": image.sha256,
+        "storePath": image.store_path,
+        "narHash": image.nar_hash,
+        "narSize": image.nar_size,
+        "cacheUrls": image.cache_urls,
         "verified": true,
         "resumedFrom": resumed_from,
         "elapsedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -502,6 +626,14 @@ fn print_image_details(image: &SystemImage) {
     println!("  Release signature  {}", image.release_verification);
     println!("  Boot payload       {}", image.boot_verification);
     println!("  SHA-256            {}", image.sha256);
+    if !image.store_path.is_empty() {
+        println!("  Store path         {}", image.store_path);
+        println!("  NAR hash           {}", image.nar_hash);
+        println!("  NAR size           {}", human_bytes(image.nar_size));
+        if let Some(cache) = image.cache_urls.first() {
+            println!("  Cache              {cache}");
+        }
+    }
     println!("  Filename           {}", image.filename);
 }
 
@@ -536,18 +668,30 @@ struct PartialDownloadIdentity {
     format: String,
     byte_size: u64,
     sha256: String,
+    #[serde(default)]
+    store_path: String,
+    #[serde(default)]
+    nar_hash: String,
+    #[serde(default)]
+    nar_size: u64,
+    #[serde(default)]
+    cache_urls: Vec<String>,
 }
 
 impl From<&SystemImage> for PartialDownloadIdentity {
     fn from(image: &SystemImage) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             package: image.package.clone(),
             release: image.release.clone(),
             architecture: image.architecture.clone(),
             format: image.format.clone(),
             byte_size: image.byte_size,
             sha256: image.sha256.clone(),
+            store_path: image.store_path.clone(),
+            nar_hash: image.nar_hash.clone(),
+            nar_size: image.nar_size,
+            cache_urls: image.cache_urls.clone(),
         }
     }
 }
@@ -1274,6 +1418,24 @@ fn validate_download_url(value: &str) -> Result<reqwest::Url> {
         || url.fragment().is_some()
     {
         bail!("Hub returned an unsafe image download URL");
+    }
+    Ok(url)
+}
+
+fn validate_cache_url(value: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value).context("Hub returned an invalid image cache URL")?;
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(_)) | None => false,
+    };
+    if (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("Hub returned an unsafe image cache URL");
     }
     Ok(url)
 }

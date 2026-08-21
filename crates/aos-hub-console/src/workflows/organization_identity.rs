@@ -554,7 +554,5 @@ where
 }
 
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }

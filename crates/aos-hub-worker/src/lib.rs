@@ -182,6 +182,7 @@ mod entry {
     use aos_hub_core::db::TokenAuth;
     #[cfg(feature = "do-e2e")]
     use aos_hub_core::domain::{Permission, Principal, Role, Scope};
+    use aos_hub_core::fetch::SurfaceProvider as _;
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
     use aos_hub_core::web::console::{console_router, ConsoleDeps};
@@ -1204,6 +1205,150 @@ mod entry {
                         )))
                     }
                 }
+            }
+            Job::ResetIndex { registry_id } => {
+                let db = aos_hub_core::db::Database::attach(make());
+                let Some(registry) = db.registry_by_id(*registry_id).await.map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job reset index load {registry_id}: {error:#}"
+                    ))
+                })?
+                else {
+                    worker::console_log!("job reset index {registry_id}: registry gone");
+                    return Ok(());
+                };
+                let placement = db
+                    .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
+                        registry.id,
+                    ))
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job reset index placement {registry_id}: {error:#}"
+                        ))
+                    })?;
+                db.mark_index_empty_from_placement(registry.id, placement.id)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job reset index {registry_id}: {error:#}"
+                        ))
+                    })?;
+            }
+            Job::RefreshPublicationObject {
+                registry_id,
+                object_key,
+            } => {
+                let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) else {
+                    return Err(worker::Error::RustError(
+                        "job refresh publication object: R2 binding missing".into(),
+                    ));
+                };
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job refresh publication object secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let state = db
+                    .registry_publication_state(*registry_id)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object state: {error:#}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        worker::Error::RustError(
+                            "job refresh publication object: publication state missing".into(),
+                        )
+                    })?;
+                let publication_id = state.current_publication_id.ok_or_else(|| {
+                    worker::Error::RustError(
+                        "job refresh publication object: current publication missing".into(),
+                    )
+                })?;
+                let object = db
+                    .registry_publication_upload_objects(&publication_id)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object manifest: {error:#}"
+                        ))
+                    })?
+                    .into_iter()
+                    .find(|object| object.object_key == *object_key)
+                    .ok_or_else(|| {
+                        worker::Error::RustError(
+                            "job refresh publication object: object is not declared".into(),
+                        )
+                    })?;
+                let placement = db
+                    .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
+                        *registry_id,
+                    ))
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object placement: {error:#}"
+                        ))
+                    })?;
+                let provider = crate::surface::R2SurfaceProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                let fetch = provider
+                    .placement_fetcher(&placement)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object fetcher: {error:#}"
+                        ))
+                    })?;
+                let evidence = fetch
+                    .inventory_evidence(object_key)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!(
+                            "job refresh publication object read: {error:#}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        worker::Error::RustError(
+                            "job refresh publication object: object is absent".into(),
+                        )
+                    })?;
+                let observed_hash = hex::encode(evidence.sha256);
+                if observed_hash != object.expected_hash || evidence.size != object.expected_size {
+                    return Err(worker::Error::RustError(
+                        "job refresh publication object: physical identity mismatch".into(),
+                    ));
+                }
+                let etag = evidence.strong_etag.ok_or_else(|| {
+                    worker::Error::RustError(
+                        "job refresh publication object: strong version missing".into(),
+                    )
+                })?;
+                let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)
+                    .map_err(|error| worker::Error::RustError(format!("{error:#}")))?;
+                db.refresh_ready_registry_publication_object_presence(
+                    &publication_id,
+                    object.surface_object_id,
+                    placement.id,
+                    &observed_hash,
+                    evidence.size,
+                    &etag,
+                    now_for_worker(),
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job refresh publication object record: {error:#}"
+                    ))
+                })?;
             }
             Job::DeliverWebhook { delivery_id } => {
                 let db = aos_hub_core::db::Database::attach(make());

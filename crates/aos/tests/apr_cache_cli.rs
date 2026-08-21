@@ -130,6 +130,67 @@ name = "{registry_name}"
     Ok(())
 }
 
+#[test]
+fn apr_cache_generate_dry_run_does_not_write() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let registry_name = "cli-cache-dry-run";
+    let registry_dir = registry_dir(&home, registry_name);
+    let config_dir = home.join(".config/apm/registries.d");
+    let output_dir = tmp.path().join("cache-output");
+    let registry_toml = format!(
+        r#"[registry]
+name = "{registry_name}"
+
+[caches]
+endpoint = "https://cache.example/"
+"#,
+    );
+
+    fs::create_dir_all(&registry_dir)?;
+    fs::create_dir_all(&config_dir)?;
+    fs::write(registry_dir.join("registry.toml"), &registry_toml)?;
+    fs::write(
+        config_dir.join(format!("{registry_name}.toml")),
+        format!(
+            r#"[registry]
+name = "{registry_name}"
+url = "file://{}"
+"#,
+            registry_dir.display(),
+        ),
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+        .env("HOME", &home)
+        .args([
+            "--dry-run",
+            "cache",
+            "generate",
+            "--registry",
+            registry_name,
+        ])
+        .arg("--output")
+        .arg(&output_dir)
+        .args(["--cache-url", "https://cache.example"])
+        .output()
+        .context("running apr cache generate --dry-run")?;
+    if !output.status.success() {
+        bail!(
+            "apr cache generate --dry-run failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    assert!(!output_dir.exists());
+    assert_eq!(
+        fs::read_to_string(registry_dir.join("registry.toml"))?,
+        registry_toml,
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> Result<()> {
     if !nix_toolchain_available("apm install static-cache e2e") {

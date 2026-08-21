@@ -525,6 +525,14 @@ message SystemImage {
   // Verification state of the registry release signature. Published images
   // are returned only after this state reaches "verified".
   string release_verification = 21;
+  // Canonical store identity signed by the registry release. Store-backed
+  // clients fetch this artifact through cache_urls; download_url remains only
+  // for bounded compatibility with legacy direct-delivery releases.
+  string store_path = 22;
+  string nar_hash = 23;
+  uint64 nar_size = 24;
+  // Ordered binary-cache bases from the registry's signed consumer stack.
+  repeated string cache_urls = 25;
 }
 
 message ImageUki {
@@ -551,6 +559,10 @@ message ImageInfo {
   string media_type = 4;
   uint64 byte_size = 5;
   string sha256 = 6;
+  // Canonical cache identity for store-backed metadata artifacts.
+  string store_path = 7;
+  string nar_hash = 8;
+  uint64 nar_size = 9;
 }
 
 // One registered registry with its verified index status.

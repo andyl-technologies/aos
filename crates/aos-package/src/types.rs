@@ -3063,6 +3063,9 @@ pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
             object_key: format!(
                 "images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json"
             ),
+            store_path: String::new(),
+            nar_hash: String::new(),
+            nar_size: 0,
             media_type: "application/vnd.aos.image-info+json".into(),
             byte_size: 1,
             sha256: info_sha256,

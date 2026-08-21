@@ -121,6 +121,34 @@ in {
       }
     ];
 
+    # Host policy names packages before the evaluator can resolve their signed
+    # runtime closures. Refresh the system-scope registry snapshot first so a
+    # pristine image can resolve those names on its first boot. `apm update`
+    # retains an already-authenticated snapshot when a registry is temporarily
+    # unreachable, so subsequent boots can still evaluate offline.
+    systemd.services.aos-registry-sync = {
+      description = "Refresh signed AOS registry metadata for host evaluation";
+      wants = ["network-online.target"];
+      requires = ["local-fs.target" "systemd-networkd.service"];
+      after = [
+        "local-fs.target"
+        "network-online.target"
+        "systemd-networkd.service"
+        "aos-config-seed.service"
+      ];
+      before = ["aos-eval.service" "multi-user.target"];
+      unitConfig.ConditionPathExists = cfg.hostNix;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "2min";
+        ExecStartPre = "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any --timeout=110";
+      };
+      script = ''
+        ${pkgs.aos}/bin/apm update --system
+      '';
+    };
+
     # Records the reboot boundary that requires configuration to be rebound to
     # the newly running image. The normal eval -> graph -> activate pipeline
     # below performs the work; this early idempotent predicate makes the image
@@ -465,6 +493,7 @@ in {
           "aos-host-config-restore.service"
           "aos-firstboot-reeval.service"
           "aos-nix-db.service"
+          "aos-registry-sync.service"
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
@@ -479,6 +508,7 @@ in {
           "aos-seed-profiles.service"
           "aos-host-config-restore.service"
           "aos-nix-db.service"
+          "aos-registry-sync.service"
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"
         ++ packageSeedReadinessUnits;

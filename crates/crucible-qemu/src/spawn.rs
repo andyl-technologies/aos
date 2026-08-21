@@ -706,7 +706,13 @@ fn validate_guarded_launch_resources(
         .map_err(|source| QemuSpawnError::LaunchResources { source })
 }
 
-fn prepare_vmstate_container(
+/// Prepares the exact-VMState qcow2 required by a launch or stopped probe.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when the run directory, existing artifact,
+/// adjacent `qemu-img`, durable staging write, or atomic publication fails.
+pub(crate) fn prepare_vmstate_container(
     command: &QemuLaunchCommand,
     run_directory: &Path,
 ) -> Result<(), QemuSpawnError> {

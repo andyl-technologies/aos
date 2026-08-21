@@ -504,6 +504,161 @@ p.chips { margin: 0.2rem 0 0.8rem; }
   margin: 0 0.2rem 0.2rem 0;
   font-size: 0.85rem;
 }
+.license-pill {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  padding: 0 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.license-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* Package artifacts use comparable, bounded facts in the summary row and put
+ * unbounded paths, hashes, and references on full-width detail rows. */
+.artifact-table .artifact { border-top: 2px solid var(--rule); }
+.artifact-table .artifact:first-of-type { border-top-width: 1px; }
+.artifact-table .artifact-summary td {
+  padding-top: 0.65rem;
+  border-bottom: 0;
+  white-space: nowrap;
+}
+.artifact-table .artifact-detail th,
+.artifact-table .artifact-detail td {
+  padding-block: 0.2rem;
+  border-bottom: 0;
+  font-size: 0.86rem;
+}
+.artifact-table .artifact-detail:last-child th,
+.artifact-table .artifact-detail:last-child td { padding-bottom: 0.7rem; }
+.artifact-table .artifact-detail th {
+  width: 8rem;
+  color: var(--dim);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.artifact-table .artifact-detail code {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.artifact-references a { display: inline-block; margin: 0 0.3rem 0.2rem 0; }
+
+/* Image filters are an intentional responsive grid instead of an inline run of
+ * controls whose browser-selected wrapping made labels collide. */
+.image-filters { margin: 0.6rem 0 1.2rem; }
+.image-filter-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.7rem 0.9rem;
+}
+.image-filter-fields label {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  color: var(--dim);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.image-filter-fields select,
+.image-filter-fields input { width: 100%; min-width: 0; }
+.image-filter-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.images-table .image-artifact { border-top: 2px solid var(--rule); }
+.images-table .image-artifact:first-of-type { border-top-width: 1px; }
+.images-table .image-summary td {
+  padding-top: 0.65rem;
+  border-bottom: 0;
+  white-space: nowrap;
+}
+.images-table .image-detail th,
+.images-table .image-detail td {
+  padding-block: 0.25rem 0.7rem;
+  border-bottom: 0;
+  font-size: 0.84rem;
+}
+.images-table .image-detail th {
+  color: var(--dim);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.image-detail-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0 1rem 0.3rem 0;
+  white-space: nowrap;
+}
+.checksum-item { max-width: 100%; }
+.image-checksum {
+  display: inline-block;
+  max-width: 9.5ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.image-copy {
+  padding: 0.05rem 0.4rem;
+  border-color: var(--rule-strong);
+  font-size: 0.75rem;
+}
+
+/* Account tokens follow the same stacked-object hierarchy as storage
+ * bindings: identity and action stay whole; unbounded permissions get a full
+ * secondary line. */
+.token-list { margin: 0.6rem 0 1.6rem; }
+.token-item {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.token-item:first-child { border-top: 1px solid var(--rule); }
+.token-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem 0.8rem;
+  min-width: 0;
+}
+.token-id,
+.token-scope { white-space: nowrap; }
+.token-scope {
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.token-manage {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.token-permissions {
+  margin-top: 0.35rem;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+@media (max-width: 40rem) {
+  .artifact-table .artifact-summary td,
+  .images-table .image-summary td { white-space: normal; }
+  .image-detail-item { white-space: normal; }
+  .token-head { flex-wrap: wrap; }
+  .token-scope { max-width: calc(100% - 6rem); }
+}
 ul.deps {
   margin: 0.3rem 0 0.8rem;
   padding-left: 1.2rem;
@@ -523,10 +678,11 @@ form.pkg-search select {
   background: var(--paper);
   color: var(--ink);
 }
-/* The Wireshark-style filter box. The plain <input> is the no-JS floor; the
- * widget wrapper adds a syntax-highlight overlay and a custom autocomplete. */
+/* The Wireshark-style filter box. The input remains ordinary selectable text;
+ * the widget wrapper adds custom autocomplete without replacing its paint. */
 .filter-field {
   position: relative;
+  isolation: isolate;
   display: inline-block;
   width: 100%;
   max-width: 52rem;
@@ -537,12 +693,10 @@ input.filter-box {
   width: 100%;
   font: inherit;
 }
-/* The highlight overlay is hidden until app.js enhances the widget. Once
- * enhanced, the <input> stays in flow and defines the box; the highlight <pre>
- * is layered exactly behind it (so the colored tokens line up under the
- * transparent typed text). */
+/* The old transparent-input highlight layer was sensitive to browser form
+ * control compositing and could render typed filters invisible. Keep the
+ * inert node for markup compatibility, but always paint the real input. */
 .filter-field .filter-highlight { display: none; }
-.filter-field.enhanced .filter-highlight,
 .filter-field.enhanced input.filter-box {
   margin: 0;
   border: 1px solid var(--rule);
@@ -554,38 +708,14 @@ input.filter-box {
   overflow: hidden;
   box-sizing: border-box;
 }
-.filter-field.enhanced .filter-highlight {
-  display: block;
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: var(--paper);
-  color: var(--ink);
-}
-.filter-field.enhanced .filter-highlight code {
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 0;
-}
 .filter-field.enhanced input.filter-box {
   position: relative;
   z-index: 1;
-  background: transparent;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
   caret-color: var(--ink);
 }
-
-/* Grey-shade syntax highlighting: fields darkest, then values, operators, and
- * connectives progressively dimmer — monochrome, matching the paper theme. */
-.ftok-field { color: var(--ink); font-weight: 700; }
-.ftok-value { color: var(--ink); }
-.ftok-string { color: var(--dim); }
-.ftok-op { color: var(--dim); }
-.ftok-bool { color: var(--dim); font-style: italic; }
-.ftok-paren { color: var(--dim); }
 
 /* The custom autocomplete dropdown (no native <datalist> popup). */
 .filter-suggest {
@@ -652,7 +782,7 @@ button:disabled { color: var(--dim); border-color: var(--rule); cursor: default;
 /* Every text-like input plus selects — matched by exclusion so a new field
  * type (url, number, tel, …) is styled automatically and never slips through
  * looking like an unstyled browser default. Buttons/checkboxes/radios opt out. */
-input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]),
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"])),
 textarea,
 select {
   font: inherit;

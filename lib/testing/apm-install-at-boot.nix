@@ -39,6 +39,7 @@ in
       registry = vm.succeed("cat /etc/apm/registries.d/example.toml")
       assert 'name = "example"' in registry, registry
       assert 'url = "https://registry.example/aos"' in registry, registry
+      assert 'channel = "stable"' in registry, registry
       assert 'public_key = "${anchorKey}"' in registry, registry
 
       keys = vm.succeed("cat /etc/apm/trusted-keys.d/example.pub")
