@@ -11,6 +11,19 @@ use std::fmt;
 
 use super::*;
 
+/// Production proof binding for one advertised effect kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionConformanceEvidence {
+    /// Stable per-effect case identity; this must equal the canonical effect key.
+    pub case_id: &'static str,
+    /// Cargo or Nix harness that executes the production mutation path.
+    pub harness: &'static str,
+    /// Live production gate that admits the backing runtime capability.
+    pub live_gate: &'static str,
+    /// Concrete post-application state inspected by the harness.
+    pub observed_state: &'static [&'static str],
+}
+
 /// Auditable production evidence for one executable effect kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectImplementationContract {
@@ -31,7 +44,7 @@ pub struct EffectImplementationContract {
     /// Search behavior or explicit non-branching rationale.
     pub search_evidence: &'static str,
     /// Production-backend conformance case exercising the mutation.
-    pub conformance_test: &'static str,
+    pub production_conformance: ProductionConformanceEvidence,
 }
 
 impl EffectImplementationContract {
@@ -48,7 +61,15 @@ impl EffectImplementationContract {
             && !self.recomputed_replay_evidence.is_empty()
             && !self.locked_replay_evidence.is_empty()
             && !self.search_evidence.is_empty()
-            && !self.conformance_test.is_empty();
+            && self.production_conformance.case_id == self.effect.as_str()
+            && !self.production_conformance.harness.is_empty()
+            && !self.production_conformance.live_gate.is_empty()
+            && !self.production_conformance.observed_state.is_empty()
+            && self
+                .production_conformance
+                .observed_state
+                .iter()
+                .all(|value| !value.is_empty());
         if self.effect.descriptor().adapter != adapter || !nonempty {
             return Err(EffectImplementationRegistryError::InvalidContract {
                 adapter,
@@ -208,7 +229,12 @@ mod tests {
             recomputed_replay_evidence: "recomputed result digest",
             locked_replay_evidence: "precondition and result digest",
             search_evidence: "fixed effect parameters",
-            conformance_test: "production::tests::applies_effect",
+            production_conformance: ProductionConformanceEvidence {
+                case_id: effect.as_str(),
+                harness: "production::tests::applies_effect",
+                live_gate: "gate:production-test",
+                observed_state: &["state_digest"],
+            },
         }
     }
 
@@ -247,8 +273,11 @@ mod tests {
             .is_err()
         );
         let mut incomplete = contract(EffectKind::NetworkAvailability);
-        incomplete.conformance_test = "";
+        incomplete.production_conformance.harness = "";
         assert!(EffectImplementationRegistry::new(FaultAdapter::Network, [incomplete]).is_err());
+        let mut mismatched = contract(EffectKind::NetworkAvailability);
+        mismatched.production_conformance.case_id = EffectKind::NetworkMtu.as_str();
+        assert!(EffectImplementationRegistry::new(FaultAdapter::Network, [mismatched]).is_err());
     }
 
     #[test]
