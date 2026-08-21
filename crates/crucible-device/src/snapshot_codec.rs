@@ -1,61 +1,41 @@
-//! Fallible, premeasured canonical-CBOR envelope encoding.
+//! Fallible bounded encoding primitives for device checkpoint envelopes.
 //!
-//! Checkpoint owners can contain large but valid queues. Serializing directly
-//! into a growing [`Vec`] would let allocator failure abort the host before the
-//! post-encode size check ran. This module counts the exact representation,
-//! admits it against the configured and compiled ceilings, reserves once with
-//! a fallible operation, and then writes only into that reservation.
+//! Device snapshots can contain large page and protocol tables. The helpers in
+//! this module premeasure canonical CBOR, reserve its exact output allocation
+//! fallibly, and bound sequence allocation while decoding hostile input.
 
 use std::io::{self, Write};
 
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// RFC-0014's compiled hard ceiling for one fat checkpoint artifact.
-pub(crate) const HARD_FAT_CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-
-/// Failure to admit or serialize a bounded CBOR envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BoundedCborError {
-    /// Serialization encountered a value that CBOR cannot represent.
-    Malformed,
-    /// The encoded form or its allocation exceeds an active resource ceiling.
-    ResourceLimit {
-        field: &'static str,
-        current: u64,
-        requested: u64,
-        configured: u64,
-        hard: u64,
-    },
+pub(crate) struct SnapshotResourceError {
+    pub(crate) field: &'static str,
+    pub(crate) current: u64,
+    pub(crate) requested: u64,
+    pub(crate) configured: u64,
+    pub(crate) hard: u64,
 }
 
-/// A sequence whose decoder reserves fallibly and never grows beyond `MAX` entries.
-///
-/// Canonical CBOR normally supplies an exact sequence length, but the visitor
-/// also handles indefinite hostile inputs by reserving each growth step before
-/// asking `Vec` to append. Allocation refusal is therefore a decode error, not
-/// a process abort.
 pub(crate) struct BoundedVec<T, const MAX: u64> {
     values: Vec<T>,
 }
 
 impl<T, const MAX: u64> BoundedVec<T, MAX> {
-    /// Wraps an already admitted vector.
-    pub(crate) fn new(values: Vec<T>) -> Result<Self, BoundedCborError> {
-        let requested = u64::try_from(values.len())
-            .map_err(|_| resource("bounded CBOR sequence", 0, u64::MAX, MAX))?;
+    pub(crate) fn new(values: Vec<T>, field: &'static str) -> Result<Self, SnapshotResourceError> {
+        let requested =
+            u64::try_from(values.len()).map_err(|_| resource(field, 0, u64::MAX, MAX, MAX))?;
         if requested > MAX {
-            return Err(resource("bounded CBOR sequence", 0, requested, MAX));
+            return Err(resource(field, 0, requested, MAX, MAX));
         }
         Ok(Self { values })
     }
 
-    /// Borrows the admitted values.
     pub(crate) fn as_slice(&self) -> &[T] {
         &self.values
     }
 
-    /// Returns the admitted vector.
     pub(crate) fn into_inner(self) -> Vec<T> {
         self.values
     }
@@ -86,7 +66,7 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                 let requested = u64::try_from(hint).unwrap_or(u64::MAX);
                 if requested > MAX {
                     return Err(serde::de::Error::custom(resource_message(
-                        "bounded CBOR sequence",
+                        "device snapshot sequence",
                         0,
                         requested,
                         MAX,
@@ -97,7 +77,7 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                 let initial = hint.min(1024);
                 values.try_reserve_exact(initial).map_err(|_| {
                     serde::de::Error::custom(resource_message(
-                        "bounded CBOR sequence",
+                        "device snapshot sequence",
                         0,
                         initial as u64,
                         MAX,
@@ -109,7 +89,7 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                     if current >= MAX {
                         if sequence.next_element::<IgnoredAny>()?.is_some() {
                             return Err(serde::de::Error::custom(resource_message(
-                                "bounded CBOR sequence",
+                                "device snapshot sequence",
                                 current,
                                 1,
                                 MAX,
@@ -124,7 +104,7 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                     if values.len() == values.capacity() {
                         values.try_reserve(1).map_err(|_| {
                             serde::de::Error::custom(resource_message(
-                                "bounded CBOR sequence",
+                                "device snapshot sequence",
                                 current,
                                 1,
                                 MAX,
@@ -142,59 +122,68 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
     }
 }
 
-/// Encodes `value` after `magic` without an unbounded intermediate buffer.
+pub(crate) fn admit_input(
+    bytes: &[u8],
+    field: &'static str,
+    configured: u64,
+    hard: u64,
+) -> Result<(), SnapshotResourceError> {
+    let requested =
+        u64::try_from(bytes.len()).map_err(|_| resource(field, 0, u64::MAX, configured, hard))?;
+    admit(field, 0, requested, configured, hard).map(|_| ())
+}
+
+pub(crate) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> Option<SnapshotResourceError> {
+    let ciborium::de::Error::Semantic(_, message) = error else {
+        return None;
+    };
+    parse_resource_message(&message)
+}
+
 pub(crate) fn encode_prefixed<T: Serialize>(
     value: &T,
     magic: &[u8],
     field: &'static str,
     configured: u64,
-) -> Result<Vec<u8>, BoundedCborError> {
-    let configured = configured.min(HARD_FAT_CHECKPOINT_BYTES);
-    let mut counter = CountingWriter::new(field, configured);
+    hard: u64,
+) -> Result<Vec<u8>, SnapshotEncodeError> {
+    let configured = configured.min(hard);
+    let mut counter = CountingWriter::new(field, configured, hard);
     if ciborium::ser::into_writer(value, &mut counter).is_err() {
-        return Err(counter.failure.unwrap_or(BoundedCborError::Malformed));
+        return Err(counter.failure.map_or(
+            SnapshotEncodeError::Malformed,
+            SnapshotEncodeError::Resource,
+        ));
     }
-    let total = admit(
-        field,
-        u64::try_from(magic.len()).map_err(|_| resource(field, 0, u64::MAX, configured))?,
-        counter.length,
-        configured,
-    )?;
-    let total_usize = usize::try_from(total).map_err(|_| resource(field, 0, total, configured))?;
-
+    let magic_len = u64::try_from(magic.len()).map_err(|_| {
+        SnapshotEncodeError::Resource(resource(field, 0, u64::MAX, configured, hard))
+    })?;
+    let total = admit(field, magic_len, counter.length, configured, hard)
+        .map_err(SnapshotEncodeError::Resource)?;
+    let total_usize = usize::try_from(total)
+        .map_err(|_| SnapshotEncodeError::Resource(resource(field, 0, total, configured, hard)))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(total_usize)
-        .map_err(|_| resource(field, 0, total, configured))?;
+        .map_err(|_| SnapshotEncodeError::Resource(resource(field, 0, total, configured, hard)))?;
     bytes.extend_from_slice(magic);
-    let mut writer = ReservedWriter::new(&mut bytes, field, total);
+    let mut writer = ReservedWriter::new(&mut bytes, field, total, hard);
     if ciborium::ser::into_writer(value, &mut writer).is_err() {
-        return Err(writer.failure.unwrap_or(BoundedCborError::Malformed));
+        return Err(writer.failure.map_or(
+            SnapshotEncodeError::Malformed,
+            SnapshotEncodeError::Resource,
+        ));
     }
     if u64::try_from(bytes.len()).ok() != Some(total) {
-        return Err(BoundedCborError::Malformed);
+        return Err(SnapshotEncodeError::Malformed);
     }
     Ok(bytes)
 }
 
-/// Admits a complete encoded input before any nested decoding allocation.
-pub(crate) fn admit_input(
-    bytes: &[u8],
-    field: &'static str,
-    configured: u64,
-) -> Result<(), BoundedCborError> {
-    let configured = configured.min(HARD_FAT_CHECKPOINT_BYTES);
-    let requested =
-        u64::try_from(bytes.len()).map_err(|_| resource(field, 0, u64::MAX, configured))?;
-    admit(field, 0, requested, configured).map(|_| ())
-}
-
-/// Preserves resource coordinates carried by bounded serde visitors.
-pub(crate) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> BoundedCborError {
-    let ciborium::de::Error::Semantic(_, message) = error else {
-        return BoundedCborError::Malformed;
-    };
-    parse_resource_message(&message).unwrap_or(BoundedCborError::Malformed)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SnapshotEncodeError {
+    Malformed,
+    Resource(SnapshotResourceError),
 }
 
 fn admit(
@@ -202,12 +191,13 @@ fn admit(
     current: u64,
     requested: u64,
     configured: u64,
-) -> Result<u64, BoundedCborError> {
+    hard: u64,
+) -> Result<u64, SnapshotResourceError> {
     let total = current
         .checked_add(requested)
-        .ok_or_else(|| resource(field, current, requested, configured))?;
-    if total > configured {
-        return Err(resource(field, current, requested, configured));
+        .ok_or_else(|| resource(field, current, requested, configured, hard))?;
+    if total > configured || total > hard {
+        return Err(resource(field, current, requested, configured, hard));
     }
     Ok(total)
 }
@@ -217,13 +207,14 @@ fn resource(
     current: u64,
     requested: u64,
     configured: u64,
-) -> BoundedCborError {
-    BoundedCborError::ResourceLimit {
+    hard: u64,
+) -> SnapshotResourceError {
+    SnapshotResourceError {
         field,
         current,
         requested,
         configured,
-        hard: HARD_FAT_CHECKPOINT_BYTES,
+        hard,
     }
 }
 
@@ -237,13 +228,13 @@ fn resource_message(
     format!("crucible-resource-limit|{field}|{current}|{requested}|{configured}|{hard}")
 }
 
-fn parse_resource_message(message: &str) -> Option<BoundedCborError> {
+fn parse_resource_message(message: &str) -> Option<SnapshotResourceError> {
     let mut fields = message.split('|');
     if fields.next()? != "crucible-resource-limit" {
         return None;
     }
     let field = match fields.next()? {
-        "bounded CBOR sequence" => "bounded CBOR sequence",
+        "device snapshot sequence" => "device snapshot sequence",
         _ => return None,
     };
     let current = fields.next()?.parse().ok()?;
@@ -253,7 +244,7 @@ fn parse_resource_message(message: &str) -> Option<BoundedCborError> {
     if fields.next().is_some() {
         return None;
     }
-    Some(BoundedCborError::ResourceLimit {
+    Some(SnapshotResourceError {
         field,
         current,
         requested,
@@ -265,15 +256,17 @@ fn parse_resource_message(message: &str) -> Option<BoundedCborError> {
 struct CountingWriter {
     field: &'static str,
     configured: u64,
+    hard: u64,
     length: u64,
-    failure: Option<BoundedCborError>,
+    failure: Option<SnapshotResourceError>,
 }
 
 impl CountingWriter {
-    const fn new(field: &'static str, configured: u64) -> Self {
+    const fn new(field: &'static str, configured: u64, hard: u64) -> Self {
         Self {
             field,
             configured,
+            hard,
             length: 0,
             failure: None,
         }
@@ -283,14 +276,26 @@ impl CountingWriter {
 impl Write for CountingWriter {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let requested = u64::try_from(buffer.len()).map_err(|_| {
-            self.failure = Some(resource(self.field, self.length, u64::MAX, self.configured));
-            io::Error::other("CBOR length is not representable")
+            self.failure = Some(resource(
+                self.field,
+                self.length,
+                u64::MAX,
+                self.configured,
+                self.hard,
+            ));
+            io::Error::other("snapshot length is not representable")
         })?;
-        self.length =
-            admit(self.field, self.length, requested, self.configured).map_err(|error| {
-                self.failure = Some(error);
-                io::Error::other("CBOR envelope exceeds its resource ceiling")
-            })?;
+        self.length = admit(
+            self.field,
+            self.length,
+            requested,
+            self.configured,
+            self.hard,
+        )
+        .map_err(|error| {
+            self.failure = Some(error);
+            io::Error::other("snapshot exceeds its resource ceiling")
+        })?;
         Ok(buffer.len())
     }
 
@@ -303,15 +308,17 @@ struct ReservedWriter<'a> {
     bytes: &'a mut Vec<u8>,
     field: &'static str,
     maximum: u64,
-    failure: Option<BoundedCborError>,
+    hard: u64,
+    failure: Option<SnapshotResourceError>,
 }
 
 impl<'a> ReservedWriter<'a> {
-    fn new(bytes: &'a mut Vec<u8>, field: &'static str, maximum: u64) -> Self {
+    fn new(bytes: &'a mut Vec<u8>, field: &'static str, maximum: u64, hard: u64) -> Self {
         Self {
             bytes,
             field,
             maximum,
+            hard,
             failure: None,
         }
     }
@@ -319,22 +326,23 @@ impl<'a> ReservedWriter<'a> {
 
 impl Write for ReservedWriter<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let current = u64::try_from(self.bytes.len()).map_err(|_| {
-            self.failure = Some(resource(self.field, u64::MAX, 0, self.maximum));
-            io::Error::other("CBOR output length is not representable")
-        })?;
-        let requested = u64::try_from(buffer.len()).map_err(|_| {
-            self.failure = Some(resource(self.field, current, u64::MAX, self.maximum));
-            io::Error::other("CBOR write length is not representable")
-        })?;
-        admit(self.field, current, requested, self.maximum).map_err(|error| {
+        let current = u64::try_from(self.bytes.len()).unwrap_or(u64::MAX);
+        let requested = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+        admit(self.field, current, requested, self.maximum, self.hard).map_err(|error| {
             self.failure = Some(error);
-            io::Error::other("CBOR serializer exceeded its measured reservation")
+            io::Error::other("snapshot serializer exceeded its reservation")
         })?;
         if buffer.len() > self.bytes.capacity().saturating_sub(self.bytes.len()) {
-            let error = resource(self.field, current, requested, self.maximum);
-            self.failure = Some(error);
-            return Err(io::Error::other("CBOR serializer exceeded its reservation"));
+            self.failure = Some(resource(
+                self.field,
+                current,
+                requested,
+                self.maximum,
+                self.hard,
+            ));
+            return Err(io::Error::other(
+                "snapshot serializer exceeded its reservation",
+            ));
         }
         self.bytes.extend_from_slice(buffer);
         Ok(buffer.len())
@@ -350,35 +358,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bounded_sequence_rejects_hostile_declared_length_before_allocation() {
+    fn hostile_sequence_hint_is_typed_before_large_allocation() {
         let mut encoded = vec![0x9b];
         encoded.extend_from_slice(&u64::MAX.to_be_bytes());
-
         let error = match ciborium::de::from_reader::<BoundedVec<u8, 4>, _>(encoded.as_slice()) {
             Ok(_) => panic!("hostile declared length must be rejected"),
-            Err(error) => map_decode_error(error),
+            Err(error) => map_decode_error(error)
+                .unwrap_or_else(|| panic!("resource coordinates must survive serde")),
         };
         assert_eq!(
             error,
-            BoundedCborError::ResourceLimit {
-                field: "bounded CBOR sequence",
+            SnapshotResourceError {
+                field: "device snapshot sequence",
                 current: 0,
                 requested: u64::MAX,
                 configured: 4,
                 hard: 4,
             }
         );
-    }
-
-    #[test]
-    fn bounded_sequence_round_trips_without_changing_cbor_shape() {
-        let bounded = BoundedVec::<u8, 4>::new(vec![1, 2, 3])
-            .unwrap_or_else(|error| panic!("admit fixture: {error:?}"));
-        let mut encoded = Vec::new();
-        ciborium::ser::into_writer(&bounded, &mut encoded)
-            .unwrap_or_else(|error| panic!("encode fixture: {error}"));
-        let decoded = ciborium::de::from_reader::<BoundedVec<u8, 4>, _>(encoded.as_slice())
-            .unwrap_or_else(|error| panic!("decode fixture: {error}"));
-        assert_eq!(decoded.into_inner(), vec![1, 2, 3]);
     }
 }

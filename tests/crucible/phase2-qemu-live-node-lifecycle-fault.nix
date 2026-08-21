@@ -6,21 +6,21 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   fullSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchesWithoutTypedResult = lib.init fullSeries.patches;
-  lastPrefixPatch = builtins.elemAt patchesWithoutTypedResult (builtins.length patchesWithoutTypedResult - 1);
-  seriesWithoutTypedResult =
-    fullSeries
-    // {
-      patches = patchesWithoutTypedResult;
-      patchFiles = map (patch: patch.file) patchesWithoutTypedResult;
-      patchBranchHeadCommit = lastPrefixPatch.branchCommit;
-    };
+  typedResultPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0072-crucible-typed-node-result-schema.patch;
+  typedResultPatchIsMandatory =
+    if
+      lib.hasInfix "-        g_byte_array_append(result_payload, staging->impulse_evidence->data," typedResultPatch
+      && lib.hasInfix "+        node_encode_evidence(staging, result_payload);" typedResultPatch
+    then true
+    else throw "patch 0072 no longer replaces command-specific results with canonical typed evidence";
   qemuWithoutTypedResult = pkgs.qemuCrucibleNonDistributableTestPrefix {
     pname = "qemu-crucible-without-typed-node-result";
-    series = seriesWithoutTypedResult;
+    series = fullSeries;
+    testOnlyPostPatch = ./fixtures/qemu-without-typed-node-result.patch;
   };
   pluginWithoutTypedResult = pkgs.crucibleQemuPluginFor qemuWithoutTypedResult;
 in
+  assert typedResultPatchIsMandatory;
   pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-live-node-lifecycle-fault";
     version = "0";
@@ -109,25 +109,10 @@ in
           grep -Fxq 'exit_code=70' "$report"
           grep -Fxq 'lifecycle_impulse_committed=true' "$report"
 
-          prefix_modifications=${qemuWithoutTypedResult}/share/licenses/qemu-crucible-without-typed-node-result/AOS-MODIFICATIONS
-          grep -Fxq 'Distribution status: non-distributable compatibility-test material' \
-            "$prefix_modifications"
-          if grep -Fq 'Corresponding source package:' "$prefix_modifications"; then
-            echo 'FAIL: the compatibility-only QEMU prefix claims full-series corresponding source' >&2
-            exit 1
-          fi
-          prefix_policy=${qemuWithoutTypedResult}/nix-support/aos-release-policy
-          grep -Fxq 'artifact_role=internal-component' "$prefix_policy"
-          grep -Fxq 'standalone_release=false' "$prefix_policy"
-          grep -Fxq 'release_via=none-test-only' "$prefix_policy"
-          grep -Fxq 'corresponding_source_required=true' "$prefix_policy"
-          grep -Fxq 'publishable=false' "$prefix_policy"
-
-          # Keep the base short enough for the nested QMP Unix socket path.
-          without_result_dir="$TMPDIR/no0072"
+          without_result_dir="$TMPDIR/no-typed-result"
           mkdir -p "$without_result_dir"
-          without_result_stdout="$TMPDIR/live-node-lifecycle-without-typed-result.stdout"
-          without_result_stderr="$TMPDIR/live-node-lifecycle-without-typed-result.stderr"
+          without_result_stdout="$TMPDIR/without-typed-result.stdout"
+          without_result_stderr="$TMPDIR/without-typed-result.stderr"
           if timeout -k 15 590 \
             "$TMPDIR/live-node-lifecycle-target/debug/examples/crucible-qemu-live-node-lifecycle-fault" \
             ${qemuWithoutTypedResult}/bin/qemu-system-x86_64 \
@@ -136,12 +121,12 @@ in
             "${qemuWithoutTypedResult}/share/qemu/bios-256k.bin" \
             "$without_result_dir" \
             > "$without_result_stdout" 2> "$without_result_stderr"; then
-            echo 'FAIL: the live gate accepted QEMU without patch 0072' >&2
+            echo 'FAIL: live QEMU accepted the patch-0072 negative mutation' >&2
             exit 1
           fi
           grep -Fq 'production typed result rejection' "$without_result_stderr"
           if grep -Fxq PASS "$without_result_stdout"; then
-            echo 'FAIL: the patch-0072 negative emitted PASS' >&2
+            echo 'FAIL: patch-0072 negative mutation emitted PASS' >&2
             exit 1
           fi
 

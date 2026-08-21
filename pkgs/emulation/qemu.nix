@@ -19,11 +19,16 @@
   enablePlugins ? false,
   applyCruciblePatches ? false,
   testOnlyNonDistributable ? false,
+  testOnlyPostPatch ? null,
   series ? import ./qemu-patches/_series.nix,
 }: let
   _testArtifactPolicy =
     if testOnlyNonDistributable && !applyCruciblePatches
     then throw "test-only QEMU artifacts require a tracked Crucible patch series"
+    else null;
+  _testMutationPolicy =
+    if testOnlyPostPatch != null && !testOnlyNonDistributable
+    then throw "QEMU test-only source mutations require a non-distributable test artifact"
     else null;
   version = series.qemuVersion;
   patchDir = ./qemu-patches;
@@ -31,6 +36,10 @@
   patchHashLine = patch: "${builtins.hashFile "sha256" (patchPath patch.file)}  ${patch.file}\n";
   patchSeriesHashMaterial = builtins.concatStringsSep "" (map patchHashLine series.patches);
   patchSeriesHash = builtins.hashString "sha256" patchSeriesHashMaterial;
+  testMutationHash =
+    if testOnlyPostPatch == null
+    then "none"
+    else builtins.hashFile "sha256" testOnlyPostPatch;
   patchBranchBundleHash = let
     actual = builtins.hashFile "sha256" series.patchBranchBundle;
   in
@@ -155,15 +164,23 @@
     qemu_shmem_abi=${shmemAbi}
     qemu_shmem_header=${shmemHeaderInstallPath}
     qemu_shmem_header_hash=${shmemHeaderHash}
+    qemu_test_mutation_hash=${testMutationHash}
   '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
   patchCommand = file: "      patch --batch --forward --fuzz=0 --no-backup-if-mismatch -p1 < ${patchPath file}\n";
   patchPhase =
     if applyCruciblePatches
-    then builtins.concatStringsSep "" (map patchCommand series.patchFiles)
+    then
+      builtins.concatStringsSep "" (map patchCommand series.patchFiles)
+      + (
+        if testOnlyPostPatch == null
+        then ""
+        else "      patch --batch --forward --fuzz=0 --no-backup-if-mismatch -p1 < ${testOnlyPostPatch}\n"
+      )
     else "";
 in
   assert _testArtifactPolicy == null;
+  assert _testMutationPolicy == null;
   mkDerivation {
     inherit pname;
     inherit version;
