@@ -260,6 +260,10 @@ pub(super) fn emit_constants(out: &mut String) {
             ("DELIVERY_STATE", FRAME_ENTRY_DELIVERY_STATE_OFFSET),
             ("PAD", FRAME_ENTRY_PAD_OFFSET),
             ("DELIVERY_ATTEMPTS", FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET),
+            (
+                "LAST_DELIVERY_ATTEMPT_ICOUNT",
+                FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET,
+            ),
             ("DATA", FRAME_ENTRY_DATA_OFFSET),
         ],
     );

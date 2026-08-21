@@ -283,8 +283,8 @@
         needle = "passed_delivery_floor_icount";
       }
       {
-        label = "retained head excluded from future deadline";
-        needle = "delivery_state(&frame)? == FrameDeliveryState::Pending";
+        label = "retained head publishes retry deadline from last attempt";
+        needle = ".last_delivery_attempt_icount()";
       }
       {
         label = "windowed deliverability";

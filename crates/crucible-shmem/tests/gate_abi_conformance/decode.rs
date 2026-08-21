@@ -153,6 +153,10 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
             ),
+            last_delivery_attempt_icount: read_u64(
+                bytes,
+                GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET,
+            ),
             payload: bytes[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
                 ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + frame_len_usize]
                 .to_vec(),

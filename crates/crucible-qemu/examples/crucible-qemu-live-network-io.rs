@@ -112,6 +112,10 @@ fn run() -> Result<(), String> {
         report.retained_frame_fresh_process_restored
     );
     println!(
+        "retained_frame_durable_envelope_restored={}",
+        report.retained_frame_durable_envelope_restored
+    );
+    println!(
         "deterministic_under_host_load={}",
         report.deterministic_under_host_load
     );

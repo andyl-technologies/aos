@@ -13,8 +13,9 @@ use crucible::{
 
 use super::{
     DRIVE_POLL_INTERVAL, GATE_DOMAIN, GATE_NODE, HOST_LOAD_WORKERS, LIVE_NETWORK_ACK_PAYLOAD,
-    LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome,
-    QMP_PRIMER_WAKE_INTERVAL, QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
+    LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
+    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL,
+    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
 };
 use crate::{
     CrucibleShmemNetworkDevice, QemuHostPluginSetup, QemuLaunchArtifact, QemuNodeChild,
@@ -25,6 +26,10 @@ use crate::{
 pub(super) struct NetworkDeterministicProjection {
     protocol_frames: Vec<(u32, Vec<u8>)>,
     reply_latency_icount: Option<u64>,
+    backpressure_delivery_attempts: u32,
+    backpressure_last_attempt_icount: u64,
+    backpressure_consumed_icount: Option<u64>,
+    backpressure_acknowledgement_icount: Option<u64>,
 }
 
 pub(super) fn deterministic_projection(
@@ -41,6 +46,10 @@ pub(super) fn deterministic_projection(
             .zip(outcome.snapshot.reply_delivery_icount)
             .and_then(|(probe, reply)| reply.checked_sub(probe)),
         protocol_frames,
+        backpressure_delivery_attempts: outcome.backpressure_delivery_attempts,
+        backpressure_last_attempt_icount: outcome.backpressure_last_attempt_icount,
+        backpressure_consumed_icount: outcome.backpressure_consumed_icount,
+        backpressure_acknowledgement_icount: outcome.backpressure_acknowledgement_icount,
     }
 }
 
@@ -58,6 +67,10 @@ fn protocol_frames(outcome: &NetworkIoRunOutcome) -> Vec<(u64, u32, Vec<u8>)> {
                     .payload
                     .windows(LIVE_NETWORK_ACK_PAYLOAD.len())
                     .any(|window| window == LIVE_NETWORK_ACK_PAYLOAD)
+                || frame
+                    .payload
+                    .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
+                    .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
         })
         .map(|frame| (frame.emit_icount, frame.sequence, frame.payload.clone()))
         .collect()

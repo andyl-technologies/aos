@@ -11,13 +11,13 @@ pub(super) fn assert_snapshot_canonical_codec_corpus() {
         Err(error) => panic!("snapshot should encode: {error}"),
     };
     assert_eq!(
-        SpscRingSnapshot::from_canonical_bytes(&encoded),
+        SpscRingSnapshot::from_canonical_bytes(&encoded, 4),
         Ok(snapshot)
     );
 
     for bytes in snapshot_malformed_byte_corpus() {
         let decoded = match catch_unwind(AssertUnwindSafe(|| {
-            SpscRingSnapshot::from_canonical_bytes(&bytes)
+            SpscRingSnapshot::from_canonical_bytes(&bytes, 4)
         })) {
             Ok(decoded) => decoded,
             Err(_) => panic!("snapshot canonical byte decoder must not panic"),
@@ -70,6 +70,8 @@ pub(super) fn snapshot_frame_prefix(
     bytes.extend_from_slice(&seq.to_le_bytes());
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.push(FRAME_DELIVERY_PENDING);
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
     bytes
 }
 
