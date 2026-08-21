@@ -16,10 +16,11 @@ use crucible::{
     SchedulingNodeKind,
 };
 use crucible_shmem::{
-    AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey, FrameEntry,
-    FrameEntryError, LookaheadGateError, NodeSlot, NodeSlotError, NodeSlotSnapshot, RingHeader,
-    STATUS_IDLE, STATUS_RUNNING, SchedulerWakePublicationError, SpscRingError,
-    authorize_advance_ceiling, validate_frame_delivery_is_future,
+    AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey,
+    FrameDeliveryStateError, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
+    NodeSlotError, NodeSlotSnapshot, RingHeader, STATUS_IDLE, STATUS_RUNNING,
+    SchedulerWakePublicationError, SpscRingError, authorize_advance_ceiling,
+    validate_frame_delivery_is_future,
 };
 use thiserror::Error;
 

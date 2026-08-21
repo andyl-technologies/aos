@@ -31,7 +31,7 @@
       }
       {
         label = "snapshot padding canonicalization";
-        needle = "canonical._pad = [0; 6];";
+        needle = "canonical._pad = [0; 5];";
       }
       {
         label = "unused payload canonicalization";
@@ -48,6 +48,10 @@
       {
         label = "canonical delivery icount field";
         needle = "bytes.extend_from_slice(&canonical.delivery_icount.to_le_bytes());";
+      }
+      {
+        label = "canonical delivery state field";
+        needle = "bytes.push(delivery_state as u8);";
       }
       {
         label = "canonical valid payload only";

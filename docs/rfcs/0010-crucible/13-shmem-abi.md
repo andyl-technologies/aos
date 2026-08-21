@@ -209,7 +209,7 @@ process-local pointer or host-layout fact crosses the ABI.
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
 frame sub-region offsets, the global control flags, and the per-direction fault
-payload-arena size. ABI v10 mappers derive the coverage, fingerprint-sample,
+payload-arena size. ABI v15 mappers derive the coverage, fingerprint-sample,
 white-box marker, device-I/O, guest-introspection, and fault transport tail
 sections from that validated frame extent, the VM count, and fixed ABI
 constants. The header is the first thing a mapper reads and the thing
@@ -222,7 +222,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 10;
+pub const ABI_VERSION: u32 = 15;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -505,8 +505,11 @@ pub struct FrameEntry {
     pub seq: u32, // @ 12
     /// Length of valid bytes in `data` (0..=MAX_FRAME_DATA).
     pub len: u16, // @ 16
-    // @ 18..24 padding to 8-byte-align the payload start.
-    pub(crate) _pad: [u8; 6], // @ 18
+    /// Consumer-owned delivery state: 0 pending, 1 retained after a real
+    /// QEMU backpressure result. Any other value is invalid.
+    delivery_state: AtomicU8, // @ 18
+    // @ 19..24 padding to 8-byte-align the payload start.
+    pub(crate) _pad: [u8; 5], // @ 19
     /// Frame payload; only `data[..len]` is valid.
     pub data: [u8; MAX_FRAME_DATA], // @ 24
 }
@@ -525,8 +528,11 @@ const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
 
 - **[SHM-13]** A `FrameEntry` MUST carry, in this field order: the
   `delivery_icount` (the virtual time at which the frame becomes visible to the
-  consumer), the `src_node` id, the per-pair `seq`, the valid `len`, and a
-  fixed-size `data` payload of `MAX_FRAME_DATA` bytes. `MAX_FRAME_DATA` MUST be at
+  consumer), the `src_node` id, the per-pair `seq`, the valid `len`, the
+  consumer-owned `delivery_state`, and a fixed-size `data` payload of
+  `MAX_FRAME_DATA` bytes. `delivery_state` MUST be pending at publication and
+  may become retained only after the consumer receives real guest backpressure.
+  `MAX_FRAME_DATA` MUST be at
   least a standard Ethernet frame (1518 bytes) plus headroom, and large enough to
   hold the largest I/O sub-node wire payload (a 4 KiB block response with its
   header) without truncation. A frame whose `len` exceeds `MAX_FRAME_DATA` MUST be
@@ -799,7 +805,8 @@ FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @  8  src_node           u32
   @ 12  seq                u32
   @ 16  len                u16
-  @ 18  _pad[6]
+  @ 18  delivery_state     atomic u8
+  @ 19  _pad[5]
   @ 24  data[MAX_FRAME_DATA]
 
 CoverageEntry (size 64, align 64)
@@ -985,8 +992,9 @@ pub fn enqueue(&self, entries: &mut [FrameEntry], e: &FrameEntry) -> Result<(), 
   serialization of its live entries (in `read_idx..write_idx` order), so that two
   equal ring states content-address identically ([INV-6]); `restore` MUST be its
   exact inverse, re-establishing the same live sequence with `read_idx`/`write_idx`
-  normalized. The padding bytes inside each entry MUST be excluded from (or
-  canonicalized in) the serialization so they cannot perturb the content hash.
+  normalized. The ABI-defined consumer delivery state MUST be serialized;
+  padding bytes inside each entry MUST be excluded from (or canonicalized in)
+  the serialization so they cannot perturb the content hash.
   *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:* §13.6.
 
 - **[SHM-23]** The SPSC implementation MUST be covered by property-based and
@@ -1166,9 +1174,10 @@ alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries an ABI version in its header. ABI v14 assigns the former
-node-slot padding at offset 44 to `control_boundary_ack`; v13 peers are rejected
-rather than inferred or supported through a compatibility path. The handshake
+The region carries an ABI version in its header. ABI v15 assigns byte 18 of
+`FrameEntry` to consumer-owned delivery state while preserving the payload
+offset and total entry size; v14 peers are rejected rather than inferred or
+supported through a compatibility path. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
 the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
 coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a
@@ -1240,6 +1249,14 @@ by when the producer's store landed in shared memory.
   property that makes a two-VM run bit-identical across adversarial host timing
   (the `gate:layer1-injection` two-VM run-twice-and-diff). *Gate:*
   `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §13.9, §4.4.
+
+- **[SHM-52]** The sole consumer MAY transition only the live ring head from
+  pending to retained after real guest-device backpressure. A retained head is
+  canonical proof that the head and its blocked same-ring FIFO successors may
+  remain due after the current icount; a retained non-head or unknown state MUST
+  fail closed. Snapshot/restore MUST preserve the retained-head identity, and
+  successful guest acceptance MUST dequeue it normally. *Gate:*
+  `gate:abi-conformance`, `gate:live-network-io`. *Spec:* §13.3.3, §13.9.
 
 ## Implementation checklist
 

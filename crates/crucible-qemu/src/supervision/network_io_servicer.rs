@@ -9,10 +9,10 @@
 use std::os::fd::BorrowedFd;
 
 use crucible_shmem::{
-    FrameEntry, FrameEntryError, LookaheadGateError, MappedDirectedRingMut, MappedNodeRingPairMut,
-    MappedSetupRegion, MappedSetupRegionAccessError, NodeSlotError, NodeSlotSnapshot,
-    SLOT_NET_ROUTER, SchedulerWakePublicationError, SetupRegionMapError, SpscRingError,
-    authorize_advance_ceiling, mmap_setup_region,
+    FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, MappedDirectedRingMut,
+    MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError, NodeSlotError,
+    NodeSlotSnapshot, SLOT_NET_ROUTER, SchedulerWakePublicationError, SetupRegionMapError,
+    SpscRingError, authorize_advance_ceiling, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -24,6 +24,8 @@ pub const LIVE_NETWORK_PROBE_PAYLOAD: &[u8] = b"crucible-network-probe-v1";
 pub const LIVE_NETWORK_REPLY_PAYLOAD: &[u8] = b"crucible-network-reply-v1";
 /// Guest-to-router acknowledgement payload.
 pub const LIVE_NETWORK_ACK_PAYLOAD: &[u8] = b"crucible-network-ack-v1";
+/// Router frame used before guest-driver initialization to force real backpressure.
+pub const LIVE_NETWORK_BACKPRESSURE_PAYLOAD: &[u8] = b"crucible-network-backpressure-v1";
 /// Fixed logical latency between probe emission and reply delivery.
 ///
 /// The deliberately broad window lets the guest enter its blocking receive
@@ -96,6 +98,50 @@ impl QemuLiveNetworkIoServicer {
             reply_sequence: 0,
             snapshot: LiveNetworkIoSnapshot::default(),
         })
+    }
+
+    /// Enqueues the boot-time frame that must encounter the unready guest NIC.
+    ///
+    /// The scheduler hot path publishes the first ceiling and wake after this
+    /// method returns. The frame therefore remains a normal router-owned input;
+    /// no host network injector or QEMU-private queue participates.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the ring pair cannot be borrowed, the frame
+    /// cannot be represented, or the bounded inbound ring is full or corrupt.
+    pub fn enqueue_boot_backpressure_probe(
+        &mut self,
+        delivery_icount: u64,
+    ) -> Result<FrameDeliveryKey, QemuLiveNetworkIoServicerError> {
+        let router_slot = SLOT_NET_ROUTER as u32;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                router_slot,
+                router_slot,
+                self.vm_slot,
+            )
+            .map_err(|source| QemuLiveNetworkIoServicerError::RegionAccess { source })?;
+        let mut payload = vec![0_u8; MINIMUM_ETHERNET_FRAME_LEN];
+        payload[..6].fill(0xff);
+        payload[6..12].copy_from_slice(&ROUTER_MAC);
+        payload[12..14].copy_from_slice(&LIVE_NETWORK_ETHERTYPE);
+        payload[14..14 + LIVE_NETWORK_BACKPRESSURE_PAYLOAD.len()]
+            .copy_from_slice(LIVE_NETWORK_BACKPRESSURE_PAYLOAD);
+        let frame = FrameEntry::new(delivery_icount, router_slot, self.reply_sequence, &payload)
+            .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?;
+        pair.second
+            .header
+            .enqueue(pair.second.entries, &frame)
+            .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?;
+        self.reply_sequence = self
+            .reply_sequence
+            .checked_add(1)
+            .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
+        Ok(frame.delivery_key())
     }
 
     /// Drains guest TX and schedules the fixed reply for the first valid probe.

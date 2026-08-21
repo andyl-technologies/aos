@@ -129,6 +129,8 @@ in
           grep -Fxq 'reply_latency_icount=100000000' "$report"
           grep -Eq '^ack_emit_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'acknowledgement_seen=true' "$report"
+          grep -Fxq 'boot_backpressure_retained=true' "$report"
+          grep -Fxq 'canonical_backpressure_retry_delivered=true' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"
@@ -176,7 +178,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"

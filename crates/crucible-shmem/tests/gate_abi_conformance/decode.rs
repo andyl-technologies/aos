@@ -145,6 +145,10 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             ),
             src_node: read_u32(bytes, GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SRC_NODE_OFFSET),
             seq: read_u32(bytes, GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SEQ_OFFSET),
+            delivery_state: read_u8(
+                bytes,
+                GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DELIVERY_STATE_OFFSET,
+            ),
             payload: bytes[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
                 ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + frame_len_usize]
                 .to_vec(),

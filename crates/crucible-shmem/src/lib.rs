@@ -191,7 +191,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Version 13 adds the canonical typed fault-command/result/event transports.
 /// Version 14 assigns the former node-slot padding at offset 44 to the plugin's
 /// drained-control-boundary publication acknowledgement.
-pub const ABI_VERSION: u32 = 14;
+/// Version 15 assigns one frame-entry padding byte to the consumer-owned
+/// canonical backpressure-retention state.
+pub const ABI_VERSION: u32 = 15;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

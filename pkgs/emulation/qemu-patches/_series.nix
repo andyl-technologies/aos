@@ -95,7 +95,7 @@ let
       catalogName = "crucible-net-deterministic";
       class = "D";
       enforces = "DET-11,DET-13,E18";
-      capability = "plugin-chosen icount network RX injection and flush";
+      capability = "plugin-chosen icount network RX direct injection with canonical shared-memory backpressure";
     }
     {
       file = "0010-crucible-plugin-time-advance.patch";
@@ -1040,11 +1040,11 @@ let
       capability = "event-driven device completion through the registered wake fd and normal main loop";
     }
     {
-      catalogName = "crucible-net-flush-api";
+      catalogName = "crucible-net-direct-inject-api";
       carriedBy = "0009-crucible-net-deterministic.patch";
       class = "F";
       enforces = "PATCH-32,DET-18,E18";
-      capability = "lossless RX queue flush API over deterministic network delivery";
+      capability = "lossless RX direct-injection status API with no QEMU-private retention";
     }
   ];
 in {
