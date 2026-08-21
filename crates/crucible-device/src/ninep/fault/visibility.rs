@@ -74,6 +74,16 @@ pub enum NinepVisibilityLookup {
 }
 
 impl NinepVisibilityState {
+    /// Returns collection sizes needed for bounded checkpoint admission.
+    pub(crate) fn checkpoint_collection_counts(&self) -> [usize; 4] {
+        [
+            self.session_metadata_frontiers.len(),
+            self.session_data_frontiers.len(),
+            self.updates.len(),
+            self.identities.len(),
+        ]
+    }
+
     /// Returns every session's metadata and data frontiers in session order.
     #[must_use]
     pub fn session_frontiers(&self) -> Vec<(u64, u64, u64)> {

@@ -162,6 +162,22 @@ fn io_core_resource_limit(
     }
 }
 
+fn io_core_configured_resource_limit(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    configured: u64,
+    hard: u64,
+) -> IoCoreSnapshotCodecError {
+    IoCoreSnapshotCodecError::ResourceLimit {
+        field,
+        current,
+        requested,
+        configured,
+        hard,
+    }
+}
+
 fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnapshotCodecError> {
     if snapshot.shift_bits >= 64 {
         return Err(IoCoreSnapshotCodecError::Invalid("clock shift"));
@@ -173,13 +189,20 @@ fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnap
         if capacity == 0 || !capacity.is_power_of_two() {
             return Err(IoCoreSnapshotCodecError::Invalid("queue capacity"));
         }
-        if capacity > HARD_IO_CORE_CHECKPOINT_ENTRIES as u64
-            || length > usize::try_from(capacity).unwrap_or(usize::MAX)
-        {
+        if capacity > HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 {
             return Err(io_core_resource_limit(
                 field,
                 0,
+                capacity,
+                HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
+            ));
+        }
+        if length > usize::try_from(capacity).unwrap_or(usize::MAX) {
+            return Err(io_core_configured_resource_limit(
+                field,
+                0,
                 length as u64,
+                capacity,
                 HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
             ));
         }
@@ -203,11 +226,18 @@ fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnap
         }
     }
     for queue in [&snapshot.inflight, &snapshot.outbox] {
-        if queue.iter().any(|pending| {
-            pending.key.src_node != snapshot.src_node
-                || pending.response.payload.len() > crucible_shmem::MAX_FRAME_DATA
-        }) {
-            return Err(IoCoreSnapshotCodecError::Invalid("response frame"));
+        for pending in queue {
+            if pending.key.src_node != snapshot.src_node {
+                return Err(IoCoreSnapshotCodecError::Invalid("response frame"));
+            }
+            if pending.response.payload.len() > crucible_shmem::MAX_FRAME_DATA {
+                return Err(io_core_resource_limit(
+                    "response payload",
+                    0,
+                    pending.response.payload.len() as u64,
+                    crucible_shmem::MAX_FRAME_DATA as u64,
+                ));
+            }
         }
         if queue.windows(2).any(|pair| pair[0].key > pair[1].key) {
             return Err(IoCoreSnapshotCodecError::Noncanonical);
@@ -494,4 +524,44 @@ pub struct ShmemDequeueResult {
     pub frame: Option<FrameEntry>,
     /// Wake issued to the producer after a live slot was freed.
     pub producer_wake: Option<WakeAction>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_core_snapshot_rejects_prior_version() {
+        let core = IoCore::new(8, 1, 2, 2)
+            .unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        let mut bytes = core
+            .snapshot()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
+        let version_index = b"crucible.io-core-snapshot.v".len();
+        assert_eq!(bytes[version_index], b'2');
+        bytes[version_index] = b'1';
+        assert_eq!(
+            IoCoreSnapshot::from_canonical_bytes(&bytes),
+            Err(IoCoreSnapshotCodecError::Version)
+        );
+    }
+
+    #[test]
+    fn io_core_snapshot_reports_offending_capacity() {
+        let core = IoCore::new(8, 1, 2, 2)
+            .unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        let mut snapshot = core.snapshot();
+        snapshot.inbox_capacity = HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 + 1;
+        assert_eq!(
+            snapshot.canonical_bytes(),
+            Err(IoCoreSnapshotCodecError::ResourceLimit {
+                field: "inbox",
+                current: 0,
+                requested: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 + 1,
+                configured: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
+                hard: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
+            })
+        );
+    }
 }

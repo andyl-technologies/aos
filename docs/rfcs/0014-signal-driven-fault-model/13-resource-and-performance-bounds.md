@@ -198,10 +198,10 @@ store and fresh-process load apply the identical authored ceiling to every
 large continuation and to the aggregate content-addressed closure. Allocation
 or representation failure is a LIMIT-2 outcome carrying the exact current,
 requested, configured, and hard values rather than a process abort. The raised
-resource policy is carried only by the versioned node-v7, host-I/O-v3,
-block-snapshot-v2, 9p-snapshot-v2, I/O-core-v2, production-runtime-v4, and
-VM-snapshot-v2 formats; VM snapshot identity uses the
-`exact-snapshot.v5` domain, so old policy identities cannot alias new artifacts.
+resource policy is carried only by the versioned node-v7, host-I/O-v4,
+block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
+production-runtime-v4, and VM-snapshot-v3 formats; VM snapshot identity uses the
+`exact-snapshot.v6` domain, so old policy identities cannot alias new artifacts.
 
 ## 13.8 Search and minimization limits
 

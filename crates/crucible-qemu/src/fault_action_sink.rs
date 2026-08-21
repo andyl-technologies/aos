@@ -65,7 +65,7 @@ struct AuthorizedQemuNodeBatch {
 }
 
 /// Authenticated APPLY-result identity retained for occurrence correlation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommittedQemuActionEvidence {
     /// Exact QEMU command sequence that installed or applied the action.
     pub(crate) command_sequence: u64,
