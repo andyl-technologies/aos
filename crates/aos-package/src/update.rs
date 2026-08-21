@@ -42,15 +42,17 @@ pub struct SyncResult {
 /// performs a git-native sync for the rest, and persists the updated sync
 /// state next to each registry's config file.
 ///
-/// When syncing all registries, a per-registry failure is reported but does
-/// not abort the remaining syncs; when a single registry was requested, its
-/// failure is propagated.
+/// When syncing all registries, a per-registry failure is reported without
+/// aborting the remaining syncs. The command still returns an error after all
+/// registries have been attempted so automation cannot mistake a partial or
+/// wholly failed refresh for success. When a single registry was requested,
+/// its failure is propagated immediately.
 ///
 /// # Errors
 ///
 /// Returns an error if `registry_filter` names a registry that does not
 /// exist or is not enabled, if the filtered registry's tracking config is
-/// invalid or its sync fails (signature verification, network, or git
+/// invalid, any registry's sync fails (signature verification, network, or git
 /// failures), or if the post-sync state file cannot be written.
 pub async fn run(
     config: &ApmConfig,
@@ -72,6 +74,7 @@ pub async fn run(
     let trusted_key_dirs = config.scope.trusted_keys_dirs();
     let config_dir = config.scope.config_dir();
     let mut any_synced = false;
+    let mut failed_registries = Vec::new();
     // Set when a system-provisioned registry (one with no user-level config
     // file) is synced through the user-scope fallback while running as root.
     // Such a sync lands clones and state in the user tree rather than
@@ -130,6 +133,7 @@ pub async fn run(
                 if registry_filter.is_some() {
                     return Err(e);
                 }
+                failed_registries.push(reg_config.name.clone());
                 continue;
             }
         };
@@ -237,6 +241,7 @@ pub async fn run(
                     // If the user asked for a specific registry, propagate the error.
                     return Err(e);
                 }
+                failed_registries.push(reg_config.name.clone());
             }
         }
     }
@@ -275,6 +280,17 @@ pub async fn run(
             "Synced a system registry into the root user's tree; \
              pass --system to update /var/lib/apm with state in /etc/apm.",
         );
+    }
+
+    if !failed_registries.is_empty() {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "failed to update {} registry(s): {}",
+                failed_registries.len(),
+                failed_registries.join(", ")
+            ),
+        }
+        .into());
     }
 
     if json_mode {
