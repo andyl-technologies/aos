@@ -274,19 +274,21 @@ fn encode_block(
 fn decode_block(
     wire: BlockWire,
 ) -> Result<QemuLiveBlockIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
+    let region_header: RegionHeaderSnapshot = wire.region_header.into();
+    let queue_capacity = region_header.queue_capacity as usize;
     let checkpoint = QemuLiveBlockIoServicerCheckpoint {
         execution_binding: ContentHash {
             bytes: wire.execution_binding,
         },
         storage_device: wire.storage_device.map(|bytes| ContentHash { bytes }),
-        region_header: wire.region_header.into(),
+        region_header,
         vm_slot: wire.vm_slot,
         size_bytes: wire.size_bytes,
         device: BlockSnapshot::from_canonical_bytes(&wire.device)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests)
+        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses)
+        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
         frames_processed: usize::try_from(wire.frames_processed)
             .map_err(|_| QemuHostIoCheckpointCodecError::Limit)?,
@@ -355,18 +357,20 @@ fn encode_ninep(
 fn decode_ninep(
     wire: NinepWire,
 ) -> Result<QemuLive9pIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
+    let region_header: RegionHeaderSnapshot = wire.region_header.into();
+    let queue_capacity = region_header.queue_capacity as usize;
     let checkpoint = QemuLive9pIoServicerCheckpoint {
         execution_binding: ContentHash {
             bytes: wire.execution_binding,
         },
         tree: ContentHash { bytes: wire.tree },
-        region_header: wire.region_header.into(),
+        region_header,
         vm_slot: wire.vm_slot,
         device: NinepSnapshot::from_canonical_bytes(&wire.device)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests)
+        requests: SpscRingSnapshot::from_canonical_bytes(&wire.requests, queue_capacity)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
-        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses)
+        responses: SpscRingSnapshot::from_canonical_bytes(&wire.responses, queue_capacity)
             .map_err(|_| QemuHostIoCheckpointCodecError::Nested)?,
         pending_fault_opportunities: wire.pending_fault_opportunities,
         frames_processed: usize::try_from(wire.frames_processed)

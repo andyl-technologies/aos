@@ -165,6 +165,8 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         Ok(crate::QemuNetworkTransportCheckpoint {
             inbound: crucible_shmem::SpscRingSnapshot { frames: Vec::new() },
             outbound: crucible_shmem::SpscRingSnapshot { frames: Vec::new() },
+            queue_capacity: crucible_shmem::DEFAULT_QUEUE_CAPACITY,
+            router_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
             next_router_inbound_sequence: 0,
             next_host_outbound_sequence: 0,
             next_plugin_outbound_sequence: 0,

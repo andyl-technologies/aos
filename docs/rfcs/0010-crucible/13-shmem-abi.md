@@ -222,7 +222,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 16;
+pub const ABI_VERSION: u32 = 17;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -513,12 +513,15 @@ pub struct FrameEntry {
     /// Consumer-owned count of concrete QEMU RX attempts. The consumer fails
     /// loudly before attempt 1,025 instead of retrying indefinitely.
     delivery_attempts: AtomicU32, // @ 20
+    /// Coordinate of the most recent concrete retained attempt. A retry is
+    /// admitted only after this coordinate plus the fixed retry interval.
+    last_delivery_attempt_icount: AtomicU64, // @ 24
     /// Frame payload; only `data[..len]` is valid.
-    pub data: [u8; MAX_FRAME_DATA], // @ 24
+    pub data: [u8; MAX_FRAME_DATA], // @ 32
 }
 
-const _: () = assert!(core::mem::size_of::<FrameEntry>() == 24 + MAX_FRAME_DATA);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
+const _: () = assert!(core::mem::size_of::<FrameEntry>() == 32 + MAX_FRAME_DATA);
+const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 32);
 ```
 
 - **[SHM-12]** Each directed `(src, dst)` node pair that can exchange frames MUST
@@ -1262,12 +1265,14 @@ by when the producer's store landed in shared memory.
   canonical proof that the head and its blocked same-ring FIFO successors may
   remain due after the current icount; a retained non-head or unknown state MUST
   fail closed. Each backpressured QEMU delivery attempt MUST increment the
-  canonical per-frame attempt count. A retained retry is admitted no sooner
-  than `delivery_icount + attempt_count * 4,000,000` guest instructions, and
-  attempt 1,025 MUST fail with a typed terminal error. Snapshot/restore MUST
-  preserve both retained-head identity and attempt count, and successful guest
-  acceptance MUST dequeue it normally. *Gate:* `gate:abi-conformance`,
-  `gate:live-network-io`. *Spec:* §13.3.3, §13.9.
+  canonical per-frame attempt count and the last concrete attempt coordinate.
+  A retained retry is admitted no sooner than
+  `last_delivery_attempt_icount + 4,000,000` guest instructions, and attempt
+  1,025 MUST fail with a typed terminal error. Snapshot/restore MUST preserve
+  retained-head identity, attempt count, and the last-attempt coordinate, and
+  successful guest acceptance MUST dequeue it normally. *Gate:*
+  `gate:abi-conformance`. *Live check:*
+  `checks.crucible.phase2.qemuLiveNetworkIo`. *Spec:* §13.3.3, §13.9.
 
 ## Implementation checklist
 

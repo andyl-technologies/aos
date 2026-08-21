@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 16u
+#define CRUCIBLE_SHMEM_ABI_VERSION 17u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -109,7 +109,7 @@
 #define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 56u
 #define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 56u
 
-#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4632u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_ALIGN 8u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET 0u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SRC_NODE_OFFSET 8u
@@ -118,7 +118,8 @@
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET 18u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET 19u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET 20u
-#define CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET 24u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET 24u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET 32u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN 1u
 #define CRUCIBLE_SHMEM_FRAME_DELIVERY_PENDING 0u
 #define CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED 1u
@@ -276,6 +277,7 @@ typedef struct crucible_shmem_frame_entry {
     _Atomic uint8_t delivery_state;
     uint8_t pad[CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN];
     _Atomic uint32_t delivery_attempts;
+    _Atomic uint64_t last_delivery_attempt_icount;
     uint8_t data[CRUCIBLE_SHMEM_MAX_FRAME_DATA];
 } crucible_shmem_frame_entry;
 
@@ -288,6 +290,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, len) == CRUCIB
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, delivery_state) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET, "crucible_shmem_frame_entry.delivery_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, pad) == CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET, "crucible_shmem_frame_entry.pad offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, delivery_attempts) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET, "crucible_shmem_frame_entry.delivery_attempts offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, last_delivery_attempt_icount) == CRUCIBLE_SHMEM_FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET, "crucible_shmem_frame_entry.last_delivery_attempt_icount offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET, "crucible_shmem_frame_entry.data offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_coverage_entry {

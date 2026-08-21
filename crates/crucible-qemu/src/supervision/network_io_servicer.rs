@@ -336,7 +336,7 @@ fn is_live_network_ack(frame: &[u8]) -> bool {
     ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
 }
 
-fn is_live_network_backpressure_ack(frame: &[u8]) -> bool {
+pub(crate) fn is_live_network_backpressure_ack(frame: &[u8]) -> bool {
     ethernet_payload(frame) == Some(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
 }
 
