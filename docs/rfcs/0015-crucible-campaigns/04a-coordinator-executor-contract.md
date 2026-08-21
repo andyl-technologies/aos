@@ -472,7 +472,12 @@ historical snapshots only from that named history; an extant snapshot from
 another campaign is `InvalidRequest`. The response carries the canonical
 snapshot body and the checked client reconstructs its envelope identity before
 exposing it. This operation grants complete snapshot metadata and all root IDs,
-but not any object body named by those IDs.
+but not any object body named by those IDs. The local `campaign snapshot`
+porcelain renders that exact body. `campaign compare` performs two independent
+checked `GetSnapshot` reads and compares lineage, active policy, parent,
+transition, and all nine roots. It reports direct adjacency only when one body
+names the other as its parent; it does not infer ancestry from IDs or bypass the
+named-history membership check.
 
 `WatchCampaign.after_snapshot` is an advisory, coalesced cursor. The response
 always describes one authenticated current head and its lifecycle projection.

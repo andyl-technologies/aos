@@ -314,6 +314,10 @@ enum CampaignCommand {
     Status(CampaignStatusArgs),
     /// Return the latest coalesced head after an optional snapshot cursor.
     Watch(CampaignWatchArgs),
+    /// Inspect one exact historical campaign snapshot.
+    Snapshot(CampaignSnapshotArgs),
+    /// Compare two exact historical campaign snapshots.
+    Compare(CampaignCompareArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
     /// Inspect one exact object named by the authenticated graph.
@@ -426,6 +430,29 @@ struct CampaignWatchArgs {
     /// Last observed campaign snapshot cursor.
     #[arg(long, value_name = "SNAPSHOT")]
     after: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSnapshotArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot to inspect.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCompareArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// First exact historical snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    left: String,
+    /// Second exact historical snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    right: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
