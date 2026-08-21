@@ -300,6 +300,28 @@ All terms use saturating checked integer or fixed-point arithmetic. Square roots
 use a specified integer algorithm. Scores are accumulated in a fixed field
 order. Ties break by `SelectionId`, then `ConfigurationId`.
 
+The exact arithmetic profile uses `S = 1_000_000`. A prior is an integer in
+`[0, S]`; reward sums, means, and score terms are expressed in millionths. For
+parent visits `N`, edge visits `n`, exploration weight `c`, and prior `p`, the
+first fixed-point scorer computes:
+
+```text
+sqrt_N = floor(sqrt(N * S * S))
+weighted_prior = floor(c * p / S)
+exploration = floor(floor(weighted_prior * sqrt_N / S) / (1 + n))
+mean_reward = trunc_toward_zero(reward_sum / n), or 0 when n = 0
+```
+
+An unvisited edge MUST have a zero reward sum. An edge prior above `S` or edge
+visits above parent visits is invalid. The configured novelty bonus is added
+once when the owner-derived novelty predicate is true, and the configured
+fairness bonus is added once when the edge owns the current fairness
+reservation. Each nonnegative bonus saturates at `i64::MAX`; the ordered sum
+`mean_reward`, exploration, novelty, fairness saturates to the signed `i64`
+range. The integer square root is the unique greatest integer whose square does
+not exceed its input. These staged divisions and saturation points are part of
+the language-neutral contract.
+
 The prior may come from the scenario's model distribution, an explicit campaign
 proposal prior, or a uniform default. Using a model prior for PUCT does not make
 the resulting visit frequency a statistical estimate; it is still guidance.
@@ -324,7 +346,10 @@ canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
 claim that PUCT is complete. Introducing reward, novelty, finding, prior, or
 edge-visit terms requires the owner-built projections and exact arithmetic
-above and a new engine implementation version.
+above and a new engine implementation version. The exact scorer above is now
+implemented and conformance-tested independently of ranking; the owner-built
+inputs and ranking engine remain the gate that prevents it from changing
+campaign behavior prematurely.
 
 ## 03.5 Guidance signals and objectives
 
