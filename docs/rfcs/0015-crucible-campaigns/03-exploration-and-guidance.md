@@ -239,6 +239,31 @@ root/power implementations, including `1/2` and `1`. A policy may additionally
 declare minimum initial children, maximum children, minimum completed visits per
 child, and domain-exhaustion behavior.
 
+For reduced `k = a / b`, completed visits `N`, admitted children `M`, initial
+allocation `I`, hard ceiling `H`, and per-child visit floor `V`, the first
+version derives the power-law allowance `R` as follows:
+
+```text
+alpha = 0:   R = ceil(a / b)
+alpha = 1:   R = ceil(a * N / b)
+alpha = 1/2: R = least nonnegative r such that (r * b)^2 >= a^2 * N
+L = min(H, max(I, R))
+```
+
+The square-root comparison uses exact unsigned 256-bit limb products and a
+bounded binary search over `[0, H]`; it does not approximate the irrational
+root. Products for the linear case use unsigned 128-bit arithmetic. Values
+above `H` saturate to `H` before they can affect admission.
+
+One more child is eligible exactly when `M < L` and either `M < I` or
+`N >= M * V`. The initial allocation therefore cannot deadlock waiting for
+feedback from children that do not yet exist. The visit threshold is computed
+in unsigned 128-bit arithmetic; a threshold above `u64::MAX` is valid but
+unreachable by the canonical visit counter. `M > H` is an integrity error.
+These rules are implemented and conformance-tested as a pure owner primitive;
+using them to issue generated candidates still requires the complete
+branch-point projection and a new planner/generator implementation version.
+
 For integer domains, the generator maintains a derived interval partition:
 
 ```text

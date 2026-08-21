@@ -165,8 +165,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   it to be scoped version 2, derives the cumulative attempt, and recomputes the
   same owner rule after convergence and restart. The exact fixed-point PUCT
   term arithmetic, including staged rounding, integer square root, input
-  invariants, and saturation, is implemented and conformance-tested. Reward,
-  novelty, finding, interval-feedback, and planner-ranking folds remain open.
+  invariants, and saturation, is implemented and conformance-tested. The
+  progressive-widening `0`, `1/2`, and `1` exponent owner is also implemented
+  with exact irrational comparison, initial allocation, visit-floor, ceiling,
+  and overflow semantics. Reward, novelty, finding, interval-feedback, and the
+  planner/generator integrations that consume these pure owners remain open.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.

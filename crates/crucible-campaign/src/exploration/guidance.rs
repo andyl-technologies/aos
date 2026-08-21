@@ -5,10 +5,95 @@
 //! owner-built reward, novelty, and finding projections must land before a
 //! planner version may use these scores to change canonical ordering.
 
-use crate::{CampaignCodecError, PuctPolicy};
+use std::cmp::Ordering;
+
+use crate::{CampaignCodecError, ProgressiveWideningPolicy, PuctPolicy};
 
 /// One whole unit in the campaign fixed-point representation.
 pub const GUIDANCE_MICROS_PER_UNIT: u64 = 1_000_000;
+
+/// Exact owner-derived progressive-widening admission decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProgressiveWideningDecision {
+    permitted_children: u64,
+    required_completed_visits: u128,
+    visit_floor_satisfied: bool,
+    eligible: bool,
+}
+
+impl ProgressiveWideningDecision {
+    /// Derives one widening decision without floating-point arithmetic.
+    ///
+    /// The initial child allocation is available without feedback. Once it is
+    /// consumed, every additional child requires at least
+    /// `admitted_children * minimum_visits_per_child` completed visits as well
+    /// as room under the exact power-law and hard child ceilings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] when the authenticated
+    /// admitted-child count exceeds the policy's hard ceiling.
+    pub fn derive(
+        policy: ProgressiveWideningPolicy,
+        completed_visits: u64,
+        admitted_children: u64,
+    ) -> Result<Self, CampaignCodecError> {
+        if admitted_children > policy.maximum_children() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "progressive-widening child count exceeds policy",
+            });
+        }
+
+        let power_law_children =
+            power_law_children_capped(policy, completed_visits, policy.maximum_children())?;
+        let permitted_children = policy
+            .initial_children()
+            .max(power_law_children)
+            .min(policy.maximum_children());
+        let required_completed_visits = if admitted_children < policy.initial_children() {
+            0
+        } else {
+            u128::from(admitted_children) * u128::from(policy.minimum_visits_per_child())
+        };
+        let visit_floor_satisfied = u128::from(completed_visits) >= required_completed_visits;
+        let eligible = admitted_children < permitted_children && visit_floor_satisfied;
+
+        Ok(Self {
+            permitted_children,
+            required_completed_visits,
+            visit_floor_satisfied,
+            eligible,
+        })
+    }
+
+    /// Returns the exact number of children currently permitted by policy.
+    #[must_use]
+    pub const fn permitted_children(self) -> u64 {
+        self.permitted_children
+    }
+
+    /// Returns the visit floor for admitting the next child.
+    ///
+    /// The value is `u128` because a valid policy and admitted count can name a
+    /// threshold above `u64::MAX`; such a threshold is intentionally
+    /// unreachable by the `u64` completed-visit counter.
+    #[must_use]
+    pub const fn required_completed_visits(self) -> u128 {
+        self.required_completed_visits
+    }
+
+    /// Returns whether the current completed visits satisfy the visit floor.
+    #[must_use]
+    pub const fn is_visit_floor_satisfied(self) -> bool {
+        self.visit_floor_satisfied
+    }
+
+    /// Returns whether one additional distinct child may be admitted now.
+    #[must_use]
+    pub const fn is_eligible(self) -> bool {
+        self.eligible
+    }
+}
 
 /// Owner-authenticated statistics required to score one PUCT edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -244,6 +329,82 @@ fn integer_square_root(mut value: u128) -> u128 {
     result
 }
 
+fn power_law_children_capped(
+    policy: ProgressiveWideningPolicy,
+    completed_visits: u64,
+    cap: u64,
+) -> Result<u64, CampaignCodecError> {
+    let k = policy.k();
+    let value = match (policy.alpha().numerator(), policy.alpha().denominator()) {
+        (0, 1) => ceil_ratio_capped(u128::from(k.numerator()), k.denominator(), cap),
+        (1, 1) => ceil_ratio_capped(
+            u128::from(k.numerator()) * u128::from(completed_visits),
+            k.denominator(),
+            cap,
+        ),
+        (1, 2) => square_root_ratio_capped(k.numerator(), k.denominator(), completed_visits, cap),
+        _ => {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported progressive-widening exponent",
+            });
+        }
+    };
+    Ok(value)
+}
+
+fn ceil_ratio_capped(numerator: u128, denominator: u64, cap: u64) -> u64 {
+    let denominator = u128::from(denominator);
+    let quotient = numerator / denominator;
+    let rounded = quotient + u128::from(!numerator.is_multiple_of(denominator));
+    rounded.min(u128::from(cap)) as u64
+}
+
+/// Computes `min(cap, ceil(numerator * sqrt(visits) / denominator))`.
+fn square_root_ratio_capped(numerator: u64, denominator: u64, visits: u64, cap: u64) -> u64 {
+    if numerator == 0 || visits == 0 || cap == 0 {
+        return 0;
+    }
+    let right = product_u64_factors(&[numerator, numerator, visits]);
+    let reaches = |candidate: u64| {
+        let left = product_u64_factors(&[candidate, denominator, candidate, denominator]);
+        compare_u256(left, right) != Ordering::Less
+    };
+    if !reaches(cap) {
+        return cap;
+    }
+
+    let mut low = 0_u64;
+    let mut high = cap;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if reaches(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
+}
+
+/// Multiplies at most four `u64` factors into little-endian `u256` limbs.
+fn product_u64_factors(factors: &[u64]) -> [u64; 4] {
+    let mut product = [1_u64, 0, 0, 0];
+    for factor in factors {
+        let mut carry = 0_u128;
+        for limb in &mut product {
+            let value = u128::from(*limb) * u128::from(*factor) + carry;
+            *limb = value as u64;
+            carry = value >> 64;
+        }
+        debug_assert_eq!(carry, 0);
+    }
+    product
+}
+
+fn compare_u256(left: [u64; 4], right: [u64; 4]) -> Ordering {
+    left.iter().rev().cmp(right.iter().rev())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -317,6 +478,130 @@ mod tests {
             PuctEdgeStatistics::new(0, 0, 0, GUIDANCE_MICROS_PER_UNIT + 1, false, false,),
             Err(CampaignCodecError::InvalidValue {
                 reason: "PUCT prior exceeds one",
+            })
+        );
+    }
+
+    #[test]
+    fn progressive_widening_uses_exact_irrational_ceiling() {
+        let policy = ProgressiveWideningPolicy::new(
+            crate::ExactRational::new(2, 1).expect("widening multiplier"),
+            crate::ExactRational::new(1, 2).expect("square-root exponent"),
+            0,
+            64,
+            1,
+        )
+        .expect("widening policy");
+
+        let after_two =
+            ProgressiveWideningDecision::derive(policy, 2, 0).expect("widening decision");
+        assert_eq!(after_two.permitted_children(), 3);
+        let after_four =
+            ProgressiveWideningDecision::derive(policy, 4, 0).expect("widening decision");
+        assert_eq!(after_four.permitted_children(), 4);
+
+        assert_eq!(
+            square_root_ratio_capped(u64::MAX, u64::MAX, u64::MAX, u64::MAX),
+            4_294_967_296
+        );
+    }
+
+    #[test]
+    fn progressive_widening_square_root_matches_small_exact_products() {
+        for numerator in 0_u64..=5 {
+            for denominator in 1_u64..=5 {
+                for visits in 0_u64..=100 {
+                    let cap = 20_u64;
+                    let right = u128::from(numerator) * u128::from(numerator) * u128::from(visits);
+                    let expected = (0..=cap)
+                        .find(|candidate| {
+                            let scaled = u128::from(*candidate) * u128::from(denominator);
+                            scaled * scaled >= right
+                        })
+                        .unwrap_or(cap);
+                    assert_eq!(
+                        square_root_ratio_capped(numerator, denominator, visits, cap),
+                        expected,
+                        "a={numerator}, b={denominator}, N={visits}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn progressive_widening_initial_allocation_and_visit_floor_are_exact() {
+        let policy = ProgressiveWideningPolicy::new(
+            crate::ExactRational::new(2, 1).expect("widening multiplier"),
+            crate::ExactRational::new(1, 2).expect("square-root exponent"),
+            3,
+            64,
+            2,
+        )
+        .expect("widening policy");
+
+        let initial =
+            ProgressiveWideningDecision::derive(policy, 0, 2).expect("initial widening decision");
+        assert_eq!(initial.permitted_children(), 3);
+        assert_eq!(initial.required_completed_visits(), 0);
+        assert!(initial.is_eligible());
+
+        let blocked = ProgressiveWideningDecision::derive(policy, 5, 3)
+            .expect("feedback-gated widening decision");
+        assert_eq!(blocked.permitted_children(), 5);
+        assert_eq!(blocked.required_completed_visits(), 6);
+        assert!(!blocked.is_visit_floor_satisfied());
+        assert!(!blocked.is_eligible());
+
+        let ready = ProgressiveWideningDecision::derive(policy, 6, 3)
+            .expect("feedback-ready widening decision");
+        assert_eq!(ready.permitted_children(), 5);
+        assert!(ready.is_visit_floor_satisfied());
+        assert!(ready.is_eligible());
+    }
+
+    #[test]
+    fn progressive_widening_caps_overflowing_power_laws_and_visit_floors() {
+        let policy = ProgressiveWideningPolicy::new(
+            crate::ExactRational::new(u64::MAX, 1).expect("widening multiplier"),
+            crate::ExactRational::new(1, 1).expect("linear exponent"),
+            1,
+            u64::MAX,
+            u64::MAX,
+        )
+        .expect("widening policy");
+        let decision = ProgressiveWideningDecision::derive(policy, u64::MAX, u64::MAX - 1)
+            .expect("bounded widening decision");
+
+        assert_eq!(decision.permitted_children(), u64::MAX);
+        assert!(decision.required_completed_visits() > u128::from(u64::MAX));
+        assert!(!decision.is_eligible());
+        assert_eq!(
+            ProgressiveWideningDecision::derive(policy, 0, u64::MAX),
+            Ok(ProgressiveWideningDecision {
+                permitted_children: 1,
+                required_completed_visits: u128::from(u64::MAX) * u128::from(u64::MAX),
+                visit_floor_satisfied: false,
+                eligible: false,
+            })
+        );
+    }
+
+    #[test]
+    fn progressive_widening_rejects_children_above_the_hard_cap() {
+        let policy = ProgressiveWideningPolicy::new(
+            crate::ExactRational::new(1, 1).expect("widening multiplier"),
+            crate::ExactRational::new(0, 1).expect("constant exponent"),
+            1,
+            1,
+            1,
+        )
+        .expect("widening policy");
+
+        assert_eq!(
+            ProgressiveWideningDecision::derive(policy, 0, 2),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "progressive-widening child count exceeds policy",
             })
         );
     }
