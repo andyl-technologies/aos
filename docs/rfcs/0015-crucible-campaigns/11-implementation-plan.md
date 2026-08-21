@@ -612,6 +612,15 @@ namespaced authorization, S3, administrative inventory/GC, and host-side
 latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
 by this checkpoint.
 
+The production exact-closure checkpoint now holds every running QEMU node
+paused while it authenticates and streams the live generation's overlay and
+VMState directly into bounded content chunks. It publishes the closure before
+deleting transient QMP snapshots and resuming the originally running nodes, and
+it no longer copies both artifacts through an additional full-file staging
+tree. Sparse-extent preservation, immutable backing plus changed-overlay
+manifests, and `O(changed state)` capture remain open, so T-CAM-5.3 and
+T-CAM-5.4 remain unchecked.
+
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
 

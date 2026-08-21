@@ -255,9 +255,13 @@ contains a manifest and authenticated objects for scenario/configuration,
 scheduler, logs, signal artifacts, trigger/assertion/lifecycle/fault state,
 per-node snapshots, disk overlays, QEMU VMState, generations, and service state.
 
-The initial implementation currently chunks full overlay and VMState artifacts.
-This RFC requires the next storage iteration to remove avoidable full-file copy
-staging:
+The single-host implementation chunks full overlay and VMState artifacts. It
+keeps every running QEMU node paused after exact capture, hashes and streams the
+run-directory overlay and VMState directly through bounded chunk buffers into
+the content store, durably publishes the closure, then deletes the transient QMP
+snapshot and resumes only nodes that were running. It does not create a second
+full-file staging tree, and cleanup attempts every captured node even when one
+delete or resume fails. The remaining storage work is:
 
 - stream source artifacts directly into the object backend;
 - preserve sparse extents where the backend supports them;

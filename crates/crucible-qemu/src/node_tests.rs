@@ -790,6 +790,32 @@ fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<()
 }
 
 #[test]
+fn publication_exact_capture_resumes_only_after_explicit_release() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let mut checkpoint = checkpoint("paused-exact");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    let snapshot = node.capture_exact_snapshot_for_publication(&node_identity, checkpoint)?;
+    assert_eq!(
+        snapshot.host_io().execution_binding(),
+        snapshot.checkpoint().id
+    );
+    assert!(!recorded(&log).contains(&ChannelCall::QmpContinue));
+
+    node.resume_after_exact_snapshot()?;
+    assert_eq!(recorded(&log).last(), Some(&ChannelCall::QmpContinue));
+    Ok(())
+}
+
+#[test]
 fn qemu_node_terminates_after_failed_exact_capture() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, true)?;

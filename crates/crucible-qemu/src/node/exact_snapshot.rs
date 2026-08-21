@@ -20,7 +20,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, true)
+        self.capture_exact_snapshot_inner(node, checkpoint, true, true)
     }
 
     /// Captures an exact snapshot while preserving an intentional QEMU pause.
@@ -38,7 +38,41 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false)
+        self.capture_exact_snapshot_inner(node, checkpoint, false, false)
+    }
+
+    /// Captures a running node while keeping successful artifacts immutable.
+    ///
+    /// A successful capture leaves QEMU paused so the owner can stream its
+    /// overlay and VMState directly into durable content storage. A failure
+    /// before an indeterminate save resumes the running node; an indeterminate
+    /// save still terminates and reaps it through the existing fail-closed path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] under the same conditions as
+    /// [`Self::capture_exact_snapshot`].
+    pub fn capture_exact_snapshot_for_publication(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+    ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
+        self.capture_exact_snapshot_inner(node, checkpoint, false, true)
+    }
+
+    /// Resumes a running node after its paused exact artifacts are durable.
+    ///
+    /// The lifecycle owner calls this only after it has streamed every
+    /// checkpoint artifact from the stopped process generation into durable
+    /// content storage. Powered-off nodes deliberately remain paused and must
+    /// not use this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when QMP cannot confirm the running-state
+    /// transition.
+    pub fn resume_after_exact_snapshot(&mut self) -> Result<(), QemuNodeError> {
+        self.resume_after_restore()
     }
 
     /// Captures the post-mutation restart state for a terminal lifecycle fault.
@@ -57,7 +91,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false)
+        self.capture_exact_snapshot_inner(node, checkpoint, false, false)
     }
 
     /// Prevalidates terminal snapshot identity and boundary prerequisites.
@@ -124,6 +158,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
         resume_after_capture: bool,
+        resume_after_pre_save_failure: bool,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
         self.validate_exact_snapshot_boundary(node, &checkpoint)?;
         self.host_io_runtime
@@ -213,7 +248,7 @@ impl QemuNode {
         })();
         let snapshot = match capture_result {
             Ok(snapshot) => snapshot,
-            Err(error) if !resume_after_capture => return Err(error),
+            Err(error) if !resume_after_pre_save_failure => return Err(error),
             Err(error) => {
                 let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
                 return match resume {
