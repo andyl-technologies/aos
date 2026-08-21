@@ -1479,7 +1479,7 @@ impl SharedCampaignStore {
                     path: path.clone(),
                     source,
                 })?;
-            if last_byte != [b'\n'] {
+            if last_byte != *b"\n" {
                 lock.file.write_all(b"\n").map_err(|source| CasError::Io {
                     operation: "write",
                     path: path.clone(),

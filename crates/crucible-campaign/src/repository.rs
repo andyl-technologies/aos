@@ -45,6 +45,8 @@ const MAX_SNAPSHOT_ANCESTRY: usize = 1_000_001;
 const MAX_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
+/// Maximum source positions served by one coordinator planner page.
+pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
 const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
 const MAX_SELECTION_RESOLUTION_RECORDS: usize = 4_096;
@@ -611,12 +613,17 @@ mod ancestry;
 mod closure;
 mod execution;
 mod observation;
+mod planner_driver;
 mod planner_issue;
 mod projection;
 mod queue;
 mod records;
 mod transactions;
 
+pub use planner_driver::{
+    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
+    CampaignPlannerStepOutcome,
+};
 pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
     WorkerSlotId,

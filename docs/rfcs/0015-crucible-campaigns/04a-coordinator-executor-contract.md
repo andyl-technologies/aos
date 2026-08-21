@@ -923,6 +923,20 @@ must equal the committed served object and byte counts. The coordinator derives
 the next page start from durable planner history: `None` for the first page or
 after a semantic-view change, and exactly the prior `ContinueScan` cursor for a
 same-view continuation. It rejects reopening a same-view scan after `NoWork`.
+The single-host coordinator implements that rule in a bounded
+`CampaignPlannerDriver`. Construction requires the checked client and
+repository to share the exact planner authority, requires the engine,
+`PolicyArtifact`, and initial `PlannerState` to name one engine, and caps one
+page at 10,000 source positions. Before every call the driver authenticates the
+current head and reconstructs state and cursor from its planner-head entry; it
+retains no process-local resume cursor as authority. An unchanged view already
+settled by a terminal disposition is returned without reinvoking the component.
+A semantic-root change restarts at `after=None` while preserving the exact
+portable next state required by planner ancestry. The driver holds no
+repository mutation guard while `PlannerService::plan` runs. A concurrent head
+advance therefore completes normally and causes request acceptance to return
+`Stale`, rather than allowing component latency to serialize unrelated owner
+mutations.
 Portable planner state carries the scan cursor, best candidate and score
 evidence accumulated so far, immutable view identity, and remaining fuel. The
 engine may suspend with

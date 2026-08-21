@@ -1774,6 +1774,399 @@ fn canonical_frontier_planner_carries_the_first_ready_offer_across_pages() {
     assert_eq!(retained, final_request_message);
 }
 
+#[derive(Clone)]
+struct ExactCanonicalPlannerSupervisor {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::PlannerExecutionSupervisor<CanonicalFrontierPlanner>
+    for ExactCanonicalPlannerSupervisor
+{
+    type Error = std::convert::Infallible;
+
+    fn execute(
+        &mut self,
+        engine: &mut CanonicalFrontierPlanner,
+        request: &PlannerRequest,
+    ) -> Result<crate::SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
+            .expect("page count fits u64")
+            + 1;
+        Ok(crate::SupervisedPlannerExecution::new(
+            engine.plan(request),
+            measured_fuel,
+        ))
+    }
+}
+
+fn canonical_planner_driver_basis(
+    repository: &CampaignRepository,
+) -> (PlannerEngine, PolicyArtifact, PlannerState, PlanningBudget) {
+    let engine = CanonicalFrontierPlanner::descriptor().expect("canonical planner descriptor");
+    let dependency_bytes = b"campaign planner driver dependency".to_vec();
+    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
+    repository
+        .blobs
+        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
+        .expect("planner dependency");
+    let artifact = PolicyArtifact::new(
+        engine.id().expect("engine id"),
+        1,
+        dependency,
+        BTreeSet::new(),
+        BTreeMap::new(),
+    )
+    .expect("planner artifact");
+    let initial_state = CanonicalFrontierPlanner::initial_state().expect("initial planner state");
+    let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("planner budget");
+    (engine, artifact, initial_state, budget)
+}
+
+fn canonical_planner_client(
+    authority: &PlannerAuthorityKey,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> crate::PlannerClient<
+    crate::AuthorizedPlannerService<CanonicalFrontierPlanner, ExactCanonicalPlannerSupervisor>,
+> {
+    crate::PlannerClient::new(
+        crate::AuthorizedPlannerService::new(
+            CanonicalFrontierPlanner,
+            ExactCanonicalPlannerSupervisor { calls },
+            authority.clone(),
+        ),
+        authority.clone(),
+    )
+}
+
+#[test]
+fn planner_driver_rejects_invalid_static_configuration_without_repository_writes() {
+    let (repository, _, _, blobs, planner_authority, _) = authorized_fixture();
+    let repository = Arc::new(repository);
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let before = blobs
+        .object_count()
+        .expect("object count before validation");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wrong_authority = PlannerAuthorityKey::from_bytes([31; 32]).expect("wrong authority");
+    assert!(matches!(
+        CampaignPlannerDriver::new(
+            Arc::clone(&repository),
+            canonical_planner_client(&wrong_authority, Arc::clone(&calls)),
+            engine.clone(),
+            artifact.clone(),
+            initial_state.clone(),
+            1,
+            budget,
+        ),
+        Err(CampaignPlannerDriverConfigError::AuthorityMismatch)
+    ));
+    assert!(matches!(
+        CampaignPlannerDriver::new(
+            Arc::clone(&repository),
+            canonical_planner_client(&planner_authority, Arc::clone(&calls)),
+            engine.clone(),
+            artifact.clone(),
+            initial_state.clone(),
+            0,
+            budget,
+        ),
+        Err(CampaignPlannerDriverConfigError::InvalidScanLimit)
+    ));
+    let other_engine =
+        PlannerEngine::new("other-planner", 1, 1, BTreeSet::new()).expect("other planner engine");
+    let other_state = PlannerState::new(
+        other_engine.id().expect("other engine id"),
+        "other-state",
+        1,
+        Vec::new(),
+    )
+    .expect("other state");
+    assert!(matches!(
+        CampaignPlannerDriver::new(
+            repository,
+            canonical_planner_client(&planner_authority, calls),
+            engine,
+            artifact,
+            other_state,
+            1,
+            budget,
+        ),
+        Err(CampaignPlannerDriverConfigError::BasisMismatch)
+    ));
+    assert_eq!(
+        blobs.object_count().expect("object count after validation"),
+        before
+    );
+}
+
+#[test]
+fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
+    let (repository, lineage, policy, _, planner_authority, debugger_authority) =
+        authorized_fixture();
+    let repository = Arc::new(repository);
+    let genesis = repository
+        .create(
+            "planner-driver-restart",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create campaign");
+    let first_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "planner-driver-first",
+    );
+    let first = repository
+        .submit_known_branch_request(
+            "planner-driver-restart",
+            genesis.snapshot_id(),
+            &first_request,
+        )
+        .expect("submit first request");
+    let second_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "planner-driver-second",
+    );
+    let second = repository
+        .submit_known_branch_request(
+            "planner-driver-restart",
+            first.new_snapshot,
+            &second_request,
+        )
+        .expect("submit second request");
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut driver = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        canonical_planner_client(&planner_authority, Arc::clone(&calls)),
+        engine.clone(),
+        artifact.clone(),
+        initial_state.clone(),
+        1,
+        budget,
+    )
+    .expect("planner driver");
+
+    let first_advance = driver.step("planner-driver-restart").expect("first page");
+    let (continued_snapshot, continued_step, cursor_position) = match first_advance {
+        CampaignPlannerStepOutcome::Advanced {
+            result,
+            disposition: PlannerDisposition::ContinueScan { cursor },
+        } => {
+            assert_eq!(result.prior_snapshot, second.new_snapshot);
+            (
+                result.new_snapshot,
+                result.step,
+                cursor.after().expect("first page cursor"),
+            )
+        }
+        other => panic!("first page must continue, got {other:?}"),
+    };
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    drop(driver);
+
+    let restarted = Arc::new(
+        CampaignRepository::with_component_authorities(
+            repository.blobs.clone(),
+            repository.refs.clone(),
+            planner_authority.clone(),
+            debugger_authority,
+        )
+        .expect("restart repository"),
+    );
+    let persisted = restarted
+        .load_planner_step_at(continued_snapshot, continued_step)
+        .expect("persisted continue step");
+    assert_eq!(
+        persisted.disposition(),
+        &PlannerDisposition::ContinueScan {
+            cursor: crate::PlanningScanCursor::new(persisted.input_view(), Some(cursor_position),)
+        }
+    );
+    let mut restarted_driver = CampaignPlannerDriver::new(
+        restarted,
+        canonical_planner_client(&planner_authority, Arc::clone(&calls)),
+        engine,
+        artifact,
+        initial_state,
+        1,
+        budget,
+    )
+    .expect("restarted planner driver");
+    let second_advance = restarted_driver
+        .step("planner-driver-restart")
+        .expect("resume final page");
+    match second_advance {
+        CampaignPlannerStepOutcome::Advanced {
+            result,
+            disposition: PlannerDisposition::Issue { selected, .. },
+        } => {
+            assert_eq!(result.prior_snapshot, continued_snapshot);
+            assert_eq!(selected, cursor_position);
+        }
+        other => panic!("resumed final page must issue, got {other:?}"),
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
+    let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
+    let repository = Arc::new(repository);
+    repository
+        .create(
+            "planner-driver-settled",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create empty campaign");
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut driver = CampaignPlannerDriver::new(
+        repository,
+        canonical_planner_client(&planner_authority, Arc::clone(&calls)),
+        engine,
+        artifact,
+        initial_state,
+        16,
+        budget,
+    )
+    .expect("planner driver");
+
+    let accepted = driver
+        .step("planner-driver-settled")
+        .expect("accept no-work step");
+    let (settled_snapshot, settled_step) = match accepted {
+        CampaignPlannerStepOutcome::Advanced {
+            result,
+            disposition: PlannerDisposition::NoWork,
+        } => (result.new_snapshot, result.step),
+        other => panic!("empty view must accept no-work, got {other:?}"),
+    };
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    assert_eq!(
+        driver
+            .step("planner-driver-settled")
+            .expect("reuse settled view"),
+        CampaignPlannerStepOutcome::Settled {
+            snapshot: settled_snapshot,
+            step: settled_step,
+            disposition: PlannerDisposition::NoWork,
+        }
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+struct BlockingPlannerService<S> {
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+    inner: S,
+}
+
+impl<S: crate::PlannerService> crate::PlannerService for BlockingPlannerService<S> {
+    type Error = S::Error;
+
+    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
+        self.started.send(()).expect("observe planner call");
+        self.release.recv().expect("release planner call");
+        self.inner.plan(request)
+    }
+}
+
+#[test]
+fn planner_driver_releases_repository_mutation_ownership_during_component_work() {
+    let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
+    let repository = Arc::new(repository);
+    let genesis = repository
+        .create(
+            "planner-driver-concurrency",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create campaign");
+    let genesis_snapshot = genesis.snapshot_id();
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let inner = crate::AuthorizedPlannerService::new(
+        CanonicalFrontierPlanner,
+        ExactCanonicalPlannerSupervisor { calls },
+        planner_authority.clone(),
+    );
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let planner = crate::PlannerClient::new(
+        BlockingPlannerService {
+            started: started_tx,
+            release: release_rx,
+            inner,
+        },
+        planner_authority,
+    );
+    let mut driver = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        planner,
+        engine,
+        artifact,
+        initial_state,
+        16,
+        budget,
+    )
+    .expect("planner driver");
+    let drive = std::thread::spawn(move || driver.step("planner-driver-concurrency"));
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("planner component entered");
+
+    let (mutation_tx, mutation_rx) = std::sync::mpsc::channel();
+    let mutation_repository = Arc::clone(&repository);
+    let mutation = std::thread::spawn(move || {
+        let result = mutation_repository.apply_control(
+            "planner-driver-concurrency",
+            &command(
+                "planner-driver-concurrent-resume",
+                genesis_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        );
+        mutation_tx.send(result).expect("return mutation result");
+    });
+    let mutation_result = match mutation_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        Ok(result) => result.expect("concurrent mutation"),
+        Err(error) => {
+            release_tx.send(()).expect("release blocked planner");
+            let _ = drive.join();
+            mutation.join().expect("mutation thread");
+            panic!("repository mutation remained blocked by planner call: {error}");
+        }
+    };
+    release_tx.send(()).expect("release planner");
+    mutation.join().expect("mutation thread");
+    let drive_result = drive.join().expect("planner driver thread");
+    assert!(matches!(
+        drive_result,
+        Err(CampaignPlannerDriverError::Repository(
+            CampaignRepositoryError::Stale { expected, current }
+        )) if expected == genesis_snapshot && current == mutation_result.new_snapshot
+    ));
+    assert_eq!(
+        repository
+            .head("planner-driver-concurrency")
+            .expect("current head")
+            .snapshot_id(),
+        mutation_result.new_snapshot
+    );
+}
+
 #[test]
 fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     let (repository, lineage, policy, blobs) = counted_fixture();

@@ -133,9 +133,11 @@ pub use policy::{
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignDerivationResult,
-    CampaignExecutorStore, CampaignHead, CampaignRepository, CampaignRepositoryError,
-    ChoiceDiscoveryResult, ClaimableAttemptPage, ObservationCandidate, ObservationDisposition,
-    ObservationResult, PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
+    CampaignExecutorStore, CampaignHead, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
+    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, ObservationCandidate, ObservationDisposition, ObservationResult,
+    PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

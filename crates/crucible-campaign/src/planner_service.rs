@@ -1009,6 +1009,10 @@ impl<S> PlannerClient<S> {
     pub fn into_inner(self) -> S {
         self.service
     }
+
+    pub(crate) const fn authority(&self) -> &PlannerAuthorityKey {
+        &self.authority
+    }
 }
 
 impl<S: PlannerService> PlannerClient<S> {

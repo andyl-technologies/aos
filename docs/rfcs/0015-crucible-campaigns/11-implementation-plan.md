@@ -207,6 +207,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
+  A coordinator-owned `CampaignPlannerDriver` now reconstructs the exact
+  portable state and same-view `ContinueScan` cursor from the authenticated
+  planner head before each bounded component call, suppresses reinvocation of
+  a terminal unchanged view, verifies exact repository/client planner
+  authority and engine/artifact/state configuration before writes, and holds no
+  repository mutation ownership across component execution. Restart and
+  concurrent-head-change regressions cover cursor continuity and stale
+  acceptance.
   The standalone bounded `AttemptQueue` reservation primitive and the daemon's
   single-host `LocalExecutorSupervisor` are implemented. The latter enforces
   exact assignment replay, aggregate slot/CPU/memory/disk capacity, a bounded
