@@ -187,12 +187,13 @@ Converge by pointing the test's firmware at `pkgs.edk2`, then docs.
 
 What the build-out surfaced (decisions and discovered bugs):
 
-- **EDK2 sourcing**: resolved as `builtins.fetchGit` with
-  `submodules = true` at a pinned release rev — OVMF compiles vendored
-  submodule sources (openssl, brotli, mipisyst) directly, so a release
-  tarball is insufficient and per-submodule pins would just duplicate
-  the rev pin. Precedent: `fetchCargoDeps`' git deps. Build quirks are
-  documented in `pkgs/boot/edk2.nix` (CRLF line endings in
+- **EDK2 sourcing**: fixed-output archives pin the EDK2 revision and every
+  top-level gitlink, and the unpack phase assembles the source tree before the
+  build. OVMF compiles vendored submodule sources (openssl, brotli, mipisyst)
+  directly, so the root release archive alone is insufficient. Archive
+  derivations keep restricted evaluation network-free and avoid fetching
+  irrelevant nested Git histories such as upstream test repositories. Build
+  quirks are documented in `pkgs/boot/edk2.nix` (CRLF line endings in
   `tools_def.template` being the sneakiest).
 - **Driver protocol bug, fixed in `agent.py`**: QEMU drops chardev
   bytes written while the guest's virtio-serial port is closed during

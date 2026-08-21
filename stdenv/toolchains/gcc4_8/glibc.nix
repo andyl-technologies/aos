@@ -78,6 +78,17 @@ in
         # Replace /bin/pwd with pwd (Nix sandbox has no /bin/)
         ${prev.sed}/bin/sed -i 's|/bin/pwd|pwd|g' configure
 
+        # The preceding bootstrap shell does not expand this configure-time
+        # wildcard reliably.  Enumerate the only native preconfigure fragment
+        # this x86_64 tier needs so glibc selects x86_64/64 and, through its
+        # Implies-after file, the wordsize-64 implementations.
+        ${prev.sed}/bin/sed -i \
+          's@if frags=`ls -d $srcdir/sysdeps/\*/preconfigure 2> /dev/null`@if frags="$srcdir/sysdeps/x86_64/preconfigure"@' \
+          configure
+        ${prev.grep}/bin/grep -Fq \
+          'if frags="$srcdir/sysdeps/x86_64/preconfigure"' \
+          configure
+
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
