@@ -13,7 +13,9 @@ use std::{fmt, os::raw::c_int};
 
 use thiserror::Error;
 
-use crucible_shmem::{FrameDeliveryKey, FrameEntry, FrameEntryError};
+use crucible_shmem::{
+    FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError, FrameEntry, FrameEntryError,
+};
 
 pub use qemu_symbols::{
     QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuPluginNetInjectFn, resolve_qemu_net_inject_symbol,
@@ -62,8 +64,24 @@ impl PluginNetworkRx {
         let mut ordered_frames = frames.iter().collect::<Vec<_>>();
         ordered_frames.sort_by_key(|frame| frame.delivery_key());
 
-        for frame in &ordered_frames {
-            validate_delivery_gate(frame, current_icount)?;
+        let mut retained_head_authorizes_backlog = false;
+        for (index, frame) in ordered_frames.iter().enumerate() {
+            let state = frame
+                .delivery_state()
+                .map_err(|source| network_rx_delivery_state_error(frame.delivery_key(), source))?;
+            if index == 0 && state == FrameDeliveryState::Retained {
+                retained_head_authorizes_backlog = true;
+            } else if state == FrameDeliveryState::Retained {
+                return Err(NetworkRxError::RetainedFrameIsNotHead {
+                    frame: frame.delivery_key(),
+                });
+            }
+            validate_delivery_gate(
+                frame,
+                passed_delivery_floor_icount,
+                current_icount,
+                retained_head_authorizes_backlog,
+            )?;
             frame.payload().map_err(|source| NetworkRxError::Payload {
                 frame: frame.delivery_key(),
                 source,
@@ -192,7 +210,7 @@ impl CanonicalNetworkRx for QemuCanonicalNetworkRx {
     }
 }
 
-/// The backend operation that produced a network RX queue error.
+/// The backend operation that produced a network RX delivery error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkRxDeliveryOperation {
     /// Direct guest delivery failed permanently.
@@ -310,6 +328,32 @@ pub enum NetworkRxError {
         /// The future frame's deterministic delivery key.
         frame: FrameDeliveryKey,
     },
+    /// A frame is behind the delivery floor without retained provenance.
+    #[error(
+        "network RX frame {frame:?} is behind delivery floor {passed_delivery_floor_icount} at current icount {current_icount} without backpressure provenance"
+    )]
+    DeliveryAlreadyPassed {
+        /// The delivery floor for this callback pass.
+        passed_delivery_floor_icount: u64,
+        /// The current consumer icount.
+        current_icount: u64,
+        /// The late frame lacking retained provenance.
+        frame: FrameDeliveryKey,
+    },
+    /// A retained marker appeared on a frame other than the canonical head.
+    #[error("network RX retained frame {frame:?} is not the canonical batch head")]
+    RetainedFrameIsNotHead {
+        /// The invalid retained frame.
+        frame: FrameDeliveryKey,
+    },
+    /// A shared frame carries a delivery state unknown to this ABI version.
+    #[error("network RX frame {frame:?} has invalid delivery state {state}")]
+    InvalidDeliveryState {
+        /// The affected deterministic frame key.
+        frame: FrameDeliveryKey,
+        /// The rejected shared-memory state byte.
+        state: u8,
+    },
     /// A frame advertised an invalid payload length.
     #[error("network RX frame {frame:?} has invalid payload: {source}")]
     Payload {
@@ -328,14 +372,38 @@ pub enum NetworkRxError {
     },
 }
 
-fn validate_delivery_gate(frame: &FrameEntry, current_icount: u64) -> Result<(), NetworkRxError> {
+fn validate_delivery_gate(
+    frame: &FrameEntry,
+    passed_delivery_floor_icount: u64,
+    current_icount: u64,
+    retained_head_authorizes_backlog: bool,
+) -> Result<(), NetworkRxError> {
     if frame.delivery_icount > current_icount {
         Err(NetworkRxError::DeliveryNotReached {
             current_icount,
             frame: frame.delivery_key(),
         })
+    } else if frame.delivery_icount < passed_delivery_floor_icount
+        && !retained_head_authorizes_backlog
+    {
+        Err(NetworkRxError::DeliveryAlreadyPassed {
+            passed_delivery_floor_icount,
+            current_icount,
+            frame: frame.delivery_key(),
+        })
     } else {
         Ok(())
+    }
+}
+
+fn network_rx_delivery_state_error(
+    frame: FrameDeliveryKey,
+    source: FrameDeliveryStateError,
+) -> NetworkRxError {
+    match source {
+        FrameDeliveryStateError::UnknownState { state } => {
+            NetworkRxError::InvalidDeliveryState { frame, state }
+        }
     }
 }
 
@@ -568,12 +636,57 @@ mod tests {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
         let late = frame(19, 1, 0, b"late");
+        late.mark_delivery_retained()
+            .unwrap_or_else(|error| panic!("mark retained frame: {error}"));
 
         let injection = network_rx
             .inject_due_frames_from_idle_context(&mut queue, 20, 20, std::slice::from_ref(&late))
             .unwrap_or_else(|error| panic!("retained frame should retry: {error}"));
         assert_eq!(injection.delivered_frame_keys(), &[late.delivery_key()]);
         assert_eq!(queue.queued_payloads, vec![b"late".to_vec()]);
+    }
+
+    #[test]
+    fn network_rx_rejects_unproven_late_frame() {
+        let network_rx = PluginNetworkRx::new();
+        let mut queue = RecordingRxQueue::ready();
+        let late = frame(19, 1, 0, b"late");
+
+        assert_eq!(
+            network_rx.inject_due_frames_from_idle_context(
+                &mut queue,
+                20,
+                20,
+                std::slice::from_ref(&late),
+            ),
+            Err(NetworkRxError::DeliveryAlreadyPassed {
+                passed_delivery_floor_icount: 20,
+                current_icount: 20,
+                frame: late.delivery_key(),
+            })
+        );
+        assert!(queue.queued_payloads.is_empty());
+    }
+
+    #[test]
+    fn network_rx_retained_head_authorizes_blocked_fifo_backlog() {
+        let network_rx = PluginNetworkRx::new();
+        let mut queue = RecordingRxQueue::ready();
+        let retained = frame(18, 1, 0, b"retained");
+        retained
+            .mark_delivery_retained()
+            .unwrap_or_else(|error| panic!("mark retained frame: {error}"));
+        let successor = frame(19, 1, 1, b"successor");
+
+        let injection = network_rx
+            .inject_due_frames_from_idle_context(&mut queue, 20, 20, &[retained, successor])
+            .unwrap_or_else(|error| panic!("retained backlog should retry: {error}"));
+
+        assert_eq!(injection.delivered_frame_keys().len(), 2);
+        assert_eq!(
+            queue.queued_payloads,
+            vec![b"retained".to_vec(), b"successor".to_vec()]
+        );
     }
 
     #[test]

@@ -441,14 +441,19 @@ vCPU-switch interleaving an explorable, replayable property of the schedule.
   in ring-arrival order. *Gate:* `gate:layer1-injection`. *Spec:* §12.4.2; routes
   [INV-3], [DET-14].
 
-- **[PLUG-20]** If the plugin ever observes an inbound frame whose
-  `delivery_icount` the guest's `current_icount` has *already passed* (a frame
-  that should have been visible earlier), this is a Contract-B violation
-  ([DET-12], [SHM-35]): the plugin MUST fail loudly and localize the violation
-  (report the frame's `(delivery_icount, src_node, seq)` and the guest's current
-  icount) rather than delivering the frame late. The conservative lookahead and
-  the ceiling handshake make this state unreachable in a correct run; observing it
-  is a defect, never a tolerated condition. *Gate:* `gate:layer1-injection`,
+- **[PLUG-20]** If the plugin observes an inbound frame whose `delivery_icount`
+  the guest's `current_icount` has already passed, it MUST fail loudly unless
+  that frame is the canonical ring head and its ABI-versioned consumer state
+  proves a prior real-QEMU backpressure result. A retained head authorizes its
+  same-ring FIFO successors while it blocks them; no other late frame or
+  retained marker is valid. Because guest progress is what can release device
+  backpressure, a retained head and its blocked FIFO MUST NOT constrain the
+  next guest wake to the head's already-attempted delivery icount. The plugin
+  MUST report the frame's
+  `(delivery_icount, src_node, seq)` and current icount on rejection. It MUST
+  set retained state only after QEMU returns backpressure, preserve that state
+  through checkpoint/restore, and dequeue the frame only after complete guest
+  acceptance. *Gate:* `gate:layer1-injection`,
   `gate:divergence-bisect`. *Spec:* §12.4.2; routes [DET-12], [INV-10].
 
 ### 12.4.3 Holding HZ ticks across in-flight device I/O

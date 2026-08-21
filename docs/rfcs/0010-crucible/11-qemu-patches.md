@@ -223,7 +223,7 @@ DEVICE CO-SIM (shmem transport)                        class  enforces
   crucible-9p-completion-wake-registration realize-time notifier lifetime D PATCH-20, DET-1, INV-10
   crucible-dev-cb-api ........... register blk/9p callbacks  F    PATCH-30, PLUG, SHM-17
   crucible-net-tx-callback ...... intercept guest TX         F    PATCH-31, DET-18, E18, SHM-17
-  crucible-net-flush-api ........ lossless RX inject + flush F    PATCH-32, DET-18, E18
+  crucible-net-direct-inject-api  lossless direct RX status F    PATCH-32, DET-18, E18
   crucible-block-typed-errors ... exact block result to errno     F    STOR-RESULT, IO-8, PATCH-26
   crucible-block-discard ........ deterministic discard transport F    STOR-DISCARD, DET-16, PATCH-26
   crucible-block-transport-reset  epoch/recovery/reset transport       F    STOR-RESET, STOR-RESULT, DET-16, PATCH-26
@@ -290,7 +290,7 @@ not additional files:
 - `crucible-plugin-advance-barrier` -> `0010-crucible-plugin-time-advance.patch`
 - `crucible-plugin-device-wake` -> `0013-crucible-plugin-wake-fd.patch`,
   `0019-crucible-9p-shmem.patch`, and `0024-crucible-sim-poll-immediate.patch`
-- `crucible-net-flush-api` -> `0009-crucible-net-deterministic.patch`
+- `crucible-net-direct-inject-api` -> `0009-crucible-net-deterministic.patch`
 
 - **[PATCH-10]** The catalog above is the **authoritative inventory** of the
   series. A patch present in the AOS QEMU package but absent from this catalog, or
@@ -1833,7 +1833,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   upstream. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.6;
   satisfies [DET-18] (E18), [SHM-17], [INV-7].
 
-### crucible-net-flush-api — canonical, lossless RX injection
+### crucible-net-direct-inject-api — canonical, lossless RX injection
 
 - **Enforces:** [DET-18]; the RX side correctness.
 - **Mechanism:** the naive inject path (`qemu_receive_packet`) silently drops
@@ -1851,10 +1851,12 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Risk:** D (it determines RX delivery timing; a regression reintroduces
   nondeterministic loss).
 
-- **[PATCH-32]** The series MUST provide lossless RX injection (queue + flush)
-  so an inbound frame is never silently dropped when the receiver is momentarily
-  unready, and is delivered at the plugin's chosen virtual-time moment; backpressure
-  buffering MUST stay in QEMU's queue. *Gate:* `gate:layer1-injection`,
+- **[PATCH-32]** The series MUST provide lossless direct RX injection with
+  distinct complete, backpressure, and permanent-failure results so an inbound
+  frame is never silently dropped when the receiver is momentarily unready and
+  is delivered at the plugin's chosen virtual-time moment. Backpressure
+  retention MUST remain in the bounded, checkpointed shared-memory ring, never
+  a QEMU-private packet queue. *Gate:* `gate:layer1-injection`,
   `gate:qemu-inert`. *Spec:* §11.6; satisfies [DET-18] (E18).
 
 ## 11.7 Guest↔host channel: no new patch required
@@ -2372,8 +2374,8 @@ time-control primitives the whole design rests on.
     9p mount and layer-1 workload evidence remains a later gate.
 - [x] **T-PATCH-14** Implement the network co-sim patches
   `crucible-net-tx-callback` (TX intercept) and complete
-  `crucible-net-flush-api` QEMU patch ABI/Rust resolver integration over the
-  QEMU-side RX append/flush primitives, with no-loss /
+  `crucible-net-direct-inject-api` QEMU patch ABI/Rust resolver integration over
+  the direct-injection result contract, with no-loss /
   deterministic-delivery micro-tests. — satisfies [PATCH-31], [PATCH-32];
   spec §11.6 (E18).
   - Completed by `0020-crucible-net-tx-callback.patch`,

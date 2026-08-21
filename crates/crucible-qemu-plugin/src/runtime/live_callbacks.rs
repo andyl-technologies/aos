@@ -1590,8 +1590,12 @@ impl LiveVcpuTimeCallbackState {
         let _active = NetworkRxDeliveryActiveGuard(&network.rx_delivery_active);
         let preview = {
             let inbound = network.inbound.inbound();
-            PluginInboundFrames::preview_deliverable_since([inbound], current_icount, 0)
-                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
+            PluginInboundFrames::preview_deliverable_since(
+                [inbound],
+                current_icount,
+                passed_delivery_floor_icount,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
         };
         let injection = if preview.frames().is_empty() {
             None
@@ -1630,6 +1634,11 @@ impl LiveVcpuTimeCallbackState {
         .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
         if committed.frames() != delivered_frames {
             return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
+        }
+        if let Some(retained) = injection.and_then(|result| result.retained_frame_key()) {
+            let inbound = network.inbound.inbound();
+            PluginInboundFrames::mark_retained_head([inbound], retained)
+                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
         }
         Ok(())
     }

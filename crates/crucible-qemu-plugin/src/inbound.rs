@@ -6,7 +6,10 @@
 
 use thiserror::Error;
 
-use crucible_shmem::{FrameDeliveryKey, FrameEntry, RingHeader, SpscRingError};
+use crucible_shmem::{
+    FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError, FrameEntry, RingHeader,
+    SpscRingError,
+};
 
 use crate::shmem_ordering::PluginShmemOrdering;
 
@@ -82,9 +85,13 @@ impl InboundFrameBatch {
 pub struct PluginInboundFrames;
 
 impl PluginInboundFrames {
-    /// Peeks the earliest delivery icount across inbound ring heads.
+    /// Peeks the earliest unattempted delivery icount across inbound ring heads.
     ///
-    /// This method never consumes a ring entry.
+    /// A retained head has already reached its exact delivery boundary and must
+    /// not hold the guest at that past coordinate: guest progress is what can
+    /// release NIC backpressure. Its whole FIFO is therefore excluded from the
+    /// next-wake calculation until the retained head transfers. This method
+    /// never consumes a ring entry.
     ///
     /// # Errors
     ///
@@ -95,10 +102,10 @@ impl PluginInboundFrames {
     ) -> Result<Option<u64>, InboundFrameError> {
         let mut next_delivery: Option<u64> = None;
         for ring in rings {
-            let delivery =
-                PluginShmemOrdering::peek_inbound_delivery_icount(ring.header, ring.entries)
-                    .map_err(|source| map_ring_error(ring, source))?;
-            if let Some(delivery) = delivery {
+            if let Some(frame) = peek_head_frame(ring)?
+                && delivery_state(&frame)? == FrameDeliveryState::Pending
+            {
+                let delivery = frame.delivery_icount;
                 next_delivery = Some(match next_delivery {
                     Some(current) => current.min(delivery),
                     None => delivery,
@@ -108,7 +115,8 @@ impl PluginInboundFrames {
         Ok(next_delivery)
     }
 
-    /// Fails if any inbound ring head is already behind `consumer_current_icount`.
+    /// Fails if an unretained inbound ring head is already behind
+    /// `consumer_current_icount`.
     ///
     /// The check is non-consuming, which lets the idle path reject a scheduler
     /// overshoot before advancing QEMU virtual time.
@@ -126,6 +134,7 @@ impl PluginInboundFrames {
             let head = peek_head_frame(ring)?;
             if let Some(frame) = head
                 && frame.delivery_icount < consumer_current_icount
+                && delivery_state(&frame)? != FrameDeliveryState::Retained
             {
                 return Err(InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: Some(ring.ring_index),
@@ -196,6 +205,49 @@ impl PluginInboundFrames {
             current_icount: consumer_current_icount,
             frames,
         })
+    }
+
+    /// Marks the exact live head retained after real guest backpressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InboundFrameError::RetainedHeadMismatch`] when the expected
+    /// frame is not the unique current head, or
+    /// [`InboundFrameError::InvalidDeliveryState`] for an unknown shared state.
+    pub fn mark_retained_head<'a>(
+        rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+        expected: FrameDeliveryKey,
+    ) -> Result<(), InboundFrameError> {
+        let mut matching = None;
+        for ring in rings {
+            if peek_head_frame(ring)?.is_some_and(|frame| frame.delivery_key() == expected) {
+                if matching.is_some() {
+                    return Err(InboundFrameError::RetainedHeadMismatch {
+                        expected,
+                        actual: None,
+                    });
+                }
+                matching = Some(ring);
+            }
+        }
+        let Some(ring) = matching else {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected,
+                actual: None,
+            });
+        };
+        let slot = (PluginShmemOrdering::consumer_read_index(ring.header)
+            & (ring.entries.len() as u64 - 1)) as usize;
+        let actual = ring.entries[slot].delivery_key();
+        if actual != expected {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected,
+                actual: Some(actual),
+            });
+        }
+        ring.entries[slot]
+            .mark_delivery_retained()
+            .map_err(|source| map_delivery_state_error(expected, source))
     }
 
     /// Drains every inbound frame deliverable in the current idle pass.
@@ -303,8 +355,20 @@ impl PluginInboundFrames {
         }
 
         let mut deliverable = Vec::new();
-        for frame in frames {
-            if frame.delivery_icount < passed_delivery_floor_icount {
+        let mut retained_head_authorizes_backlog = false;
+        for (index, frame) in frames.into_iter().enumerate() {
+            let state = delivery_state(&frame)?;
+            if index == 0 && state == FrameDeliveryState::Retained {
+                retained_head_authorizes_backlog = true;
+            } else if state == FrameDeliveryState::Retained {
+                return Err(InboundFrameError::RetainedHeadMismatch {
+                    expected: frame.delivery_key(),
+                    actual: deliverable.first().map(FrameEntry::delivery_key),
+                });
+            }
+            if frame.delivery_icount < passed_delivery_floor_icount
+                && !retained_head_authorizes_backlog
+            {
                 return Err(InboundFrameError::DeliveryAlreadyPassed {
                     ring_index: None,
                     consumer_current_icount,
@@ -363,6 +427,22 @@ pub enum InboundFrameError {
         /// The consumer icount observed while polling or draining.
         consumer_current_icount: u64,
     },
+    /// A shared frame carries a delivery state unknown to this ABI version.
+    #[error("inbound frame {frame:?} has invalid delivery state {state}")]
+    InvalidDeliveryState {
+        /// The affected deterministic frame key.
+        frame: FrameDeliveryKey,
+        /// The rejected shared-memory state byte.
+        state: u8,
+    },
+    /// The frame reported backpressured is no longer the unique ring head.
+    #[error("retained inbound head mismatch: expected {expected:?}, actual {actual:?}")]
+    RetainedHeadMismatch {
+        /// The frame whose guest delivery returned backpressure.
+        expected: FrameDeliveryKey,
+        /// A different head, when one was available.
+        actual: Option<FrameDeliveryKey>,
+    },
     /// A post-injection commit did not consume the same batch that was previewed.
     #[error("inbound commit consumed {actual:?} after previewing {expected:?}")]
     CommittedBatchMismatch {
@@ -415,11 +495,22 @@ fn collect_ring_deliverable_since(
     let write_idx = PluginShmemOrdering::producer_write_index(ring.header);
     let live = inbound_live_count(ring, read_idx, write_idx, capacity)?;
     let mut frames = Vec::new();
+    let mut retained_head_authorizes_backlog = false;
 
     for offset in 0..live {
         let slot = ((read_idx.wrapping_add(offset)) & (capacity - 1)) as usize;
         let frame = ring.entries[slot].clone();
-        if frame.delivery_icount < passed_delivery_floor_icount {
+        let state = delivery_state(&frame)?;
+        if offset == 0 && state == FrameDeliveryState::Retained {
+            retained_head_authorizes_backlog = true;
+        } else if state == FrameDeliveryState::Retained {
+            return Err(InboundFrameError::RetainedHeadMismatch {
+                expected: frame.delivery_key(),
+                actual: frames.first().map(FrameEntry::delivery_key),
+            });
+        }
+        if frame.delivery_icount < passed_delivery_floor_icount && !retained_head_authorizes_backlog
+        {
             return Err(InboundFrameError::DeliveryAlreadyPassed {
                 ring_index: Some(ring.ring_index),
                 consumer_current_icount,
@@ -433,6 +524,23 @@ fn collect_ring_deliverable_since(
     }
 
     Ok(frames)
+}
+
+fn delivery_state(frame: &FrameEntry) -> Result<FrameDeliveryState, InboundFrameError> {
+    frame
+        .delivery_state()
+        .map_err(|source| map_delivery_state_error(frame.delivery_key(), source))
+}
+
+fn map_delivery_state_error(
+    frame: FrameDeliveryKey,
+    source: FrameDeliveryStateError,
+) -> InboundFrameError {
+    match source {
+        FrameDeliveryStateError::UnknownState { state } => {
+            InboundFrameError::InvalidDeliveryState { frame, state }
+        }
+    }
 }
 
 fn inbound_ring_capacity(ring: InboundFrameRing<'_>) -> Result<u64, InboundFrameError> {
@@ -645,6 +753,74 @@ mod tests {
                 ring_index: Some(9),
                 consumer_current_icount: 20,
                 frame: frame(9, 7, 2, b"late").delivery_key(),
+            })
+        );
+        assert_eq!(ring.read_index(), 0);
+    }
+
+    #[test]
+    fn inbound_retained_head_authorizes_blocked_fifo_backlog() {
+        let ring = RingHeader::new();
+        let mut entries = empty_entries();
+        let retained = frame(8, 7, 2, b"retained");
+        let successor = frame(9, 7, 3, b"successor");
+        enqueue(&ring, &mut entries, retained.clone());
+        enqueue(&ring, &mut entries, successor.clone());
+
+        PluginInboundFrames::mark_retained_head(
+            [InboundFrameRing::new(9, &ring, &entries)],
+            retained.delivery_key(),
+        )
+        .unwrap_or_else(|error| panic!("live head should become retained: {error}"));
+        let batch = PluginInboundFrames::preview_deliverable_since(
+            [InboundFrameRing::new(9, &ring, &entries)],
+            20,
+            10,
+        )
+        .unwrap_or_else(|error| panic!("retained backlog should remain deliverable: {error}"));
+
+        assert_eq!(
+            batch
+                .frames()
+                .iter()
+                .map(FrameEntry::delivery_key)
+                .collect::<Vec<_>>(),
+            vec![retained.delivery_key(), successor.delivery_key()]
+        );
+        assert_eq!(
+            batch.frames()[0].delivery_state(),
+            Ok(FrameDeliveryState::Retained)
+        );
+        assert_eq!(
+            PluginInboundFrames::peek_next_delivery_icount([InboundFrameRing::new(
+                9, &ring, &entries,
+            )]),
+            Ok(None)
+        );
+        assert_eq!(ring.read_index(), 0);
+    }
+
+    #[test]
+    fn inbound_rejects_retained_marker_away_from_ring_head() {
+        let ring = RingHeader::new();
+        let mut entries = empty_entries();
+        let head = frame(10, 7, 2, b"head");
+        let invalid = frame(11, 7, 3, b"invalid");
+        invalid
+            .mark_delivery_retained()
+            .unwrap_or_else(|error| panic!("test marker should set: {error}"));
+        enqueue(&ring, &mut entries, head.clone());
+        enqueue(&ring, &mut entries, invalid.clone());
+
+        assert_eq!(
+            PluginInboundFrames::preview_deliverable_since(
+                [InboundFrameRing::new(9, &ring, &entries)],
+                20,
+                10,
+            ),
+            Err(InboundFrameError::RetainedHeadMismatch {
+                expected: invalid.delivery_key(),
+                actual: Some(head.delivery_key()),
             })
         );
         assert_eq!(ring.read_index(), 0);

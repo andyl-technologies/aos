@@ -4,7 +4,10 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crucible_shmem::{FrameEntry, MAX_FRAME_DATA, RingHeader, SpscRingError, SpscRingSnapshot};
+use crucible_shmem::{
+    FRAME_DELIVERY_PENDING, FrameDeliveryState, FrameEntry, MAX_FRAME_DATA, RingHeader,
+    SpscRingError, SpscRingSnapshot,
+};
 
 #[test]
 fn snapshot_captures_fifo_after_wraparound_and_canonicalizes_entries() {
@@ -141,6 +144,29 @@ fn canonical_bytes_decoder_round_trips_and_normalizes_padding() {
 }
 
 #[test]
+fn canonical_bytes_round_trip_retained_delivery_state() {
+    let retained = frame(61, 7, 1, b"retained");
+    retained
+        .mark_delivery_retained()
+        .unwrap_or_else(|error| panic!("frame should become retained: {error}"));
+    let snapshot = SpscRingSnapshot {
+        frames: vec![retained],
+    };
+
+    let encoded = snapshot
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("retained snapshot should encode: {error}"));
+    let decoded = SpscRingSnapshot::from_canonical_bytes(&encoded)
+        .unwrap_or_else(|error| panic!("retained snapshot should decode: {error}"));
+
+    assert_eq!(
+        decoded.frames[0].delivery_state(),
+        Ok(FrameDeliveryState::Retained)
+    );
+    assert_eq!(decoded, snapshot);
+}
+
+#[test]
 fn canonical_bytes_decoder_rejects_malformed_corpus_without_panicking() {
     for case in malformed_snapshot_cases() {
         let decoded = match catch_unwind(AssertUnwindSafe(|| {
@@ -218,6 +244,12 @@ fn canonical_bytes(frames: &[FrameEntry]) -> Vec<u8> {
         bytes.extend_from_slice(&frame.src_node.to_le_bytes());
         bytes.extend_from_slice(&frame.seq.to_le_bytes());
         bytes.extend_from_slice(&frame.len.to_le_bytes());
+        bytes.push(
+            frame
+                .delivery_state()
+                .unwrap_or_else(|error| panic!("test frame state should be valid: {error}"))
+                as u8,
+        );
         bytes.extend_from_slice(payload(frame));
     }
     bytes
@@ -239,6 +271,9 @@ fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
 
     let mut truncated_payload = snapshot_frame_prefix(71, 8, 1, 3);
     truncated_payload.extend_from_slice(b"ab");
+
+    let mut invalid_delivery_state = snapshot_frame_prefix(72, 8, 2, 0);
+    invalid_delivery_state[26] = 0xff;
 
     let huge_count_error = if usize::try_from(u64::MAX).is_ok() {
         SpscRingError::SnapshotDecodeTruncated {
@@ -305,10 +340,15 @@ fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
             name: "truncated-payload",
             bytes: truncated_payload,
             error: SpscRingError::SnapshotDecodeTruncated {
-                offset: 26,
+                offset: 27,
                 needed: 3,
                 available: 2,
             },
+        },
+        MalformedSnapshotCase {
+            name: "invalid-delivery-state",
+            bytes: invalid_delivery_state,
+            error: SpscRingError::InvalidFrameDeliveryState { state: 0xff },
         },
         MalformedSnapshotCase {
             name: "trailing-after-empty-snapshot",
@@ -328,6 +368,7 @@ fn snapshot_frame_prefix(delivery_icount: u64, src_node: u32, seq: u32, len: u16
     bytes.extend_from_slice(&src_node.to_le_bytes());
     bytes.extend_from_slice(&seq.to_le_bytes());
     bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.push(FRAME_DELIVERY_PENDING);
     bytes
 }
 

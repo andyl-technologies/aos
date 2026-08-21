@@ -126,6 +126,17 @@ pub enum FrameEntryError {
     },
 }
 
+/// A validation error for the consumer-owned frame delivery state.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum FrameDeliveryStateError {
+    /// The shared byte carries a state unknown to this ABI version.
+    #[error("frame delivery state {state} is not recognized")]
+    UnknownState {
+        /// The rejected shared-memory state byte.
+        state: u8,
+    },
+}
+
 /// A validation error for plugin-to-host coverage entries.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CoverageEntryError {
@@ -410,6 +421,12 @@ pub enum SpscRingError {
         len: usize,
         /// The maximum payload capacity in bytes.
         capacity: usize,
+    },
+    /// A frame carries a delivery state unknown to this ABI version.
+    #[error("SPSC frame delivery state {state} is not recognized")]
+    InvalidFrameDeliveryState {
+        /// The rejected shared-memory state byte.
+        state: u8,
     },
     /// The snapshot frame count cannot fit in the canonical byte encoding.
     #[error("SPSC snapshot length {len} cannot be encoded as u64")]

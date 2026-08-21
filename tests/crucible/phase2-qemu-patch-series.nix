@@ -81,7 +81,7 @@
       catalogName = "crucible-net-deterministic";
       class = "D";
       enforces = "DET-11,DET-13,E18";
-      capability = "plugin-chosen icount network RX injection and flush";
+      capability = "plugin-chosen icount network RX direct injection with canonical shared-memory backpressure";
     }
     {
       file = "0010-crucible-plugin-time-advance.patch";
