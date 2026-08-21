@@ -200,8 +200,12 @@ in
             bundle_bytes=$(wc -c < ${series.patchBranchBundle})
             test "$bundle_bytes" -lt 100000000 \
               || fail "patch branch bundle is $bundle_bytes bytes; repository artifacts must remain below GitHub's 100 MB limit"
+            # A thin bundle made from an explicitly checked-out commit records
+            # its advertised tip as HEAD. The manifest separately pins the
+            # logical branch name and exact head commit, so import that tip and
+            # verify its identity below instead of assuming a named bundle ref.
             git fetch -q ${series.patchBranchBundle} \
-              "refs/heads/${series.patchBranchRef}:refs/heads/patch-stack"
+              "HEAD:refs/heads/patch-stack"
             patch_branch_head=$(git rev-parse refs/heads/patch-stack)
             test "$patch_branch_head" = "${series.patchBranchHeadCommit}" \
               || fail "patch branch head $patch_branch_head does not match manifest ${series.patchBranchHeadCommit}"

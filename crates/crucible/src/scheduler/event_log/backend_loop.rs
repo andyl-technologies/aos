@@ -3,6 +3,9 @@
 use super::*;
 use crate::BackendEffect;
 
+mod settlement;
+pub use settlement::BackendNetworkSettlement;
+
 /// Intercepts committed live-backend network outputs before link resolution.
 ///
 /// The interceptor runs after every output has been translated to scheduler
@@ -55,28 +58,6 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
     network_settlement_poisoned: bool,
-}
-
-/// Scheduler changes produced while settling network frames at one boundary.
-#[derive(Clone, Debug)]
-pub struct BackendNetworkSettlement {
-    decisions: Vec<Decision>,
-    configuration: Option<Configuration>,
-    appends: Vec<SchedulerEventLogAppend>,
-}
-
-impl BackendNetworkSettlement {
-    /// Consumes the settlement into decisions, the latest configuration, and appends.
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        Vec<Decision>,
-        Option<Configuration>,
-        Vec<SchedulerEventLogAppend>,
-    ) {
-        (self.decisions, self.configuration, self.appends)
-    }
 }
 
 impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
