@@ -21,7 +21,8 @@ use crucible_shmem::{
 /// Hard ceiling on concrete QEMU RX attempts for one canonical frame.
 pub const NETWORK_RX_DELIVERY_ATTEMPT_LIMIT: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
 /// Minimum guest-instruction distance between retained-frame RX retries.
-pub const NETWORK_RX_RETRY_INTERVAL_ICOUNT: u64 = 4_000_000;
+pub const NETWORK_RX_RETRY_INTERVAL_ICOUNT: u64 =
+    crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT;
 
 pub use qemu_symbols::{
     QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuPluginNetInjectFn, resolve_qemu_net_inject_symbol,

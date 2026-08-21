@@ -301,6 +301,8 @@ pub const FRAME_DELIVERY_PENDING: u8 = 0;
 pub const FRAME_DELIVERY_RETAINED: u8 = 1;
 /// Hard ceiling on retained guest RX attempts represented by the public ABI.
 pub const MAX_FRAME_DELIVERY_ATTEMPTS: u32 = 1_024;
+/// Minimum guest-instruction distance between retained-frame delivery attempts.
+pub const FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT: u64 = 4_000_000;
 
 /// Failure to admit another concrete guest delivery attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

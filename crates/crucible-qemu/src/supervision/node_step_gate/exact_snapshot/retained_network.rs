@@ -12,6 +12,8 @@ pub struct QemuLiveRetainedNetworkSnapshotReport {
     pub retained_frame: crucible_shmem::FrameDeliveryKey,
     /// Delivery-attempt count captured and restored with the frame.
     pub restored_delivery_attempts: u32,
+    /// First retry deadline observed unchanged before and attempted exactly at.
+    pub first_retry_icount: u64,
     /// Whether the restored guest userspace acknowledged that exact payload.
     pub guest_acknowledgement_seen: bool,
     /// Whether the frame left canonical shared memory after guest acceptance.
@@ -91,7 +93,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         .map_err(|error| {
             QemuLiveNodeStepGateError::node_op("inspect retained capture transport", error)
         })?;
-    let (retained_frame, source_attempts) =
+    let (retained_frame, source_attempts, source_last_attempt_icount) =
         retained_transport_head(&source_transport, frame_payload)?;
 
     let checkpoint = retained_network_checkpoint(&identity, CAPTURE_ICOUNT);
@@ -168,15 +170,98 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         .map_err(|error| {
             QemuLiveNodeStepGateError::node_op("inspect retained restored transport", error)
         })?;
-    let (restored_frame, restored_attempts) =
+    let (restored_frame, restored_attempts, restored_last_attempt_icount) =
         retained_transport_head(&restored_transport, frame_payload)?;
     if restored_icount != CAPTURE_ICOUNT
         || restored_frame != retained_frame
         || restored_attempts != source_attempts
+        || restored_last_attempt_icount != source_last_attempt_icount
     {
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: format!(
-                "fresh retained restore changed boundary/state: icount={restored_icount}/{CAPTURE_ICOUNT}, frame={restored_frame:?}/{retained_frame:?}, attempts={restored_attempts}/{source_attempts}"
+                "fresh retained restore changed boundary/state: icount={restored_icount}/{CAPTURE_ICOUNT}, frame={restored_frame:?}/{retained_frame:?}, attempts={restored_attempts}/{source_attempts}, last_attempt={restored_last_attempt_icount}/{source_last_attempt_icount}"
+            ),
+        });
+    }
+
+    let first_retry_icount = restored_last_attempt_icount
+        .checked_add(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
+        .ok_or_else(|| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("restored retained retry coordinate overflowed u64"),
+        })?;
+    let before_retry = first_retry_icount.checked_sub(1).ok_or_else(|| {
+        QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("restored retained retry has no preceding boundary"),
+        }
+    })?;
+    restored
+        .advance_to_ceiling(Icount {
+            retired: before_retry,
+        })
+        .map_err(|error| {
+            QemuLiveNodeStepGateError::node_op("advance restored pre-retry boundary", error)
+        })?;
+    let pre_retry_icount = restored
+        .current_icount()
+        .map_err(|error| {
+            QemuLiveNodeStepGateError::node_op("read restored pre-retry boundary", error)
+        })?
+        .retired;
+    let pre_retry_transport =
+        restored
+            .checkpoint_network_transport_for_gate()
+            .map_err(|error| {
+                QemuLiveNodeStepGateError::node_op("inspect restored pre-retry transport", error)
+            })?;
+    let pre_retry_unchanged = pre_retry_transport.inbound.frames.iter().any(|frame| {
+        frame.delivery_key() == retained_frame
+            && frame.delivery_state() == Ok(FrameDeliveryState::Retained)
+            && frame.delivery_attempts() == restored_attempts
+            && frame.last_delivery_attempt_icount() == restored_last_attempt_icount
+    });
+    if pre_retry_icount != before_retry || !pre_retry_unchanged {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "restored retained frame changed before retry: icount={pre_retry_icount}/{before_retry}, inbound={:?}",
+                pre_retry_transport.inbound.frames
+            ),
+        });
+    }
+
+    restored
+        .advance_to_ceiling(Icount {
+            retired: first_retry_icount,
+        })
+        .map_err(|error| {
+            QemuLiveNodeStepGateError::node_op("advance restored exact retry boundary", error)
+        })?;
+    let exact_retry_icount = restored
+        .current_icount()
+        .map_err(|error| {
+            QemuLiveNodeStepGateError::node_op("read restored exact retry boundary", error)
+        })?
+        .retired;
+    let exact_retry_transport =
+        restored
+            .checkpoint_network_transport_for_gate()
+            .map_err(|error| {
+                QemuLiveNodeStepGateError::node_op("inspect restored exact retry transport", error)
+            })?;
+    let retry_state_valid = exact_retry_transport
+        .inbound
+        .frames
+        .iter()
+        .find(|frame| frame.delivery_key() == retained_frame)
+        .is_none_or(|frame| {
+            frame.delivery_state() == Ok(FrameDeliveryState::Retained)
+                && frame.delivery_attempts() == restored_attempts.saturating_add(1)
+                && frame.last_delivery_attempt_icount() == first_retry_icount
+        });
+    if exact_retry_icount != first_retry_icount || !retry_state_valid {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "restored retained frame missed exact retry: icount={exact_retry_icount}/{first_retry_icount}, inbound={:?}",
+                exact_retry_transport.inbound.frames
             ),
         });
     }
@@ -265,6 +350,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         capture_icount: CAPTURE_ICOUNT,
         retained_frame,
         restored_delivery_attempts: restored_attempts,
+        first_retry_icount,
         guest_acknowledgement_seen,
         retained_frame_consumed,
         source_process_force_crashed: true,
@@ -340,7 +426,7 @@ fn persist_snapshot_closure(
 fn retained_transport_head(
     checkpoint: &crate::QemuNetworkTransportCheckpoint,
     expected_payload: &[u8],
-) -> Result<(crucible_shmem::FrameDeliveryKey, u32), QemuLiveNodeStepGateError> {
+) -> Result<(crucible_shmem::FrameDeliveryKey, u32, u64), QemuLiveNodeStepGateError> {
     let Some(frame) = checkpoint.inbound.frames.first() else {
         return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: String::from("retained network checkpoint has no inbound head"),
@@ -358,7 +444,11 @@ fn retained_transport_head(
             ),
         });
     }
-    Ok((frame.delivery_key(), frame.delivery_attempts()))
+    Ok((
+        frame.delivery_key(),
+        frame.delivery_attempts(),
+        frame.last_delivery_attempt_icount(),
+    ))
 }
 
 fn retained_network_checkpoint(node: &NodeId, icount: u64) -> Checkpoint {
