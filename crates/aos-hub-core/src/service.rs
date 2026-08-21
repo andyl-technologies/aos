@@ -24026,7 +24026,7 @@ impl RpcService {
             }
             if existing.state != "failed" {
                 return self
-                    .registry_publication_response(&existing.publication_id)
+                    .registry_publication_response(&existing.publication_id, true)
                     .await;
             }
             self.db
@@ -24151,10 +24151,15 @@ impl RpcService {
                 .map_err(RpcError::internal)?;
             return Err(error);
         }
-        self.registry_publication_response(&publication_id).await
+        self.registry_publication_response(&publication_id, true)
+            .await
     }
 
     /// Lists one registry's publication history in stable newest-first order.
+    ///
+    /// List entries omit per-object upload manifests. Call
+    /// [`Self::get_registry_publication`] for one publication's complete object
+    /// inventory.
     ///
     /// Page tokens are bound to the registry's immutable identity and exact
     /// state filter, so they cannot be replayed against another inventory.
@@ -24228,7 +24233,7 @@ impl RpcService {
         let mut publications = Vec::with_capacity(page.records.len());
         for publication in page.records {
             publications.push(
-                self.registry_publication_response(&publication.publication_id)
+                self.registry_publication_response(&publication.publication_id, false)
                     .await?,
             );
         }
@@ -24264,7 +24269,7 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
-        self.registry_publication_response(&publication.publication_id)
+        self.registry_publication_response(&publication.publication_id, true)
             .await
     }
 
@@ -25471,7 +25476,7 @@ impl RpcService {
             self.refresh_registry_index_after_publication(&registry, &req.publication_id)
                 .await;
             return self
-                .registry_publication_response(&req.publication_id)
+                .registry_publication_response(&req.publication_id, true)
                 .await;
         }
         let immutable_complete = self
@@ -25617,7 +25622,7 @@ impl RpcService {
         self.lease.release(registry.id, &req.publication_id).await;
         self.refresh_registry_index_after_publication(&registry, &req.publication_id)
             .await;
-        self.registry_publication_response(&req.publication_id)
+        self.registry_publication_response(&req.publication_id, true)
             .await
     }
 
@@ -25655,7 +25660,7 @@ impl RpcService {
         if publication.state == "failed" {
             self.lease.release(registry.id, &req.publication_id).await;
             return self
-                .registry_publication_response(&req.publication_id)
+                .registry_publication_response(&req.publication_id, true)
                 .await;
         }
         if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
@@ -25677,13 +25682,14 @@ impl RpcService {
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         self.lease.release(registry.id, &req.publication_id).await;
-        self.registry_publication_response(&req.publication_id)
+        self.registry_publication_response(&req.publication_id, true)
             .await
     }
 
     async fn registry_publication_response(
         &self,
         publication_id: &str,
+        include_objects: bool,
     ) -> Result<pb::RegistryPublication, RpcError> {
         let publication = self
             .db
@@ -25697,33 +25703,36 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))?;
-        let max_complete_upload = self.effective_complete_upload_bytes().await as i64;
-        let objects = self
-            .db
-            .registry_publication_upload_objects(publication_id)
-            .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .map(|object| pb::RegistryPublicationObject {
-                object_id: object.surface_object_id,
-                path: object.object_key.clone(),
-                sha256: object.expected_hash,
-                byte_size: object.expected_size,
-                kind: object.object_kind,
-                media_type: publication_media_type(&object.object_key).into(),
-                upload_url: (object.expected_size <= max_complete_upload)
-                    .then(|| {
-                        format!(
-                            "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
-                            self.external_url.trim_end_matches('/'),
-                            publication_id,
-                            object.surface_object_id
-                        )
-                    })
-                    .unwrap_or_default(),
-                verified: object.verified,
-            })
-            .collect();
+        let objects = if include_objects {
+            let max_complete_upload = self.effective_complete_upload_bytes().await as i64;
+            self.db
+                .registry_publication_upload_objects(publication_id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .map(|object| pb::RegistryPublicationObject {
+                    object_id: object.surface_object_id,
+                    path: object.object_key.clone(),
+                    sha256: object.expected_hash,
+                    byte_size: object.expected_size,
+                    kind: object.object_kind,
+                    media_type: publication_media_type(&object.object_key).into(),
+                    upload_url: (object.expected_size <= max_complete_upload)
+                        .then(|| {
+                            format!(
+                                "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
+                                self.external_url.trim_end_matches('/'),
+                                publication_id,
+                                object.surface_object_id
+                            )
+                        })
+                        .unwrap_or_default(),
+                    verified: object.verified,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut placements = Vec::new();
         for progress in self
             .db
@@ -35903,6 +35912,33 @@ mod cache_upload_tests {
 
         assert_eq!(committed.state, "ready");
         assert_eq!(committed.placements[0].state, "ready");
+        assert_eq!(committed.objects.len(), 2);
+
+        let listed = service
+            .list_registry_publications(
+                Some(&auth),
+                pb::ListRegistryPublicationsRequest {
+                    registry: "reuse-only/main".into(),
+                    state: "ready".into(),
+                    page_size: 1,
+                    page_token: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.publications.len(), 1);
+        assert!(listed.publications[0].objects.is_empty());
+
+        let shown = service
+            .get_registry_publication(
+                Some(&auth),
+                pb::GetRegistryPublicationRequest {
+                    publication_id: publication_id.into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown.objects.len(), 2);
         assert_eq!(
             db.registry_publication_state(registry_id)
                 .await
