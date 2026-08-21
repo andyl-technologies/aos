@@ -14,18 +14,20 @@
 
 use std::sync::Arc;
 
-use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
+use crucible::{Configuration, Decision, FindingReproductionArtifact, ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
     CampaignRepositoryError, CandidateGeneratorSpec, CandidateGeneratorSpecId,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ReproductionArtifact,
+    ReproductionArtifactId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectionOrigin,
 };
 
 /// Payload schema for a compact canonical Crucible scenario definition.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
 /// Payload schema for a compact canonical Crucible configuration schedule.
 pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
+/// Payload schema for a compact canonical Crucible reproduction artifact.
+pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1: u32 = 1;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
@@ -115,6 +117,84 @@ impl CrucibleCampaignArtifactStore {
         if stored != expected {
             return Err(CrucibleArtifactError::SemanticIdentityMismatch {
                 artifact: "stored configuration",
+            });
+        }
+        Ok(stored)
+    }
+
+    /// Replays, verifies, and publishes one self-contained finding reproduction.
+    ///
+    /// The supplied value is reconstructed through Crucible's public capture
+    /// path before any campaign write. Its exact scenario/configuration
+    /// artifacts are imported first, and the campaign record then binds those
+    /// identities to the verified failure fingerprint and compact bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when replay, identity validation,
+    /// artifact publication, or the resulting stored identity check fails.
+    pub fn import_reproduction(
+        &self,
+        finding: &FindingReproductionArtifact,
+    ) -> Result<ReproductionArtifactId, CrucibleArtifactError> {
+        let scenario = finding.artifact.scenario_form();
+        let schedule = finding.artifact.schedule();
+        let configuration = Configuration {
+            def: finding.artifact.scenario_def(),
+            schedule: schedule.clone(),
+        };
+        let verified = FindingReproductionArtifact::capture(
+            finding.discovery_path,
+            finding.finding_fingerprint,
+            scenario,
+            &configuration,
+        )
+        .map_err(|source| CrucibleArtifactError::InvalidPayload {
+            artifact: "finding reproduction",
+            source: Box::new(source),
+        })?;
+        if verified != *finding {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding reproduction",
+            });
+        }
+
+        let scenario_record = encode_crucible_scenario_artifact(scenario)?;
+        let configuration_record =
+            encode_crucible_configuration_artifact(&scenario_record, schedule)?;
+        let stored_configuration = self.import_configuration(scenario, schedule)?;
+        if stored_configuration != configuration_record.id()? {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding configuration",
+            });
+        }
+
+        let fingerprint = CampaignHash::from_bytes(finding.finding_fingerprint.bytes);
+        let artifact = ReproductionArtifact::new(
+            scenario_record.scenario(),
+            scenario_record.id()?,
+            configuration_record.configuration(),
+            stored_configuration,
+            fingerprint,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1,
+            finding.artifact.to_compact_binary(),
+        )?;
+        let expected = artifact.id()?;
+        let stored = self
+            .repository
+            .publish_reproduction_artifact(
+                artifact.scenario(),
+                artifact.scenario_artifact(),
+                artifact.configuration(),
+                artifact.configuration_artifact(),
+                artifact.finding_fingerprint(),
+                artifact.payload_schema(),
+                artifact.payload().to_vec(),
+            )
+            .map_err(CrucibleArtifactError::RepositoryPublication)?;
+        if stored != expected {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "stored finding reproduction",
             });
         }
         Ok(stored)
@@ -467,7 +547,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use crucible::{Decision, DeliveryOrderDecision, SelectionDecision, VirtualTime};
+    use crucible::{
+        ContentHash, Decision, DeliveryOrderDecision, FindingDiscoveryPath, SelectionDecision,
+        VirtualTime,
+    };
     use crucible_campaign::{
         BooleanDomain, CampaignRepository, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
         ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
@@ -585,6 +668,50 @@ mod tests {
             .expect("verify stored configuration")
             .schedule,
             schedule
+        );
+    }
+
+    #[test]
+    fn verifier_backed_store_replays_finding_before_reproduction_publication() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule: Schedule::empty(),
+        };
+        let finding = FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            ContentHash::from_bytes(b"stable-failure-fingerprint"),
+            &scenario,
+            &configuration,
+        )
+        .expect("capture finding reproduction");
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "crucible-reproduction-import",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+
+        let id = store
+            .import_reproduction(&finding)
+            .expect("import verified reproduction");
+        let stored = repository
+            .load_reproduction_artifact(id)
+            .expect("load stored reproduction");
+        assert_eq!(
+            stored.finding_fingerprint(),
+            CampaignHash::from_bytes(finding.finding_fingerprint.bytes)
+        );
+        assert_eq!(
+            crucible::ReproductionArtifact::from_compact_binary(stored.payload())
+                .expect("decode stored reproduction")
+                .replay()
+                .expect("replay stored reproduction"),
+            finding.replay
         );
     }
 

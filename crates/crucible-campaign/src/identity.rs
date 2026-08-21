@@ -571,6 +571,12 @@ content_object_id!(
     "Identifies one canonical campaign finding."
 );
 content_object_id!(
+    ReproductionArtifactId,
+    ObjectKind::Finding,
+    "crucible.campaign.reproduction-artifact",
+    "Identifies one verifier-backed self-contained finding reproduction."
+);
+content_object_id!(
     MeasurementSetId,
     ObjectKind::Observation,
     "crucible.campaign.measurement-set",

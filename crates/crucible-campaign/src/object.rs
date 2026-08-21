@@ -18,9 +18,9 @@ use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
-    ExpansionCredit, ExpansionState, MeasurementSet, Observation, PlannerEngine, PlannerInvocation,
-    PlannerRequest, PlannerState, PlannerStep, PolicyArtifact, PropertyVerdictSet, Proposal,
-    ScenarioArtifact,
+    ExpansionCredit, ExpansionState, Finding, MeasurementSet, Observation, PlannerEngine,
+    PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
+    PropertyVerdictSet, Proposal, ReproductionArtifact, ScenarioArtifact,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -94,11 +94,15 @@ pub enum CampaignRecordKind {
     ContinuationProjection,
     /// Idempotent observation visit credited to one branch point.
     ExpansionCredit,
+    /// Verifier-backed self-contained finding reproduction.
+    ReproductionArtifact,
+    /// Canonical stable finding cluster.
+    Finding,
 }
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -131,6 +135,8 @@ impl CampaignRecordKind {
         Self::RetainedPlannerRequest,
         Self::ContinuationProjection,
         Self::ExpansionCredit,
+        Self::ReproductionArtifact,
+        Self::Finding,
     ];
 
     /// Returns the globally registered canonical schema name.
@@ -169,6 +175,8 @@ impl CampaignRecordKind {
             Self::RetainedPlannerRequest => "crucible.campaign.retained-planner-request",
             Self::ContinuationProjection => "crucible.campaign.continuation-projection",
             Self::ExpansionCredit => "crucible.campaign.expansion-credit",
+            Self::ReproductionArtifact => "crucible.campaign.reproduction-artifact",
+            Self::Finding => "crucible.campaign.finding",
         }
     }
 
@@ -212,6 +220,7 @@ impl CampaignRecordKind {
             Self::MeasurementSet | Self::PropertyVerdictSet | Self::Observation => {
                 ObjectKind::Observation
             }
+            Self::ReproductionArtifact | Self::Finding => ObjectKind::Finding,
             Self::Lineage
             | Self::Fact
             | Self::PlanningView
@@ -267,6 +276,8 @@ impl Canonical for CampaignRecordKind {
             Self::RetainedPlannerRequest => 29,
             Self::ContinuationProjection => 30,
             Self::ExpansionCredit => 31,
+            Self::ReproductionArtifact => 32,
+            Self::Finding => 33,
         });
     }
 
@@ -304,6 +315,8 @@ impl Canonical for CampaignRecordKind {
             29 => Ok(Self::RetainedPlannerRequest),
             30 => Ok(Self::ContinuationProjection),
             31 => Ok(Self::ExpansionCredit),
+            32 => Ok(Self::ReproductionArtifact),
+            33 => Ok(Self::Finding),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -679,6 +692,14 @@ fn expected_children(
         CampaignRecordKind::RetainedPlannerRequest => {
             let value = PlannerRequest::from_canonical_bytes(body)?;
             content_children(value.content_children()?)
+        }
+        CampaignRecordKind::ReproductionArtifact => {
+            let value = ReproductionArtifact::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::Finding => {
+            let value = Finding::from_canonical_bytes(body)?;
+            content_children(value.content_children())
         }
         CampaignRecordKind::MerkleNode => Err(CampaignCodecError::InvalidValue {
             reason: "opaque campaign record requires its owning validator",

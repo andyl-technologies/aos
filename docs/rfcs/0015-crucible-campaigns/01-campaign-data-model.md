@@ -84,6 +84,16 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
+Finding reproduction uses the same exact-artifact rule. A schema-v1
+`ReproductionArtifact` binds semantic and exact scenario/configuration
+identities, a stable failure fingerprint, and verifier-checked self-contained
+execution-model bytes. A schema-v1 `Finding` binds its normalized signature,
+representative and occurrence observations, original and optional minimized
+reproductions, the authenticated first-seen parent snapshot, and optional exact
+checkpoint accelerators. Both are `ObjectKind::Finding` records with distinct
+registered schemas; a broad finding content ID is not authoritative until its
+envelope schema and complete child table are authenticated.
+
 Campaign creation inserts the exact genesis configuration artifact into the
 canonical graph and corpus keys, publishes any candidate-generator closure,
 and verifies the complete snapshot closure before advancing the name. A

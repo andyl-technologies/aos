@@ -271,6 +271,19 @@ impl CampaignRepository {
         self.read_configuration_artifact(id.content_id())
     }
 
+    /// Loads a reproduction and validates its exact scenario/configuration basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for an invalid record or
+    /// cross-record semantic mismatch.
+    pub fn load_reproduction_artifact(
+        &self,
+        id: ReproductionArtifactId,
+    ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
+        self.read_reproduction_artifact(id.content_id())
+    }
+
     /// Loads an exact selectable declaration.
     ///
     /// # Errors
@@ -887,6 +900,28 @@ impl CampaignRepository {
         )?)
     }
 
+    pub(super) fn put_reproduction_artifact(
+        &self,
+        value: &ReproductionArtifact,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ReproductionArtifact,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_finding(
+        &self,
+        value: &Finding,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::Finding,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
     pub(super) fn put_scenario_artifact(
         &self,
         artifact: &ScenarioArtifact,
@@ -1028,6 +1063,101 @@ impl CampaignRepository {
         Ok(artifact)
     }
 
+    pub(super) fn read_reproduction_artifact(
+        &self,
+        id: ContentId,
+    ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::ReproductionArtifact)?;
+        let artifact = ReproductionArtifact::from_canonical_bytes(envelope.body())?;
+        if artifact.id()?.content_id() != id {
+            return Err(integrity("finding-reproduction-envelope-shape"));
+        }
+        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        let configuration =
+            self.read_configuration_artifact(artifact.configuration_artifact().content_id())?;
+        if scenario.scenario() != artifact.scenario()
+            || configuration.scenario() != artifact.scenario()
+            || configuration.scenario_artifact() != artifact.scenario_artifact()
+            || configuration.configuration() != artifact.configuration()
+        {
+            return Err(integrity("finding-reproduction-artifact-basis-mismatch"));
+        }
+        Ok(artifact)
+    }
+
+    pub(super) fn read_finding(&self, id: ContentId) -> Result<Finding, CampaignRepositoryError> {
+        self.read_finding_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_finding_cached(
+        &self,
+        id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Finding)?;
+        let finding = Finding::from_canonical_bytes(envelope.body())?;
+        if finding.id()?.content_id() != id {
+            return Err(integrity("finding-envelope-shape"));
+        }
+        self.validate_finding_references_cached(&finding, choice_cache)?;
+        Ok(finding)
+    }
+
+    pub(super) fn validate_finding_references_cached(
+        &self,
+        finding: &Finding,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = self.decode_observation(finding.observation().content_id())?;
+        self.validate_observation_references_cached(&observation, choice_cache)?;
+        let observation_child =
+            self.read_configuration_artifact(observation.child_content().content_id())?;
+        let occurrences = self.merkle.inspect_shallow(finding.occurrences())?;
+        if occurrences.entry_count() != u64::from(finding.occurrence_count())
+            || self.merkle.get(
+                finding.occurrences(),
+                finding_occurrence_key(finding.observation()),
+            )? != Some(finding.observation().content_id())
+            || self.merkle.get(
+                finding.occurrences(),
+                finding_occurrence_key(finding.latest_occurrence()),
+            )? != Some(finding.latest_occurrence().content_id())
+        {
+            return Err(integrity("finding-occurrence-root-mismatch"));
+        }
+        let reproduction = self.read_reproduction_artifact(finding.reproduction().content_id())?;
+        self.read_snapshot(finding.first_seen_snapshot().content_id())?;
+        if reproduction.finding_fingerprint() != finding.signature().fingerprint()
+            || reproduction.scenario() != observation_child.scenario()
+            || reproduction.configuration_artifact() != observation.child_content()
+        {
+            return Err(integrity("finding-reproduction-observation-basis-mismatch"));
+        }
+        if finding.latest_occurrence() != finding.observation() {
+            let latest = self.decode_observation(finding.latest_occurrence().content_id())?;
+            self.validate_observation_references_cached(&latest, choice_cache)?;
+            let latest_child =
+                self.read_configuration_artifact(latest.child_content().content_id())?;
+            if latest_child.scenario() != observation_child.scenario() {
+                return Err(integrity("finding-occurrence-scenario-mismatch"));
+            }
+        }
+        if let Some(minimized) = finding.minimized() {
+            let minimized = self.read_reproduction_artifact(minimized.content_id())?;
+            if minimized.finding_fingerprint() != finding.signature().fingerprint()
+                || minimized.scenario() != observation_child.scenario()
+            {
+                return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
+            }
+        }
+        for pin in finding.exact_pins() {
+            let handle = self.blobs.read(pin.content_id(), None)?;
+            handle.copy_to(&mut std::io::sink())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn read_policy(
         &self,
         id: ContentId,
@@ -1154,8 +1284,8 @@ impl CampaignRepository {
             CampaignFact::ObservationPublished(id) | CampaignFact::ObservationCredited(id) => {
                 self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Observation)?;
             }
-            CampaignFact::FindingPublished(_) => {
-                return Err(integrity("campaign-fact-record-type-is-not-implemented"));
+            CampaignFact::FindingPublished(id) => {
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Finding)?;
             }
             CampaignFact::BudgetGranted(_) | CampaignFact::PinChanged(_) => {}
         }

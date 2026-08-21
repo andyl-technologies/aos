@@ -18,6 +18,7 @@ mod codec;
 mod execution;
 mod executor_capability;
 mod exploration;
+mod finding;
 mod identity;
 mod merkle;
 mod model;
@@ -83,6 +84,11 @@ pub use exploration::{
     PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
     ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore, StopCondition,
 };
+pub use finding::{
+    Finding, FindingKind, FindingOccurrenceSet, FindingSignature, FindingTarget,
+    MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_OCCURRENCES,
+    ReproductionArtifact,
+};
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
     BranchRequestId, CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId,
@@ -92,8 +98,8 @@ pub use identity::{
     ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
     ExpansionStateId, FindingId, MeasurementSetId, ObservationId, PlannerEngineId,
     PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
-    PropertyVerdictSetId, ProposalId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
-    SelectableId, SelectableSemanticId, SelectionId,
+    PropertyVerdictSetId, ProposalId, ReproductionArtifactId, RetainedPlannerRequestId,
+    ScenarioArtifactId, ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -145,10 +151,11 @@ pub use repository::{
     CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
     CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
     CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscoveryResult,
-    ClaimableAttemptPage, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
-    MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
-    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
-    ProposalResult, ResolvedSelection, WorkerSlotId,
+    ClaimableAttemptPage, FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    MAX_CAMPAIGN_CLOSURE_OBJECTS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObservationCandidate,
+    ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
+    ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

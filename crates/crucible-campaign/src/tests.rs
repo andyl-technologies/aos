@@ -195,6 +195,9 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
             | CampaignRecordKind::Observation => "crucible-campaign::observation",
+            CampaignRecordKind::ReproductionArtifact | CampaignRecordKind::Finding => {
+                "crucible-campaign::finding"
+            }
             _ => "crucible-campaign::object",
         };
         assert_eq!(row[2], expected_owner);
@@ -2493,6 +2496,153 @@ fn selectable_fixture(
         true,
     )
     .expect("selectable declaration")
+}
+
+#[test]
+fn finding_and_reproduction_records_round_trip_with_exact_children() {
+    let scenario = ScenarioDefId::from_hash(hash("finding-scenario"));
+    let scenario_artifact =
+        ScenarioArtifact::new(scenario, 1, b"scenario".to_vec()).expect("scenario artifact");
+    let scenario_artifact_id = scenario_artifact.id().expect("scenario artifact id");
+    let configuration = ConfigurationId::from_hash(hash("finding-configuration"));
+    let configuration_artifact = ConfigurationArtifact::new(
+        scenario,
+        scenario_artifact_id,
+        configuration,
+        1,
+        b"configuration".to_vec(),
+    )
+    .expect("configuration artifact");
+    let configuration_artifact_id = configuration_artifact
+        .id()
+        .expect("configuration artifact id");
+    let fingerprint = hash("finding-fingerprint");
+    let reproduction = ReproductionArtifact::new(
+        scenario,
+        scenario_artifact_id,
+        configuration,
+        configuration_artifact_id,
+        fingerprint,
+        1,
+        b"self-contained reproduction".to_vec(),
+    )
+    .expect("reproduction");
+    let reproduction_id = reproduction.id().expect("reproduction id");
+    assert_eq!(
+        ReproductionArtifact::from_canonical_bytes(&reproduction.canonical_bytes())
+            .expect("decode reproduction"),
+        reproduction
+    );
+
+    let evidence = ContentId::for_bytes(ObjectKind::Trace, 1, b"causal-evidence");
+    let signature = FindingSignature::new(
+        FindingKind::PropertyViolation,
+        fingerprint,
+        Some("network.delivery".to_owned()),
+        "guest.assertion".to_owned(),
+        Some(FindingTarget::Configuration(configuration_artifact_id)),
+        BTreeSet::from([evidence]),
+    )
+    .expect("signature");
+    let observation = ObservationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Observation,
+        1,
+        b"finding-observation",
+    ))
+    .expect("observation id");
+    let first_seen = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignSnapshot,
+        2,
+        b"finding-parent-snapshot",
+    ))
+    .expect("snapshot id");
+    let finding = Finding::new(
+        signature.clone(),
+        observation,
+        reproduction_id,
+        first_seen,
+        FindingOccurrenceSet::new(
+            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"finding occurrences"),
+            1,
+            observation,
+        )
+        .expect("occurrences"),
+        None,
+        BTreeSet::new(),
+    )
+    .expect("finding");
+    assert_eq!(
+        Finding::from_canonical_bytes(&finding.canonical_bytes()).expect("decode finding"),
+        finding
+    );
+    assert_eq!(signature.cluster_key(), finding.signature().cluster_key());
+
+    let envelope = ObjectEnvelope::for_record(
+        CampaignRecordKind::Finding,
+        crate::object::content_children(finding.content_children()).expect("finding children"),
+        finding.canonical_bytes(),
+    )
+    .expect("finding envelope");
+    assert_eq!(
+        envelope,
+        ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes()).expect("decode envelope")
+    );
+    assert!(
+        envelope
+            .children()
+            .iter()
+            .any(|child| child.id() == evidence)
+    );
+    assert!(
+        envelope
+            .children()
+            .iter()
+            .any(|child| child.id() == reproduction_id.content_id())
+    );
+}
+
+#[test]
+fn finding_signature_and_membership_invariants_fail_closed() {
+    assert!(matches!(
+        FindingSignature::new(
+            FindingKind::PropertyViolation,
+            hash("missing-property"),
+            None,
+            "guest.assertion".to_owned(),
+            None,
+            BTreeSet::new(),
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding property identity disagrees with failure kind"
+        })
+    ));
+
+    let observation = ObservationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Observation,
+        1,
+        b"omitted-observation",
+    ))
+    .expect("observation id");
+    assert!(matches!(
+        FindingOccurrenceSet::new(
+            ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"empty occurrences"),
+            0,
+            observation,
+        ),
+        Err(CampaignCodecError::LimitExceeded {
+            limit: "finding-occurrence-count"
+        })
+    ));
+    assert!(matches!(
+        FindingOccurrenceSet::new(
+            ContentId::for_bytes(ObjectKind::Trace, 1, b"not a merkle root"),
+            1,
+            observation,
+        ),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding occurrence root is not a Merkle node"
+        })
+    ));
 }
 
 fn hash(label: &str) -> CampaignHash {
