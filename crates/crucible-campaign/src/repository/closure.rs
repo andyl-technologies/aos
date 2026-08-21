@@ -257,6 +257,20 @@ impl CampaignRepository {
                             )?;
                             actions.push(request.action);
                         }
+                        CampaignFact::PinCommandAccepted(request) => {
+                            if !seen_commands.insert(request.command) {
+                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
+                            }
+                            if request.expected_snapshot != parent {
+                                return Err(integrity("transition-precondition-parent-mismatch"));
+                            }
+                            self.validate_pin_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                transition.content_id(),
+                                &request,
+                            )?;
+                        }
                         CampaignFact::BranchRequestIssued(request) => {
                             let request_record = self.read_branch_request(request.content_id())?;
                             if let BranchRequestCause::Operator(command) = request_record.cause()
@@ -465,6 +479,69 @@ impl CampaignRepository {
         }
         if !self.coordination_matches_parent_result(parent, next_roots.coordination)? {
             return Err(integrity("control-transition-coordination-root-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_pin_successor(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        transition_content: ContentId,
+        request: &PinRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage() {
+            return Err(integrity("snapshot-transition-changed-lineage"));
+        }
+        if child.snapshot.active_policy() != parent.snapshot.active_policy() {
+            return Err(integrity("pin-transition-changed-active-policy"));
+        }
+
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+        {
+            return Err(integrity("pin-transition-changed-unrelated-root"));
+        }
+
+        let configuration = request.change.configuration();
+        let configuration_content = self
+            .merkle
+            .get(
+                prior.graph,
+                map_key_hash("graph.configuration", configuration.as_hash()),
+            )?
+            .ok_or_else(|| integrity("pin-configuration-is-not-in-campaign-graph"))?;
+        let artifact = self.read_configuration_artifact(configuration_content)?;
+        if artifact.configuration() != configuration {
+            return Err(integrity("pin-configuration-index-mismatch"));
+        }
+
+        let command_key = map_key_hash("accounting.command", request.command.as_hash());
+        if self.merkle.get(prior.accounting, command_key)?.is_some() {
+            return Err(integrity("pin-transition-reused-command"));
+        }
+        if !self.merkle.equals_after_upserts(
+            prior.accounting,
+            next.accounting,
+            &BTreeMap::from([(command_key, transition_content)]),
+        )? {
+            return Err(integrity("pin-transition-accounting-root-mismatch"));
+        }
+        if !self.merkle.equals_after_upserts(
+            prior.pins,
+            next.pins,
+            &BTreeMap::from([(pin_configuration_key(configuration), transition_content)]),
+        )? {
+            return Err(integrity("pin-transition-pins-root-mismatch"));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity("pin-transition-coordination-root-mismatch"));
         }
         Ok(())
     }
@@ -1231,7 +1308,8 @@ impl CampaignRepository {
             | CampaignFact::AttemptClosed { .. }
             | CampaignFact::PolicyActivated(_)
             | CampaignFact::BudgetGranted(_)
-            | CampaignFact::PinChanged(_) => {}
+            | CampaignFact::PinChanged(_)
+            | CampaignFact::PinCommandAccepted(_) => {}
         }
         Ok(anchors)
     }

@@ -1130,6 +1130,12 @@ impl CampaignRepository {
                     )?;
                 }
             }
+            CampaignFact::PinCommandAccepted(request) => {
+                self.require_record_kind(
+                    request.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+            }
             CampaignFact::BranchRequestIssued(id) => {
                 self.read_branch_request(id.content_id())?;
             }

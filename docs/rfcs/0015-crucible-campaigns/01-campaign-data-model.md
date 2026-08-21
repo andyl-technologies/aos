@@ -242,6 +242,7 @@ pub enum CampaignFact {
     BudgetGranted(BudgetGrant),
     ControlRequested(ControlRequest),
     PinChanged(PinChange),
+    PinCommandAccepted(PinRequest),
     CampaignDerived(CampaignDerivation),
 }
 ```
@@ -269,16 +270,42 @@ bound to that target's most recent founding derivation edge; a locator inherited
 from an ancestor derived campaign cannot replay as the child ref's own result.
 Campaign-fact schema v3 adds this transition. Schema v4 adds
 `ObservationCredited`, whose owner recomputes both scoped expansion credits and
-the child configuration-to-path membership described in §01.6. Every variant
-that predates `CampaignDerived` continues to encode as schema v2, preserving
-its canonical bytes and `CampaignFactId`; only `CampaignDerived` encodes as v3,
-and only `ObservationCredited` encodes as v4. Schema-v2 and schema-v3 fact
-bodies and envelopes remain canonically readable for existing history. A body cannot carry
-a variant introduced by another version, and body/envelope version mismatches
-fail closed. Historical schema-v2 `ObservationPublished` successors are
+the child configuration-to-path membership described in §01.6. Schema v5 adds
+`PinCommandAccepted(PinRequest)`, which binds the caller's command ID, exact
+parent snapshot, configuration, retention tier or removal, and bounded reason
+in one owner-validated transition. Every variant that predates
+`CampaignDerived` continues to encode as schema v2, preserving its canonical
+bytes and `CampaignFactId`; only `CampaignDerived` encodes as v3, only
+`ObservationCredited` encodes as v4, and only `PinCommandAccepted` encodes as
+v5. Schema-v2 through schema-v4 fact bodies and envelopes remain canonically
+readable for existing history. A body cannot carry a variant introduced by
+another version, and body/envelope version mismatches fail closed. Historical
+schema-v2 `ObservationPublished` successors are
 validated against either their original observation-only delta or the interim
 credit-bearing delta; new publication always uses the unambiguous schema-v4
 owner.
+
+The pin owner resolves command replay before staleness. An exact retry returns
+the first accepted parent/child snapshot pair; reuse of the command ID with a
+different `PinRequest` fails closed. The configuration must already occur in
+the parent's authenticated graph. Acceptance inserts the v5 fact under both
+`accounting.command(command_id)` and `pins.configuration(configuration_id)`;
+unpinning writes a `retention = None` tombstone at the same pin key rather than
+deleting historical intent. Imported and restarted histories recompute these
+two exact root deltas and the ordinary parent-result locator.
+
+The language-neutral canonical field order is:
+
+```text
+PinRequestV1 = command_id | expected_snapshot | PinChangeV1
+PinChangeV1 = configuration_id | optional(thin | exact) |
+              nfc_reason_utf8_0_to_4096_bytes
+pin_request_digest =
+  H("crucible.campaign-pin-request.v1", canonical(PinRequestV1))
+```
+
+The optional retention field uses absence for removal. The reason rejects NUL,
+non-NFC text, and encoded content beyond 4,096 bytes.
 
 Facts are immutable and carry causal references. They may be represented in
 persistent Merkle maps rather than replayed from a flat log. A projection cache

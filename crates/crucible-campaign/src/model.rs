@@ -4,8 +4,8 @@ mod facts;
 
 pub use facts::{
     ActiveAttemptPolicy, BudgetGrant, CampaignControlAction, CampaignDerivation, CampaignFact,
-    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRetention,
-    PolicyActivation,
+    CampaignState, ControlRequest, NonModeledAttemptDisposition, PinChange, PinRequest,
+    PinRetention, PolicyActivation,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

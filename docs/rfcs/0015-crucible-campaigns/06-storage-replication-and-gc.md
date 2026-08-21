@@ -468,6 +468,15 @@ transfer roots, and durable write-back journals. A pin declares
 metadata, thin, or exact retention plus a durability requirement. Hot-hub
 preference and placement receipts are operational.
 
+Within a campaign snapshot, the semantic pin projection is keyed by the exact
+`ConfigurationId`. Its value is the latest authenticated schema-v5
+`PinCommandAccepted` fact. `Thin` and `Exact` select the required logical
+closure profile; `None` is a retained tombstone that removes the configuration
+from the current GC pin set without erasing command replay or campaign history.
+The graph membership proof is evaluated at the accepting parent snapshot, so a
+backing-store object that is not authoritative campaign knowledge cannot be
+pinned through this transaction.
+
 On the single-host executor, the lineage-qualified operational assignment
 ledger is the owner of result-publication roots. It streams the expected
 `ObservationId` from every authenticated `publishing` record and the retained
