@@ -16,7 +16,8 @@ pub struct FrameEntry {
     /// The number of valid bytes in [`FrameEntry::data`].
     pub len: u16,
     delivery_state: AtomicU8,
-    pub(crate) _pad: [u8; 5],
+    pub(crate) _pad: [u8; 1],
+    delivery_attempts: AtomicU32,
     /// The fixed-capacity frame payload buffer.
     pub data: [u8; MAX_FRAME_DATA],
 }
@@ -35,6 +36,9 @@ pub const FRAME_ENTRY_DELIVERY_STATE_OFFSET: usize =
     core::mem::offset_of!(FrameEntry, delivery_state);
 /// Byte offset of [`FrameEntry`]'s reserved padding bytes.
 pub const FRAME_ENTRY_PAD_OFFSET: usize = core::mem::offset_of!(FrameEntry, _pad);
+/// Byte offset of [`FrameEntry`]'s consumer-owned delivery-attempt count.
+pub const FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET: usize =
+    core::mem::offset_of!(FrameEntry, delivery_attempts);
 /// Byte offset of [`FrameEntry`]'s payload data.
 pub const FRAME_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(FrameEntry, data);
 /// Wire size of one [`FrameEntry`].
@@ -48,6 +52,7 @@ const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
 const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
 const _: () = assert!(FRAME_ENTRY_DELIVERY_STATE_OFFSET == 18);
 const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 19);
+const _: () = assert!(FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET == 20);
 const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
 const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
 const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
@@ -90,7 +95,8 @@ impl FrameEntry {
             seq,
             len: payload.len() as u16,
             delivery_state: AtomicU8::new(FRAME_DELIVERY_PENDING),
-            _pad: [0; 5],
+            _pad: [0; 1],
+            delivery_attempts: AtomicU32::new(0),
             data,
         })
     }
@@ -128,6 +134,31 @@ impl FrameEntry {
             Ok(_) | Err(FRAME_DELIVERY_RETAINED) => Ok(()),
             Err(state) => Err(FrameDeliveryStateError::UnknownState { state }),
         }
+    }
+
+    /// Returns the number of concrete guest delivery attempts for this frame.
+    #[must_use]
+    pub fn delivery_attempts(&self) -> u32 {
+        self.delivery_attempts.load(Ordering::Acquire)
+    }
+
+    /// Records one concrete guest delivery attempt under a fixed hard bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameDeliveryAttemptError::LimitReached`] without modifying
+    /// shared state when `limit` attempts have already occurred.
+    pub fn record_delivery_attempt(&self, limit: u32) -> Result<u32, FrameDeliveryAttemptError> {
+        self.delivery_attempts
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then(|| current + 1)
+            })
+            .map(|previous| previous + 1)
+            .map_err(|attempts| FrameDeliveryAttemptError::LimitReached { attempts, limit })
+    }
+
+    pub(crate) fn restore_delivery_attempts(&self, attempts: u32) {
+        self.delivery_attempts.store(attempts, Ordering::Release);
     }
 
     /// Returns `true` when this frame is visible at `consumer_current_icount`.
@@ -185,7 +216,7 @@ impl FrameEntry {
             })?;
 
         let mut canonical = self.clone();
-        canonical._pad = [0; 5];
+        canonical._pad = [0; 1];
         canonical.data[len..].fill(0);
         Ok(canonical)
     }
@@ -206,6 +237,19 @@ pub const FRAME_DELIVERY_PENDING: u8 = 0;
 /// Wire value for a frame retained after guest backpressure.
 pub const FRAME_DELIVERY_RETAINED: u8 = 1;
 
+/// Failure to admit another concrete guest delivery attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FrameDeliveryAttemptError {
+    /// The canonical attempt counter reached its fixed limit.
+    #[error("frame delivery attempt limit reached: attempts={attempts}, limit={limit}")]
+    LimitReached {
+        /// Attempts already made for this frame.
+        attempts: u32,
+        /// Maximum attempts admitted for this frame.
+        limit: u32,
+    },
+}
+
 impl Clone for FrameEntry {
     fn clone(&self) -> Self {
         Self {
@@ -215,6 +259,7 @@ impl Clone for FrameEntry {
             len: self.len,
             delivery_state: AtomicU8::new(self.delivery_state.load(Ordering::Acquire)),
             _pad: self._pad,
+            delivery_attempts: AtomicU32::new(self.delivery_attempts.load(Ordering::Acquire)),
             data: self.data,
         }
     }
@@ -232,6 +277,10 @@ impl fmt::Debug for FrameEntry {
                 "delivery_state",
                 &self.delivery_state.load(Ordering::Acquire),
             )
+            .field(
+                "delivery_attempts",
+                &self.delivery_attempts.load(Ordering::Acquire),
+            )
             .field("data", &self.data)
             .finish()
     }
@@ -246,6 +295,8 @@ impl PartialEq for FrameEntry {
             && self.delivery_state.load(Ordering::Acquire)
                 == other.delivery_state.load(Ordering::Acquire)
             && self._pad == other._pad
+            && self.delivery_attempts.load(Ordering::Acquire)
+                == other.delivery_attempts.load(Ordering::Acquire)
             && self.data == other.data
     }
 }
@@ -260,7 +311,8 @@ impl Default for FrameEntry {
             seq: 0,
             len: 0,
             delivery_state: AtomicU8::new(FRAME_DELIVERY_PENDING),
-            _pad: [0; 5],
+            _pad: [0; 1],
+            delivery_attempts: AtomicU32::new(0),
             data: [0; MAX_FRAME_DATA],
         }
     }

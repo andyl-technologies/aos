@@ -304,11 +304,25 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     TEST_RX_INJECT_STATUS.store(0, Ordering::SeqCst);
     state
         .publish_current_icount(7)
-        .unwrap_or_else(|error| panic!("retry should transfer accepted inbound: {error}"));
+        .unwrap_or_else(|error| panic!("early callback should leave retained inbound: {error}"));
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 1);
+
+    let retry_icount = 7 + crate::NETWORK_RX_RETRY_INTERVAL_ICOUNT;
+    let retry_ceiling = authorize_advance_ceiling(7, retry_icount, None)
+        .unwrap_or_else(|error| panic!("retry ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(retry_ceiling)
+        .unwrap_or_else(|error| panic!("retry ceiling should publish: {error}"));
+    TEST_ICOUNT_RAW.set(retry_icount);
+    state
+        .publish_current_icount(retry_icount)
+        .unwrap_or_else(|error| {
+            panic!("scheduled retry should transfer accepted inbound: {error}")
+        });
     TEST_ICOUNT_RAW.set(0);
     TEST_REENTRANT_RX_STATE.store(std::ptr::null_mut(), Ordering::Release);
 
-    assert_eq!(slot.snapshot().current_icount, 7);
+    assert_eq!(slot.snapshot().current_icount, retry_icount);
     assert_eq!(inbound_header.read_index(), 1);
     assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 12);

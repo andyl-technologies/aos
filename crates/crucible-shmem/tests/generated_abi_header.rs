@@ -42,6 +42,7 @@ fn generated_header_asserts_every_shared_struct_layout() {
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_frame_entry)",
         "offsetof(crucible_shmem_frame_entry, delivery_icount)",
         "offsetof(crucible_shmem_frame_entry, delivery_state)",
+        "offsetof(crucible_shmem_frame_entry, delivery_attempts)",
         "offsetof(crucible_shmem_frame_entry, data)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_coverage_entry)",

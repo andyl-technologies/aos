@@ -87,7 +87,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 15;";
+        needle = "pub const ABI_VERSION: u32 = 16;";
       }
       {
         label = "physical slot capacity";
@@ -192,6 +192,10 @@
       {
         label = "frame entry padding offset";
         needle = "FRAME_ENTRY_PAD_OFFSET == 19";
+      }
+      {
+        label = "frame entry delivery attempts offset";
+        needle = "FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET == 20";
       }
       {
         label = "pinned layout target";

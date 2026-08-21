@@ -39,10 +39,12 @@ fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {
             ],
             reply_delivery_icount: Some(probe_icount + LIVE_NETWORK_REPLY_LATENCY_ICOUNT),
             acknowledgement_seen: true,
+            backpressure_acknowledgement_seen: true,
         },
         acknowledgement_icount: Some(acknowledgement_icount),
         boot_backpressure_retained: true,
         canonical_backpressure_retry_delivered: true,
+        backpressure_acknowledgement_icount: Some(probe_icount - 1),
         delayed_reply_applied: false,
         orderly_child_exit: true,
     }

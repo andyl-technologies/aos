@@ -149,6 +149,11 @@ fn canonical_bytes_round_trip_retained_delivery_state() {
     retained
         .mark_delivery_retained()
         .unwrap_or_else(|error| panic!("frame should become retained: {error}"));
+    for _ in 0..2 {
+        retained
+            .record_delivery_attempt(64)
+            .unwrap_or_else(|error| panic!("delivery attempt should be recorded: {error}"));
+    }
     let snapshot = SpscRingSnapshot {
         frames: vec![retained],
     };
@@ -163,6 +168,7 @@ fn canonical_bytes_round_trip_retained_delivery_state() {
         decoded.frames[0].delivery_state(),
         Ok(FrameDeliveryState::Retained)
     );
+    assert_eq!(decoded.frames[0].delivery_attempts(), 2);
     assert_eq!(decoded, snapshot);
 }
 
@@ -250,6 +256,7 @@ fn canonical_bytes(frames: &[FrameEntry]) -> Vec<u8> {
                 .unwrap_or_else(|error| panic!("test frame state should be valid: {error}"))
                 as u8,
         );
+        bytes.extend_from_slice(&frame.delivery_attempts().to_le_bytes());
         bytes.extend_from_slice(payload(frame));
     }
     bytes
@@ -340,7 +347,7 @@ fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
             name: "truncated-payload",
             bytes: truncated_payload,
             error: SpscRingError::SnapshotDecodeTruncated {
-                offset: 27,
+                offset: 31,
                 needed: 3,
                 available: 2,
             },
@@ -369,6 +376,7 @@ fn snapshot_frame_prefix(delivery_icount: u64, src_node: u32, seq: u32, len: u16
     bytes.extend_from_slice(&seq.to_le_bytes());
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.push(FRAME_DELIVERY_PENDING);
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
     bytes
 }
 

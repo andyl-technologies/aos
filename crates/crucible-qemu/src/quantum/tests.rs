@@ -411,7 +411,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
     let pending = hot_path
         .start_quantum(horizon(10))
         .unwrap_or_else(|error| panic!("quantum should start without inbound frames: {error}"));
-    let _frame = hot_path
+    hot_path
         .enqueue_inbound_frame(QemuInboundFrame {
             delivery_icount: icount(5),
             src_node: 31,
