@@ -3,7 +3,8 @@
 //! Given a commit oid, [`load_registry_tree`] walks `commit → tree →
 //! entries` through loose objects and materializes the committed files the
 //! index needs: `registry.toml`, `keys.toml`, every
-//! `packages/<bucket>/<name>.toml`, and the `closures/` adjacency lists.
+//! `packages/<bucket>/<name>.toml`, the package-root realization records under
+//! `store/`, and the `closures/` adjacency lists.
 //! All file formats are parsed with the wasm-clean
 //! [`aos_registry_surface::manifest`] schema/parsers, so the hub, the Worker,
 //! and `apm` cannot drift on what they accept.
@@ -13,13 +14,15 @@
 //! filesystem, or HTTP client and compiles to `wasm32-unknown-unknown` (RFC-0004
 //! Phase 5).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use aos_registry_surface::manifest::{
-    parse_package_file, KeysToml, PackageToml, RegistryRootConfig,
+    parse_package_file, KeysToml, PackageToml, ReferenceField, RegistryRootConfig,
 };
 use aos_registry_surface::object::{self, Commit, ObjectKind, Oid};
+use aos_registry_surface::store::{self, StoreEntry};
+use futures_util::future::try_join_all;
 
 use crate::fetch::SurfaceFetch;
 
@@ -41,6 +44,17 @@ pub const MAX_PACKAGES: usize = 50_000;
 /// references); a hostile tree can pad these without bound. Capped for the same
 /// reason as [`MAX_PACKAGES`], and likewise aborts the index when exceeded.
 pub const MAX_CLOSURE_ENTRIES: usize = 1_000_000;
+
+/// Maximum package-root realization records loaded from one registry tree.
+pub const MAX_STORE_ENTRIES: usize = 1_000_000;
+
+/// Maximum concurrent loose-object reads while loading package metadata.
+///
+/// A modern registry spreads package manifests and realization records across
+/// most of their shard trees. Reading every tree and blob serially exceeds the
+/// Worker execution window even for a few hundred packages, while this bounded
+/// fanout keeps both native and Worker transports below their request limits.
+const OBJECT_FETCH_CONCURRENCY: usize = 32;
 
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
@@ -147,19 +161,37 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
                 .read_kind(packages_entry.oid, ObjectKind::Tree)
                 .await?,
         )?;
-        for bucket in buckets.values().filter(|e| e.is_tree()) {
-            let files = object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)?;
-            for file in files.values().filter(|e| e.name.ends_with(".toml")) {
-                if packages.len() >= MAX_PACKAGES {
-                    bail!(
-                        "registry tree exceeds the {MAX_PACKAGES}-package index cap; \
-                         aborting index"
-                    );
-                }
-                let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-                let package = parse_committed_package(&file.name, &content)?;
-                packages.push(package);
-            }
+        let bucket_entries = buckets
+            .values()
+            .filter(|entry| entry.is_tree())
+            .collect::<Vec<_>>();
+        let mut bucket_files = Vec::with_capacity(bucket_entries.len());
+        for batch in bucket_entries.chunks(OBJECT_FETCH_CONCURRENCY) {
+            bucket_files.extend(
+                try_join_all(batch.iter().map(|bucket| async {
+                    object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)
+                }))
+                .await?,
+            );
+        }
+        let files = bucket_files
+            .into_iter()
+            .flat_map(BTreeMap::into_values)
+            .filter(|entry| entry.name.ends_with(".toml"))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            files.len() <= MAX_PACKAGES,
+            "registry tree exceeds the {MAX_PACKAGES}-package index cap; aborting index"
+        );
+        packages.reserve(files.len());
+        for batch in files.chunks(OBJECT_FETCH_CONCURRENCY) {
+            packages.extend(
+                try_join_all(batch.iter().map(|file| async {
+                    let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
+                    parse_committed_package(&file.name, &content)
+                }))
+                .await?,
+            );
         }
     }
 
@@ -189,12 +221,152 @@ pub async fn load_registry_tree(fetch: &dyn SurfaceFetch, commit_oid: Oid) -> Re
         }
     }
 
+    let store = load_package_store_records(&reader, &root_tree, &packages).await?;
+    if let Some(store) = &store {
+        enrich_packages_from_store(&mut packages, store)?;
+    }
+
     Ok(LoadedTree {
         root,
         keys,
         packages,
         closures,
     })
+}
+
+async fn load_package_store_records(
+    reader: &ObjectReader<'_>,
+    root_tree: &BTreeMap<String, object::TreeEntry>,
+    packages: &[PackageToml],
+) -> Result<Option<BTreeMap<String, StoreEntry>>> {
+    let Some(store_entry) = root_tree.get(store::STORE_DIR) else {
+        return Ok(None);
+    };
+    anyhow::ensure!(store_entry.is_tree(), "committed store entry is not a tree");
+
+    let shards = object::tree_map(&reader.read_kind(store_entry.oid, ObjectKind::Tree).await?)?;
+    let mut required = BTreeSet::new();
+    for package in packages {
+        for version in &package.versions {
+            for artifact in version.platforms.values() {
+                required.insert(store_hash_component(&artifact.store_path).to_string());
+            }
+        }
+    }
+    anyhow::ensure!(
+        required.len() <= MAX_STORE_ENTRIES,
+        "registry packages reference more than the {MAX_STORE_ENTRIES}-record store graph cap"
+    );
+
+    let mut required_shards = BTreeSet::new();
+    for hash in &required {
+        required_shards.insert(
+            store::shard(hash)
+                .with_context(|| format!("invalid package store-path hash '{hash}'"))?
+                .to_string(),
+        );
+    }
+
+    let required_shards = required_shards.into_iter().collect::<Vec<_>>();
+    let mut shard_files = BTreeMap::new();
+    for batch in required_shards.chunks(OBJECT_FETCH_CONCURRENCY) {
+        let shards = &shards;
+        shard_files.extend(
+            try_join_all(batch.iter().cloned().map(|shard_name| async move {
+                let shard_entry = shards
+                    .get(&shard_name)
+                    .with_context(|| format!("signed store graph has no shard '{shard_name}'"))?;
+                anyhow::ensure!(
+                    shard_entry.is_tree(),
+                    "committed store shard '{}' is not a tree",
+                    shard_entry.name
+                );
+                let files =
+                    object::tree_map(&reader.read_kind(shard_entry.oid, ObjectKind::Tree).await?)?;
+                Ok::<_, anyhow::Error>((shard_name.clone(), files))
+            }))
+            .await?,
+        );
+    }
+
+    let required = required.into_iter().collect::<Vec<_>>();
+    let mut entries = BTreeMap::new();
+    for batch in required.chunks(OBJECT_FETCH_CONCURRENCY) {
+        let shard_files = &shard_files;
+        entries.extend(
+            try_join_all(batch.iter().cloned().map(|hash| async move {
+                let shard_name = store::shard(&hash)
+                    .with_context(|| format!("invalid package store-path hash '{hash}'"))?;
+                let files = shard_files
+                    .get(shard_name)
+                    .context("loaded store shard disappeared")?;
+                let file = files
+                    .get(&hash)
+                    .with_context(|| format!("signed store graph has no record for '{hash}'"))?;
+                anyhow::ensure!(
+                    !file.is_tree(),
+                    "committed store record '{}' is unexpectedly a tree",
+                    file.name
+                );
+                let content = read_utf8_blob(reader, file.oid, &file.name).await?;
+                let parsed = store::parse_entry(&content)
+                    .with_context(|| format!("parsing committed store record '{}'", file.name))?;
+                Ok::<_, anyhow::Error>((hash.clone(), parsed))
+            }))
+            .await?,
+        );
+    }
+    Ok(Some(entries))
+}
+
+fn enrich_packages_from_store(
+    packages: &mut [PackageToml],
+    store: &BTreeMap<String, StoreEntry>,
+) -> Result<()> {
+    for package in packages {
+        for version in &mut package.versions {
+            for (platform, artifact) in &mut version.platforms {
+                let hash = store_hash_component(&artifact.store_path);
+                let record = store.get(hash).with_context(|| {
+                    format!(
+                        "package {} {} {platform} has no signed store record for {hash}",
+                        package.package.name, version.version
+                    )
+                })?;
+                let nar = record.blessed_nars().into_iter().next().with_context(|| {
+                    format!(
+                        "package {} {} {platform} store record {hash} has no blessed NAR",
+                        package.package.name, version.version
+                    )
+                })?;
+                if !artifact.nar_hash.is_empty() {
+                    anyhow::ensure!(
+                        nar.matches(&artifact.nar_hash, artifact.nar_size),
+                        "package {} {} {platform} legacy NAR metadata disagrees with signed store record {hash}",
+                        package.package.name,
+                        version.version
+                    );
+                }
+                artifact.nar_hash = nar.nar_hash();
+                artifact.nar_size = nar.size;
+
+                let dependencies = record.dep_ias();
+                match &mut artifact.references {
+                    ReferenceField::Hashes(hashes) if hashes.is_empty() => *hashes = dependencies,
+                    ReferenceField::Gate(gate) if gate.hashes.is_empty() => {
+                        gate.hashes = dependencies;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn store_hash_component(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.split('-').next().unwrap_or(name)
 }
 
 fn parse_committed_package(name: &str, content: &str) -> Result<PackageToml> {
@@ -251,5 +423,67 @@ nar_size = 1
         let rendered = format!("{error:#}");
         assert!(rendered.contains("packages/…/server.toml"));
         assert!(rendered.contains("duplicate 'raw' image encodings"));
+    }
+}
+
+#[cfg(test)]
+mod store_graph_tests {
+    use super::*;
+
+    const NAR: &str = "1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy";
+
+    fn modern_package() -> PackageToml {
+        parse_committed_package(
+            "acl.toml",
+            r#"
+[package]
+name = "acl"
+description = "Access control lists"
+license = "LGPL-2.1-or-later"
+maintainer = "team"
+
+[[versions]]
+version = "2.3.2"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/9rd6z1174svja44vjm38h6iql4sz4z9k-acl-2.3.2"
+closure_size = 14987624
+source_drv = "/nix/store/source-acl.drv"
+source_nar_hash = "sha256:source"
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn modern_package_metadata_is_enriched_from_signed_store_record() {
+        let mut packages = vec![modern_package()];
+        let mut graph = BTreeMap::new();
+        graph.insert(
+            "9rd6z1174svja44vjm38h6iql4sz4z9k".to_string(),
+            store::parse_entry(&format!(
+                "nar:sha256:{NAR}:367184\n  ia:sha256:6ypxvvj6cvgba6jfkna2b7vjsywfssaa\n"
+            ))
+            .unwrap(),
+        );
+
+        enrich_packages_from_store(&mut packages, &graph).unwrap();
+        let artifact = packages[0].versions[0]
+            .platforms
+            .get("x86_64-linux")
+            .unwrap();
+        assert_eq!(artifact.nar_hash, format!("sha256:{NAR}"));
+        assert_eq!(artifact.nar_size, 367184);
+        assert_eq!(
+            artifact.references.hashes(),
+            ["6ypxvvj6cvgba6jfkna2b7vjsywfssaa"]
+        );
+    }
+
+    #[test]
+    fn modern_package_missing_its_store_record_fails_closed() {
+        let error =
+            enrich_packages_from_store(&mut [modern_package()], &BTreeMap::new()).unwrap_err();
+        assert!(format!("{error:#}").contains("has no signed store record"));
     }
 }

@@ -163,19 +163,11 @@ pub fn merge_staged_projection(
                     .as_ref()
                     .map(|config| config.credentials.as_slice())
             });
-        let expected_credentials = if let Some(signed_credentials) = signed_credentials {
-            super::subverbs::canonicalize_credential_handles(
-                package,
-                source.credentials.get(package),
-                signed_credentials,
-            )?
-        } else {
-            source
-                .credentials
-                .get(package)
-                .cloned()
-                .unwrap_or(Value::Null)
-        };
+        let expected_credentials = super::subverbs::canonicalize_credential_handles(
+            package,
+            source.credentials.get(package),
+            signed_credentials.unwrap_or(&[]),
+        )?;
         if stage.credentials != expected_credentials {
             bail!("render stage credential handles disagree for package {package:?}");
         }

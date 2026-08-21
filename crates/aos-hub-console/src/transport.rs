@@ -39,11 +39,11 @@ impl ApiClient {
     ///
     /// Returns an error when the CSRF proof is absent, the exchange request
     /// fails, the Hub rejects the session, or the response is malformed.
-    pub async fn from_browser_session(csrf: &str) -> Result<Self, TransportError> {
+    pub async fn from_browser_session(csrf: &str, route: &str) -> Result<Self, TransportError> {
         if csrf.is_empty() {
             return Err(TransportError::MissingCsrf);
         }
-        let session = exchange_browser_session(csrf).await?;
+        let session = exchange_browser_session(csrf, route).await?;
         Ok(Self {
             csrf: csrf.to_string(),
             session: Arc::new(Mutex::new(session)),
@@ -91,7 +91,7 @@ impl ApiClient {
         let bearer = self.session_guard().access_token.clone();
         let (mut status, mut response_body) = send_connect(path, &bearer, &request_body).await?;
         if status == 401 {
-            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let refreshed = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
             let bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
             (status, response_body) = send_connect(path, &bearer, &request_body).await?;
@@ -166,7 +166,7 @@ impl ApiClient {
         let bearer = self.session_guard().access_token.clone();
         let mut status = send_publication_upload(upload_url, &bearer, file).await?;
         if status == 401 {
-            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let refreshed = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
             let bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
             status = send_publication_upload(upload_url, &bearer, file).await?;
@@ -204,7 +204,7 @@ impl ApiClient {
         let (mut status, mut response) =
             send_cache_upload(upload_url, bearer.as_deref(), body).await?;
         if same_origin && status == 401 {
-            let refreshed = exchange_browser_session(&self.csrf).await?;
+            let refreshed = exchange_browser_session(&self.csrf, &current_browser_route()).await?;
             let bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
             (status, response) = send_cache_upload(upload_url, Some(&bearer), body).await?;
@@ -240,15 +240,19 @@ impl ApiClient {
     }
 }
 
+fn current_browser_route() -> String {
+    leptos::web_sys::window()
+        .and_then(|window| window.location().pathname().ok())
+        .unwrap_or_else(|| "/".to_string())
+}
+
 async fn exchange_browser_session(
     csrf: &str,
+    route: &str,
 ) -> Result<aos_proto_types::BrowserSessionTokenResponse, TransportError> {
-    let route = leptos::web_sys::window()
-        .and_then(|window| window.location().pathname().ok())
-        .unwrap_or_else(|| "/".to_string());
     let response = Request::post(SESSION_TOKEN_PATH)
         .header("x-aos-csrf", csrf)
-        .header("x-aos-console-route", &route)
+        .header("x-aos-console-route", route)
         .header("accept", "application/json")
         .body(String::new())
         .map_err(|error| TransportError::Request(error.to_string()))?

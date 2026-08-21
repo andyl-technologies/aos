@@ -101,6 +101,8 @@
   ];
   server2Top = candidate.config.system.build.toplevel;
   server2Image = candidate.config.system.build.image.raw;
+  server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
+  server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
   server2Uki = candidate.config.system.build.uki;
 
   targetSystem = mkSystem [
@@ -333,7 +335,9 @@ in {
             --license MIT \\
             --maintainer test \\
             --sysroot \\
-            --image '${server2Image}' --image-format raw \\
+            --image-payload '${server2Image}' \\
+            --image-disk '${server2ImageDisk}' \\
+            --image-info '${server2ImageInfo}' --image-format raw \\
             --image-uki "$CANDIDATE_UKI" \\
             --no-ca \\
             --registry sysreg \\

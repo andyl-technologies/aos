@@ -97,14 +97,23 @@ apr publish /nix/store/HASH-aos-system-toplevel \
 # Associate prebuilt image artifacts with a sysroot package.
 apr publish /nix/store/HASH-aos-system-toplevel \
   --registry acme --sysroot \
-  --image /nix/store/HASH-aos-image-qcow2 --image-format qcow2 \
-  --image /nix/store/HASH-aos-image-raw --image-format raw \
+  --image-payload /nix/store/HASH-aos-image-qcow2 \
+  --image-disk /nix/store/HASH-aos-image-qcow2-disk \
+  --image-info /nix/store/HASH-aos-image-qcow2-info \
+  --image-format qcow2 --image-uki /nix/store/HASH-uki/aos.efi \
+  --image-payload /nix/store/HASH-aos-image-raw \
+  --image-disk /nix/store/HASH-aos-image-raw-disk \
+  --image-info /nix/store/HASH-aos-image-raw-info \
+  --image-format raw --image-uki /nix/store/HASH-uki/aos.efi \
   --key-id initial
 ```
 
-Pair each `--image` with one `--image-format`. `--previous` records the prior
-package version when maintaining a version chain. `--source-drv` records source
-material used by `apm source`.
+Provide one payload, regular-file disk output, regular-file metadata output,
+format, and exact UKI for each image encoding. The disk and metadata outputs
+are published through the registry's Nix cache; the payload supplies layout,
+recovery, and update facts for validation. `--previous` records the prior
+package version when maintaining a version chain. `--source-drv` records
+source material used by `apm source`.
 
 ## Inspect before release
 

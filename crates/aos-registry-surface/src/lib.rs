@@ -28,6 +28,8 @@
 //! - [`stack`] — the committed `[caches]` cache-stack node model
 //!   ([`StackNode`](stack::StackNode)): the nestable try/mirror expression
 //!   flattened into the priority list consumers resolve.
+//! - [`store`] — signed realization-graph records carrying exact NAR identity
+//!   and dependency edges for modern package metadata.
 //!
 //! The crate deliberately excludes the surface *transport* (the trait that
 //! fetches loose objects over `file://`/HTTP, or `fetch()` in a browser)
@@ -42,5 +44,6 @@ pub mod pack_index;
 pub mod refs;
 pub mod sshsig;
 pub mod stack;
+pub mod store;
 pub mod tag;
 pub mod tagobject;

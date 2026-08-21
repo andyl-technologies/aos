@@ -3,9 +3,9 @@
 ##! Declares `aos.apm.registries`, which bakes a registry configuration
 ##! and its initial trust anchor into the image:
 ##!
-##!   - `/etc/apm/registries.d/<name>.toml` — registry URL, priority,
-##!     bootstrap cache endpoints, and `[registry.signing]` with the first
-##!     trust key as the bootstrap anchor.
+##!   - `/etc/apm/registries.d/<name>.toml` — registry URL, signed channel,
+##!     priority, bootstrap cache endpoints, and `[registry.signing]` with the
+##!     first trust key as the bootstrap anchor.
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
 ##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the Secure Boot db
@@ -70,8 +70,9 @@ in {
       ];
     };
     description = ''
-      Package registries and bootstrap cache endpoints baked into the image
-      with their trust anchors.
+      Package registries, signed channels, and bootstrap cache endpoints baked
+      into the image with their trust anchors. Registries track the `stable`
+      channel unless an entry selects another channel explicitly.
       Each entry writes `/etc/apm/registries.d/<name>.toml` and
       `/etc/apm/trusted-keys.d/<name>.pub`, so `apm` verifies the
       registry out of the box without any manual `apr trust pin`.
