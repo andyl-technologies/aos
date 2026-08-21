@@ -618,9 +618,22 @@ treats promotion as non-semantic, and never reports cache durability as
 authoritative source durability. Write-back with its durable GC root/journal,
 packing, compression/encryption below plaintext identity, restart-safe aggregate
 quota,
-namespaced authorization, S3, administrative inventory/GC, and host-side
+namespaced authorization, S3, composed administrative inventory/GC, and host-side
 latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
 by this checkpoint.
+
+The memory and directory loose-object leaves now expose a separately held,
+exclusive administrative fence that streams exact physical inventory under a
+backend-instance generation and supports idempotent deletion of an already
+planned candidate. Directory generations use the registered checksummed v1
+state record, persist across restart, and advance durably before cooperating
+puts or deletes; tests cover restart, delete/reinsert ABA, early visitor failure,
+malformed placement rejection, and put exclusion while fenced. This is only the
+physical leaf primitive. Store-graph administrative composition, a fenced
+canonical ref and operational-root snapshot, complete reachability planning,
+an immutable plan identity, interruption-safe apply/recovery, and production
+maintenance ownership remain open, so no Phase 5 task is checked by this
+checkpoint.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's overlay and
@@ -725,8 +738,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
-  and operational root inventory is implemented; exact-pin materialization
-  selection and destructive physical plan/apply remain open. Implement
+  and operational root inventory plus the exclusive generation-bound memory and
+  directory loose-leaf inventory/delete primitive are implemented; exact-pin
+  materialization selection, composed-store/ref/ledger fencing, and destructive
+  physical plan/apply remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

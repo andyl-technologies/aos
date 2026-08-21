@@ -1,7 +1,24 @@
 //! Crash-safe directory leaves for immutable objects and authoritative refs.
+//!
+//! Loose objects and administrative inventory state use this on-disk layout:
+//!
+//! ```text
+//! <blob-root>/<kind>/<schema-version>/<digest-prefix>/<digest>
+//! <blob-root>/.inventory-admin/lock
+//! <blob-root>/.inventory-admin/state-v1
+//! ```
+//!
+//! `state-v1` is canonical UTF-8 text. It contains `version`, a persistent
+//! random backend `instance`, a monotonic `generation`, and a BLAKE3 checksum
+//! over the preceding fields under the
+//! `crucible.content-store.directory-inventory-state.v1` domain. Cooperating
+//! puts and administrative deletion serialize on `lock`; the directory root
+//! must not be mutated by an uncooperating process. Readers reject state larger
+//! than 256 bytes before retaining more input.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,9 +26,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, flock};
 
+use super::admin::{InventoryCounter, persistent_inventory_generation};
 use super::*;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const INVENTORY_ADMIN_DIRECTORY: &str = ".inventory-admin";
+const INVENTORY_LOCK_FILE: &str = "lock";
+const INVENTORY_STATE_FILE: &str = "state-v1";
+const INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-inventory-state.v1";
+const MAX_INVENTORY_STATE_BYTES: u64 = 256;
 
 /// Durable loose-object directory backend.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -87,6 +112,64 @@ impl DirectoryBlobBackend {
             }
         }
     }
+
+    fn inventory_admin_directory(&self) -> PathBuf {
+        self.root.join(INVENTORY_ADMIN_DIRECTORY)
+    }
+
+    fn acquire_inventory_lock(&self) -> Result<File, StoreError> {
+        let directory = self.inventory_admin_directory();
+        create_dir_all_durable(&directory)?;
+        let path = directory.join(INVENTORY_LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|source| StoreError::Io {
+                operation: "open-inventory-lock",
+                path: path.clone(),
+                source,
+            })?;
+        flock(&file, FlockOperation::LockExclusive).map_err(|source| StoreError::Io {
+            operation: "lock-inventory",
+            path,
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+        Ok(file)
+    }
+
+    fn load_or_create_inventory_state(&self) -> Result<DirectoryInventoryState, StoreError> {
+        let directory = self.inventory_admin_directory();
+        let path = directory.join(INVENTORY_STATE_FILE);
+        match File::open(&path) {
+            Ok(file) => read_inventory_state(file, &path),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                let state = DirectoryInventoryState {
+                    instance: new_inventory_instance(&self.root)?,
+                    generation: 1,
+                };
+                persist_inventory_state(&directory, &path, state)?;
+                Ok(state)
+            }
+            Err(source) => Err(StoreError::Io {
+                operation: "read-inventory-state",
+                path,
+                source,
+            }),
+        }
+    }
+
+    fn advance_inventory_state(
+        &self,
+        state: &mut DirectoryInventoryState,
+    ) -> Result<(), StoreError> {
+        state.generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
+        let directory = self.inventory_admin_directory();
+        let path = directory.join(INVENTORY_STATE_FILE);
+        persist_inventory_state(&directory, &path, *state)
+    }
 }
 
 impl ImmutableBlobBackend for DirectoryBlobBackend {
@@ -122,6 +205,9 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let _inventory_lock = self.acquire_inventory_lock()?;
+        let mut inventory_state = self.load_or_create_inventory_state()?;
+        self.advance_inventory_state(&mut inventory_state)?;
         let path = self.object_path(id);
         let directory = path.parent().ok_or(StoreError::InvalidComposition {
             reason: "object path has no containing directory",
@@ -179,6 +265,376 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
         let authenticated_length = publish_result?;
         Ok(directory_receipt(&self.name, id, authenticated_length))
     }
+}
+
+impl BlobStoreAdmin for DirectoryBlobBackend {
+    fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        let lock = self.acquire_inventory_lock()?;
+        let state = self.load_or_create_inventory_state()?;
+        Ok(Box::new(DirectoryBlobInventoryFence {
+            backend: self,
+            _lock: lock,
+            state,
+        }))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DirectoryInventoryState {
+    instance: [u8; 32],
+    generation: u64,
+}
+
+struct DirectoryBlobInventoryFence<'a> {
+    backend: &'a DirectoryBlobBackend,
+    _lock: File,
+    state: DirectoryInventoryState,
+}
+
+impl BlobInventoryFence for DirectoryBlobInventoryFence<'_> {
+    fn visit_inventory(
+        &mut self,
+        visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<BlobInventorySummary, StoreError> {
+        let generation = persistent_inventory_generation(
+            &self.backend.name,
+            self.state.instance,
+            self.state.generation,
+        )?;
+        let mut inventory = InventoryCounter::new(generation);
+        visit_directory_inventory(&self.backend.root, visitor, &mut inventory)?;
+        Ok(inventory.finish(self.backend.name.clone()))
+    }
+
+    fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        self.backend.advance_inventory_state(&mut self.state)?;
+        let path = self.backend.object_path(id);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(StoreError::InvalidComposition {
+                    reason: "planned loose-object candidate is not a regular file",
+                });
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(PlannedDeleteDisposition::AlreadyAbsent);
+            }
+            Err(source) => {
+                return Err(StoreError::Io {
+                    operation: "inspect-delete-candidate",
+                    path,
+                    source,
+                });
+            }
+        }
+        fs::remove_file(&path).map_err(|source| StoreError::Io {
+            operation: "remove-planned-object",
+            path: path.clone(),
+            source,
+        })?;
+        let directory = path.parent().ok_or(StoreError::InvalidComposition {
+            reason: "planned loose-object candidate has no parent directory",
+        })?;
+        sync_directory(directory)?;
+        Ok(PlannedDeleteDisposition::Deleted)
+    }
+}
+
+fn visit_directory_inventory(
+    root: &Path,
+    visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+    inventory: &mut InventoryCounter,
+) -> Result<(), StoreError> {
+    for kind_entry in read_directory_entries(root, "read-inventory-root")? {
+        let kind_entry = inventory_directory_entry(kind_entry, root, "read-inventory-root")?;
+        let kind_path = kind_entry.path();
+        let kind_name = path_name(&kind_path)?;
+        if kind_name == INVENTORY_ADMIN_DIRECTORY {
+            require_directory(&kind_path)?;
+            continue;
+        }
+        let kind = ObjectKind::parse(kind_name).ok_or(StoreError::InvalidComposition {
+            reason: "inventory contains an unknown object-kind directory",
+        })?;
+        require_directory(&kind_path)?;
+
+        for version_entry in read_directory_entries(&kind_path, "read-inventory-kind")? {
+            let version_entry =
+                inventory_directory_entry(version_entry, &kind_path, "read-inventory-kind")?;
+            let version_path = version_entry.path();
+            require_directory(&version_path)?;
+            let version_name = path_name(&version_path)?;
+            let version = version_name
+                .parse::<u32>()
+                .ok()
+                .filter(|version| version.to_string() == version_name)
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "inventory contains a noncanonical schema-version directory",
+                })?;
+
+            for prefix_entry in read_directory_entries(&version_path, "read-inventory-version")? {
+                let prefix_entry = inventory_directory_entry(
+                    prefix_entry,
+                    &version_path,
+                    "read-inventory-version",
+                )?;
+                let prefix_path = prefix_entry.path();
+                require_directory(&prefix_path)?;
+                let prefix = path_name(&prefix_path)?;
+                if prefix.len() != 2 || !prefix.bytes().all(is_lower_hex) {
+                    return Err(StoreError::InvalidComposition {
+                        reason: "inventory contains a noncanonical digest-prefix directory",
+                    });
+                }
+
+                for object_entry in read_directory_entries(&prefix_path, "read-inventory-prefix")? {
+                    let object_entry = inventory_directory_entry(
+                        object_entry,
+                        &prefix_path,
+                        "read-inventory-prefix",
+                    )?;
+                    let object_path = object_entry.path();
+                    let metadata =
+                        fs::symlink_metadata(&object_path).map_err(|source| StoreError::Io {
+                            operation: "inspect-inventory-object",
+                            path: object_path.clone(),
+                            source,
+                        })?;
+                    if !metadata.file_type().is_file() {
+                        return Err(StoreError::InvalidComposition {
+                            reason: "inventory object is not a regular file",
+                        });
+                    }
+                    let digest = path_name(&object_path)?;
+                    if digest.len() != 64
+                        || !digest.bytes().all(is_lower_hex)
+                        || !digest.starts_with(prefix)
+                    {
+                        return Err(StoreError::InvalidComposition {
+                            reason: "inventory contains a noncanonical object digest",
+                        });
+                    }
+                    let id =
+                        ContentId::parse(&format!("{}.{}.{}", kind.as_str(), version, digest))?;
+                    let record = BlobInventoryRecord::new(id, metadata.len());
+                    inventory.push(record)?;
+                    visitor(record)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn inventory_directory_entry(
+    entry: io::Result<fs::DirEntry>,
+    directory: &Path,
+    operation: &'static str,
+) -> Result<fs::DirEntry, StoreError> {
+    entry.map_err(|source| StoreError::Io {
+        operation,
+        path: directory.to_path_buf(),
+        source,
+    })
+}
+
+fn read_directory_entries(path: &Path, operation: &'static str) -> Result<fs::ReadDir, StoreError> {
+    fs::read_dir(path).map_err(|source| StoreError::Io {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn require_directory(path: &Path) -> Result<(), StoreError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| StoreError::Io {
+        operation: "inspect-inventory-directory",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidComposition {
+            reason: "inventory path component is not a directory",
+        })
+    }
+}
+
+fn path_name(path: &Path) -> Result<&str, StoreError> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(StoreError::InvalidComposition {
+            reason: "inventory path component is not canonical UTF-8",
+        })
+}
+
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
+fn new_inventory_instance(root: &Path) -> Result<[u8; 32], StoreError> {
+    let ordinal = INVENTORY_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let random_path = Path::new("/dev/urandom");
+    let mut random = [0_u8; 32];
+    File::open(random_path)
+        .and_then(|mut source| source.read_exact(&mut random))
+        .map_err(|source| StoreError::Io {
+            operation: "read-inventory-instance-randomness",
+            path: random_path.to_path_buf(),
+            source,
+        })?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.content-store.directory-inventory-instance.v1");
+    hasher.update(root.as_os_str().as_bytes());
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&ordinal.to_le_bytes());
+    hasher.update(&random);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn inventory_state_material(state: DirectoryInventoryState) -> String {
+    format!(
+        "version=1\ninstance={}\ngeneration={}\n",
+        encode_digest(state.instance),
+        state.generation
+    )
+}
+
+fn inventory_state_bytes(state: DirectoryInventoryState) -> Vec<u8> {
+    let material = inventory_state_material(state);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(INVENTORY_STATE_DOMAIN.as_bytes());
+    hasher.update(material.as_bytes());
+    format!(
+        "{material}checksum={}\n",
+        encode_digest(*hasher.finalize().as_bytes())
+    )
+    .into_bytes()
+}
+
+fn read_inventory_state(file: File, path: &Path) -> Result<DirectoryInventoryState, StoreError> {
+    let mut bytes = Vec::new();
+    file.take(MAX_INVENTORY_STATE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| StoreError::Io {
+            operation: "read-inventory-state",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)? > MAX_INVENTORY_STATE_BYTES {
+        return Err(StoreError::InvalidComposition {
+            reason: "directory inventory state exceeds its byte limit",
+        });
+    }
+    parse_inventory_state(&bytes)
+}
+
+fn parse_inventory_state(bytes: &[u8]) -> Result<DirectoryInventoryState, StoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| StoreError::InvalidComposition {
+        reason: "directory inventory state is not UTF-8",
+    })?;
+    let mut lines = text.lines();
+    if lines.next() != Some("version=1") {
+        return Err(StoreError::InvalidComposition {
+            reason: "directory inventory state has the wrong version",
+        });
+    }
+    let instance = lines
+        .next()
+        .and_then(|line| line.strip_prefix("instance="))
+        .and_then(decode_digest)
+        .ok_or(StoreError::InvalidComposition {
+            reason: "directory inventory state has an invalid instance",
+        })?;
+    let generation = lines
+        .next()
+        .and_then(|line| line.strip_prefix("generation="))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(StoreError::InvalidComposition {
+            reason: "directory inventory state has an invalid generation",
+        })?;
+    let checksum = lines
+        .next()
+        .and_then(|line| line.strip_prefix("checksum="))
+        .and_then(decode_digest)
+        .ok_or(StoreError::InvalidComposition {
+            reason: "directory inventory state has an invalid checksum",
+        })?;
+    if lines.next().is_some() {
+        return Err(StoreError::InvalidComposition {
+            reason: "directory inventory state has trailing fields",
+        });
+    }
+    let state = DirectoryInventoryState {
+        instance,
+        generation,
+    };
+    let material = inventory_state_material(state);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(INVENTORY_STATE_DOMAIN.as_bytes());
+    hasher.update(material.as_bytes());
+    if checksum != *hasher.finalize().as_bytes() {
+        return Err(StoreError::InvalidComposition {
+            reason: "directory inventory state checksum does not match",
+        });
+    }
+    if bytes != inventory_state_bytes(state) {
+        return Err(StoreError::InvalidComposition {
+            reason: "directory inventory state is not canonical",
+        });
+    }
+    Ok(state)
+}
+
+fn persist_inventory_state(
+    directory: &Path,
+    path: &Path,
+    state: DirectoryInventoryState,
+) -> Result<(), StoreError> {
+    let bytes = inventory_state_bytes(state);
+    let (staging_path, mut staging) = loop {
+        let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let staging_path = directory.join(format!(
+            ".inventory-state-staging-{}-{ordinal}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging_path)
+        {
+            Ok(staging) => break (staging_path, staging),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(StoreError::Io {
+                    operation: "create-inventory-state-staging",
+                    path: staging_path,
+                    source,
+                });
+            }
+        }
+    };
+    let result = (|| {
+        staging
+            .write_all(&bytes)
+            .and_then(|()| staging.sync_all())
+            .map_err(|source| StoreError::Io {
+                operation: "write-inventory-state-staging",
+                path: staging_path.clone(),
+                source,
+            })?;
+        fs::rename(&staging_path, path).map_err(|source| StoreError::Io {
+            operation: "publish-inventory-state",
+            path: path.to_path_buf(),
+            source,
+        })?;
+        sync_directory(directory)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staging_path);
+    }
+    result
 }
 
 struct DirectoryBlobSource {

@@ -371,19 +371,34 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             );
         }
     }
-    for (schema, owner) in [
+    for (schema, owner, kind) in [
         (
             "crucible.content-envelope",
             "crucible-cas::content_envelope",
+            "envelope",
         ),
-        ("crucible.content-id-text", "crucible-cas::content_store"),
-        ("crucible.directory-ref", "crucible-cas::content_store"),
+        (
+            "crucible.content-id-text",
+            "crucible-cas::content_store",
+            "identity",
+        ),
+        (
+            "crucible.directory-ref",
+            "crucible-cas::content_store",
+            "mutable-ref",
+        ),
+        (
+            "crucible.content-store.directory-inventory-state",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
     ] {
         let row = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         assert_eq!(row[1], "1");
         assert_eq!(row[2], owner);
+        assert_eq!(row[3], kind);
     }
 }
 

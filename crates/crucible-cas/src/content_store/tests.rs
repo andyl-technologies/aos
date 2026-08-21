@@ -123,6 +123,94 @@ fn memory_blob_and_ref_contracts_are_idempotent() {
 }
 
 #[test]
+fn memory_administration_is_generation_bound_and_idempotent() {
+    let blobs = MemoryBlobBackend::new("memory-admin", 1_024);
+    let first_bytes = b"first retained object";
+    let second_bytes = b"second retained object";
+    let first = ContentId::for_bytes(ObjectKind::CampaignFact, 1, first_bytes);
+    let second = ContentId::for_bytes(ObjectKind::Observation, 1, second_bytes);
+    put_bytes(&blobs, first, first_bytes).expect("put first object");
+    put_bytes(&blobs, second, second_bytes).expect("put second object");
+
+    let mut fence = blobs
+        .acquire_inventory_fence()
+        .expect("acquire memory inventory fence");
+    let mut records = Vec::new();
+    let before = fence
+        .visit_inventory(&mut |record| {
+            records.push(record);
+            Ok(())
+        })
+        .expect("visit initial inventory");
+    assert_eq!(before.backend(), "memory-admin");
+    assert_eq!(before.objects(), 2);
+    assert_eq!(
+        before.logical_bytes(),
+        u64::try_from(first_bytes.len() + second_bytes.len()).expect("test byte count")
+    );
+    assert_eq!(
+        records.iter().map(|record| record.id()).collect::<Vec<_>>(),
+        BTreeSet::from([first, second])
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
+
+    let mut bounded_visits = 0_u8;
+    assert!(matches!(
+        fence.visit_inventory(&mut |_| {
+            bounded_visits = bounded_visits.saturating_add(1);
+            Err(StoreError::Quota)
+        }),
+        Err(StoreError::Quota)
+    ));
+    assert_eq!(bounded_visits, 1);
+
+    assert_eq!(
+        fence
+            .delete_candidate(first)
+            .expect("delete planned candidate"),
+        PlannedDeleteDisposition::Deleted
+    );
+    assert_eq!(
+        fence
+            .delete_candidate(first)
+            .expect("repeat candidate deletion"),
+        PlannedDeleteDisposition::AlreadyAbsent
+    );
+    let mut retained = Vec::new();
+    let after = fence
+        .visit_inventory(&mut |record| {
+            retained.push(record);
+            Ok(())
+        })
+        .expect("visit retained inventory");
+    assert_ne!(after.generation(), before.generation());
+    assert_eq!(after.objects(), 1);
+    assert_eq!(
+        retained,
+        [BlobInventoryRecord::new(
+            second,
+            u64::try_from(second_bytes.len()).expect("test byte count"),
+        )]
+    );
+    drop(fence);
+
+    assert!(!blobs.contains(first).expect("query deleted candidate"));
+    assert!(blobs.contains(second).expect("query retained object"));
+    put_bytes(&blobs, first, first_bytes).expect("reinsert deleted object");
+    let mut reinserted_fence = blobs
+        .acquire_inventory_fence()
+        .expect("acquire reinserted inventory fence");
+    let reinserted = reinserted_fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("visit reinserted inventory");
+    assert_eq!(reinserted.objects(), before.objects());
+    assert_ne!(reinserted.generation(), before.generation());
+    drop(reinserted_fence);
+    assert_eq!(blobs.object_count().expect("reinserted object count"), 2);
+}
+
+#[test]
 fn directory_backend_publishes_objects_and_refs_durably() {
     let temp = TempDir::new().expect("temporary directory");
     let blobs = DirectoryBlobBackend::new("directory", temp.path().join("blobs"));
@@ -175,6 +263,102 @@ fn directory_backend_publishes_objects_and_refs_durably() {
     assert!(matches!(
         reopened_refs.read_ref(&name),
         Err(StoreError::InvalidId)
+    ));
+}
+
+#[test]
+fn directory_administration_is_persistent_fenced_and_fail_closed() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("blobs");
+    let blobs = Arc::new(DirectoryBlobBackend::new("directory-admin", &root));
+    let first_bytes = b"first durable object";
+    let second_bytes = b"second durable object";
+    let first = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, first_bytes);
+    let second = ContentId::for_bytes(ObjectKind::Observation, 1, second_bytes);
+    put_bytes(blobs.as_ref(), first, first_bytes).expect("put first object");
+    put_bytes(blobs.as_ref(), second, second_bytes).expect("put second object");
+
+    let mut fence = blobs
+        .acquire_inventory_fence()
+        .expect("acquire directory inventory fence");
+    let mut records = BTreeSet::new();
+    let before = fence
+        .visit_inventory(&mut |record| {
+            records.insert(record.id());
+            Ok(())
+        })
+        .expect("visit directory inventory");
+    assert_eq!(before.backend(), "directory-admin");
+    assert_eq!(before.objects(), 2);
+    assert_eq!(records, BTreeSet::from([first, second]));
+
+    let writer_store = Arc::clone(&blobs);
+    let writer_started = Arc::new(AtomicBool::new(false));
+    let writer_completed = Arc::new(AtomicBool::new(false));
+    let writer_started_clone = Arc::clone(&writer_started);
+    let writer_completed_clone = Arc::clone(&writer_completed);
+    let third_bytes = b"third durable object";
+    let third = ContentId::for_bytes(ObjectKind::CampaignFact, 1, third_bytes);
+    let writer = thread::spawn(move || {
+        writer_started_clone.store(true, Ordering::Release);
+        put_bytes(writer_store.as_ref(), third, third_bytes).expect("fenced writer put");
+        writer_completed_clone.store(true, Ordering::Release);
+    });
+    while !writer_started.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(std::time::Duration::from_millis(10));
+    assert!(!writer_completed.load(Ordering::Acquire));
+
+    assert_eq!(
+        fence
+            .delete_candidate(first)
+            .expect("delete durable candidate"),
+        PlannedDeleteDisposition::Deleted
+    );
+    let after_delete = fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("visit after deletion");
+    assert_ne!(after_delete.generation(), before.generation());
+    drop(fence);
+    writer.join().expect("join fenced writer");
+    assert!(writer_completed.load(Ordering::Acquire));
+    put_bytes(blobs.as_ref(), first, first_bytes).expect("reinsert deleted durable object");
+
+    let reopened = DirectoryBlobBackend::new("directory-admin", &root);
+    let mut reopened_fence = reopened
+        .acquire_inventory_fence()
+        .expect("reopen directory inventory fence");
+    let reopened_summary = reopened_fence
+        .visit_inventory(&mut |_| Ok(()))
+        .expect("visit reopened inventory");
+    assert_ne!(reopened_summary.generation(), after_delete.generation());
+    assert_ne!(reopened_summary.generation(), before.generation());
+    assert_eq!(reopened_summary.objects(), 3);
+    drop(reopened_fence);
+
+    fs::write(root.join("unexpected-physical-entry"), b"unowned")
+        .expect("inject malformed physical entry");
+    let mut malformed_fence = reopened
+        .acquire_inventory_fence()
+        .expect("acquire malformed inventory fence");
+    assert!(matches!(
+        malformed_fence.visit_inventory(&mut |_| Ok(())),
+        Err(StoreError::InvalidComposition {
+            reason: "inventory contains an unknown object-kind directory"
+        })
+    ));
+    drop(malformed_fence);
+
+    fs::remove_file(root.join("unexpected-physical-entry"))
+        .expect("remove malformed physical entry");
+    fs::write(root.join(".inventory-admin/state-v1"), [0_u8; 257])
+        .expect("inject oversized inventory state");
+    assert!(matches!(
+        reopened.acquire_inventory_fence(),
+        Err(StoreError::InvalidComposition {
+            reason: "directory inventory state exceeds its byte limit"
+        })
     ));
 }
 

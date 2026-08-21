@@ -5,7 +5,8 @@
 //! directory, pack, compression, encryption, cache, or archival placement.
 //! [`ImmutableBlobBackend`] and [`MutableRefBackend`] are deliberately distinct:
 //! immutable stores may be tiered and mirrored, while one campaign namespace
-//! has one authoritative ref backend.
+//! has one authoritative ref backend. Physical inventory and candidate removal
+//! require the separately held [`BlobStoreAdmin`] capability.
 //!
 //! Built-in memory and directory leaves are public. Composition implementations
 //! remain private and can only be assembled through the admitted [`StoreGraph`]
@@ -18,11 +19,16 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+mod admin;
 mod composition;
 mod directory;
 mod graph;
 mod memory;
 
+pub use admin::{
+    BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
+    InventoryGeneration, PlannedDeleteDisposition,
+};
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
     StoreGraph, StoreGraphConfig, StoreNodeDescription, StoreNodeId, StoreNodeKind,
