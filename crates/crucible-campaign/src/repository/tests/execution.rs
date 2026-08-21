@@ -1,6 +1,77 @@
 //! Attempt admission, observation, executor, and projection repository tests.
 
 use super::*;
+use crate::{ExecutorClient, ExecutorService};
+
+struct CompletingExecutor {
+    calls: usize,
+    execution: ExecutionId,
+    observation: ObservationId,
+}
+
+impl ExecutorService for CompletingExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.calls += 1;
+        let disposition = if self.calls == 1 {
+            SubmitAttemptDisposition::Accepted {
+                execution: self.execution,
+            }
+        } else {
+            SubmitAttemptDisposition::AlreadyCompleted {
+                observation: self.observation,
+            }
+        };
+        SubmitAttemptResponse::new(request, disposition).map_err(|_| "response encoding")
+    }
+}
+
+struct RejectingExecutor {
+    reason: ExecutorRejection,
+}
+
+struct DeferringExecutor {
+    requests: Vec<SubmitAttemptRequest>,
+}
+
+impl ExecutorService for DeferringExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Rejected {
+                reason: ExecutorRejection::Backpressure,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorService for RejectingExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Rejected {
+                reason: self.reason,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
 
 #[test]
 fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
@@ -919,6 +990,264 @@ fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() 
 }
 
 #[test]
+fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "executor-driver-completion");
+    let observation_id = observation.id().expect("observation id");
+    assert_eq!(
+        repository
+            .put_observation(&observation)
+            .expect("publish executor observation body"),
+        observation_id.content_id()
+    );
+    let resume = command(
+        "executor-driver-resume",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    let running = repository
+        .apply_control("executor-driver-completion", &resume)
+        .expect("start campaign");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = CompletingExecutor {
+        calls: 0,
+        execution: ExecutionId::from_bytes([0x91; 16]).expect("execution"),
+        observation: observation_id,
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0x92; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver");
+
+    assert!(matches!(
+        driver
+            .step("executor-driver-completion", WorkerSlotId::new(0))
+            .expect("accept assignment"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            newly_accepted: true,
+            ..
+        } if attempt == admitted.attempt
+    ));
+    assert_eq!(driver.reservation_count(), 1);
+    let incorporated = driver
+        .step("executor-driver-completion", WorkerSlotId::new(0))
+        .expect("incorporate completion");
+    let CampaignExecutorStepOutcome::Incorporated(incorporated) = incorporated else {
+        panic!("expected incorporated completion");
+    };
+    assert_eq!(incorporated.prior_snapshot, running.new_snapshot);
+    assert_eq!(incorporated.observation, observation_id);
+    assert_eq!(driver.reservation_count(), 0);
+    assert_eq!(driver.into_executor().into_inner().calls, 2);
+
+    let restarted_repository = Arc::new(CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+    ));
+    let mut restarted = CampaignExecutorDriver::new(
+        restarted_repository,
+        ExecutorClient::new(RejectingExecutor {
+            reason: ExecutorRejection::Incompatible,
+        }),
+        DaemonEpoch::from_bytes([0x93; 16]).expect("restart epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        1,
+    )
+    .expect("restarted executor driver");
+    loop {
+        match restarted
+            .step("executor-driver-completion", WorkerSlotId::new(0))
+            .expect("restart projection")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, incorporated.new_snapshot);
+                break;
+            }
+            outcome => panic!("unexpected restarted driver outcome: {outcome:?}"),
+        }
+    }
+    assert_eq!(restarted.reservation_count(), 0);
+}
+
+#[test]
+fn campaign_executor_driver_closes_stable_rejection_and_retries_transient_basis() {
+    let (repository, lineage, policy) = fixture();
+    let (genesis, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "executor-driver-rejection");
+    let resume = command(
+        "executor-driver-rejection-resume",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    repository
+        .apply_control("executor-driver-rejection", &resume)
+        .expect("start campaign");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(1, 256 * 1024 * 1024, 0, 10_000).expect("executor limits");
+
+    let mut deferred = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(DeferringExecutor {
+            requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xa1; 16]).expect("deferred epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("deferred driver");
+    for _ in 0..2 {
+        assert_eq!(
+            deferred
+                .step("executor-driver-rejection", WorkerSlotId::new(0))
+                .expect("deferred assignment"),
+            CampaignExecutorStepOutcome::RetryScheduled {
+                attempt: admitted.attempt,
+                reason: ExecutorRejection::Backpressure,
+            }
+        );
+    }
+    assert_eq!(deferred.reservation_count(), 0);
+    let requests = deferred.into_executor().into_inner().requests;
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].assignment(), requests[1].assignment());
+    assert_eq!(
+        requests[0].execution_basis_digest(),
+        requests[1].execution_basis_digest()
+    );
+
+    let mut unauthorized = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(RejectingExecutor {
+            reason: ExecutorRejection::Unauthorized,
+        }),
+        DaemonEpoch::from_bytes([0xa3; 16]).expect("unauthorized epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("unauthorized driver");
+    assert_eq!(
+        unauthorized
+            .step("executor-driver-rejection", WorkerSlotId::new(0))
+            .expect("authorization stop"),
+        CampaignExecutorStepOutcome::Blocked {
+            attempt: admitted.attempt,
+            reason: ExecutorRejection::Unauthorized,
+        }
+    );
+    assert_eq!(unauthorized.reservation_count(), 1);
+    assert!(
+        repository
+            .project_claimable_attempts("executor-driver-rejection", None, 10_000)
+            .expect("authorization remains non-semantic")
+            .attempts()
+            .contains(&admitted.attempt)
+    );
+    drop(unauthorized);
+
+    let mut rejected = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(RejectingExecutor {
+            reason: ExecutorRejection::Incompatible,
+        }),
+        DaemonEpoch::from_bytes([0xa2; 16]).expect("rejection epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("rejecting driver");
+    let closed = rejected
+        .step("executor-driver-rejection", WorkerSlotId::new(0))
+        .expect("close incompatible attempt");
+    let CampaignExecutorStepOutcome::Closed(closed) = closed else {
+        panic!("expected non-modeled closure");
+    };
+    assert_eq!(closed.attempt, admitted.attempt);
+    assert_eq!(closed.ordinal, AdmissionOrdinal::new(1));
+    assert_eq!(
+        closed.disposition,
+        NonModeledAttemptDisposition::PermanentlyIncompatible
+    );
+    assert!(!closed.replayed);
+    assert_eq!(rejected.reservation_count(), 0);
+
+    let pause = command(
+        "executor-driver-rejection-pause",
+        closed.new_snapshot,
+        CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+    );
+    let paused = repository
+        .apply_control("executor-driver-rejection", &pause)
+        .expect("advance after attempt closure");
+
+    let replay = repository
+        .close_attempt_non_modeled(
+            "executor-driver-rejection",
+            genesis,
+            admitted.attempt,
+            NonModeledAttemptDisposition::PermanentlyIncompatible,
+        )
+        .expect("closure replay before stale check");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, closed.new_snapshot);
+    assert!(matches!(
+        repository.close_attempt_non_modeled(
+            "executor-driver-rejection",
+            paused.new_snapshot,
+            admitted.attempt,
+            NonModeledAttemptDisposition::Unauthorized,
+        ),
+        Err(CampaignRepositoryError::AlreadyExists)
+    ));
+    assert!(matches!(
+        repository.publish_observation(
+            "executor-driver-rejection",
+            paused.new_snapshot,
+            &observation,
+        ),
+        Err(CampaignRepositoryError::AlreadyExists)
+    ));
+    let page = repository
+        .project_claimable_attempts("executor-driver-rejection", None, 10_000)
+        .expect("post-closure projection");
+    assert!(page.attempts().is_empty());
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("executor-driver-rejection")
+            .expect("restart validates attempt closure")
+            .snapshot_id(),
+        paused.new_snapshot
+    );
+    assert!(
+        restarted
+            .project_claimable_attempts("executor-driver-rejection", None, 10_000)
+            .expect("restart claim projection")
+            .attempts()
+            .is_empty()
+    );
+}
+
+#[test]
 fn executor_responses_authenticate_request_attempt_and_lineage() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) = admitted_observation_fixture(
@@ -1374,7 +1703,7 @@ fn strict_observations_commit_in_global_admission_order() {
             &second_observation,
         ),
         Err(CampaignRepositoryError::Integrity {
-            reason: "strict-observation-order-gap"
+            reason: "strict-completion-order-gap"
         })
     ));
     assert_eq!(
@@ -1384,23 +1713,33 @@ fn strict_observations_commit_in_global_admission_order() {
             .snapshot_id(),
         second_admitted.new_snapshot
     );
-    let first_published = repository
-        .publish_observation(
+    let first_closed = repository
+        .close_attempt_non_modeled(
             "observation-order",
             second_admitted.new_snapshot,
-            &first_observation,
+            first_admitted.attempt,
+            NonModeledAttemptDisposition::OperatorCancelled,
         )
-        .expect("first ordered observation");
+        .expect("close first admission ordinal");
+    assert_eq!(first_closed.ordinal, AdmissionOrdinal::new(1));
     let second_published = repository
         .publish_observation(
             "observation-order",
-            first_published.new_snapshot,
+            first_closed.new_snapshot,
             &second_observation,
         )
-        .expect("second ordered observation");
+        .expect("second observation follows closed ordinal");
     assert_eq!(
         second_published.disposition,
         ObservationDisposition::Canonical
+    );
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        restarted
+            .head("observation-order")
+            .expect("restart validates mixed strict completion sequence")
+            .snapshot_id(),
+        second_published.new_snapshot
     );
 }
 

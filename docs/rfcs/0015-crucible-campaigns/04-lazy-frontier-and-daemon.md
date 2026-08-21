@@ -76,6 +76,7 @@ The claimable work set is:
 ```text
 admitted attempts
   - completed observations
+  - explicit non-modeled terminal dispositions
   - currently live local reservations
 ```
 
@@ -194,7 +195,8 @@ checkpoint is expanded once.
 The first repository checkpoint projects that index directly from one
 authenticated `CampaignSnapshot`. `ProjectClaimableAttempts` scans a bounded
 page of the accounting root, accepts only canonical `accounting.attempt` keys,
-and removes attempts present under the canonical `observations.attempt` owner.
+and removes attempts present under either the canonical `observations.attempt`
+owner or the exact `accounting.attempt-disposition` owner.
 Its opaque continuation carries the snapshot identity and exclusive accounting
 key. A head advance rejects the old continuation rather than mixing semantic
 roots, and concatenating all pages to EOF produces the same canonical sequence
@@ -209,6 +211,22 @@ when constructing a new queue after restart. The queue and cursor are
 operational Rust interfaces at this checkpoint, not canonical campaign objects
 or component messages; a later service schema must preserve these semantics
 without adding reservation fields to semantic identity.
+
+The coordinator-owned `CampaignExecutorDriver` composes those two primitives
+without making its cursor or reservation authoritative. One call consumes at
+most one accounting page and one checked `SubmitAttempt` exchange. Assignment
+identity is derived from the exact daemon epoch, lease generation, attempt,
+lineage, resource ceiling, and retention basis, but none of those operational
+fields enter modeled identity. `Backpressure` and `UnavailableInput` release
+the lease so the next bounded scan uses the fresh `AssignmentId` required by
+the executor retry contract. `Unauthorized` retains only the volatile lease and
+requires local reconfiguration; it never fabricates a campaign policy fact.
+Because the supported deployment has exactly one eligible local executor, a
+stable `Incompatible` response closes the execution-basis ordinal with an
+`AttemptClosed(PermanentlyIncompatible)` owner transition. Completion IDs are
+reloaded, closure-authenticated, and incorporated only through the observation
+owner transaction. Restart discards driver state and reconstructs both pending
+work and already resolved attempts from the authenticated roots.
 
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or

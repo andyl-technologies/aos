@@ -290,6 +290,12 @@ permanent incompatibility, invalid input, or authorization refusal. Retriable
 operational failure does not close an ordinal. This is the only non-observation
 path that can close strict ordering, and it cannot be interpreted as a modeled
 timeout, crash, or assertion result.
+In strict mode both an accepted observation and `AttemptClosed` advance the
+same admission-completion sequence owner. Its value is therefore a typed
+`Observation` or `AttemptClosed` fact, and the next completion must carry the
+immediately following global admission ordinal. Separate per-attempt and
+per-ordinal disposition indexes make closure replay and claim filtering
+independent of ancestry scans.
 
 `PlannerStep` makes adaptation explicit:
 

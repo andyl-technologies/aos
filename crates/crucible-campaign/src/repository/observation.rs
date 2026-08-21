@@ -158,6 +158,16 @@ impl CampaignRepository {
         let observation_id = observation.id()?;
         let attempt_key =
             map_key_content("observations.attempt", observation.attempt().content_id());
+        if self
+            .merkle
+            .get(
+                current.snapshot.roots().accounting,
+                non_modeled_attempt_key(observation.attempt()),
+            )?
+            .is_some()
+        {
+            return Err(CampaignRepositoryError::AlreadyExists);
+        }
         let canonical = self
             .merkle
             .get(current.snapshot.roots().observations, attempt_key)?;
@@ -485,7 +495,7 @@ impl CampaignRepository {
         }
 
         let (attempt, ordinal) = self.observation_execution_basis(roots.accounting, observation)?;
-        self.validate_strict_observation_order(parent, ordinal)?;
+        self.validate_strict_completion_order(parent, ordinal)?;
         let mut graph = BTreeMap::from([(
             map_key_hash("graph.configuration", observation.child().as_hash()),
             observation.child_content().content_id(),
@@ -803,7 +813,7 @@ impl CampaignRepository {
         ))
     }
 
-    fn validate_strict_observation_order(
+    pub(super) fn validate_strict_completion_order(
         &self,
         parent: &LoadedSnapshot,
         ordinal: AdmissionOrdinal,
@@ -818,17 +828,40 @@ impl CampaignRepository {
         )? {
             None => 1,
             Some(previous) => {
-                let previous = self.decode_observation(previous)?;
-                let (_, previous_ordinal) = self
-                    .observation_execution_basis(parent.snapshot.roots().accounting, &previous)?;
+                let envelope = self.read_envelope(previous)?;
+                let previous_ordinal = match envelope.record_kind() {
+                    crate::CampaignRecordKind::Observation => {
+                        let previous = self.decode_observation(previous)?;
+                        self.observation_execution_basis(
+                            parent.snapshot.roots().accounting,
+                            &previous,
+                        )?
+                        .1
+                    }
+                    crate::CampaignRecordKind::Fact => {
+                        let CampaignFact::AttemptClosed { ordinal, .. } =
+                            self.read_fact(previous)?
+                        else {
+                            return Err(integrity(
+                                "strict-completion-sequence-fact-is-not-attempt-closure",
+                            ));
+                        };
+                        ordinal
+                    }
+                    _ => {
+                        return Err(integrity(
+                            "strict-completion-sequence-has-invalid-record-kind",
+                        ));
+                    }
+                };
                 previous_ordinal
                     .value()
                     .checked_add(1)
-                    .ok_or_else(|| integrity("observation-sequence-overflow"))?
+                    .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?
             }
         };
         if ordinal.value() != expected {
-            return Err(integrity("strict-observation-order-gap"));
+            return Err(integrity("strict-completion-order-gap"));
         }
         Ok(())
     }

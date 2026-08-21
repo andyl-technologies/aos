@@ -224,6 +224,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   preflighted immutable observation-candidate bundle without advancing campaign
   state, and returns results to the supervisor actor for durable completion or
   bounded retry without holding supervisor state during guest execution.
+  A coordinator-owned `CampaignExecutorDriver` now pages authenticated
+  claimable attempts into exact bounded reservations, derives a stable
+  assignment per lease, invokes the checked direct/RPC executor boundary
+  without repository mutation ownership, authenticates and incorporates
+  completed observations, and rebuilds from semantic roots after restart.
+  Retryable executor rejection rotates the assignment identity, authorization
+  failure remains operational, and the sole eligible local executor's stable
+  incompatibility closes the exact admission ordinal through the imported-
+  validated `AttemptClosed` owner transition.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -301,9 +310,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   retention, exact root deltas, imported recomputation, and final-CAS safety;
   Executor restart recovery now uses direct-by-ID, bounded, checksummed,
   single-writer directory records and preserves exact responses, completed
-  observations, and cancellation races without loading history. Campaign
-  supervisor scheduling, non-modeled ordinal closure, and claim-reservation
-  integration remain open.
+  observations, and cancellation races without loading history. Full campaign-
+  supervisor scheduling, pause-policy cancellation/checkpoint orchestration,
+  and the bounded worker-thread pool around the existing linear worker tokens
+  remain open.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

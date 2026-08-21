@@ -133,11 +133,13 @@ pub use policy::{
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignDerivationResult,
-    CampaignExecutorStore, CampaignHead, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
-    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
-    CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, ObservationCandidate, ObservationDisposition, ObservationResult,
-    PlannerStepResult, ProposalResult, ResolvedSelection, WorkerSlotId,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignPlannerDriver,
+    CampaignPlannerDriverConfigError, CampaignPlannerDriverError, CampaignPlannerStepOutcome,
+    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
+    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
+    ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

@@ -256,6 +256,38 @@ impl CampaignRepository {
         }))
     }
 
+    pub(super) fn find_non_modeled_attempt_result(
+        &self,
+        content_id: ContentId,
+        attempt: AttemptId,
+        ordinal: AdmissionOrdinal,
+        disposition: NonModeledAttemptDisposition,
+    ) -> Result<NonModeledAttemptResult, CampaignRepositoryError> {
+        let key = mutation_result_content_key("attempt-closure", attempt.content_id());
+        let (result_content, loaded, fact) = self.mutation_result_snapshot(content_id, key)?;
+        if fact
+            != (CampaignFact::AttemptClosed {
+                attempt,
+                ordinal,
+                disposition,
+            })
+        {
+            return Err(integrity("attempt-closure-result-index-type-mismatch"));
+        }
+        let prior_snapshot = loaded
+            .snapshot
+            .parent()
+            .ok_or_else(|| integrity("attempt-closure-transition-has-no-parent"))?;
+        Ok(NonModeledAttemptResult {
+            prior_snapshot,
+            new_snapshot: CampaignSnapshotId::from_content_id(result_content)?,
+            attempt,
+            ordinal,
+            disposition,
+            replayed: true,
+        })
+    }
+
     pub(super) fn parent_result_upsert(
         &self,
         content_id: ContentId,
@@ -360,6 +392,9 @@ impl CampaignRepository {
             CampaignFact::ObservationPublished(observation)
             | CampaignFact::ObservationCredited(observation) => {
                 mutation_result_content_key("observation", observation.content_id())
+            }
+            CampaignFact::AttemptClosed { attempt, .. } => {
+                mutation_result_content_key("attempt-closure", attempt.content_id())
             }
             CampaignFact::ChoiceOpportunityDiscovered {
                 parent,

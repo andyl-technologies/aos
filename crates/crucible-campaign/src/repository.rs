@@ -29,15 +29,16 @@ use crate::{
     ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
     DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit,
     ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
-    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, ObjectEnvelope,
-    Observation, ObservationId, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
-    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
-    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
-    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
-    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
-    ProposalId, PurePlannerEngine, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
-    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
+    NonModeledAttemptDisposition, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
+    PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
+    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
+    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
+    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
+    RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -610,8 +611,10 @@ pub struct CampaignRepository {
 }
 
 mod ancestry;
+mod attempt_closure;
 mod closure;
 mod execution;
+mod executor_driver;
 mod observation;
 mod planner_driver;
 mod planner_issue;
@@ -620,13 +623,20 @@ mod queue;
 mod records;
 mod transactions;
 
+use attempt_closure::non_modeled_attempt_key;
+
+pub use attempt_closure::NonModeledAttemptResult;
+pub use executor_driver::{
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorStepOutcome,
+};
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome,
 };
 pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
-    WorkerSlotId,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
 };
 
 struct LoadedSnapshot {
