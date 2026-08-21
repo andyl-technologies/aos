@@ -235,6 +235,23 @@ pub struct Finding {
 }
 ```
 
+The canonical schema-v1 record represents `occurrences` as an authenticated
+Merkle-set root plus a checked count of at most 1,000,000 observations. It also
+retains the exact latest occurrence so the owner can prove one set insertion
+without rescanning history. `exact_pins` is a sorted bounded set of at most 256
+`ExactCheckpointId` values, and the signature retains at most 4,096 canonical
+evidence object IDs. Every referenced identity or root is an exact envelope
+child. `first_seen_snapshot` is the authenticated parent snapshot at which the
+first observation was already visible; using the successor that publishes the
+finding would create a content-address cycle.
+
+`ReproductionArtifact` schema v1 binds the semantic scenario and configuration,
+their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
+failure fingerprint, and at most 32 MiB of self-contained execution-model
+bytes. The campaign layer does not trust those opaque bytes by inspection. A
+typed execution-model adapter replays them, re-derives all identities and the
+failure fingerprint, and only then publishes the immutable record.
+
 The signature includes property/assertion identity, stable guest or QEMU failure
 class, relevant target/opportunity, and canonical causal evidence. It excludes
 executor, PID, wall time, and materialization tier. Rediscovery unions occurrence

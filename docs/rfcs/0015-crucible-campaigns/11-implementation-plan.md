@@ -129,6 +129,13 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   objectives, ranking, explanations, and the Phase 3 flight remain open.
 - [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
+  Canonical bounded finding signatures, clusters, exact child closures, and
+  self-contained reproduction records are implemented. A narrow Crucible
+  adapter replays and re-derives the reproduction before immutable import, and
+  the repository atomically clusters canonical observations with read-only
+  import/restart successor validation. Automated exact-pin selection,
+  minimization policy, paged service queries, and the Phase 3 flight remain
+  open.
 - [ ] **T-CAM-3.6** Have an independent reviewer cross-check guest convergence
   markers, model-derived traffic evidence, measurement windows, objective
   ranking, and one known finding in the §14 Phase 3 flight.
@@ -421,9 +428,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   an audited successor of an exact authenticated source snapshot, optionally
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
-  cache eviction, restart, or a same-basis CAS race. Paged finding queries,
-  rich frontier explanation, verifier-backed import/validation and
-  start-attachment porcelain,
+  cache eviction, restart, or a same-basis CAS race. Canonical bounded finding
+  and self-contained reproduction records now have a verifier-backed Crucible
+  importer and an atomic occurrence-clustering owner with restart validation.
+  Paged finding queries, rich frontier explanation, start-attachment porcelain,
   and richer filtered/aggregated CLI views remain open. The CLI wiring uses the
   checked local Unix-stream client for authenticated `status`, one-shot
   resumable `watch`, exact immutable pages of graph keys, discovered choice

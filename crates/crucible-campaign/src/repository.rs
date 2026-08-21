@@ -29,16 +29,18 @@ use crate::{
     ConfigurationId, ContinuationProjection, ControlRequest, CoverageProjection,
     CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey, DebuggerSubmission,
     ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit, ExpansionState,
-    ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap, MerkleMapLookupProof,
-    MerkleMapPage, MerkleMapPageProof, MerkleMapRoot, NonModeledAttemptDisposition, ObjectEnvelope,
-    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
-    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
-    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
-    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
-    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
-    ProposalId, PurePlannerEngine, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
-    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    ExpansionStateId, Finding, FindingId, FindingOccurrenceSet, MeasurementSet, MeasurementSetId,
+    MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
+    NonModeledAttemptDisposition, ObjectEnvelope, Observation, ObservationId, PinRequest,
+    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
+    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
+    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
+    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
+    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
+    ReproductionArtifact, ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -647,6 +649,7 @@ mod attempt_closure;
 mod closure;
 mod execution;
 mod executor_driver;
+mod finding;
 mod observation;
 mod planner_driver;
 mod planner_issue;
@@ -658,12 +661,14 @@ mod supervisor;
 mod transactions;
 
 use attempt_closure::non_modeled_attempt_key;
+use finding::finding_occurrence_key;
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{
     CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome, CampaignExecutorDriver,
     CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
 };
+pub use finding::FindingPublicationResult;
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignPlannerStepOutcome,
@@ -1084,6 +1089,7 @@ const fn is_campaign_record_kind(kind: ObjectKind) -> bool {
             | ObjectKind::Policy
             | ObjectKind::Scenario
             | ObjectKind::Configuration
+            | ObjectKind::Finding
             | ObjectKind::Observation
             | ObjectKind::Projection
     )

@@ -314,6 +314,14 @@ impl CampaignRepository {
                                 choice_cache,
                             )?;
                         }
+                        CampaignFact::FindingPublished(finding) => {
+                            self.validate_finding_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                finding,
+                                choice_cache,
+                            )?;
+                        }
                         CampaignFact::AttemptClosed {
                             attempt,
                             ordinal,
@@ -1452,6 +1460,12 @@ impl CampaignRepository {
                 }
                 crate::CampaignRecordKind::ConfigurationArtifact => {
                     self.read_configuration_artifact(id)?;
+                }
+                crate::CampaignRecordKind::ReproductionArtifact => {
+                    self.read_reproduction_artifact(id)?;
+                }
+                crate::CampaignRecordKind::Finding => {
+                    self.read_finding_cached(id, choice_cache)?;
                 }
                 crate::CampaignRecordKind::BranchRequest => {
                     let request = self.decode_branch_request(id)?;

@@ -2523,6 +2523,54 @@ impl CampaignRepository {
         ConfigurationArtifactId::from_content_id(content).map_err(Into::into)
     }
 
+    /// Publishes verifier-backed self-contained finding reproduction bytes.
+    ///
+    /// The execution-model adapter remains responsible for replaying the
+    /// payload and proving its semantic identities and failure fingerprint.
+    /// This repository boundary authenticates the already-published exact
+    /// scenario/configuration basis before the first write.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, integrity, or store error when the payload is
+    /// invalid, its exact artifact basis is absent or inconsistent, or the
+    /// resulting reproduction cannot be placed and authenticated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_reproduction_artifact(
+        &self,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+        configuration_artifact: ConfigurationArtifactId,
+        finding_fingerprint: CampaignHash,
+        payload_schema: u32,
+        bytes: Vec<u8>,
+    ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
+        let artifact = ReproductionArtifact::new(
+            scenario,
+            scenario_artifact,
+            configuration,
+            configuration_artifact,
+            finding_fingerprint,
+            payload_schema,
+            bytes,
+        )?;
+        let stored_scenario = self.read_scenario_artifact(scenario_artifact.content_id())?;
+        let stored_configuration =
+            self.read_configuration_artifact(configuration_artifact.content_id())?;
+        if stored_scenario.scenario() != scenario
+            || stored_configuration.scenario() != scenario
+            || stored_configuration.scenario_artifact() != scenario_artifact
+            || stored_configuration.configuration() != configuration
+        {
+            return Err(integrity("finding-reproduction-artifact-basis-mismatch"));
+        }
+
+        let content = self.put_reproduction_artifact(&artifact)?;
+        self.verify_campaign_closure(content)?;
+        ReproductionArtifactId::from_content_id(content).map_err(Into::into)
+    }
+
     /// Publishes an exact choice domain.
     ///
     /// # Errors

@@ -5,8 +5,9 @@ use crate::{
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExecutorClient,
-    ExecutorControlService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    ExecutorControlService, ExecutorService, ExecutorStatusService, FindingKind, FindingSignature,
+    FindingTarget, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -765,6 +766,141 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
         )
         .expect("coordinator incorporates candidate");
     assert_eq!(incorporated.observation, published);
+}
+
+#[test]
+fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "finding-publication");
+    let observed = repository
+        .publish_observation("finding-publication", admitted.new_snapshot, &observation)
+        .expect("publish observation");
+    let fingerprint = CampaignHash::derive("test-finding", b"replay divergence");
+    let reproduction = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"verified self-contained reproduction".to_vec(),
+        )
+        .expect("publish reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("finding signature");
+
+    let published = repository
+        .publish_finding(
+            "finding-publication",
+            observed.new_snapshot,
+            signature.clone(),
+            observed.observation,
+            reproduction,
+            None,
+            BTreeSet::new(),
+        )
+        .expect("publish finding");
+    assert!(!published.replayed);
+    let head = repository
+        .head("finding-publication")
+        .expect("finding head");
+    assert_eq!(head.snapshot_id(), published.new_snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                head.snapshot().roots().findings,
+                map_key_hash("findings.signature", signature.cluster_key()),
+            )
+            .expect("finding lookup"),
+        Some(published.finding.content_id())
+    );
+    let stored = repository
+        .read_finding(published.finding.content_id())
+        .expect("read finding");
+    assert_eq!(stored.first_seen_snapshot(), observed.new_snapshot);
+    assert_eq!(stored.occurrence_count(), 1);
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                stored.occurrences(),
+                finding_occurrence_key(observed.observation),
+            )
+            .expect("occurrence lookup"),
+        Some(observed.observation.content_id())
+    );
+    repository.evict_local_checkpoint(published.new_snapshot.content_id());
+    assert_eq!(
+        repository
+            .head("finding-publication")
+            .expect("restart-style finding validation")
+            .snapshot_id(),
+        published.new_snapshot
+    );
+
+    let replayed = repository
+        .publish_finding(
+            "finding-publication",
+            published.new_snapshot,
+            signature.clone(),
+            observed.observation,
+            reproduction,
+            None,
+            BTreeSet::new(),
+        )
+        .expect("replay finding");
+    assert!(replayed.replayed);
+    assert_eq!(replayed.new_snapshot, published.new_snapshot);
+
+    let invalid = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        None,
+        BTreeSet::from([ContentId::for_bytes(
+            ObjectKind::Trace,
+            1,
+            b"foreign evidence",
+        )]),
+    )
+    .expect("structurally valid foreign evidence");
+    let count_before = blobs.object_count().expect("object count");
+    assert!(matches!(
+        repository.publish_finding(
+            "finding-publication",
+            published.new_snapshot,
+            invalid,
+            observed.observation,
+            reproduction,
+            None,
+            BTreeSet::new(),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-candidate-evidence-is-not-observation-owned"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("object count after rejection"),
+        count_before
+    );
+    assert_eq!(
+        repository
+            .head("finding-publication")
+            .expect("unchanged head")
+            .snapshot_id(),
+        published.new_snapshot
+    );
 }
 
 #[test]
