@@ -1,22 +1,69 @@
 ##! crucible-guest — static RFC-0010 guest white-box emitter
 {
   lib,
+  stdenv,
   mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoDeps,
   patchelf,
 }: let
   version = "0.1.0";
   src = import ./crucible/_source.nix {inherit lib;};
+  cargoDeps = fetchCargoDeps {
+    inherit src;
+    sourceRoot = "source/crates";
+    hash = import ./crucible/_cargo-deps-hash.nix;
+  };
+  targetTriple =
+    {
+      "x86_64-linux" = "x86_64-unknown-linux-gnu";
+      "aarch64-linux" = "aarch64-unknown-linux-gnu";
+    }
+    .${
+      stdenv.hostPlatform.system
+    };
+  staticBuildSetup = ''
+    target_triple="$(rustc -vV | sed -n 's/^host: //p')"
+    test "$target_triple" = "${targetTriple}"
+    rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+    mkdir -p "$TMPDIR/static-shim"
+    ln -s "$(dirname "$(cc -print-libgcc-file-name)")/libgcc_s.a" \
+      "$TMPDIR/static-shim/libgcc_eh.a"
+    export "$rustflags_var=-C target-feature=+crt-static -C relocation-model=static -L $TMPDIR/static-shim"
+    export CARGO_BUILD_TARGET="$target_triple"
+  '';
+  cargoArtifactContract = {
+    family = "crucible-static-guest-release-and-test";
+    target = targetTriple;
+    rustflags = "-C target-feature=+crt-static -C relocation-model=static";
+    nativeInputs = map toString [patchelf];
+    licenseScope = "MIT";
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "crucible-static-guest-artifacts";
+    inherit version cargoDeps cargoArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "crucible-static-guest-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest --bin crucible-guest"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"
+    ];
+    preBuild = staticBuildSetup;
+    buildDeps = [patchelf];
+  };
 in
   mkCargoPackage {
     pname = "crucible-guest";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-    };
+    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    cargoRoot = "crates";
+    cargoNextest = true;
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";
     cargoTestFlags = "-p crucible-guest";
@@ -25,25 +72,18 @@ in
     runtimeDeps = [];
 
     preBuild = ''
-      target_triple="$(rustc -vV | sed -n 's/^host: //p')"
-      rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+      ${staticBuildSetup}
       # crt-static linking asks for -lgcc_eh, which the AOS gcc (built with
       # shared libgcc) does not install. libgcc_s.a carries the same unwinder
       # symbols, so expose it under the name the linker wants.
-      mkdir -p "$TMPDIR/static-shim"
-      ln -s "$(dirname "$(cc -print-libgcc-file-name)")/libgcc_s.a" \
-        "$TMPDIR/static-shim/libgcc_eh.a"
       # relocation-model=static links a classic static executable instead of
       # static-pie; static-pie startup self-relocation SIGSEGVs against the
       # AOS glibc (IRELATIVE ordering), and the in-VM guest gains nothing
       # from PIE.
-      export "$rustflags_var=-C target-feature=+crt-static -C relocation-model=static -L $TMPDIR/static-shim"
       # Build with an explicit --target (equal to the host triple) so cargo
       # separates host units from target units: proc-macro dylibs
       # (e.g. thiserror-impl) compile for the host WITHOUT +crt-static, which
       # cannot produce dylibs, while the guest binary itself links statically.
-      export CARGO_BUILD_TARGET="$target_triple"
-      cd crates
     '';
 
     preInstall = ''

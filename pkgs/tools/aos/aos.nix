@@ -2,6 +2,8 @@
 {
   lib,
   mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoVendor,
   bash,
   git-minimal,
@@ -85,6 +87,43 @@
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );
+  cargoDeps = fetchCargoVendor {
+    inherit src;
+    name = "aos-vendor-${version}";
+    sourceRoot = "source/crates";
+    hash = "sha256-nwEvuWQPu98b6w5O/yM0d0XYHYhoGyuf0gn+XLzZ6P0=";
+  };
+  cargoArtifactContract = {
+    family = "aos-native-release-and-test";
+    checkType = "debug";
+    nativeInputs = map toString [openssl protobuf cmake libssh2];
+  };
+  cargoEnv = {
+    OPENSSL_DIR = "${openssl}";
+    OPENSSL_LIB_DIR = "${openssl}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl}/include";
+    OPENSSL_NO_VENDOR = "1";
+    OPENSSL_STATIC = "0";
+    PROTOC = "${protobuf}/bin/protoc";
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-native-release-and-test-artifacts";
+    inherit version cargoDeps cargoArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../../crates;
+      name = "aos-cargo-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+    ];
+    inherit cargoEnv;
+    buildDeps = [perl pkg-config openssl protobuf cmake libssh2];
+    runtimeDeps = [openssl zlib];
+  };
 in
   mkCargoPackage {
     pname = "aos";
@@ -92,12 +131,11 @@ in
 
     cargoFlags = "-p aos";
 
-    # The lockfile-driven vendor builder extracts the workspace crate subtree.
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      name = "aos-vendor-${version}";
-      sourceRoot = "source/crates";
-      hash = "sha256-nwEvuWQPu98b6w5O/yM0d0XYHYhoGyuf0gn+XLzZ6P0=";
+    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoNextest = true;
+    passthru = {
+      inherit cargoArtifacts cargoDeps cargoEnv;
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -143,7 +181,6 @@ in
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
       export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
       export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
-      cd crates
       # The real-Git interoperability test intentionally exercises stock
       # OpenSSH signing. Nix builders have numeric uids without /etc/passwd
       # entries, while ssh-keygen requires getpwuid(3) even with an explicit

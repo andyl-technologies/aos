@@ -199,8 +199,8 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        label = "central cargo dependency hash";
+        needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" crucibleNix [
@@ -209,8 +209,8 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        label = "central cargo dependency hash";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-guest.nix" guestNix [
@@ -219,8 +219,8 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "inline cargo dependency hash";
-        needle = "hash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        label = "central cargo dependency hash";
+        needle = "hash = import ./crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible-fleet-store.nix" fleetStoreNix [
@@ -229,8 +229,8 @@
         needle = "cargoDeps = fetchCargoDeps";
       }
       {
-        label = "inline cargo dependency hash";
-        needle = "cargoDepsHash = \"sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=\";";
+        label = "central cargo dependency hash";
+        needle = "cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;";
       }
     ];
 

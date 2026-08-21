@@ -63,6 +63,8 @@
 {
   lib,
   mkDerivation,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
@@ -105,6 +107,40 @@
   # The native `esbuild` binary inside the vendored miniflare/wrangler closure
   # (the platform package, not the `#!/usr/bin/env node` JS launcher).
   esbuildBin = "${miniflare}/lib/node_modules/@esbuild/linux-x64/bin/esbuild";
+  cargoDeps = fetchCargoVendor {
+    inherit src;
+    name = "aos-vendor-${version}";
+    sourceRoot = "source/crates";
+    hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
+  };
+  qualifiedFeatures =
+    if cargoFeatures == ""
+    then ""
+    else lib.concatMapStringsSep "," (feature: "aos-hub-worker/${feature}") (lib.splitString " " cargoFeatures);
+  cargoEnv = {
+    PROTOC = "${protobuf}/bin/protoc";
+    AOS_HUB_CONSOLE_JS = "${aos-hub-console-dist}/hub-console.js";
+    AOS_HUB_CONSOLE_WASM = "${aos-hub-console-dist}/hub-console_bg.wasm";
+    AOS_HUB_CONSOLE_CSS = "${aos-hub-console-dist}/hub-console.css";
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-hub-worker-wasm-artifacts";
+    inherit version cargoDeps cargoEnv;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-hub-worker-wasm-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-hub-worker --target wasm32-unknown-unknown ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"}";
+    cargoArtifactContract = {
+      family = "aos-hub-worker-wasm-release";
+      target = "wasm32-unknown-unknown";
+      features = lib.splitString " " cargoFeatures;
+      nativeInputs = map toString [protobuf stdenv.cc aos-hub-console-dist];
+    };
+    buildDeps = [protobuf stdenv.cc aos-hub-console-dist];
+  };
 in
   mkDerivation {
     pname = "aos-hub-worker-dist";
@@ -117,12 +153,7 @@ in
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      name = "aos-vendor-${version}";
-      sourceRoot = "source/crates";
-      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
-    };
+    inherit cargoDeps;
 
     phases = [
       {
@@ -146,6 +177,10 @@ in
           # both crates.io and pinned Git sources.
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
             > .cargo/config.toml
+          mkdir -p target
+          tar xf ${cargoArtifacts}/target.tar -C target
+          chmod -R u+w target
+          find . -path ./target -prune -o -type f -name '*.rs' -exec touch {} +
         '';
       }
       {
@@ -172,9 +207,7 @@ in
             --release \
             --frozen \
             --offline \
-            ${lib.optionalString (cargoFeatures != "") "--features ${
-            lib.concatMapStringsSep "," (f: "aos-hub-worker/${f}") (lib.splitString " " cargoFeatures)
-          }"} \
+            ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"} \
             -j"$NIX_BUILD_CORES"
 
           test -f target/wasm32-unknown-unknown/release/aos_hub_worker.wasm

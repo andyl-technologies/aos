@@ -1188,7 +1188,11 @@
           # Extract source into a clean subdirectory so ls -d */ works
           mkdir -p "$TMPDIR/src"
           cd "$TMPDIR/src"
-          tar xf "${src}" || cp -r "${src}" source
+          if [ -d "${src}" ]; then
+            cp -r "${src}" source
+          else
+            tar xf "${src}"
+          fi
           cd ${
             if sourceRoot != null
             then sourceRoot
@@ -1290,7 +1294,11 @@
 
           mkdir -p "$TMPDIR/src"
           cd "$TMPDIR/src"
-          tar xf "${src}" || cp -r "${src}" source
+          if [ -d "${src}" ]; then
+            cp -r "${src}" source
+          else
+            tar xf "${src}"
+          fi
           cd ${
             if sourceRoot != null
             then sourceRoot

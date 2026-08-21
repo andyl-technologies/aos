@@ -7,7 +7,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   scenario = ./fixtures/nginx-curl-http-200.scenario.toml;
