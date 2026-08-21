@@ -3,9 +3,9 @@
 use super::*;
 
 pub(super) fn assert_snapshot_canonical_codec_corpus() {
-    let snapshot = SpscRingSnapshot {
-        frames: vec![frame(1, 2, 3, b"first"), frame(5, 8, 13, b"second")],
-    };
+    let snapshot =
+        SpscRingSnapshot::from_live_frames(&[frame(1, 2, 3, b"first"), frame(5, 8, 13, b"second")])
+            .unwrap_or_else(|error| panic!("test frames should snapshot: {error}"));
     let encoded = match snapshot.canonical_bytes() {
         Ok(encoded) => encoded,
         Err(error) => panic!("snapshot should encode: {error}"),

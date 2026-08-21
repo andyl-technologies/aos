@@ -294,7 +294,7 @@ impl QemuNodeContinuationCheckpoint {
             .frames
             .first()
             .filter(|frame| frame.delivery_key() == key)
-            .map(crucible_shmem::FrameEntry::delivery_attempts)
+            .map(crucible_shmem::SnapshotFrameEntry::delivery_attempts)
             .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
         Ok(Some((key, attempts)))
     }

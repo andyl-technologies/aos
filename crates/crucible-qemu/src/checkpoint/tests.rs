@@ -107,15 +107,11 @@ fn node_continuation_codec_round_trips_complete_state() {
             payload: vec![1, 2, 3],
         }],
         network_transport: QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot {
-                frames: vec![retained_inbound],
-            },
-            outbound: SpscRingSnapshot {
-                frames: vec![
-                    crucible_shmem::FrameEntry::new(68, 0, 6, &[6, 7])
-                        .unwrap_or_else(|error| panic!("outbound frame should encode: {error}")),
-                ],
-            },
+            inbound: ring_snapshot(vec![retained_inbound]),
+            outbound: ring_snapshot(vec![
+                crucible_shmem::FrameEntry::new(68, 0, 6, &[6, 7])
+                    .unwrap_or_else(|error| panic!("outbound frame should encode: {error}")),
+            ]),
             queue_capacity: 64,
             router_slot: 31,
             next_router_inbound_sequence: 6,
@@ -147,14 +143,12 @@ fn node_continuation_codec_round_trips_complete_state() {
 fn network_transport_binds_host_and_plugin_cursors_around_live_frames() {
     let mut transport = QemuNetworkTransportCheckpoint {
         inbound: SpscRingSnapshot { frames: Vec::new() },
-        outbound: SpscRingSnapshot {
-            frames: vec![
-                crucible_shmem::FrameEntry::new(68, 0, 9, &[1])
-                    .unwrap_or_else(|error| panic!("first frame should encode: {error}")),
-                crucible_shmem::FrameEntry::new(69, 0, 10, &[2])
-                    .unwrap_or_else(|error| panic!("second frame should encode: {error}")),
-            ],
-        },
+        outbound: ring_snapshot(vec![
+            crucible_shmem::FrameEntry::new(68, 0, 9, &[1])
+                .unwrap_or_else(|error| panic!("first frame should encode: {error}")),
+            crucible_shmem::FrameEntry::new(69, 0, 10, &[2])
+                .unwrap_or_else(|error| panic!("second frame should encode: {error}")),
+        ]),
         queue_capacity: 64,
         router_slot: 31,
         next_router_inbound_sequence: 0,
@@ -177,9 +171,7 @@ fn network_transport_rejects_a_gap_or_inconsistent_plugin_cursor() {
         .unwrap_or_else(|error| panic!("frame should encode: {error}"));
     let mut gap = QemuNetworkTransportCheckpoint {
         inbound: SpscRingSnapshot { frames: Vec::new() },
-        outbound: SpscRingSnapshot {
-            frames: vec![frame],
-        },
+        outbound: ring_snapshot(vec![frame]),
         queue_capacity: 64,
         router_slot: 31,
         next_router_inbound_sequence: 0,
@@ -204,16 +196,17 @@ fn network_transport_rejects_noncanonical_retained_state() {
     let retained_non_head = crucible_shmem::FrameEntry::new(69, 31, 1, &[2])
         .unwrap_or_else(|error| panic!("retained frame should encode: {error}"));
     retained_non_head
+        .record_delivery_attempt(69, crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS)
+        .unwrap_or_else(|error| panic!("retained attempt should encode: {error}"));
+    retained_non_head
         .mark_delivery_retained()
         .unwrap_or_else(|error| panic!("frame should retain: {error}"));
     let inbound = QemuNetworkTransportCheckpoint {
-        inbound: SpscRingSnapshot {
-            frames: vec![
-                crucible_shmem::FrameEntry::new(68, 31, 0, &[1])
-                    .unwrap_or_else(|error| panic!("head frame should encode: {error}")),
-                retained_non_head,
-            ],
-        },
+        inbound: ring_snapshot(vec![
+            crucible_shmem::FrameEntry::new(68, 31, 0, &[1])
+                .unwrap_or_else(|error| panic!("head frame should encode: {error}")),
+            retained_non_head,
+        ]),
         outbound: SpscRingSnapshot { frames: Vec::new() },
         queue_capacity: 64,
         router_slot: 31,
@@ -229,13 +222,14 @@ fn network_transport_rejects_noncanonical_retained_state() {
     let retained_outbound = crucible_shmem::FrameEntry::new(68, 0, 0, &[1])
         .unwrap_or_else(|error| panic!("outbound frame should encode: {error}"));
     retained_outbound
+        .record_delivery_attempt(68, crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS)
+        .unwrap_or_else(|error| panic!("retained attempt should encode: {error}"));
+    retained_outbound
         .mark_delivery_retained()
         .unwrap_or_else(|error| panic!("frame should retain: {error}"));
     let outbound = QemuNetworkTransportCheckpoint {
         inbound: SpscRingSnapshot { frames: Vec::new() },
-        outbound: SpscRingSnapshot {
-            frames: vec![retained_outbound],
-        },
+        outbound: ring_snapshot(vec![retained_outbound]),
         queue_capacity: 64,
         router_slot: 31,
         next_router_inbound_sequence: 0,
@@ -252,7 +246,7 @@ fn network_transport_rejects_noncanonical_retained_state() {
 fn network_transport_authenticates_inbound_producer_provenance() {
     let transport =
         |frames: Vec<crucible_shmem::FrameEntry>, next_sequence| QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot { frames },
+            inbound: ring_snapshot(frames),
             outbound: SpscRingSnapshot { frames: Vec::new() },
             queue_capacity: 64,
             router_slot: 31,
@@ -301,22 +295,22 @@ fn network_transport_rejects_impossible_retained_attempt_state() {
         .unwrap_or_else(|error| panic!("test retained state should mark: {error}"));
 
     for frame in [pending, retained] {
-        let transport = QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot {
-                frames: vec![frame],
-            },
-            outbound: SpscRingSnapshot { frames: Vec::new() },
-            queue_capacity: 64,
-            router_slot: 31,
-            next_router_inbound_sequence: 1,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 0,
+        let attempts = frame.delivery_attempts();
+        let state = if attempts == 0 {
+            crucible_shmem::FRAME_DELIVERY_RETAINED
+        } else {
+            crucible_shmem::FRAME_DELIVERY_PENDING
         };
         assert_eq!(
-            transport.validate(),
-            Err(QemuNodeCheckpointCodecError::NetworkTransport)
+            SpscRingSnapshot::from_live_frames(&[frame]),
+            Err(crucible_shmem::SpscRingError::InvalidFrameDeliveryAttempts { state, attempts })
         );
     }
+}
+
+fn ring_snapshot(frames: Vec<crucible_shmem::FrameEntry>) -> SpscRingSnapshot {
+    SpscRingSnapshot::from_live_frames(&frames)
+        .unwrap_or_else(|error| panic!("test frames should snapshot: {error}"))
 }
 
 #[test]
