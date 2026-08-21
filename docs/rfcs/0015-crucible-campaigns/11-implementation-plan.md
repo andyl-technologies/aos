@@ -599,6 +599,19 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   missing-object transfer, and offline maintenance transfer. Do not implement
   demand paging or worker fanout.
 
+The admitted graph checkpoint currently provides bounded acyclic validation,
+exact kind routing, logical verification, ordered tiers and promotion,
+source-authoritative read-through caching, write-through mirroring, and
+path-free saturating synchronous operation/byte/error counters over memory and
+durable directory leaves. Read-through falls through only on exact absence,
+treats promotion as non-semantic, and never reports cache durability as
+authoritative source durability. Write-back with its durable GC root/journal,
+packing, compression/encryption below plaintext identity, restart-safe aggregate
+quota,
+namespaced authorization, S3, administrative inventory/GC, and host-side
+latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
+by this checkpoint.
+
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
 

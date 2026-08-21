@@ -12,7 +12,7 @@ use std::thread;
 
 use tempfile::TempDir;
 
-use super::composition::{RoutedStore, TieredStore, WriteThroughStore};
+use super::composition::{ReadThroughStore, RoutedStore, TieredStore, WriteThroughStore};
 use super::directory::{DirectoryBlobBackend, DirectoryRefBackend};
 use super::graph::{StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeKind, StoreNodeSpec};
 use super::memory::{MemoryBlobBackend, MemoryRefBackend};
@@ -191,6 +191,29 @@ fn tiered_reads_promote_only_verified_objects() {
     assert!(!store.capabilities().streaming_read);
     assert_eq!(read_bytes(&store, id, None).expect("tiered read"), bytes);
     assert!(cache.contains(id).expect("promoted cache object"));
+}
+
+#[test]
+fn read_through_cache_failure_does_not_hide_authenticated_source_bytes() {
+    let cache = Arc::new(MemoryBlobBackend::new("full-cache", 0));
+    let source = Arc::new(MemoryBlobBackend::new("source", 1_024));
+    let bytes = b"source remains authoritative";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    put_bytes(source.as_ref(), id, bytes).expect("seed source");
+    let store = ReadThroughStore::new("read-through", cache.clone(), source.clone());
+
+    assert_eq!(
+        read_bytes(&store, id, None).expect("read despite cache quota"),
+        bytes
+    );
+    assert!(!cache.contains(id).expect("failed promotion remains absent"));
+
+    let unavailable_cache: Arc<dyn ImmutableBlobBackend> = Arc::new(UnavailableReadBackend);
+    let strict = ReadThroughStore::new("strict-read-through", unavailable_cache, source);
+    assert!(matches!(
+        read_bytes(&strict, id, None),
+        Err(StoreError::Unavailable)
+    ));
 }
 
 #[test]
@@ -736,6 +759,109 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
 }
 
 #[test]
+fn read_through_and_metrics_nodes_report_exact_synchronous_operations() {
+    let root = node_id("root-metrics");
+    let read_through = node_id("read-through");
+    let cache_metrics = node_id("cache-metrics");
+    let source_metrics = node_id("source-metrics");
+    let cache = node_id("cache");
+    let source = node_id("source");
+    let graph = StoreGraph::build(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+        nodes: BTreeMap::from([
+            (
+                root.clone(),
+                StoreNodeSpec::Metrics {
+                    child: read_through.clone(),
+                },
+            ),
+            (
+                read_through,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache_metrics.clone(),
+                    source: source_metrics.clone(),
+                },
+            ),
+            (
+                cache_metrics.clone(),
+                StoreNodeSpec::Metrics {
+                    child: cache.clone(),
+                },
+            ),
+            (
+                source_metrics.clone(),
+                StoreNodeSpec::Metrics {
+                    child: source.clone(),
+                },
+            ),
+            (
+                cache,
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+            (
+                source,
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+        ]),
+    })
+    .expect("valid read-through metrics graph");
+    assert_eq!(graph.metrics().len(), 3);
+    assert!(
+        graph
+            .describe()
+            .iter()
+            .any(|node| node.kind == StoreNodeKind::ReadThrough)
+    );
+    assert!(
+        graph
+            .describe()
+            .iter()
+            .any(|node| node.kind == StoreNodeKind::Metrics)
+    );
+
+    let bytes = b"metric bytes";
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("source-only logical put");
+    assert_eq!(
+        read_bytes(&graph, id, None).expect("source read and promotion"),
+        bytes
+    );
+    assert_eq!(
+        read_bytes(&graph, id, Some(ByteRange::new(7, 5).expect("valid range")))
+            .expect("cache range read"),
+        b"bytes"
+    );
+    assert!(graph.contains(id).expect("cached object present"));
+
+    let metrics = graph.metrics();
+    let root_snapshot = metrics_for(&metrics, &root);
+    assert_eq!(root_snapshot.put_calls, 1);
+    assert_eq!(root_snapshot.put_logical_bytes, bytes.len() as u64);
+    assert_eq!(root_snapshot.read_calls, 2);
+    assert_eq!(root_snapshot.read_logical_bytes, bytes.len() as u64 + 5);
+    assert_eq!(root_snapshot.contains_calls, 1);
+    assert_eq!(root_snapshot.contains_hits, 1);
+    assert_eq!(root_snapshot.failures, 0);
+
+    let cache_snapshot = metrics_for(&metrics, &cache_metrics);
+    assert_eq!(cache_snapshot.read_calls, 3);
+    assert_eq!(cache_snapshot.failures, 1);
+    assert_eq!(cache_snapshot.put_calls, 1);
+    assert_eq!(cache_snapshot.put_logical_bytes, bytes.len() as u64);
+
+    let source_snapshot = metrics_for(&metrics, &source_metrics);
+    assert_eq!(source_snapshot.put_calls, 1);
+    assert_eq!(source_snapshot.read_calls, 1);
+    assert_eq!(source_snapshot.read_logical_bytes, bytes.len() as u64);
+    assert_eq!(source_snapshot.failures, 0);
+}
+
+#[test]
 fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
     let root = node_id("root");
     assert!(matches!(
@@ -821,6 +947,17 @@ fn object_path(root: &Path, id: ContentId) -> PathBuf {
 
 fn node_id(value: &str) -> StoreNodeId {
     StoreNodeId::new(value).expect("valid store node ID")
+}
+
+fn metrics_for<'a>(
+    metrics: &'a [StoreNodeMetricsDescription],
+    id: &StoreNodeId,
+) -> &'a StoreNodeMetrics {
+    &metrics
+        .iter()
+        .find(|entry| &entry.id == id)
+        .expect("metrics node exists")
+        .metrics
 }
 
 fn assert_no_staging(root: &Path, id: ContentId) {
