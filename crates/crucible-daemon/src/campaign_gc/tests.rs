@@ -10,12 +10,18 @@ use std::sync::Arc;
 use crucible_campaign::CampaignRepository;
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
-    MutableRefBackend, ObjectKind, RefCasOutcome, RefName,
+    BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
+    ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, MutableRefBackend, ObjectKind, PlannedDeleteDisposition, RefCasOutcome,
+    RefName, StoreError,
 };
 
 use super::*;
-use crate::MemoryAssignmentLedger;
+use crate::{
+    AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
+    AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
+    AssignmentRetentionVisitorError, DirectoryAssignmentLedger, MemoryAssignmentLedger,
+};
 
 fn hash(domain: &str, byte: u8) -> CampaignHash {
     CampaignHash::derive(domain, &[byte])
@@ -426,6 +432,354 @@ fn external_journal_rejects_incomplete_and_corrupt_state() {
         DirectoryCampaignGcJournal::open(&complete),
         Err(CampaignGcJournalError::InvalidState)
     ));
+}
+
+#[test]
+fn apply_revalidates_every_basis_then_deletes_and_completes() {
+    let mut fixture = apply_fixture(2);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &fixture.prepared)
+            .expect("create apply journal");
+    let physical = CampaignGcPhysicalStore::new("apply-primary", fixture.blobs.as_ref())
+        .expect("apply physical store");
+
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        fixture.refs.as_ref(),
+        &mut fixture.ledger,
+        fixture.graph,
+        &[physical],
+    )
+    .expect("apply exact plan");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert_eq!(report.candidates(), 2);
+    assert_eq!(
+        report.logical_bytes(),
+        fixture.prepared.candidates().logical_bytes()
+    );
+    assert_eq!(fixture.blobs.object_count().expect("object count"), 0);
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+
+    let replay = apply_single_host_campaign_gc(
+        &mut journal,
+        fixture.refs.as_ref(),
+        &mut fixture.ledger,
+        fixture.graph,
+        &[physical],
+    )
+    .expect("replay completed apply");
+    assert_eq!(replay.status(), CampaignGcApplyStatus::AlreadyComplete);
+    assert_eq!(replay.candidates(), report.candidates());
+}
+
+#[test]
+fn stale_ref_and_blob_generations_fail_before_deletion() {
+    let mut ref_fixture = apply_fixture(1);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let (mut ref_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("ref-journal"), &ref_fixture.prepared)
+            .expect("create ref-stale journal");
+    let orphan = ref_fixture
+        .prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("orphan candidate")
+        .id();
+    ref_fixture
+        .refs
+        .compare_exchange(
+            &RefName::new("campaigns/new-root").expect("new ref"),
+            None,
+            orphan,
+        )
+        .expect("advance ref generation");
+    let physical = CampaignGcPhysicalStore::new("apply-primary", ref_fixture.blobs.as_ref())
+        .expect("ref-stale physical store");
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut ref_journal,
+            ref_fixture.refs.as_ref(),
+            &mut ref_fixture.ledger,
+            ref_fixture.graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::RefBasisChanged)
+    ));
+    assert_eq!(ref_journal.phase(), CampaignGcJournalPhase::Planned);
+    assert_eq!(ref_fixture.blobs.object_count().expect("object count"), 1);
+
+    let mut blob_fixture = apply_fixture(1);
+    let (mut blob_journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("blob-journal"),
+        &blob_fixture.prepared,
+    )
+    .expect("create blob-stale journal");
+    let additional_bytes = b"post-plan object";
+    let additional = ContentId::for_bytes(ObjectKind::Trace, 1, additional_bytes);
+    blob_fixture
+        .blobs
+        .put_if_absent(additional, &BlobHandle::from_bytes(additional_bytes))
+        .expect("advance blob generation");
+    let physical = CampaignGcPhysicalStore::new("apply-primary", blob_fixture.blobs.as_ref())
+        .expect("blob-stale physical store");
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut blob_journal,
+            blob_fixture.refs.as_ref(),
+            &mut blob_fixture.ledger,
+            blob_fixture.graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::PhysicalBasisChanged { .. })
+    ));
+    assert_eq!(blob_journal.phase(), CampaignGcJournalPhase::Planned);
+    assert_eq!(blob_fixture.blobs.object_count().expect("object count"), 2);
+}
+
+#[test]
+fn stale_ledger_generation_fails_before_deletion() {
+    let blobs = Arc::new(MemoryBlobBackend::new("ledger-primary", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let orphan_bytes = b"ledger stale orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store ledger stale orphan");
+    let mut ledger = SyntheticRetentionLedger { generation: 1 };
+    let graph = hash("crucible.test.gc.ledger-store-graph.v1", 0x65);
+    let physical = CampaignGcPhysicalStore::new("ledger-primary", blobs.as_ref())
+        .expect("ledger physical store");
+    let prepared =
+        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
+            .expect("plan ledger stale GC");
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared)
+            .expect("create ledger stale journal");
+    ledger.generation = 2;
+
+    assert!(matches!(
+        apply_single_host_campaign_gc(&mut journal, refs.as_ref(), &mut ledger, graph, &[physical],),
+        Err(CampaignGcApplyError::LedgerBasisChanged)
+    ));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    assert!(blobs.contains(orphan).expect("orphan retained"));
+}
+
+#[test]
+fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
+    let mut fixture = apply_fixture(2);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &fixture.prepared)
+            .expect("create interrupted journal");
+    let failing = FailAfterFirstDeleteAdmin {
+        inner: fixture.blobs.as_ref(),
+    };
+    let physical =
+        CampaignGcPhysicalStore::new("apply-primary", &failing).expect("failing physical store");
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            fixture.graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::Blob { .. })
+    ));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Applying);
+    assert_eq!(fixture.blobs.object_count().expect("object count"), 1);
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            fixture.graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::InterruptedJournal)
+    ));
+    assert_eq!(fixture.blobs.object_count().expect("object count"), 1);
+}
+
+#[test]
+fn directory_plan_journal_and_apply_survive_full_backend_restart() {
+    let temp = tempfile::TempDir::new().expect("temporary GC root");
+    let blob_root = temp.path().join("blobs");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("journal");
+    let graph = hash("crucible.test.gc.directory-store-graph.v1", 0x71);
+
+    let blobs = Arc::new(DirectoryBlobBackend::new("directory-primary", &blob_root));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-directory-live",
+        1,
+        BTreeSet::new(),
+        b"live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_id = live.content_id(ObjectKind::Finding);
+    blobs
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
+        .expect("store live directory object");
+    refs.compare_exchange(
+        &RefName::new("campaigns/directory-gc").expect("directory ref"),
+        None,
+        live_id,
+    )
+    .expect("publish directory root");
+    let orphan_bytes = b"directory orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store directory orphan");
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open directory ledger");
+    let physical = CampaignGcPhysicalStore::new("directory-primary", blobs.as_ref())
+        .expect("directory physical store");
+    let prepared =
+        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
+            .expect("plan directory GC");
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("create directory journal");
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(blobs);
+
+    let blobs = DirectoryBlobBackend::new("directory-primary", &blob_root);
+    let refs = DirectoryRefBackend::new(&ref_root);
+    let mut ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen directory ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen directory journal");
+    let physical =
+        CampaignGcPhysicalStore::new("directory-primary", &blobs).expect("reopened physical store");
+    let report =
+        apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, graph, &[physical])
+            .expect("apply after restart");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(blobs.contains(live_id).expect("live placement"));
+    assert!(!blobs.contains(orphan).expect("orphan placement"));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+}
+
+struct ApplyFixture {
+    blobs: Arc<MemoryBlobBackend>,
+    refs: Arc<MemoryRefBackend>,
+    ledger: MemoryAssignmentLedger,
+    prepared: CampaignGcPreparedPlan,
+    graph: CampaignHash,
+}
+
+fn apply_fixture(orphan_count: u8) -> ApplyFixture {
+    let blobs = Arc::new(MemoryBlobBackend::new("apply-primary", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    for index in 0..orphan_count {
+        let bytes = [index; 8];
+        let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+        blobs
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("store apply orphan");
+    }
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.apply-store-graph.v1", 0x61);
+    let physical = CampaignGcPhysicalStore::new("apply-primary", blobs.as_ref())
+        .expect("apply fixture physical store");
+    let prepared =
+        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
+            .expect("prepare apply fixture");
+    ApplyFixture {
+        blobs,
+        refs,
+        ledger,
+        prepared,
+        graph,
+    }
+}
+
+struct FailAfterFirstDeleteAdmin<'a> {
+    inner: &'a MemoryBlobBackend,
+}
+
+impl BlobStoreAdmin for FailAfterFirstDeleteAdmin<'_> {
+    fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        Ok(Box::new(FailAfterFirstDeleteFence {
+            inner: self.inner.acquire_inventory_fence()?,
+            deletes: 0,
+        }))
+    }
+}
+
+struct FailAfterFirstDeleteFence<'a> {
+    inner: Box<dyn BlobInventoryFence + 'a>,
+    deletes: usize,
+}
+
+struct SyntheticRetentionLedger {
+    generation: u8,
+}
+
+impl AssignmentRetentionAdmin for SyntheticRetentionLedger {
+    type Error = std::convert::Infallible;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        Ok(Box::new(SyntheticRetentionFence {
+            generation: self.generation,
+        }))
+    }
+}
+
+struct SyntheticRetentionFence {
+    generation: u8,
+}
+
+impl AssignmentRetentionFence for SyntheticRetentionFence {
+    type BackendError = std::convert::Infallible;
+
+    fn visit_roots(
+        &mut self,
+        _visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        Ok(AssignmentRetentionSummary::new(
+            AssignmentRetentionGeneration::from_bytes([self.generation; 32]),
+            0,
+            0,
+            0,
+        ))
+    }
+}
+
+impl BlobInventoryFence for FailAfterFirstDeleteFence<'_> {
+    fn visit_inventory(
+        &mut self,
+        visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<BlobInventorySummary, StoreError> {
+        self.inner.visit_inventory(visitor)
+    }
+
+    fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        if self.deletes == 1 {
+            return Err(StoreError::Quota);
+        }
+        let disposition = self.inner.delete_candidate(id)?;
+        self.deletes += 1;
+        Ok(disposition)
+    }
 }
 
 fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {

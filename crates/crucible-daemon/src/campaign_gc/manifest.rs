@@ -197,6 +197,10 @@ impl CampaignGcCandidate {
     pub const fn logical_length(&self) -> u64 {
         self.logical_length
     }
+
+    pub(super) fn compare_id(&self, id: ContentId) -> Ordering {
+        compare_content_id(self.id, id)
+    }
 }
 
 /// Canonical ordered physical-deletion candidate manifest.
@@ -324,6 +328,16 @@ impl CampaignGcCandidateManifest {
     /// Iterates candidates in canonical physical order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &CampaignGcCandidate> {
         self.candidates.iter()
+    }
+
+    pub(super) fn for_backend(&self, backend: &str) -> &[CampaignGcCandidate] {
+        let start = self
+            .candidates
+            .partition_point(|candidate| candidate.backend() < backend);
+        let end = self
+            .candidates
+            .partition_point(|candidate| candidate.backend() <= backend);
+        &self.candidates[start..end]
     }
 }
 

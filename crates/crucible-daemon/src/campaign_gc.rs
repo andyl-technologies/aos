@@ -1,10 +1,10 @@
 //! Canonical generation-bound campaign garbage-collection plans.
 //!
 //! This module owns the small immutable plan header, canonical logical-root and
-//! physical-candidate manifests, and the non-destructive single-host planner
-//! that binds them to every administrative generation needed by apply. It does
-//! not delete content; apply additionally requires a durable journal and a
-//! transaction-lifecycle fence spanning campaign publication.
+//! physical-candidate manifests, the non-destructive single-host planner that
+//! binds them to every administrative generation, the durable external apply
+//! journal, and exact-generation loose-leaf deletion under publication/root
+//! fences. Composed cache/durable/pack policy remains a higher-level owner.
 //!
 //! The v1 body is:
 //!
@@ -21,10 +21,15 @@
 //!   blob_generation[32] | objects:u64be | logical_bytes:u64be
 //! ```
 
+mod apply;
 mod journal;
 mod manifest;
 mod planner;
 
+pub use apply::{
+    CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
+    apply_single_host_campaign_gc,
+};
 pub use journal::{
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
     CampaignGcJournalTransition, DirectoryCampaignGcJournal,

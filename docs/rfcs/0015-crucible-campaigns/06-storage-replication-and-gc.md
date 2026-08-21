@@ -710,8 +710,25 @@ it through the final ref comparison. Ref inventory takes the exclusive side.
 The memory backend composes an in-process reader/writer lock; directory-backed
 repositories sharing a root compose the same rule through
 `.ref-admin/publication-lock`. This excludes the children-before-ref race before
-root inventory or apply begins. Composed-store fencing and destructive apply
-under exact ref, ledger, and physical-generation revalidation remain open.
+root inventory or apply begins.
+
+Single-host loose-leaf apply requires a `Planned` journal, the exact store-graph
+hash, and the same ordered physical backend list. It takes and retains the
+exclusive ref/publication and ledger fences, reproduces their terminal
+generations, counters, and exact deduplicated root manifest, then preflights
+every complete physical inventory and every candidate's exact observed length.
+Only after every basis matches does it durably publish `Applying`. It then
+reacquires each physical leaf in canonical order, revalidates that exact basis
+again, retains that leaf's fence through all of its deletions, and finally
+publishes `Complete` while the root fences still exclude new authority. The
+second physical pass makes any intervening put fail closed even though physical
+leaves are not locked simultaneously; sequential acquisition also prevents a
+misconfigured alias from deadlocking on the same physical lock. A complete
+journal replays idempotently. Any failure after `Applying`, including an
+indeterminate durable delete or final state write, retains the journal in the
+recovery-required phase and never authorizes reuse of its generations.
+Composed cache/durable/pack store fencing and policy-aware tier eviction remain
+open beyond this loose-leaf apply.
 
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
@@ -746,8 +763,8 @@ materialization never removes the semantic configuration or thin replay path.
 The implemented memory and directory leaves now provide both the exclusive
 physical inventory generation/idempotent exact-candidate deletion primitive and
 the exclusive authoritative-ref inventory generation and publication-lifecycle
-fence needed by that apply step. The assignment ledger likewise provides one exclusive, persistent
-generation over its combined operational root inventory. Directory generations
+fence needed by that apply step. The assignment ledger likewise provides one
+exclusive, persistent generation over its combined operational root inventory. Directory generations
 survive restart; memory generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon
 maintenance owner. The canonical bounded v1 plan header now binds these
@@ -755,8 +772,10 @@ generations to constructed root and candidate manifests, and the external
 journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
-manifest ownership, the complete composed-store fence, and interruption-safe
-apply have been implemented and revalidated.
+manifest ownership and every applicable root and physical generation have been
+revalidated. The implemented single-host loose-leaf apply satisfies that rule;
+composed tiers, packs, and exact-materialization policy require their additional
+fences before deletion.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing
