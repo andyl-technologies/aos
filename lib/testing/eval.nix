@@ -29,16 +29,35 @@
     if abiOverrideSystem.config.aos.config.evalAtBoot.baseLib.passthru.moduleAbi == 2
     then "2"
     else throw "the base library ABI must follow inline image module overrides";
-  serverSshWaitsForHostEvaluation =
-    if
-      builtins.elem
-      "aos-eval.service"
-      serverRoleSystem.config.systemd.services.sshd.after
-      && !(builtins.elem
-        "aos-graph-compile.service"
+  serverSshWaitsForLiveHostPolicy =
+    if !(builtins.hasAttr "aos-ssh-ready" serverRoleSystem.config.systemd.services)
+    then throw "server SSH must emit a host-policy readiness gate"
+    else if
+      !(builtins.elem
+        "aos-ssh-ready.service"
         serverRoleSystem.config.systemd.services.sshd.after)
-    then "ordered without activation cycle"
-    else throw "server sshd must wait for host evaluation without depending on graph activation";
+    then throw "server sshd must wait for the host-policy readiness gate"
+    else if
+      !(builtins.elem
+        "aos-eval.service"
+        serverRoleSystem.config.systemd.services.aos-ssh-ready.after)
+    then throw "the SSH readiness gate must wait for host evaluation"
+    else if
+      !(containsStr
+        "/run/aos/host-policy-live"
+        serverRoleSystem.config.systemd.services.aos-ssh-ready.script)
+    then throw "the SSH readiness gate must observe the post-swap policy marker"
+    else if
+      !(containsStr
+        "/run/aos/host-policy-live"
+        (builtins.readFile ../../modules/base/activate.sh.in))
+    then throw "host activation must publish the SSH readiness marker"
+    else if
+      builtins.elem
+      "aos-graph-compile.service"
+      serverRoleSystem.config.systemd.services.sshd.after
+    then throw "server sshd must not form a cycle with graph activation"
+    else "post-swap marker";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -1259,7 +1278,7 @@ in
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
-        echo "server SSH:      waits for host evaluation (${serverSshWaitsForHostEvaluation})"
+        echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
