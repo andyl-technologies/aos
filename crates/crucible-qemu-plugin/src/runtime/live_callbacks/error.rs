@@ -151,10 +151,10 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying inbound-ring error.
         source: InboundFrameError,
     },
-    /// QEMU's lossless RX queue rejected the validated batch.
+    /// QEMU's direct RX injection rejected the validated batch.
     #[error("live network RX injection failed: {source}")]
     NetworkRx {
-        /// Underlying lossless RX error.
+        /// Underlying canonical RX delivery error.
         source: NetworkRxError,
     },
     /// A live block or 9p adapter failed registration or dispatch.

@@ -69,6 +69,7 @@ pub(super) fn snapshot_frame_prefix(
     bytes.extend_from_slice(&src_node.to_le_bytes());
     bytes.extend_from_slice(&seq.to_le_bytes());
     bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.push(FRAME_DELIVERY_PENDING);
     bytes
 }
 

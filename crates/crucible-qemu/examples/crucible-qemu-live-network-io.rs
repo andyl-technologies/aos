@@ -96,6 +96,14 @@ fn run() -> Result<(), String> {
     println!("ack_emit_icount={}", observation_icount(acknowledgement));
     println!("acknowledgement_seen={}", report.acknowledgement_seen);
     println!(
+        "boot_backpressure_retained={}",
+        report.boot_backpressure_retained
+    );
+    println!(
+        "canonical_backpressure_retry_delivered={}",
+        report.canonical_backpressure_retry_delivered
+    );
+    println!(
         "deterministic_under_host_load={}",
         report.deterministic_under_host_load
     );

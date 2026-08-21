@@ -16,7 +16,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 14u
+#define CRUCIBLE_SHMEM_ABI_VERSION 15u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -115,9 +115,12 @@
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SRC_NODE_OFFSET 8u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SEQ_OFFSET 12u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_LEN_OFFSET 16u
-#define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET 18u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET 18u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET 19u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET 24u
-#define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN 6u
+#define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN 5u
+#define CRUCIBLE_SHMEM_FRAME_DELIVERY_PENDING 0u
+#define CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED 1u
 
 #define CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE 64u
 #define CRUCIBLE_SHMEM_COVERAGE_ENTRY_ALIGN 64u
@@ -269,6 +272,7 @@ typedef struct crucible_shmem_frame_entry {
     uint32_t src_node;
     uint32_t seq;
     uint16_t len;
+    _Atomic uint8_t delivery_state;
     uint8_t pad[CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN];
     uint8_t data[CRUCIBLE_SHMEM_MAX_FRAME_DATA];
 } crucible_shmem_frame_entry;
@@ -279,6 +283,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, delivery_icoun
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, src_node) == CRUCIBLE_SHMEM_FRAME_ENTRY_SRC_NODE_OFFSET, "crucible_shmem_frame_entry.src_node offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, seq) == CRUCIBLE_SHMEM_FRAME_ENTRY_SEQ_OFFSET, "crucible_shmem_frame_entry.seq offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, len) == CRUCIBLE_SHMEM_FRAME_ENTRY_LEN_OFFSET, "crucible_shmem_frame_entry.len offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, delivery_state) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET, "crucible_shmem_frame_entry.delivery_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, pad) == CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET, "crucible_shmem_frame_entry.pad offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET, "crucible_shmem_frame_entry.data offset");
 

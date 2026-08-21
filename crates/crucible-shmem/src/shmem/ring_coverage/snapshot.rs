@@ -13,9 +13,10 @@ impl SpscRingSnapshot {
     /// Serializes the live frames into padding-independent canonical bytes.
     ///
     /// The encoding is little-endian and contains the frame count followed by
-    /// each frame's delivery icount, source node, sequence, payload length, and
-    /// valid payload bytes. Frame padding and unused payload capacity are excluded
-    /// so equivalent logical snapshots content-address identically.
+    /// each frame's delivery icount, source node, sequence, payload length,
+    /// consumer-owned delivery state, and valid payload bytes. Frame padding
+    /// and unused payload capacity are excluded so equivalent logical snapshots
+    /// content-address identically.
     ///
     /// # Errors
     ///
@@ -38,6 +39,12 @@ impl SpscRingSnapshot {
             bytes.extend_from_slice(&canonical.src_node.to_le_bytes());
             bytes.extend_from_slice(&canonical.seq.to_le_bytes());
             bytes.extend_from_slice(&canonical.len.to_le_bytes());
+            let delivery_state = canonical.delivery_state().map_err(
+                |FrameDeliveryStateError::UnknownState { state }| {
+                    SpscRingError::InvalidFrameDeliveryState { state }
+                },
+            )?;
+            bytes.push(delivery_state as u8);
             bytes.extend_from_slice(&canonical.data[..payload_len]);
         }
         Ok(bytes)
@@ -71,6 +78,7 @@ impl SpscRingSnapshot {
             let src_node = cursor.read_u32()?;
             let seq = cursor.read_u32()?;
             let len = usize::from(cursor.read_u16()?);
+            let delivery_state = cursor.read_u8()?;
             if len > MAX_FRAME_DATA {
                 return Err(SpscRingError::InvalidFrameLength {
                     len,
@@ -83,6 +91,15 @@ impl SpscRingSnapshot {
                     SpscRingError::InvalidFrameLength { len, capacity }
                 },
             )?;
+            match delivery_state {
+                FRAME_DELIVERY_PENDING => {}
+                FRAME_DELIVERY_RETAINED => frame.mark_delivery_retained().map_err(
+                    |FrameDeliveryStateError::UnknownState { state }| {
+                        SpscRingError::InvalidFrameDeliveryState { state }
+                    },
+                )?,
+                state => return Err(SpscRingError::InvalidFrameDeliveryState { state }),
+            }
             frames.push(frame);
         }
 
@@ -104,6 +121,10 @@ impl<'a> SnapshotByteCursor<'a> {
     fn read_u16(&mut self) -> Result<u16, SpscRingError> {
         let bytes = self.read_bytes(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u8(&mut self) -> Result<u8, SpscRingError> {
+        Ok(self.read_bytes(1)?[0])
     }
 
     fn read_u32(&mut self) -> Result<u32, SpscRingError> {

@@ -100,6 +100,10 @@
         needle = "offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET";
       }
       {
+        label = "frame entry delivery-state offset static assert";
+        needle = "offsetof(crucible_shmem_frame_entry, delivery_state) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_STATE_OFFSET";
+      }
+      {
         label = "frame entry offset static assert";
         needle = "offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET";
       }
