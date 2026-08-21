@@ -320,10 +320,10 @@ architecture = "x86_64"
 logical_image_id = "{logical}"
 logical_disk_sha256 = "{disk}"
 rootfs_sha256 = "{rootfs}"
-filename = "aos-server.img"
-object_key = "images/sha256/{image}/aos-server.img"
-media_type = "application/vnd.aos.disk-image.raw"
-compression = "none"
+filename = "aos-server.img.zst"
+object_key = "images/sha256/{image}/aos-server.img.zst"
+media_type = "application/vnd.aos.disk-image.raw+zstd"
+compression = "zstd"
 byte_size = 10
 sha256 = "{image}"
 compatible_targets = ["bare-metal"]
@@ -371,7 +371,7 @@ sha256 = "{info}"
                 ..ImageQuery::default()
             })
             .unwrap();
-        assert_eq!(resolved.filename, "aos-server.img");
+        assert_eq!(resolved.filename, "aos-server.img.zst");
         assert!(resolved.download_url.contains("/download/images/sha256/"));
         assert!(resolved.image_info_url.contains("/download/images/sha256/"));
         assert_eq!(

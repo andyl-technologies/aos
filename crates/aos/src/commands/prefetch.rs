@@ -12,20 +12,23 @@
 //! package `.nix` files under `pkgs/`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use base64::Engine;
 use glob::glob;
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::HumanBytes;
 use regex::Regex;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{OutputMode, Printer};
+use aos_core::output::{OutputMode, Printer, TransferProgress};
+use aos_net::{
+    HashAlgorithm, HashDownloadRequest, TransferEngineConfig, TransferEvent, TransferManager,
+    TransferObserver,
+};
 
 // -----------------------------------------------------------------------
 // Nix-evaluated source metadata
@@ -74,126 +77,94 @@ struct FetchOk {
     source_url: String,
 }
 
-/// Try downloading from a single URL. Streams chunks through a SHA-256 hasher
-/// so the full body is never held in memory or written to disk.
-///
-/// Aborts early if the average speed over `speed_window` drops below
-/// `min_speed` bytes/sec.
-async fn try_one_url(
-    client: &reqwest::Client,
-    url: &str,
-    pb: &ProgressBar,
-    min_speed: u64,
-    speed_window: Duration,
-) -> Result<FetchOk> {
-    let start = Instant::now();
-
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("connect {url}"))?
-        .error_for_status()
-        .with_context(|| format!("HTTP error {url}"))?;
-
-    if let Some(len) = response.content_length() {
-        pb.set_length(len);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("    {spinner:.cyan} {msg} [{bar:20.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec})")
-                .expect("valid template")
-                .progress_chars("=> "),
-        );
-    }
-
-    let mut hasher = Sha256::new();
-    let mut downloaded: u64 = 0;
-    let mut window_start = Instant::now();
-    let mut window_bytes: u64 = 0;
-
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .with_context(|| format!("read {url}"))?
-    {
-        hasher.update(&chunk);
-        downloaded += chunk.len() as u64;
-        window_bytes += chunk.len() as u64;
-        pb.set_position(downloaded);
-
-        // Check minimum speed after the window elapses.
-        let window_elapsed = window_start.elapsed();
-        if min_speed > 0 && window_elapsed >= speed_window {
-            let speed = window_bytes as f64 / window_elapsed.as_secs_f64();
-            if (speed as u64) < min_speed {
-                anyhow::bail!(
-                    "too slow ({}/s < {}/s minimum)",
-                    HumanBytes(speed as u64),
-                    HumanBytes(min_speed),
-                );
-            }
-            // Reset the window.
-            window_start = Instant::now();
-            window_bytes = 0;
-        }
-    }
-
-    let digest = hasher.finalize();
-    let b64 = base64::engine::general_purpose::STANDARD.encode(digest);
-
-    Ok(FetchOk {
-        hash: format!("sha256-{b64}"),
-        bytes: downloaded,
-        elapsed: start.elapsed(),
-        source_url: url.to_string(),
-    })
-}
-
 /// Try each mirror URL in order. Returns the first successful result or the
 /// last error if all mirrors fail.
 async fn fetch_hash(
-    client: &reqwest::Client,
+    manager: &TransferManager,
     urls: &[String],
-    pb: ProgressBar,
+    progress: TransferProgress,
     name: &str,
-    min_speed: u64,
-    speed_window: Duration,
 ) -> Result<FetchOk> {
     if urls.is_empty() {
-        pb.finish_and_clear();
+        progress.finish();
         anyhow::bail!("no URLs provided for {name}");
     }
 
-    let mut last_err = None;
+    let started = Instant::now();
+    let observer = PrefetchProgress::new(progress);
+    let primary = urls
+        .first()
+        .cloned()
+        .context("prefetch source list became empty")?;
+    let request =
+        HashDownloadRequest::new(primary, HashAlgorithm::Sha256).with_sources(urls.to_vec());
+    let result = manager.hash_download_observed(request, &observer).await;
+    observer.finish();
+    let result = result?;
+    let digest =
+        hex::decode(&result.hash).context("transfer manager returned an invalid digest")?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(digest);
+    Ok(FetchOk {
+        hash: format!("sha256-{b64}"),
+        bytes: result.bytes,
+        elapsed: started.elapsed(),
+        source_url: result.source,
+    })
+}
 
-    for (i, url) in urls.iter().enumerate() {
-        if i > 0 {
-            pb.set_message(format!("{name} (mirror {}/{})", i + 1, urls.len()));
-            pb.set_position(0);
-            pb.set_length(0);
-            // Reset to spinner style for new attempt.
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("    {spinner:.cyan} {msg} ({bytes}, {elapsed})")
-                    .expect("valid template")
-                    .tick_chars("-\\|/ "),
-            );
-        }
+/// Adapts transfer-manager events to one prefetch progress reporter.
+struct PrefetchProgress {
+    progress: Mutex<TransferProgress>,
+}
 
-        match try_one_url(client, url, &pb, min_speed, speed_window).await {
-            Ok(ok) => {
-                pb.finish_and_clear();
-                return Ok(ok);
-            }
-            Err(err) => {
-                last_err = Some(err);
-                continue;
-            }
+impl PrefetchProgress {
+    /// Wraps one progress reporter for synchronized event delivery.
+    fn new(progress: TransferProgress) -> Self {
+        Self {
+            progress: Mutex::new(progress),
         }
     }
 
-    pb.finish_and_clear();
-    Err(last_err.unwrap())
+    /// Finishes the reporter after the manager releases the observer.
+    fn finish(self) {
+        if let Ok(progress) = self.progress.into_inner() {
+            progress.finish();
+        }
+    }
+}
+
+impl TransferObserver for PrefetchProgress {
+    fn observe(&self, event: TransferEvent<'_>) {
+        let Ok(mut progress) = self.progress.lock() else {
+            return;
+        };
+        match event {
+            TransferEvent::Started {
+                total_bytes,
+                resumed_bytes,
+                ..
+            } => {
+                if let Some(total_bytes) = total_bytes {
+                    progress.set_total(total_bytes);
+                }
+                progress.set_position(resumed_bytes);
+            }
+            TransferEvent::Progress {
+                transferred_bytes, ..
+            } => progress.set_position(transferred_bytes),
+            TransferEvent::Retrying {
+                attempt,
+                delay,
+                error,
+                ..
+            } => progress.warning(&format!(
+                "source transfer interrupted ({error}); retrying attempt {attempt} in {:.1}s",
+                delay.as_secs_f64()
+            )),
+            TransferEvent::Verifying { .. } => progress.phase("Verifying source"),
+            TransferEvent::Completed { .. } | TransferEvent::Failed { .. } => {}
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -348,31 +319,15 @@ pub fn run(
         .build()
         .context("creating tokio runtime")?;
 
+    let mut manager_config = TransferEngineConfig::default();
+    manager_config.pool.connect_timeout = Duration::from_secs(connect_timeout);
+    manager_config.min_speed = (min_speed > 0).then_some(min_speed);
+    manager_config.min_speed_duration = speed_window;
+    let manager = TransferManager::new(manager_config);
     let results: Vec<(String, Result<FetchOk>)> = rt.block_on(async {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(connect_timeout))
-            .timeout(Duration::from_secs(600))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("valid HTTP client");
-
         let semaphore = Arc::new(Semaphore::new(jobs));
-        let client = Arc::new(client);
-
-        let mp = MultiProgress::new();
-        let overall = mp.add(ProgressBar::new(entries.len() as u64));
-        overall.set_style(
-            ProgressStyle::default_bar()
-                .template("  [{bar:30.cyan/dim}] {pos}/{len}  {msg}")
-                .expect("valid template")
-                .progress_chars("=> "),
-        );
-        overall.set_message("sources");
-
-        let spinner_style = ProgressStyle::default_spinner()
-            .template("    {spinner:.cyan} {msg} ({bytes}, {elapsed})")
-            .expect("valid template")
-            .tick_chars("-\\|/ ");
+        let manager = Arc::new(manager);
+        let overall = Arc::new(printer.items("Prefetching sources", entries.len() as u64));
 
         let mut handles = Vec::new();
 
@@ -381,19 +336,15 @@ pub fn run(
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("prefetch semaphore closed unexpectedly");
-            let client = client.clone();
+                .context("prefetch concurrency controller closed unexpectedly")?;
+            let manager = manager.clone();
             let urls = info.urls.clone();
             let name = name.clone();
             let overall = overall.clone();
-
-            let pb = mp.insert_before(&overall, ProgressBar::new_spinner());
-            pb.set_style(spinner_style.clone());
-            pb.set_message(name.clone());
-            pb.enable_steady_tick(Duration::from_millis(120));
+            let progress = printer.transfer(&name, 0);
 
             handles.push(tokio::spawn(async move {
-                let result = fetch_hash(&client, &urls, pb, &name, min_speed, speed_window).await;
+                let result = fetch_hash(&manager, &urls, progress, &name).await;
                 drop(permit);
                 overall.inc(1);
                 (name, result)
@@ -416,8 +367,8 @@ pub fn run(
         }
 
         overall.finish_and_clear();
-        results
-    });
+        Ok::<_, anyhow::Error>(results)
+    })?;
 
     let wall_elapsed = wall_start.elapsed();
 

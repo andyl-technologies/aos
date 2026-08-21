@@ -16,7 +16,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   openssl,
   perl,
   pkg-config,
@@ -57,14 +57,15 @@ in
     cargoFlags = "-p aos-hub --features postgres";
 
     # The workspace's vendored dependency set. This hash is the
-    # `fetchCargoDeps` fixed-output over the whole workspace Cargo.lock; it is
+    # The lockfile-aware vendor output over the whole workspace Cargo.lock is
     # shared in shape with `aos.nix` but is its own derivation. Regenerate with
     # `nix build` once and copy the reported `got:` hash here (the lockfile
     # gained `hmac` for the phase-4 webhook HMAC signatures).
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
+      name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];

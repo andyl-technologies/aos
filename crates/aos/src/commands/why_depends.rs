@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// `aos why-depends <package> <dependency>` — trace why a package depends on
 /// another.
@@ -28,13 +28,13 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) 
     ));
 
     // Build both packages so we have their store paths.
-    let spinner = create_spinner(&format!("building {package}"));
+    let spinner = printer.activity(&format!("building {package}"));
     let pkg_path = nix
         .build(&pkg_attr, None)
         .with_context(|| format!("building '{package}'"))?;
     spinner.finish_and_clear();
 
-    let spinner = create_spinner(&format!("building {dependency}"));
+    let spinner = printer.activity(&format!("building {dependency}"));
     let dep_path = nix
         .build(&dep_attr, None)
         .with_context(|| format!("building '{dependency}'"))?;
@@ -44,7 +44,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) 
     // dependency in it.
     printer.info("Tracing dependency chain...");
 
-    let spinner = create_spinner("querying referrers closure");
+    let spinner = printer.activity("querying referrers closure");
     let requisites = nix
         .store_query(&pkg_path, &["--query", "--requisites"])
         .context("querying requisites")?;
@@ -70,7 +70,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) 
 
     // Get the referrers of the dependency within the package closure to show
     // what directly references it.
-    let spinner = create_spinner("finding direct referrers");
+    let spinner = printer.activity("finding direct referrers");
     let referrers = nix
         .store_query(&dep_path, &["--query", "--referrers"])
         .context("querying referrers")?;

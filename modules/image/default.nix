@@ -16,12 +16,34 @@
   ...
 }: let
   cfg = config.aos.image;
+  positiveMiB = default: description:
+    lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value > 0);
+      inherit default description;
+    };
+  maxLogicalDiskMiB = 8192;
+  verityStorageMiB =
+    if config.aos.security.verity.enable
+    then 2 * cfg.budgets.maxVerityMiB
+    else 0;
+  logicalDiskContractMiB =
+    2
+    + cfg.budgets.maxEspMiB
+    + 2 * cfg.budgets.maxRootMiB
+    + verityStorageMiB;
   buildImage = import ./_builder.nix;
 
   rawImage = buildImage {
     inherit pkgs lib;
     system = {inherit config;};
     name = config.aos.system.name;
+  };
+  imageBudgetCheck = import ./_budget-check.nix {
+    inherit config lib pkgs;
+    image = rawImage;
+    name = config.aos.system.name;
+    rootfs = rawImage.rootfs;
+    uki = "${rawImage.ukiA}/${rawImage.ukiAStoreFilename}";
   };
 
   # Convert a raw image to another format via qemu-img and emit a per-format
@@ -36,7 +58,7 @@
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq];
+      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -46,12 +68,20 @@
           name = "convert";
           script = ''
             mkdir -p $out
+            zstd -d --no-progress \
+              ${rawImage}/aos-${config.aos.system.name}.img.zst \
+              -o image.raw
             qemu-img convert -f raw -O ${formatFlag} \
-              ${rawImage}/aos-${config.aos.system.name}.img \
+              image.raw \
               $out/aos-${config.aos.system.name}.${format}
 
             filename="$IMAGE_FILENAME"
             byte_size=$(stat -c %s "$out/$filename")
+            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/image-info.json)
+            if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
+              echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
+              exit 1
+            fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
             virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
               | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
@@ -105,6 +135,17 @@ in {
       '';
     };
 
+    espExtraFreeMiB = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      internal = true;
+      description = ''
+        Additional free space reserved on the ESP for tests that exercise
+        temporary boot artifacts outside the production publication
+        transaction.
+      '';
+    };
+
     hostConfigClosures = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -115,12 +156,22 @@ in {
         to the generation-zero manifest or the interactive command path.
       '';
     };
+
+    budgets = {
+      maxRootMiB = positiveMiB 512 "Maximum immutable root payload size and capacity of each A/B root partition.";
+      maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
+      maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
+      maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
+      maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
+      maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
+    };
   };
 
   options.system.build.image = {
     raw = lib.mkOption {
       type = lib.types.package;
-      description = "Raw GPT disk image (bootable via dd).";
+      description = "Zstandard-compressed raw GPT disk image (bootable after decompression).";
     };
     qcow2 = lib.mkOption {
       type = lib.types.package;
@@ -146,7 +197,39 @@ in {
     '';
   };
 
+  options.system.build.recoveryUkiA = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot A.";
+  };
+
+  options.system.build.recoveryUkiB = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Signed, uncounted recovery UKI paired with immutable slot B.";
+  };
+
+  options.system.build.recoveryBundle = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    description = "Authenticated fixed-layout payload for removable recovery media.";
+  };
+
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
+        message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
+      }
+      {
+        assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
+        message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
+      }
+      {
+        assertion = cfg.espExtraFreeMiB >= 0;
+        message = "aos.image.espExtraFreeMiB must not be negative";
+      }
+    ];
     system.build.image = {
       raw = rawImage;
       qcow2 = convertImage {
@@ -168,6 +251,12 @@ in {
         targets = ["hyper-v"];
       };
     };
+    system.build.checks.image-budget = imageBudgetCheck;
     system.build.uki = rawImage.uki;
+    system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
+    system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
+    system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
+    system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
+    system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
   };
 }

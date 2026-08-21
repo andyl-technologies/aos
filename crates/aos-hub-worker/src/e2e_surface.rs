@@ -41,7 +41,8 @@ impl DoE2eSurfaceProvider {
             "CREATE TABLE IF NOT EXISTS aos_e2e_surface_objects (
                object_key TEXT PRIMARY KEY,
                byte_size INTEGER NOT NULL,
-               content_hash TEXT NOT NULL
+               content_hash TEXT NOT NULL,
+               strong_etag TEXT NOT NULL
              )",
             None,
         )?;
@@ -400,7 +401,7 @@ pub(crate) fn decode_producer_surface_fixture(bytes: &[u8]) -> Result<WorkerImag
     }
     let raw_key = objects
         .keys()
-        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.img"))
+        .find(|path| path.starts_with("images/sha256/") && path.ends_with("/aos-e2e.img.zst"))
         .context("apr producer surface has no raw image object")?
         .clone();
     let qcow2_key = objects
@@ -438,17 +439,17 @@ impl DoE2eSurface {
         }
     }
 
-    fn load_object(&self, path: &str) -> Result<Option<(Vec<u8>, String, i64)>> {
+    fn load_object(&self, path: &str) -> Result<Option<(Vec<u8>, String, String, i64)>> {
         let object_key = self.object_key(path);
         let cursor = self.sql.exec(
-            "SELECT byte_size, content_hash FROM aos_e2e_surface_objects
+            "SELECT byte_size, content_hash, strong_etag FROM aos_e2e_surface_objects
              WHERE object_key = ?",
             Some(vec![SqlStorageValue::String(object_key.clone())]),
         )?;
         let Some(row) = cursor.raw().next().transpose()? else {
             return Ok(None);
         };
-        let [SqlStorageValue::Integer(byte_size), SqlStorageValue::String(content_hash)] =
+        let [SqlStorageValue::Integer(byte_size), SqlStorageValue::String(content_hash), SqlStorageValue::String(strong_etag)] =
             row.as_slice()
         else {
             anyhow::bail!("test object metadata row had an invalid shape");
@@ -477,7 +478,12 @@ impl DoE2eSurface {
             bytes.len() == usize::try_from(*byte_size)?,
             "test object chunk coverage is incomplete"
         );
-        Ok(Some((bytes, content_hash.clone(), *byte_size)))
+        Ok(Some((
+            bytes,
+            content_hash.clone(),
+            strong_etag.clone(),
+            *byte_size,
+        )))
     }
 }
 
@@ -519,12 +525,12 @@ impl SurfaceWriteProvider for DoE2eSurfaceProvider {
 #[async_trait(?Send)]
 impl SurfaceFetch for DoE2eSurface {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.load_object(path)?.map(|(bytes, _, _)| bytes))
+        Ok(self.load_object(path)?.map(|(bytes, _, _, _)| bytes))
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
         let cursor = self.sql.exec(
-            "SELECT content_hash FROM aos_e2e_surface_objects WHERE object_key = ?",
+            "SELECT strong_etag FROM aos_e2e_surface_objects WHERE object_key = ?",
             Some(vec![SqlStorageValue::String(self.object_key(path))]),
         )?;
         let Some(row) = cursor.raw().next().transpose()? else {
@@ -535,7 +541,7 @@ impl SurfaceFetch for DoE2eSurface {
             .next()
             .context("test object row had no version")?
         {
-            SqlStorageValue::String(version) => Ok(Some(format!("\"do-{version}\""))),
+            SqlStorageValue::String(etag) => Ok(Some(etag)),
             _ => anyhow::bail!("test object store returned a non-string version"),
         }
     }
@@ -549,7 +555,7 @@ impl SurfaceFetch for DoE2eSurface {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Option<StreamedRead>> {
-        let Some((bytes, version, byte_size)) = self.load_object(path)? else {
+        let Some((bytes, _, strong_etag, byte_size)) = self.load_object(path)? else {
             return Ok(None);
         };
         let total = u64::try_from(byte_size).context("test object size is negative")?;
@@ -567,7 +573,7 @@ impl SurfaceFetch for DoE2eSurface {
             body: axum::body::Body::from(body),
             total,
             range: served,
-            strong_etag: Some(format!("\"do-{version}\"")),
+            strong_etag: Some(strong_etag),
             snapshot_lease_id: None,
         }))
     }
@@ -579,8 +585,35 @@ impl SurfaceWrite for DoE2eSurface {
         Some(1)
     }
 
+    fn abandoned_multipart_lifetime_secs(&self) -> Option<u64> {
+        Some(24 * 60 * 60)
+    }
+
+    fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
+        let mut ordered = parts.to_vec();
+        ordered.sort_by_key(|part| part.part_number);
+        anyhow::ensure!(
+            ordered.iter().enumerate().all(|(index, part)| {
+                part.part_number as usize == index + 1
+                    && part.etag.len() == 64
+                    && part.etag.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
+            "test multipart completion manifest is malformed"
+        );
+        let mut identities = Vec::with_capacity(ordered.len() * 32);
+        for part in &ordered {
+            identities.extend(hex::decode(&part.etag)?);
+        }
+        Ok(Some(format!(
+            "\"do-multipart-{}-{}\"",
+            hex::encode(Sha256::digest(&identities)),
+            ordered.len()
+        )))
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let content_hash = hex::encode(Sha256::digest(bytes));
+        let strong_etag = format!("\"do-{content_hash}\"");
         let object_key = self.object_key(path);
         for (chunk_number, chunk) in bytes.chunks(SURFACE_CHUNK_BYTES).enumerate() {
             self.sql.exec(
@@ -598,14 +631,17 @@ impl SurfaceWrite for DoE2eSurface {
         }
         let byte_size = i64::try_from(bytes.len()).context("test object is too large")?;
         self.sql.exec(
-            "INSERT INTO aos_e2e_surface_objects (object_key, byte_size, content_hash)
-             VALUES (?, ?, ?)
+            "INSERT INTO aos_e2e_surface_objects
+             (object_key, byte_size, content_hash, strong_etag)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT(object_key) DO UPDATE SET
-               byte_size = excluded.byte_size, content_hash = excluded.content_hash",
+               byte_size = excluded.byte_size, content_hash = excluded.content_hash,
+               strong_etag = excluded.strong_etag",
             Some(vec![
                 SqlStorageValue::String(object_key.clone()),
                 SqlStorageValue::Integer(byte_size),
                 SqlStorageValue::String(content_hash),
+                SqlStorageValue::String(strong_etag),
             ]),
         )?;
         self.sql.exec(
@@ -744,7 +780,7 @@ impl SurfaceWrite for DoE2eSurface {
         path: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let mut body = Vec::new();
         let cursor = self.sql.exec(
             "SELECT part_number, body, etag FROM aos_e2e_surface_parts
@@ -752,6 +788,12 @@ impl SurfaceWrite for DoE2eSurface {
             Some(vec![SqlStorageValue::String(upload_id.to_string())]),
         )?;
         let rows = cursor.raw().collect::<worker::Result<Vec<_>>>()?;
+        if rows.is_empty() {
+            let (_, _, strong_etag, _) = self
+                .load_object(path)?
+                .context("completed test multipart object disappeared")?;
+            return Ok(strong_etag);
+        }
         anyhow::ensure!(rows.len() == parts.len(), "multipart part count changed");
         for (row, expected) in rows.into_iter().zip(parts) {
             let [SqlStorageValue::Integer(part_number), body_value, SqlStorageValue::String(etag)] =
@@ -765,9 +807,19 @@ impl SurfaceWrite for DoE2eSurface {
             );
             body.extend(Self::blob(body_value.clone())?);
         }
+        let strong_etag = self
+            .expected_multipart_etag(parts)?
+            .context("test multipart completion identity was unavailable")?;
         self.write(path, &body).await?;
+        self.sql.exec(
+            "UPDATE aos_e2e_surface_objects SET strong_etag = ? WHERE object_key = ?",
+            Some(vec![
+                SqlStorageValue::String(strong_etag.clone()),
+                SqlStorageValue::String(self.object_key(path)),
+            ]),
+        )?;
         self.abort_multipart(path, upload_id).await?;
-        Ok(())
+        Ok(strong_etag)
     }
 
     async fn abort_multipart(&self, _path: &str, upload_id: &str) -> Result<MultipartAbortOutcome> {

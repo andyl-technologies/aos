@@ -247,6 +247,12 @@ struct WorkerArgs {
     /// Immutable source/build identity exposed for deployment verification.
     #[arg(long, env = "HUB_DEPLOYMENT_ID")]
     deployment_id: Option<String>,
+    /// Stable name of the colocated SQLite Durable Object instance.
+    ///
+    /// Changing this selects a fresh database and is intended for explicit
+    /// restore or cutover operations, not routine deployments.
+    #[arg(long, default_value = "hub")]
+    database_instance: String,
     /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
     /// deploy` provisions its DNS record + edge cert, and its zone must be on the
     /// same Cloudflare account. Repeatable — pass `--domain` once per hostname to
@@ -649,6 +655,17 @@ async fn main() -> Result<()> {
             if has_route_adapter {
                 controller = controller.with_route_observer(Arc::new(route_adapters));
             }
+            let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                Arc::clone(&app_state.db),
+                Arc::new(
+                    aos_hub::coreports::HubSurfaceProvider::new(
+                        Arc::clone(&app_state.db),
+                        app_state.http.clone(),
+                        app_state.image_snapshots.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                ),
+            );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -657,6 +674,12 @@ async fn main() -> Result<()> {
                         tracing::warn!(
                             error = %format!("{error:#}"),
                             "domain probe controller pass failed"
+                        );
+                    }
+                    if let Err(error) = placement_scans.run_due(5).await {
+                        tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "placement scan controller pass failed"
                         );
                     }
                 }
@@ -1098,6 +1121,7 @@ async fn provision_worker(
         args.egress_gateway_url.as_deref(),
         &external_url,
         args.deployment_id.as_deref(),
+        &args.database_instance,
         args.email_relay_url.as_deref(),
         &args.domains,
         aos_hub::cloudflare::RateLimitNamespaces::from_base(args.rate_limit_namespace_base)?,

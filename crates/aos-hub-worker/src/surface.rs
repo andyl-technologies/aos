@@ -20,11 +20,13 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
 use aos_hub_core::db::{Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
-    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceProvider,
+    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
+    SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::secret_version::SecretVersionResolver;
@@ -37,7 +39,7 @@ use aos_hub_core::surface_write::{
 
 use crate::consoleports::WorkerEgressClient;
 use crate::keymap;
-use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListPage};
+use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListObject, R2ListPage};
 
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
@@ -125,14 +127,29 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
             .map_err(|e| anyhow::anyhow!("R2 list: objects: {e:?}"))?
             .dyn_into()
             .map_err(|e| anyhow::anyhow!("R2 list: objects not an array: {e:?}"))?;
-        let mut keys = Vec::with_capacity(objects.length() as usize);
+        let mut listed = Vec::with_capacity(objects.length() as usize);
         for object in objects.iter() {
-            keys.push(
-                Reflect::get(&object, &JsValue::from_str("key"))
-                    .map_err(|e| anyhow::anyhow!("R2 list: key: {e:?}"))?
-                    .as_string()
-                    .context("R2 list object has no string key")?,
-            );
+            let key = Reflect::get(&object, &JsValue::from_str("key"))
+                .map_err(|e| anyhow::anyhow!("R2 list: key: {e:?}"))?
+                .as_string()
+                .context("R2 list object has no string key")?;
+            let size = Reflect::get(&object, &JsValue::from_str("size"))
+                .map_err(|e| anyhow::anyhow!("R2 list {key}: size: {e:?}"))?
+                .as_f64()
+                .filter(|value| {
+                    value.is_finite()
+                        && *value >= 0.0
+                        && value.fract() == 0.0
+                        && *value <= ((1_u64 << 53) - 1) as f64
+                })
+                .context("R2 list object has an invalid size")? as u64;
+            let etag = Reflect::get(&object, &JsValue::from_str("etag"))
+                .map_err(|e| anyhow::anyhow!("R2 list {key}: etag: {e:?}"))?
+                .as_string()
+                .context("R2 list object has no string etag")?;
+            let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)
+                .with_context(|| format!("R2 list {key} returned an invalid strong ETag"))?;
+            listed.push(R2ListObject { key, size, etag });
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
             .ok()
@@ -148,7 +165,10 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         } else {
             None
         };
-        Ok(R2ListPage { keys, cursor })
+        Ok(R2ListPage {
+            objects: listed,
+            cursor,
+        })
     }
 
     async fn head(&self, key: &str) -> Result<Option<u64>> {
@@ -251,7 +271,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         key: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         use wasm_bindgen::JsValue;
         use wasm_bindgen_futures::JsFuture;
         let upload = resume_r2_multipart(&self.bucket, key, upload_id)?;
@@ -277,10 +297,13 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
             key,
             "complete",
         )?;
-        JsFuture::from(promise)
+        let object = JsFuture::from(promise)
             .await
             .map_err(|e| anyhow::anyhow!("R2 complete {key}: {e:?}"))?;
-        Ok(())
+        js_sys::Reflect::get(&object, &JsValue::from_str("etag"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .context("R2 multipart completion returned no ETag")
     }
 
     async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
@@ -477,52 +500,90 @@ async fn r2_get(
     }
 }
 
-/// Adapt an R2 object's `body` ([`web_sys::ReadableStream`]-shaped `JsValue`)
-/// into a byte-chunk stream by driving its default reader.
-///
-/// Mirrors what worker-rs `ByteStream` does internally, but over the raw
-/// `JsValue` body of the object [`r2_get`] returns (worker-rs `ObjectBody` is
-/// only reachable from a `worker::Object`, which has no public constructor). Each
-/// `reader.read()` yields `{ done, value: Uint8Array }`; `done` ends the stream.
-fn r2_body_stream(
-    body: wasm_bindgen::JsValue,
-) -> impl futures_util::Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> {
-    use js_sys::{Function, Promise, Reflect, Uint8Array};
+/// Run an R2 ranged `get` without worker-rs's invalid `suffix: undefined` field.
+async fn r2_get_range(
+    bucket: &wasm_bindgen::JsValue,
+    key: &str,
+    offset: u64,
+    length: u64,
+) -> Result<Option<wasm_bindgen::JsValue>> {
+    use js_sys::{Function, Object, Promise, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
-    let reader = Reflect::get(&body, &JsValue::from_str("getReader"))
-        .ok()
-        .and_then(|f| f.dyn_into::<Function>().ok())
-        .and_then(|f| f.call0(&body).ok());
-    futures_util::stream::try_unfold(reader, move |reader| async move {
-        let Some(reader) = reader else {
-            return Err(std::io::Error::other("R2 body: getReader unavailable"));
-        };
-        let read_fn: Function = Reflect::get(&reader, &JsValue::from_str("read"))
-            .map_err(|e| std::io::Error::other(format!("R2 read method: {e:?}")))?
+    const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+    if offset > MAX_SAFE_INTEGER || length > MAX_SAFE_INTEGER {
+        return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+            "R2 range for {key} exceeds JavaScript's exact integer range"
+        )));
+    }
+
+    let range = Object::new();
+    Reflect::set(
+        &range,
+        &JsValue::from_str("offset"),
+        &JsValue::from_f64(offset as f64),
+    )
+    .map_err(|e| anyhow::anyhow!("R2 get {key}: range offset: {e:?}"))?;
+    Reflect::set(
+        &range,
+        &JsValue::from_str("length"),
+        &JsValue::from_f64(length as f64),
+    )
+    .map_err(|e| anyhow::anyhow!("R2 get {key}: range length: {e:?}"))?;
+    let options = Object::new();
+    Reflect::set(&options, &JsValue::from_str("range"), &range)
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: range options: {e:?}"))?;
+
+    let get_fn: Function = Reflect::get(bucket, &JsValue::from_str("get"))
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get method: {e:?}"))?
+        .dyn_into()
+        .map_err(|e| anyhow::anyhow!("R2 get {key}: get is not a function: {e:?}"))?;
+    let mut attempt = 0u32;
+    loop {
+        let promise: Promise = get_fn
+            .call2(bucket, &JsValue::from_str(key), &options)
+            .map_err(|e| anyhow::anyhow!("R2 get {key}: ranged call: {e:?}"))?
             .dyn_into()
-            .map_err(|e| std::io::Error::other(format!("R2 read not a function: {e:?}")))?;
-        let promise: Promise = read_fn
-            .call0(&reader)
-            .map_err(|e| std::io::Error::other(format!("R2 read call: {e:?}")))?
-            .dyn_into()
-            .map_err(|e| std::io::Error::other(format!("R2 read not a promise: {e:?}")))?;
-        let result = JsFuture::from(promise)
-            .await
-            .map_err(|e| std::io::Error::other(format!("R2 read: {e:?}")))?;
-        let done = Reflect::get(&result, &JsValue::from_str("done"))
-            .ok()
-            .map(|value| value.is_truthy())
-            .unwrap_or(true);
-        if done {
-            return Ok(None);
+            .map_err(|e| {
+                anyhow::anyhow!("R2 get {key}: ranged get did not return a promise: {e:?}")
+            })?;
+        match JsFuture::from(promise).await {
+            Ok(v) if v.is_null() || v.is_undefined() => return Ok(None),
+            Ok(v) => return Ok(Some(v)),
+            Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
+            Err(e) if is_transient_r2(&format!("{e:?}")) => {
+                return Err(aos_hub_core::placement_read::retryable_read_error(format!(
+                    "R2 ranged get {key}: {e:?}"
+                )));
+            }
+            Err(e) => {
+                return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+                    "R2 ranged get {key}: {e:?}"
+                )));
+            }
         }
-        let value = Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|e| std::io::Error::other(format!("R2 read value: {e:?}")))?;
-        let chunk = value.unchecked_into::<Uint8Array>().to_vec();
-        Ok(Some((chunk, Some(reader))))
-    })
+    }
+}
+
+/// Adapts an R2 object's raw `ReadableStream` body into Rust byte chunks.
+///
+/// The raw reflected object cannot be converted into worker-rs's private
+/// `ObjectBody`, but its public [`worker::ByteStream`] accepts the same
+/// `ReadableStream`. Reusing that adapter keeps stream locking, promise
+/// polling, cancellation, and JavaScript exception handling aligned with the
+/// Workers runtime instead of maintaining a second hand-written reader.
+fn r2_body_stream(
+    body: wasm_bindgen::JsValue,
+) -> Result<impl futures_util::Stream<Item = std::result::Result<Vec<u8>, std::io::Error>>> {
+    use futures_util::TryStreamExt as _;
+    use wasm_bindgen::JsCast as _;
+
+    let stream = body
+        .dyn_into::<worker::web_sys::ReadableStream>()
+        .map_err(|value| anyhow::anyhow!("R2 body is not a ReadableStream: {value:?}"))?;
+    Ok(worker::ByteStream::from(stream)
+        .map_err(|error| std::io::Error::other(format!("R2 body stream: {error}"))))
 }
 
 /// A [`SurfaceProvider`] that serves every registry from one R2 bucket, or from
@@ -617,20 +678,77 @@ impl SurfaceFetch for R2SurfaceFetch {
         );
         let listing_prefix = keymap::r2_key(&self.prefix, "");
         let page = self.contract.list(&listing_prefix, cursor, limit).await?;
-        let mut paths = Vec::with_capacity(page.keys.len());
-        for key in page.keys {
-            if let Some(rel) = keymap::relative_key(&self.prefix, &key) {
+        let mut entries = Vec::with_capacity(page.objects.len());
+        for object in page.objects {
+            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
                 if !rel.is_empty() {
-                    paths.push(rel);
+                    entries.push((
+                        rel,
+                        SurfaceListedEvidence {
+                            size: i64::try_from(object.size)
+                                .context("R2 listed object size exceeds i64")?,
+                            strong_etag: object.etag,
+                        },
+                    ));
                 }
             }
         }
-        paths.sort();
-        paths.dedup();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        anyhow::ensure!(
+            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
+            "R2 listing returned a duplicate relative key"
+        );
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
+        let evidence = entries.into_iter().collect();
         Ok(SurfaceListPage {
             paths,
+            evidence,
             next_cursor: page.cursor,
         })
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        use futures_util::TryStreamExt as _;
+
+        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
+        // that body is stronger and cheaper than issuing separate GETs before
+        // and after it, whose bodies would be discarded merely to read ETags.
+        let Some(read) = self.fetch_stream(path, None).await? else {
+            return Ok(None);
+        };
+        let expected_size = read.total;
+        anyhow::ensure!(
+            expected_size <= maximum_bytes,
+            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
+        );
+        let strong_etag = read.strong_etag;
+        let mut stream = read.body.into_data_stream();
+        let mut hasher = Sha256::new();
+        let mut observed_size = 0_u64;
+        while let Some(chunk) = stream.try_next().await? {
+            observed_size = observed_size
+                .checked_add(chunk.len() as u64)
+                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
+            anyhow::ensure!(
+                observed_size <= expected_size && observed_size <= maximum_bytes,
+                "R2 object '{path}' exceeded its bounded inventory length while streaming"
+            );
+            hasher.update(&chunk);
+        }
+        anyhow::ensure!(
+            observed_size == expected_size,
+            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
+        );
+
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: hasher.finalize().into(),
+            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
+            strong_etag,
+        }))
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -648,6 +766,15 @@ impl SurfaceFetch for R2SurfaceFetch {
         Ok(etag.filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
     }
 
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|size| i64::try_from(size).context("R2 object size exceeds i64"))
+            .transpose()
+    }
+
     async fn fetch_stream(
         &self,
         path: &str,
@@ -656,39 +783,52 @@ impl SurfaceFetch for R2SurfaceFetch {
         use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
-        // NOTE: we deliberately do *not* push the byte range into the R2 `get`
-        // (`GetOptionsBuilder::range`). workers-rs serializes every `Range`
-        // variant with an explicit `suffix: undefined` property (still true in
-        // 0.8.5 — `r2::builder::Range`'s `OffsetWithLength` arm emits
-        // `"suffix" => JsValue::UNDEFINED`), and the runtime's R2 binding rejects
-        // the *presence* of the `suffix` key alongside `offset` ("Suffix is
-        // incompatible with offset"), so a pushed-down range errors on
-        // workerd. Instead we open the whole-object stream and trim it chunk by
-        // chunk below — the isolate still never holds the whole object in memory
-        // (it streams through, dropping pre-`start` bytes and stopping at the
-        // range end), so the memory-safety property the streaming path guarantees
-        // is preserved; only the discarded pre-`start` bytes cross R2→isolate
-        // (nil for the whole-object and prefix reads nix actually issues).
-        let Some(object) = r2_get(self.bucket.as_ref(), &key).await? else {
+        // Construct range options through raw JS so absent fields are genuinely
+        // absent: worker-rs 0.8.5 emits an invalid `suffix: undefined` alongside
+        // offset/length. R2 returns the full object size on the same GET object,
+        // keeping range metadata and the body on one object snapshot.
+        let object = match range {
+            Some((start, end)) if start <= end => {
+                let length = end
+                    .checked_sub(start)
+                    .and_then(|span| span.checked_add(1))
+                    .ok_or_else(|| {
+                        aos_hub_core::placement_read::terminal_read_error(format!(
+                            "R2 range length for {key} overflows u64"
+                        ))
+                    })?;
+                r2_get_range(self.bucket.as_ref(), &key, start, length).await?
+            }
+            None => r2_get(self.bucket.as_ref(), &key).await?,
+            Some(_) => r2_get(self.bucket.as_ref(), &key).await?,
+        };
+        let Some(object) = object else {
             return Ok(None);
+        };
+        let total_value = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .filter(|value| {
+                value.is_finite()
+                    && *value >= 0.0
+                    && value.fract() == 0.0
+                    && *value <= ((1_u64 << 53) - 1) as f64
+            })
+            .ok_or_else(|| {
+                aos_hub_core::placement_read::terminal_read_error(format!(
+                    "R2 get {key} returned an invalid object size"
+                ))
+            })?;
+        let total = total_value as u64;
+        let served = match range {
+            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
+            _ => None,
         };
         let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
             .ok()
             .and_then(|value| value.as_string())
             .map(|value| value.trim().to_string())
             .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
-        // Read `size` and `body` off the raw R2 object via `js_sys` (worker-rs
-        // `Object` is unreachable here — see `r2_get`).
-        let total = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as u64;
-        // The inclusive range actually served (clamped to the object), or `None`
-        // for a whole-object read.
-        let served = match range {
-            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
-            _ => None,
-        };
         let body_js = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("body"))
             .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
         if body_js.is_null() || body_js.is_undefined() {
@@ -704,13 +844,11 @@ impl SurfaceFetch for R2SurfaceFetch {
                 snapshot_lease_id: None,
             }));
         }
-        let stream = r2_body_stream(body_js);
-        // Trim the whole-object stream to the served byte range without buffering:
-        // `skip` leading bytes are dropped (splitting a straddling chunk) and at
-        // most `remaining` bytes are emitted (truncating the final chunk, then
-        // ending the stream). For a whole-object read both bounds are wide open.
+        let stream = r2_body_stream(body_js)?;
+        // Bound a ranged R2 body to the exact requested length. The R2 read
+        // already starts at `start`, so no leading bytes are discarded.
         let (skip, remaining) = match served {
-            Some((start, end)) => (start, end - start + 1),
+            Some((start, end)) => (0, end - start + 1),
             None => (0, u64::MAX),
         };
         let trimmed = futures_util::stream::try_unfold(
@@ -885,7 +1023,11 @@ impl SurfaceFetch for S3SurfaceFetch {
         } else {
             None
         };
-        Ok(SurfaceListPage { paths, next_cursor })
+        Ok(SurfaceListPage {
+            paths,
+            evidence: Default::default(),
+            next_cursor,
+        })
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -1271,6 +1413,17 @@ impl SurfaceWrite for R2Write {
         Some(1)
     }
 
+    fn abandoned_multipart_lifetime_secs(&self) -> Option<u64> {
+        // The deployment reconciles an all-prefix lifecycle rule before this
+        // Worker is installed, bounding an upload whose opaque creation
+        // response never reached the caller.
+        Some(7 * 24 * 60 * 60)
+    }
+
+    fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
+        aos_hub_core::surface_write::md5_multipart_etag(parts)
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract.put(&key, bytes).await
@@ -1304,7 +1457,7 @@ impl SurfaceWrite for R2Write {
         path: &str,
         upload_id: &str,
         parts: &[PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract
             .complete_multipart(&key, upload_id, parts)
@@ -1335,6 +1488,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use futures_util::TryStreamExt as _;
     use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsValue;
@@ -1397,6 +1551,12 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &JsValue::from_str("key"),
             &JsValue::from_str("fixture/object"),
         );
+        let _ = Reflect::set(&listed, &JsValue::from_str("size"), &JsValue::from_f64(3.0));
+        let _ = Reflect::set(
+            &listed,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str("fixture-etag"),
+        );
         let objects = Array::new();
         objects.push(&listed);
         let _ = Reflect::set(&object, &JsValue::from_str("objects"), &objects);
@@ -1436,12 +1596,29 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     set_method(&body, "arrayBuffer", array_buffer.as_ref())?;
     let get_calls = Rc::clone(&calls);
     let get_body = body.clone();
-    let get = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
-        get_calls
-            .borrow_mut()
-            .push(format!("get:{}", key.as_string().unwrap_or_default()));
+    let get = Closure::wrap(Box::new(move |key: JsValue, options: JsValue| -> JsValue {
+        let rendered_range = if options.is_undefined() {
+            "<absent>".to_string()
+        } else {
+            let range =
+                Reflect::get(&options, &JsValue::from_str("range")).unwrap_or(JsValue::UNDEFINED);
+            let offset = Reflect::get(&range, &JsValue::from_str("offset"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or_default() as u64;
+            let length = Reflect::get(&range, &JsValue::from_str("length"))
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or_default() as u64;
+            let suffix = Reflect::has(&range, &JsValue::from_str("suffix")).unwrap_or(true);
+            format!("{offset}:{length}:suffix={suffix}")
+        };
+        get_calls.borrow_mut().push(format!(
+            "get:{}:{rendered_range}",
+            key.as_string().unwrap_or_default()
+        ));
         Promise::resolve(&get_body).into()
-    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    }) as Box<dyn FnMut(JsValue, JsValue) -> JsValue>);
     set_method(&bucket, "get", get.as_ref())?;
 
     let create_calls = Rc::clone(&calls);
@@ -1499,7 +1676,13 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
         complete_calls
             .borrow_mut()
             .push(format!("complete:[{rendered}]"));
-        Promise::resolve(&JsValue::UNDEFINED).into()
+        let object = Object::new();
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str("\"completed-etag\""),
+        );
+        Promise::resolve(&object).into()
     }) as Box<dyn FnMut(JsValue) -> JsValue>);
 
     let abort_calls = Rc::clone(&calls);
@@ -1526,28 +1709,54 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
     );
     set_method(&bucket, "resumeMultipartUpload", resume.as_ref())?;
 
+    let bucket_value: JsValue = bucket.into();
     let contract = R2Contract::new(WorkerR2BucketAdapter {
-        bucket: bucket.into(),
+        bucket: bucket_value.clone(),
     });
     contract.put("fixture/object", &[1, 2, 3]).await?;
     contract.delete("fixture/deleted").await?;
     let first_page = contract.list("fixture/", None, 2).await?;
     anyhow::ensure!(
-        first_page.keys == vec!["fixture/object".to_string()]
+        first_page.objects
+            == vec![R2ListObject {
+                key: "fixture/object".into(),
+                size: 3,
+                etag: "\"fixture-etag\"".into(),
+            }]
             && first_page.cursor.as_deref() == Some("cursor-2"),
-        "R2 first list response shape did not round-trip: keys={:?}, cursor={:?}",
-        first_page.keys,
+        "R2 first list response shape did not round-trip: objects={:?}, cursor={:?}",
+        first_page.objects,
         first_page.cursor
     );
     let page = contract.list("fixture/", Some("cursor-1"), 2).await?;
     anyhow::ensure!(
-        page.keys == vec!["fixture/object".to_string()]
+        page.objects
+            == vec![R2ListObject {
+                key: "fixture/object".into(),
+                size: 3,
+                etag: "\"fixture-etag\"".into(),
+            }]
             && page.cursor.as_deref() == Some("cursor-2"),
         "R2 list response shape did not round-trip"
     );
     anyhow::ensure!(
         contract.read_bounded("fixture/object", 3).await? == Some(vec![1, 2, 3]),
         "R2 HEAD/get/arrayBuffer shape did not round-trip"
+    );
+    anyhow::ensure!(
+        r2_get_range(&bucket_value, "fixture/object", 7, 11)
+            .await?
+            .is_some(),
+        "R2 ranged get response shape did not round-trip"
+    );
+    let response: worker::web_sys::Response = worker::Response::from_bytes(vec![7, 8, 9])?.into();
+    let body = response
+        .body()
+        .context("workerd fixture response returned no ReadableStream")?;
+    let streamed = r2_body_stream(body.into())?.try_concat().await?;
+    anyhow::ensure!(
+        streamed == vec![7, 8, 9],
+        "R2 ReadableStream body did not round-trip through worker-rs"
     );
     anyhow::ensure!(
         contract.create_multipart("fixture/object").await? == "upload-1",
@@ -1583,8 +1792,9 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
         "list:fixture/:<absent>:2",
         "list:fixture/:cursor-1:2",
         "head:fixture/object",
-        "get:fixture/object",
+        "get:fixture/object:<absent>",
         "arrayBuffer",
+        "get:fixture/object:7:11:suffix=false",
         "createMultipartUpload:fixture/object",
         "resumeMultipartUpload:fixture/object:upload-1",
         "uploadPart:2:[4, 5]",
@@ -1639,10 +1849,6 @@ struct S3Write {
 
 #[async_trait(?Send)]
 impl SurfaceWrite for S3Write {
-    fn multipart_protocol_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Put, path, now)?;
@@ -1776,7 +1982,7 @@ impl SurfaceWrite for S3Write {
         path: &str,
         upload_id: &str,
         parts: &[aos_hub_core::surface_write::PartTag],
-    ) -> Result<()> {
+    ) -> Result<String> {
         let url = self.surface.multipart_url(
             "complete",
             path,
@@ -1811,8 +2017,7 @@ impl SurfaceWrite for S3Write {
         .await?;
         let body =
             String::from_utf8(body).context("S3 complete multipart response is not UTF-8")?;
-        aos_hub_core::s3surface::validate_complete_multipart_response(&body)?;
-        Ok(())
+        aos_hub_core::s3surface::complete_multipart_etag(&body)
     }
 
     async fn abort_multipart(

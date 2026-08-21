@@ -94,15 +94,17 @@ use crate::types::{
     ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT,
-    PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    RootContribution, SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot,
-    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
-    validate_branch_name, validate_channel_name, validate_config_module_meta,
-    validate_config_output_meta, validate_expose_artifact_meta, validate_expose_meta_for_package,
-    validate_git_ref_name, validate_package_name, validate_permissions_meta,
-    validate_platform_name, validate_registry_name,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1,
+    FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
+    ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryBundleComponent,
+    RecoveryBundleComponentId, RecoveryBundleManifest, RecoveryUkiEntry, RegistryConfig,
+    RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig, RootContribution, SbatEntry,
+    SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot, package_name_bucket,
+    rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
+    validate_channel_name, validate_config_module_meta, validate_config_output_meta,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
@@ -1369,6 +1371,7 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
 fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     objectstore::assert_sha256(dir)?;
     let releases = semver_tag_versions(dir)?;
     for release in &releases {
@@ -1646,9 +1649,10 @@ description = ""
 ///
 /// # Errors
 ///
-/// Fails when the registry has no writable authoring clone, when the
-/// package name is not safe for registry package paths, when the platform
-/// name is not safe for package metadata, when the image arguments are not
+/// Fails when required package distribution metadata is missing, empty, or a
+/// legacy placeholder; when the registry has no writable authoring clone;
+/// when the package name is not safe for registry package paths; when the
+/// platform name is not safe for package metadata; when the image arguments are not
 /// given in triples or their files/metadata disagree, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, when `--expose-manifest`
 /// cannot be parsed or validated, when the config output references a
@@ -1688,6 +1692,10 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let description = required_publish_metadata(description, "--description", "No description")?;
+    let license = required_publish_metadata(license, "--license", "unknown")?;
+    let maintainer = required_publish_metadata(maintainer, "--maintainer", "unknown")?;
+
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
     ensure_writable_registry_clone(&name, &dir)?;
@@ -1840,10 +1848,10 @@ pub async fn publish(
         pkg_version,
         &platform,
         &info,
-        description,
+        Some(description),
         homepage,
-        license,
-        maintainer,
+        Some(license),
+        Some(maintainer),
         sysroot,
         previous,
         &image_infos,
@@ -2058,6 +2066,8 @@ pub async fn publish(
                     })).collect::<Vec<_>>(),
                     "expected_pcr11": image.sb.expected_pcr11,
                     "ukis": image.sb.ukis,
+                    "recovery_ukis": image.sb.recovery_ukis,
+                    "recovery_bundle": image.sb.recovery_bundle,
                 })
             })
             .collect::<Vec<_>>();
@@ -2116,6 +2126,40 @@ pub async fn publish(
     Ok(())
 }
 
+/// Returns required package distribution metadata after rejecting historical
+/// placeholders that do not describe a package.
+fn required_publish_metadata<'a>(
+    value: Option<&'a str>,
+    flag: &str,
+    legacy_placeholder: &str,
+) -> Result<&'a str> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{flag} is required and must not be empty"))?;
+    if value.eq_ignore_ascii_case(legacy_placeholder) {
+        bail!(
+            "{flag} must describe the package, not use the legacy placeholder '{legacy_placeholder}'"
+        );
+    }
+    Ok(value)
+}
+
+/// Validates metadata for the optional package attached to a release plan.
+fn validate_release_publish_metadata(
+    store_path: Option<&str>,
+    description: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+) -> Result<()> {
+    if store_path.is_some() {
+        required_publish_metadata(description, "--description", "No description")?;
+        required_publish_metadata(license, "--license", "unknown")?;
+        required_publish_metadata(maintainer, "--maintainer", "unknown")?;
+    }
+    Ok(())
+}
+
 fn apply_publish_sb_policy(
     images: &mut [PublishedImage],
     catalog: Option<&SbCertsToml>,
@@ -2134,6 +2178,13 @@ fn apply_publish_sb_policy(
                     .iter()
                     .filter_map(|uki| uki.sb_signer_cert_sha256.as_deref()),
             );
+        let signers = signers.chain(
+            image
+                .sb
+                .recovery_ukis
+                .iter()
+                .map(|uki| uki.sb_signer_cert_sha256.as_str()),
+        );
         for signer in signers {
             if let Some(catalog) = catalog {
                 if !catalog.accepts_signer(signer) {
@@ -2202,9 +2253,9 @@ fn build_package_toml(
     config_module: Option<&ConfigModuleMeta>,
     config_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
-    let desc = description.unwrap_or("No description");
-    let lic = license.unwrap_or("unknown");
-    let maint = maintainer.unwrap_or("unknown");
+    let desc = description.context("package description is required")?;
+    let lic = license.context("package license is required")?;
+    let maint = maintainer.context("package maintainer is required")?;
     let source_drv = source_info
         .map(|source| source.path.as_str())
         .unwrap_or_default();
@@ -2269,9 +2320,29 @@ fn build_package_toml(
         let mut toml_val: toml::Value =
             toml::from_str(existing).context("parsing existing package TOML")?;
 
-        // Set sysroot flag on the [package] section if requested.
-        if sysroot {
-            if let Some(pkg) = toml_val.get_mut("package").and_then(|v| v.as_table_mut()) {
+        // Metadata describes the package across versions. Explicit values on
+        // a later publication replace stale catalog values as well as the
+        // historical placeholders emitted by older clients.
+        if let Some(pkg) = toml_val.get_mut("package").and_then(|v| v.as_table_mut()) {
+            if let Some(description) = description {
+                pkg.insert(
+                    "description".into(),
+                    toml::Value::String(description.to_string()),
+                );
+            }
+            if let Some(homepage) = homepage {
+                pkg.insert("homepage".into(), toml::Value::String(homepage.to_string()));
+            }
+            if let Some(license) = license {
+                pkg.insert("license".into(), toml::Value::String(license.to_string()));
+            }
+            if let Some(maintainer) = maintainer {
+                pkg.insert(
+                    "maintainer".into(),
+                    toml::Value::String(maintainer.to_string()),
+                );
+            }
+            if sysroot {
                 pkg.insert("sysroot".into(), toml::Value::Boolean(true));
             }
         }
@@ -3314,6 +3385,10 @@ struct SbFacts {
     expected_pcr11: Option<String>,
     /// Deterministically identified per-slot facts for an A/B image payload.
     ukis: Vec<SysrootUkiEntry>,
+    /// Independently verified signed recovery copies for an A/B image payload.
+    recovery_ukis: Vec<RecoveryUkiEntry>,
+    /// Complete catalog-authenticated offline recovery bundle manifest.
+    recovery_bundle: Option<RecoveryBundleManifest>,
 }
 
 /// A fully validated disk-image publication input.
@@ -3339,6 +3414,8 @@ struct PublishedImage {
     esp_offset_bytes: u64,
     /// Byte interval of the canonical root filesystem payload.
     root_range: (u64, u64),
+    /// Exact byte length of the reconstructed canonical raw disk.
+    virtual_size_bytes: u64,
 }
 
 struct ValidatedImageDirectory {
@@ -3390,12 +3467,17 @@ struct ProducerImageInfo {
     sha256: String,
     logical_disk_sha256: String,
     rootfs_sha256: String,
+    artifact_budgets_mi_b: ProducerArtifactBudgets,
+    #[serde(default)]
+    module_abi: Option<u32>,
     compatible_targets: Vec<ImageTarget>,
     uki: PortableUkiInfo,
     #[serde(default)]
     disk_size_mi_b: Option<u64>,
     #[serde(default)]
     esp_size_mi_b: Option<u64>,
+    #[serde(default)]
+    esp_budget: Option<ProducerEspBudget>,
     #[serde(default)]
     root_size_mi_b: Option<u64>,
     #[serde(default)]
@@ -3406,6 +3488,8 @@ struct ProducerImageInfo {
     partitions: Vec<ProducerPartitionInfo>,
     #[serde(default)]
     esp: Option<ProducerEspInfo>,
+    #[serde(default)]
+    recovery: Option<ProducerRecoveryInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3417,6 +3501,55 @@ struct PortableUkiInfo {
     sha256: String,
     signed: bool,
     measured: bool,
+}
+
+/// Maximum artifact sizes and storage geometry declared by an image producer.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerArtifactBudgets {
+    root: u64,
+    verity: u64,
+    initrd: u64,
+    uki: u64,
+    esp: u64,
+    runtime_closure: u64,
+    download: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerRecoveryInfo {
+    abi: u32,
+    release: String,
+    command_line: String,
+    copies: ProducerRecoveryCopies,
+    entries: ProducerRecoveryEntries,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProducerRecoveryCopies {
+    #[serde(rename = "A")]
+    a: ProducerRecoveryCopy,
+    #[serde(rename = "B")]
+    b: ProducerRecoveryCopy,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerRecoveryCopy {
+    esp_path: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProducerRecoveryEntries {
+    #[serde(rename = "A")]
+    a: String,
+    #[serde(rename = "B")]
+    b: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3439,7 +3572,79 @@ struct ProducerEspInfo {
     sd_boot: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerEspBudget {
+    installed_bytes: u64,
+    transaction_bytes: u64,
+    required_bytes: u64,
+    partition_bytes: u64,
+}
+
+/// Verifies that declared budgets agree with observable image metadata.
+fn validate_image_artifact_budgets(
+    budgets: &ProducerArtifactBudgets,
+    download_size: u64,
+    uki_size: u64,
+    partitions: &[ProducerPartitionInfo],
+) -> Result<()> {
+    let nonzero = [
+        budgets.root,
+        budgets.verity,
+        budgets.initrd,
+        budgets.uki,
+        budgets.esp,
+        budgets.runtime_closure,
+        budgets.download,
+    ]
+    .into_iter()
+    .all(|value| value > 0);
+    let uki_fits = uki_size <= budgets.uki.saturating_mul(1024 * 1024);
+    let download_fits = download_size <= budgets.download.saturating_mul(1024 * 1024);
+    let esp_holds_two_ukis = budgets.esp >= budgets.uki.saturating_mul(2).saturating_add(32);
+    let partition_contracts_match = partitions.iter().all(|partition| {
+        let expected = match partition.kind.as_str() {
+            "esp" => Some(budgets.esp),
+            "root" => Some(budgets.root),
+            "verity" => Some(budgets.verity),
+            _ => None,
+        };
+        expected.is_none_or(|size| {
+            size == partition.size_mi_b && partition.size_bytes == size.saturating_mul(1024 * 1024)
+        })
+    });
+    if !nonzero || !uki_fits || !download_fits || !esp_holds_two_ukis || !partition_contracts_match
+    {
+        bail!("image-info artifact budgets disagree with the image payload or partition layout");
+    }
+    Ok(())
+}
+
 const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
+const MAX_LOGICAL_DISK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const CANONICAL_GPT_TAIL_BYTES: u64 = 1024 * 1024;
+const MAX_ZSTD_WINDOW_LOG: u32 = 27;
+
+/// Rejects decompression sizes that are unbounded or disagree with GPT geometry.
+fn validate_logical_disk_geometry(
+    virtual_size_bytes: u64,
+    partition_ranges: &[(u64, u64)],
+) -> Result<()> {
+    let partition_end = partition_ranges
+        .last()
+        .map(|range| range.1)
+        .context("image-info must declare at least one partition")?;
+    let expected_virtual_size = partition_end
+        .checked_add(CANONICAL_GPT_TAIL_BYTES)
+        .context("image-info partition geometry overflows")?;
+    if virtual_size_bytes != expected_virtual_size || virtual_size_bytes > MAX_LOGICAL_DISK_BYTES {
+        bail!(
+            "image-info virtualSizeBytes must equal the canonical GPT extent and may not exceed {} bytes",
+            MAX_LOGICAL_DISK_BYTES
+        );
+    }
+    Ok(())
+}
 
 /// Validates one image store output and constructs its signed delivery entry.
 ///
@@ -3550,6 +3755,9 @@ where
     verify_stable_regular_file(&info_path, &info_file, &info_identity)?;
     let producer: ProducerImageInfo = serde_json::from_slice(&info_bytes)
         .with_context(|| format!("parsing {}", info_path.display()))?;
+    if producer.schema_version != 1 {
+        bail!("image-info schemaVersion must be 1");
+    }
     let public_text = std::str::from_utf8(&info_bytes).context("image-info.json is not UTF-8")?;
     if public_text.contains("/nix/store/")
         || public_text.contains("/aos/store/")
@@ -3606,6 +3814,7 @@ where
     {
         bail!("image-info partition layout overlaps");
     }
+    validate_logical_disk_geometry(producer.virtual_size_bytes, &partition_ranges)?;
     if producer
         .esp
         .as_ref()
@@ -3613,12 +3822,12 @@ where
     {
         bail!("image-info ESP UKI path disagrees with the signed UKI identity");
     }
-    let esp_offset_bytes = producer
+    let esp_partition = producer
         .partitions
         .iter()
         .find(|partition| partition.kind == "esp" && partition.filesystem == "vfat")
-        .map(|partition| partition.offset_bytes)
         .context("image-info must identify exactly one vfat ESP partition")?;
+    let esp_offset_bytes = esp_partition.offset_bytes;
     if producer
         .partitions
         .iter()
@@ -3648,6 +3857,29 @@ where
     {
         bail!("image-info MiB summaries disagree with the exact logical layout");
     }
+    validate_image_artifact_budgets(
+        &producer.artifact_budgets_mi_b,
+        producer.byte_size,
+        producer.uki.byte_size,
+        &producer.partitions,
+    )?;
+    if let Some(budget) = &producer.esp_budget {
+        let calculated = budget
+            .installed_bytes
+            .checked_add(budget.transaction_bytes)
+            .and_then(|bytes| bytes.checked_add(32 * 1024 * 1024))
+            .context("image-info ESP budget overflows")?;
+        if budget.installed_bytes == 0
+            || budget.transaction_bytes == 0
+            || budget.required_bytes != calculated
+            || budget.partition_bytes != esp_partition.size_bytes
+            || budget.required_bytes > budget.partition_bytes
+        {
+            bail!("image-info ESP budget disagrees with the exact partition layout");
+        }
+    } else if producer.recovery.is_some() {
+        bail!("recovery image-info must include the ESP transaction budget");
+    }
 
     let mut entry_count = 0_u8;
     let mut auxiliary_names = HashSet::new();
@@ -3674,6 +3906,12 @@ where
                     | "root.roothash.p7s"
                     | "uki-a.efi"
                     | "uki-b.efi"
+                    | "recovery-a.efi"
+                    | "recovery-b.efi"
+                    | "recovery-a.conf"
+                    | "recovery-b.conf"
+                    | "recovery-bundle.json"
+                    | "recovery-bundle.json.sig"
             )
         });
         if !is_primary && !is_auxiliary {
@@ -3696,6 +3934,18 @@ where
     let has_uki_b = auxiliary_names.contains(std::ffi::OsStr::new("uki-b.efi"));
     if has_uki_a != has_uki_b {
         bail!("A/B image output must carry both uki-a.efi and uki-b.efi");
+    }
+    let recovery_count = [
+        "recovery-a.efi",
+        "recovery-b.efi",
+        "recovery-a.conf",
+        "recovery-b.conf",
+    ]
+    .iter()
+    .filter(|name| auxiliary_names.contains(std::ffi::OsStr::new(name)))
+    .count();
+    if recovery_count != 0 && recovery_count != 4 {
+        bail!("recovery image output must carry both UKIs and both loader entries");
     }
     if !auxiliary_names.is_empty() && !auxiliary_names.contains(std::ffi::OsStr::new("root.img")) {
         bail!("runtime-update image output must carry root.img");
@@ -3729,9 +3979,6 @@ where
     if producer.sha256 != actual_sha256 {
         bail!("image-info sha256 does not match the disk file");
     }
-    if format == "raw" && producer.logical_disk_sha256 != actual_sha256 {
-        bail!("raw image SHA-256 must equal its canonical logical disk SHA-256");
-    }
     let expected_key = immutable_image_object_key(&actual_sha256, &producer.filename);
     if producer.object_key != expected_key {
         bail!("image-info objectKey is not the canonical immutable key");
@@ -3764,6 +4011,7 @@ where
         "kernelParams": &producer.kernel_params,
         "partitions": &producer.partitions,
         "uki": &producer.uki,
+        "recovery": &producer.recovery,
     });
     let logical_image_id = sha256_hex(&serde_json::to_vec(&logical_identity)?);
     let producer_uki_signed = producer.uki.signed;
@@ -3783,6 +4031,8 @@ where
         bail!("image-info UKI measured state does not match its PCR-11 policy");
     }
     sb.ukis = derive_slot_uki_facts(root, db_cert)?;
+    sb.recovery_ukis =
+        derive_recovery_uki_facts(root, producer.recovery.as_ref(), &producer.version, db_cert)?;
     if let Some(slot_a) = sb.ukis.iter().find(|uki| uki.slot == UkiSlot::A)
         && (slot_a.sb_signer_cert_sha256 != sb.signer_cert_sha256
             || slot_a.sbat != sb.sbat
@@ -3795,6 +4045,38 @@ where
         serde_json::to_vec(&producer).context("serializing canonical public image-info.json")?;
     canonical_info_bytes.push(b'\n');
     let info_sha256 = sha256_hex(&canonical_info_bytes);
+    sb.recovery_bundle = derive_recovery_bundle_manifest(
+        root,
+        producer.recovery.as_ref(),
+        producer.module_abi,
+        &producer.version,
+        &producer.architecture,
+        &producer.platform,
+    )?;
+    if let Some(expected_bundle) = &sb.recovery_bundle {
+        let bundle_path = root.join("recovery-bundle.json");
+        let signature_path = root.join("recovery-bundle.json.sig");
+        let bundle_metadata = fs::symlink_metadata(&bundle_path)?;
+        let signature_metadata = fs::symlink_metadata(&signature_path)?;
+        if !bundle_metadata.file_type().is_file()
+            || bundle_metadata.len() == 0
+            || bundle_metadata.len() > 256 * 1024
+            || !signature_metadata.file_type().is_file()
+            || signature_metadata.len() == 0
+            || signature_metadata.len() > 16 * 1024
+        {
+            bail!("recovery bundle manifest or signature is outside its size bound");
+        }
+        let published_bundle: RecoveryBundleManifest =
+            serde_json::from_slice(&fs::read(&bundle_path)?)
+                .context("parsing recovery-bundle.json")?;
+        if &published_bundle != expected_bundle {
+            bail!("recovery-bundle.json disagrees with the authenticated image components");
+        }
+        let db_cert =
+            db_cert.context("publishing a recovery bundle requires the registry db certificate")?;
+        verify_detached_db_signature(&bundle_path, &signature_path, db_cert)?;
+    }
     let mut canonical_info_file =
         tempfile::tempfile().context("creating pinned canonical image-info.json")?;
     canonical_info_file
@@ -3879,6 +4161,7 @@ where
         },
         esp_offset_bytes,
         root_range,
+        virtual_size_bytes: producer.virtual_size_bytes,
     })
 }
 
@@ -4214,11 +4497,51 @@ fn inheritable_procfd(file: &fs::File, fallback: &Path) -> Result<(fs::File, Pat
 /// Proves that the separately verified UKI is byte-identical to the UKI
 /// embedded in the disk image at the signed ESP path.
 #[cfg(target_os = "linux")]
+fn decompress_raw_disk(
+    source: impl std::io::Read,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+) -> Result<()> {
+    let mut decoder =
+        zstd::stream::read::Decoder::new(source).context("opening compressed raw disk")?;
+    decoder
+        .window_log_max(MAX_ZSTD_WINDOW_LOG)
+        .context("bounding compressed raw disk decode window")?;
+    let copied = std::io::copy(
+        &mut decoder.take(expected_size.saturating_add(1)),
+        destination,
+    )
+    .context("decompressing canonical raw disk")?;
+    if copied != expected_size {
+        bail!("compressed raw image expands to {copied} bytes, expected {expected_size}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn decompress_pinned_raw_disk(
+    source: &fs::File,
+    destination: &mut impl std::io::Write,
+    expected_size: u64,
+) -> Result<()> {
+    let mut disk = source
+        .try_clone()
+        .context("duplicating compressed raw disk")?;
+    // File::try_clone shares the open-file-description offset on Unix. Image
+    // hashing intentionally leaves that offset at EOF, so every independent
+    // consumer must establish its own starting position before reading.
+    disk.seek(SeekFrom::Start(0))?;
+    decompress_raw_disk(disk, destination, expected_size)
+}
+
+#[cfg(target_os = "linux")]
 fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
     let mut raw = tempfile::tempfile().context("creating pinned raw-image verification file")?;
     let raw_input;
     let raw_path = if image.format == "raw" {
-        let (file, path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        decompress_pinned_raw_disk(&image.disk.file, &mut raw, image.virtual_size_bytes)?;
+        raw.seek(SeekFrom::Start(0))?;
+        let (file, path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
         raw_input = Some(file);
         path
     } else {
@@ -4249,16 +4572,7 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
         path
     };
 
-    let mut logical_disk = if image.format == "raw" {
-        image
-            .disk
-            .file
-            .try_clone()
-            .context("duplicating canonical raw disk")?
-    } else {
-        raw.try_clone()
-            .context("duplicating converted canonical raw disk")?
-    };
+    let mut logical_disk = raw.try_clone().context("duplicating canonical raw disk")?;
     let logical_disk_sha256 = sha256_open_file(&mut logical_disk, Path::new("<logical disk>"))?;
     if logical_disk_sha256 != image.delivery.logical_disk_sha256 {
         bail!("image encoding does not materialize the signed canonical logical disk");
@@ -4524,7 +4838,7 @@ fn sha256_open_file(file: &mut fs::File, path: &Path) -> Result<String> {
 /// Builds a Secure Boot helper command resolved only through the wrapper's
 /// hermetic AOS runtime `PATH`.
 ///
-/// `pkgs.aos` includes AOS-built `sbsigntools`, `binutils`, and `systemd` in
+/// `pkgs.aos` includes AOS-built `sbsigntools` and `systemd` in
 /// that path. Internal verification must never consult `AOS_HOST_PATH`.
 fn sb_tool_command(program: &str) -> Command {
     Command::new(program)
@@ -4571,7 +4885,7 @@ fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
     let bytes = fs::read(uki).with_context(|| format!("reading {}", uki.display()))?;
     let leaf = leaf_cert_from_pe(&bytes)
         .with_context(|| format!("extracting signer cert from {}", uki.display()))?;
-    Ok(Some(sha256_hex(leaf)))
+    Ok(leaf.map(sha256_hex))
 }
 
 /// Return the first (leaf) X.509 certificate DER bytes from a signed PE's
@@ -4586,8 +4900,10 @@ fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
 ///
 /// Returns an error when the PE headers, the security directory, or the
 /// PKCS#7 certificate set cannot be parsed.
-fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
-    let (cert_off, cert_len) = pe_security_dir(pe)?;
+fn leaf_cert_from_pe(pe: &[u8]) -> Result<Option<&[u8]>> {
+    let Some((cert_off, cert_len)) = pe_security_dir(pe)? else {
+        return Ok(None);
+    };
     let cert_table = pe
         .get(cert_off..cert_off + cert_len)
         .ok_or_else(|| anyhow::anyhow!("security directory extends past end of file"))?;
@@ -4595,7 +4911,7 @@ fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
     let pkcs7 = cert_table
         .get(8..)
         .ok_or_else(|| anyhow::anyhow!("WIN_CERTIFICATE blob too short"))?;
-    first_certificate_der(pkcs7)
+    first_certificate_der(pkcs7).map(Some)
 }
 
 /// Parse the PE optional-header data directory entry for the
@@ -4605,9 +4921,8 @@ fn leaf_cert_from_pe(pe: &[u8]) -> Result<&[u8]> {
 /// # Errors
 ///
 /// Returns an error when the DOS/PE signatures, the optional-header magic,
-/// or the data directory cannot be read, or when no security directory is
-/// present.
-fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
+/// or the data directory cannot be read. An unsigned PE returns `None`.
+fn pe_security_dir(pe: &[u8]) -> Result<Option<(usize, usize)>> {
     let read_u16 = |off: usize| -> Option<u16> {
         pe.get(off..off + 2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -4624,24 +4939,50 @@ fn pe_security_dir(pe: &[u8]) -> Result<(usize, usize)> {
     if read_u32(pe_off) != Some(0x0000_4550) {
         bail!("missing PE signature");
     }
-    // COFF header is 20 bytes; the optional header magic follows.
-    let opt_off = pe_off + 24;
+    let coff_off = pe_off
+        .checked_add(4)
+        .context("PE header offset overflowed")?;
+    let optional_size = read_u16(coff_off + 16).context("reading optional-header size")? as usize;
+    // COFF header is 20 bytes; the optional header follows.
+    let opt_off = coff_off
+        .checked_add(20)
+        .context("optional-header offset overflowed")?;
+    let opt_end = opt_off
+        .checked_add(optional_size)
+        .context("optional-header size overflowed")?;
+    if opt_end > pe.len() {
+        bail!("optional header extends past end of PE image");
+    }
     let magic = read_u16(opt_off).context("reading optional-header magic")?;
     // The data directory array starts after the windows-specific fields:
     // 96 bytes for PE32 (0x10b), 112 bytes for PE32+ (0x20b).
-    let dir_off = match magic {
-        0x10b => opt_off + 96,
-        0x20b => opt_off + 112,
+    let (dir_off, count_off) = match magic {
+        0x10b => (opt_off + 96, opt_off + 92),
+        0x20b => (opt_off + 112, opt_off + 108),
         other => bail!("unexpected optional-header magic {other:#x}"),
     };
+    if count_off.checked_add(4).is_none_or(|end| end > opt_end) {
+        bail!("data-directory count is outside the declared optional header");
+    }
+    let directory_count =
+        read_u32(count_off).context("reading optional-header data-directory count")?;
+    if directory_count <= 4 {
+        return Ok(None);
+    }
     // Security directory is entry index 4 (8 bytes each: RVA/offset + size).
     let entry = dir_off + 4 * 8;
+    if entry.checked_add(8).is_none_or(|end| end > opt_end) {
+        bail!("security directory is outside the declared optional header");
+    }
     let offset = read_u32(entry).context("reading security dir offset")? as usize;
     let size = read_u32(entry + 4).context("reading security dir size")? as usize;
-    if offset == 0 || size == 0 {
-        bail!("PE has no Authenticode certificate table");
+    if offset == 0 && size == 0 {
+        return Ok(None);
     }
-    Ok((offset, size))
+    if offset == 0 || size == 0 {
+        bail!("PE security directory has an incomplete certificate table");
+    }
+    Ok(Some((offset, size)))
 }
 
 /// Walk a PKCS#7 `SignedData` DER blob and return the *signer* certificate's
@@ -4862,46 +5203,22 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Read the SBAT component/generation table from a UKI's `.sbat` PE section.
 ///
-/// Dumps the section with `objcopy -O binary --only-section=.sbat` and
-/// parses the CSV: each non-empty, non-comment line is `component,generation`
+/// Reads the section from the PE section table and parses the CSV: each
+/// non-empty, non-comment line is `component,generation`
 /// (extra columns describing the upstream are ignored). Returns an empty
 /// vector when the binary carries no `.sbat` section.
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` cannot be spawned or fails for a reason
-/// other than the section being absent, the dumped section is not valid
-/// UTF-8, or a generation field is not a non-negative integer.
+/// Returns an error if the PE section table is malformed, the section is not
+/// valid UTF-8, or a generation field is not a non-negative integer.
 fn extract_sbat_entries(uki: &Path) -> Result<Vec<SbatEntry>> {
-    let tmp = tempfile::Builder::new()
-        .prefix("aos-sbat-")
-        .tempfile()
-        .context("creating temp file for .sbat dump")?;
-    let output = sb_tool_command("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg("--only-section=.sbat")
-        .arg(uki)
-        .arg(tmp.path())
-        .output()
-        .with_context(|| format!("running objcopy on {}", uki.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // A missing section is not an error for our purposes.
-        if stderr.contains("can't dump section")
-            || stderr.contains("section '.sbat'")
-            || stderr.contains("no symbols")
-        {
-            return Ok(Vec::new());
-        }
-        bail!("objcopy on {} failed: {}", uki.display(), stderr.trim());
-    }
-    let raw = fs::read(tmp.path()).context("reading dumped .sbat section")?;
-    if raw.is_empty() {
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let Some(raw) = pe_section(&pe, ".sbat")? else {
         return Ok(Vec::new());
-    }
-    let text = String::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
-    parse_sbat_csv(&text)
+    };
+    let text = std::str::from_utf8(raw).context("decoding .sbat section as UTF-8")?;
+    parse_sbat_csv(text)
 }
 
 /// Parse the CSV body of a `.sbat` section into [`SbatEntry`] records.
@@ -4938,55 +5255,100 @@ fn parse_sbat_csv(text: &str) -> Result<Vec<SbatEntry>> {
     Ok(entries)
 }
 
-/// Dump a single PE section of `uki` to a fresh temp file with `objcopy`.
+/// Returns a named PE section's exact on-disk bytes.
 ///
-/// Returns the temp file holding the section bytes, or `Ok(None)` when the
-/// section is absent (or empty). The returned handle keeps the file alive;
-/// drop it to remove the temp file.
+/// PE section names are fixed-width eight-byte fields. UKI section names fit
+/// directly in that field, so string-table indirection is deliberately not
+/// accepted. Empty sections are treated as absent.
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` cannot be spawned, or fails for a reason
-/// other than the section being absent.
-fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTempFile>> {
-    let tmp = tempfile::Builder::new()
+/// Returns an error if the PE/COFF headers, section table, or selected raw-data
+/// range is malformed, or if the image contains duplicate selected sections.
+fn pe_section<'a>(pe: &'a [u8], section: &str) -> Result<Option<&'a [u8]>> {
+    if section.is_empty() || section.len() > 8 || !section.is_ascii() {
+        bail!("PE section name must contain one to eight ASCII bytes");
+    }
+    let read_u16 = |off: usize| -> Option<u16> {
+        pe.get(off..off + 2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        pe.get(off..off + 4)
+            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+
+    if read_u16(0) != Some(0x5a4d) {
+        bail!("not a PE image (missing MZ signature)");
+    }
+    let pe_off = read_u32(0x3c).context("reading e_lfanew")? as usize;
+    if read_u32(pe_off) != Some(0x0000_4550) {
+        bail!("missing PE signature");
+    }
+    let coff_off = pe_off
+        .checked_add(4)
+        .context("PE header offset overflowed")?;
+    let section_count = read_u16(coff_off + 2).context("reading PE section count")? as usize;
+    let optional_size = read_u16(coff_off + 16).context("reading optional-header size")? as usize;
+    let section_table = coff_off
+        .checked_add(20)
+        .and_then(|offset| offset.checked_add(optional_size))
+        .context("PE section-table offset overflowed")?;
+    let section_table_end = section_count
+        .checked_mul(40)
+        .and_then(|size| section_table.checked_add(size))
+        .context("PE section-table size overflowed")?;
+    if section_table_end > pe.len() {
+        bail!("PE section table extends past end of image");
+    }
+
+    let mut matched = false;
+    let mut selected = None;
+    for index in 0..section_count {
+        let header = section_table + index * 40;
+        let raw_name = &pe[header..header + 8];
+        let name_len = raw_name.iter().position(|byte| *byte == 0).unwrap_or(8);
+        if &raw_name[..name_len] != section.as_bytes() {
+            continue;
+        }
+        if matched {
+            bail!("PE image contains duplicate {section} sections");
+        }
+        matched = true;
+        let virtual_size =
+            read_u32(header + 8).context("reading PE section virtual size")? as usize;
+        let raw_size = read_u32(header + 16).context("reading PE section size")? as usize;
+        let raw_offset = read_u32(header + 20).context("reading PE section offset")? as usize;
+        // systemd-stub measures only bytes materialized in the PE file. Its
+        // loader and ukify both define that range as the smaller of the
+        // section's virtual and raw sizes.
+        let section_size = virtual_size.min(raw_size);
+        if section_size == 0 {
+            continue;
+        }
+        let raw_end = raw_offset
+            .checked_add(section_size)
+            .context("PE section range overflowed")?;
+        selected = Some(
+            pe.get(raw_offset..raw_end)
+                .with_context(|| format!("PE {section} section extends past end of image"))?,
+        );
+    }
+    Ok(selected)
+}
+
+/// Copies a selected PE section to a temporary file for `systemd-measure`.
+fn dump_pe_section(pe: &[u8], section: &str) -> Result<Option<tempfile::NamedTempFile>> {
+    let Some(bytes) = pe_section(pe, section)? else {
+        return Ok(None);
+    };
+    let mut tmp = tempfile::Builder::new()
         .prefix("aos-uki-section-")
         .tempfile()
         .with_context(|| format!("creating temp file for {section} dump"))?;
-    let output = sb_tool_command("objcopy")
-        .arg("-O")
-        .arg("binary")
-        .arg(format!("--only-section={section}"))
-        .arg(uki)
-        .arg(tmp.path())
-        .output()
-        .with_context(|| {
-            format!(
-                "running objcopy --only-section={section} on {}",
-                uki.display()
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("can't dump section")
-            || stderr.contains(section)
-            || stderr.contains("no symbols")
-        {
-            return Ok(None);
-        }
-        bail!(
-            "objcopy --only-section={section} on {} failed: {}",
-            uki.display(),
-            stderr.trim()
-        );
-    }
-    // objcopy emits an empty file for an absent section rather than failing.
-    let len = fs::metadata(tmp.path())
-        .with_context(|| format!("stat-ing dumped {section} section"))?
-        .len();
-    if len == 0 {
-        return Ok(None);
-    }
+    tmp.as_file_mut()
+        .write_all(bytes)
+        .with_context(|| format!("writing temporary {section} section"))?;
     Ok(Some(tmp))
 }
 
@@ -5022,8 +5384,8 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 ///
 /// # Errors
 ///
-/// Returns an error if `objcopy` or `systemd-measure` is found but exits
-/// non-zero, or its output cannot be parsed into a PCR-11 digest.
+/// Returns an error if the UKI section table is malformed, `systemd-measure`
+/// exits non-zero, or its output cannot be parsed into a PCR-11 digest.
 pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
     // Section name -> systemd-measure flag, in sd-stub measurement order.
     // (systemd-measure applies its own canonical order internally, so the
@@ -5046,8 +5408,9 @@ pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
     // Hold the section temp files alive until systemd-measure has run.
     let mut held = Vec::new();
     let mut any = false;
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
     for (section, flag) in SECTIONS {
-        if let Some(tmp) = dump_pe_section(uki, section)? {
+        if let Some(tmp) = dump_pe_section(&pe, section)? {
             cmd.arg(format!("{flag}={}", tmp.path().display()));
             held.push(tmp);
             any = true;
@@ -5211,6 +5574,260 @@ fn derive_slot_uki_facts(
     Ok(entries)
 }
 
+fn derive_recovery_uki_facts(
+    image_store: &Path,
+    recovery: Option<&ProducerRecoveryInfo>,
+    release: &str,
+    db_cert: Option<&Path>,
+) -> Result<Vec<RecoveryUkiEntry>> {
+    let paths = [
+        image_store.join("recovery-a.efi"),
+        image_store.join("recovery-b.efi"),
+        image_store.join("recovery-a.conf"),
+        image_store.join("recovery-b.conf"),
+    ];
+    let present = paths.iter().filter(|path| path.is_file()).count();
+    let Some(recovery) = recovery else {
+        if present != 0 {
+            bail!("recovery artifacts require recovery metadata in image-info.json");
+        }
+        return Ok(Vec::new());
+    };
+    if present != paths.len() {
+        bail!("recovery image output must carry two UKIs and two loader entries");
+    }
+    if recovery.abi == 0 || recovery.release != release {
+        bail!("recovery ABI or release identity disagrees with the image release");
+    }
+    aos_boot_identity::parse_recovery(&recovery.command_line)
+        .context("recovery image-info command line is not canonical")?;
+
+    let copies = [
+        (
+            UkiSlot::A,
+            "A",
+            "recovery-a.efi",
+            "recovery-a.conf",
+            "EFI/AOS/recovery-a.efi",
+            "loader/entries/recovery-a.conf",
+            &recovery.copies.a,
+            recovery.entries.a.as_str(),
+        ),
+        (
+            UkiSlot::B,
+            "B",
+            "recovery-b.efi",
+            "recovery-b.conf",
+            "EFI/AOS/recovery-b.efi",
+            "loader/entries/recovery-b.conf",
+            &recovery.copies.b,
+            recovery.entries.b.as_str(),
+        ),
+    ];
+    let mut entries = Vec::with_capacity(copies.len());
+    for (copy, copy_name, uki_name, entry_name, esp_path, entry_path, metadata, recorded_entry) in
+        copies
+    {
+        if metadata.esp_path != esp_path || recorded_entry != entry_path {
+            bail!("recovery copy {copy_name} uses a noncanonical ESP path");
+        }
+        let uki = image_store.join(uki_name);
+        let uki_metadata = fs::symlink_metadata(&uki)?;
+        if !uki_metadata.file_type().is_file() || uki_metadata.len() == 0 {
+            bail!(
+                "recovery UKI {} is not a nonempty regular file",
+                uki.display()
+            );
+        }
+        let mut uki_file = fs::File::open(&uki)?;
+        let digest = sha256_open_file(&mut uki_file, &uki)?;
+        if metadata.byte_size != uki_metadata.len() || metadata.sha256 != digest {
+            bail!("recovery copy {copy_name} size or digest disagrees with image-info.json");
+        }
+
+        let facts = derive_sb_facts(&uki, db_cert)?;
+        let signer = facts
+            .signer_cert_sha256
+            .context("recovery UKIs must carry a db-verifiable Authenticode signature")?;
+        let cmdline = read_bounded_pe_text(&uki, ".cmdline", 64 * 1024)?;
+        if cmdline != recovery.command_line {
+            bail!("recovery copy {copy_name} command line disagrees with image-info.json");
+        }
+        aos_boot_identity::parse_recovery(&cmdline)
+            .with_context(|| format!("recovery copy {copy_name} command line is not canonical"))?;
+        let uki_bytes = fs::read(&uki)?;
+        if dump_pe_section(&uki_bytes, ".pcrsig")?.is_some_and(|file| {
+            file.as_file()
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() != 0)
+        }) {
+            bail!("recovery copy {copy_name} carries forbidden normal PCR authorization");
+        }
+        let os_release = read_bounded_pe_text(&uki, ".osrel", 64 * 1024)?;
+        validate_recovery_os_release(&os_release, copy_name, &recovery.release, recovery.abi)?;
+
+        let entry = image_store.join(entry_name);
+        let entry_metadata = fs::symlink_metadata(&entry)?;
+        if !entry_metadata.file_type().is_file() || entry_metadata.len() > 4096 {
+            bail!("recovery loader entry {entry_name} is not a bounded regular file");
+        }
+        let expected_entry = format!(
+            "title AOS Recovery {copy_name} ({})\nefi /{esp_path}\n",
+            recovery.release
+        );
+        if fs::read_to_string(&entry)? != expected_entry {
+            bail!("recovery loader entry {entry_name} is not canonical");
+        }
+
+        entries.push(RecoveryUkiEntry {
+            copy,
+            path: uki_name.to_string(),
+            entry_path: entry_name.to_string(),
+            byte_size: metadata.byte_size,
+            sha256: digest,
+            release: recovery.release.clone(),
+            recovery_abi: recovery.abi,
+            sb_signer_cert_sha256: signer,
+            sbat: facts.sbat,
+        });
+    }
+    Ok(entries)
+}
+
+fn read_bounded_pe_text(uki: &Path, section: &str, maximum: u64) -> Result<String> {
+    let bytes = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let extracted = dump_pe_section(&bytes, section)?
+        .with_context(|| format!("recovery UKI {} has no {section} section", uki.display()))?;
+    let metadata = extracted.as_file().metadata()?;
+    if metadata.len() == 0 || metadata.len() > maximum {
+        bail!("recovery UKI {section} section is outside its size bound");
+    }
+    let bytes = fs::read(extracted.path())?;
+    let text = String::from_utf8(bytes)
+        .with_context(|| format!("recovery UKI {section} section is not UTF-8"))?;
+    Ok(text.trim_end_matches('\0').to_string())
+}
+
+fn validate_recovery_os_release(
+    os_release: &str,
+    copy: &str,
+    release: &str,
+    recovery_abi: u32,
+) -> Result<()> {
+    let expected = [
+        ("AOS_RELEASE_ID", release.to_string()),
+        ("AOS_RECOVERY_ABI", recovery_abi.to_string()),
+        ("AOS_RECOVERY_COPY", copy.to_string()),
+    ];
+    for (key, expected_value) in expected {
+        let values = os_release
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .filter_map(|(found, value)| (found == key).then_some(value.trim_matches('"')))
+            .collect::<Vec<_>>();
+        if values.as_slice() != [expected_value.as_str()] {
+            bail!("recovery signed os-release has invalid {key}");
+        }
+    }
+    Ok(())
+}
+
+fn derive_recovery_bundle_manifest(
+    image_store: &Path,
+    recovery: Option<&ProducerRecoveryInfo>,
+    module_abi: Option<u32>,
+    release: &str,
+    architecture: &str,
+    platform: &str,
+) -> Result<Option<RecoveryBundleManifest>> {
+    let Some(recovery) = recovery else {
+        return Ok(None);
+    };
+    let module_abi = module_abi
+        .filter(|abi| *abi != 0)
+        .context("recovery image-info.json must carry a positive moduleAbi")?;
+    let specifications = [
+        (RecoveryBundleComponentId::RootImage, "root.img"),
+        (RecoveryBundleComponentId::RootVerity, "root.verity"),
+        (RecoveryBundleComponentId::RootHash, "root.roothash"),
+        (RecoveryBundleComponentId::NormalUkiA, "uki-a.efi"),
+        (RecoveryBundleComponentId::NormalUkiB, "uki-b.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiA, "recovery-a.efi"),
+        (RecoveryBundleComponentId::RecoveryUkiB, "recovery-b.efi"),
+        (RecoveryBundleComponentId::RecoveryEntryA, "recovery-a.conf"),
+        (RecoveryBundleComponentId::RecoveryEntryB, "recovery-b.conf"),
+        (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
+    ];
+    let mut components = Vec::with_capacity(specifications.len());
+    for (id, path) in specifications {
+        let artifact = image_store.join(path);
+        let metadata = fs::symlink_metadata(&artifact)
+            .with_context(|| format!("reading recovery bundle component {path}"))?;
+        if !metadata.file_type().is_file() || metadata.len() == 0 {
+            bail!("recovery bundle component {path} is not a nonempty regular file");
+        }
+        let mut file = fs::File::open(&artifact)?;
+        let digest = sha256_open_file(&mut file, &artifact)?;
+        components.push(RecoveryBundleComponent {
+            id,
+            path: path.to_string(),
+            byte_size: metadata.len(),
+            sha256: digest,
+        });
+    }
+    Ok(Some(RecoveryBundleManifest {
+        schema: "aos.recovery-bundle/v1".to_string(),
+        release: release.to_string(),
+        architecture: architecture.to_string(),
+        platform: platform.to_string(),
+        module_abi,
+        recovery_abi: recovery.abi,
+        components,
+    }))
+}
+
+pub(crate) fn verify_detached_db_signature(
+    manifest: &Path,
+    signature: &Path,
+    db_cert: &Path,
+) -> Result<()> {
+    let public_key =
+        tempfile::NamedTempFile::new().context("creating temporary recovery bundle public key")?;
+    let output = Command::new("openssl")
+        .args(["x509", "-pubkey", "-noout", "-in"])
+        .arg(db_cert)
+        .output()
+        .context("extracting the recovery bundle verification key")?;
+    if !output.status.success() {
+        bail!(
+            "extracting recovery bundle verification key failed: {}",
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    fs::write(public_key.path(), output.stdout)?;
+    let output = Command::new("openssl")
+        .args(["dgst", "-sha256", "-verify"])
+        .arg(public_key.path())
+        .arg("-signature")
+        .arg(signature)
+        .arg(manifest)
+        .output()
+        .context("verifying the recovery bundle manifest signature")?;
+    if !output.status.success() {
+        bail!(
+            "recovery bundle manifest signature rejected: {}",
+            combine_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn find_ukis_in_store_path(store_path: &str) -> Result<Vec<(Option<UkiSlot>, PathBuf)>> {
     let root = Path::new(store_path);
@@ -5243,10 +5860,10 @@ fn find_ukis_in_store_path(store_path: &str) -> Result<Vec<(Option<UkiSlot>, Pat
 }
 
 fn validate_uki_slot_cmdline(uki: &Path, slot: UkiSlot) -> Result<()> {
-    let section = dump_pe_section(uki, ".cmdline")?
+    let pe = fs::read(uki).with_context(|| format!("reading UKI {}", uki.display()))?;
+    let section = pe_section(&pe, ".cmdline")?
         .with_context(|| format!("A/B UKI {} has no measured .cmdline section", uki.display()))?;
-    let bytes = std::fs::read(section.path())?;
-    let cmdline = String::from_utf8(bytes)
+    let cmdline = std::str::from_utf8(section)
         .with_context(|| format!("UKI {} .cmdline is not UTF-8", uki.display()))?;
     let cmdline = cmdline.trim_end_matches('\0');
     let suffix = match slot {
@@ -5301,6 +5918,8 @@ fn derive_sb_facts(uki: &Path, db_cert: Option<&Path>) -> Result<SbFacts> {
         sbat: extract_sbat_entries(uki)?,
         expected_pcr11: extract_expected_pcr11(uki)?,
         ukis: Vec::new(),
+        recovery_ukis: Vec::new(),
+        recovery_bundle: None,
     })
 }
 
@@ -7425,12 +8044,76 @@ fn package_platform_table(
                             .context("serializing slot-specific UKI facts")?,
                     );
                 }
+                if !image.sb.recovery_ukis.is_empty() {
+                    entry.insert(
+                        "recovery_ukis".into(),
+                        toml::Value::try_from(&image.sb.recovery_ukis)
+                            .context("serializing recovery UKI facts")?,
+                    );
+                }
+                if let Some(bundle) = &image.sb.recovery_bundle {
+                    entry.insert(
+                        "recovery_bundle".into(),
+                        toml::Value::try_from(bundle)
+                            .context("serializing recovery bundle manifest")?,
+                    );
+                }
+                let root_image = image.directory.path.join("root.img");
+                let root_verity = image.directory.path.join("root.verity");
+                let root_hash = image.directory.path.join("root.roothash");
+                let root_hash_sig = image.directory.path.join("root.roothash.p7s");
+                let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
+                    .iter()
+                    .filter(|path| path.is_file())
+                    .count();
+                if verity_count != 0 && verity_count != 4 {
+                    bail!("published image has an incomplete dm-verity artifact set");
+                }
+                if verity_count == 4 {
+                    let hash = fs::read_to_string(&root_hash)?;
+                    let hash = hash.trim();
+                    if hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        bail!("published image has a malformed root.roothash");
+                    }
+                    entry.insert("root_image".into(), toml::Value::String("root.img".into()));
+                    entry.insert(
+                        "root_verity".into(),
+                        toml::Value::String("root.verity".into()),
+                    );
+                    entry.insert("root_hash".into(), toml::Value::String(hash.to_string()));
+                    entry.insert(
+                        "root_hash_sig".into(),
+                        toml::Value::String("root.roothash.p7s".into()),
+                    );
+                }
                 Ok(toml::Value::Table(entry))
             })
             .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
         if image_infos.iter().any(|image| !image.sb.ukis.is_empty()) {
             let feature = toml::Value::String(FEATURE_UKI_SLOTS_V1.to_string());
+            let features = table
+                .entry("requires-features")
+                .or_insert_with(|| toml::Value::Array(Vec::new()))
+                .as_array_mut()
+                .context("platform requires-features metadata is not an array")?;
+            if !features.contains(&feature) {
+                features.push(feature);
+            }
+            table.insert(
+                "min-format".into(),
+                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+            );
+        }
+        if image_infos
+            .iter()
+            .any(|image| !image.sb.recovery_ukis.is_empty())
+        {
+            let feature = toml::Value::String(FEATURE_RECOVERY_UKIS_V1.to_string());
             let features = table
                 .entry("requires-features")
                 .or_insert_with(|| toml::Value::Array(Vec::new()))
@@ -10483,6 +11166,10 @@ pub async fn run_origin(
                 );
             }
             let dir = config.scope.registries_path().join(&registry_name);
+            // Ref metadata and loose-object canonicalization form one
+            // publication snapshot. Keep registry writers out until every
+            // destination has consumed that snapshot.
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
             refresh_registry_object_store(&dir)
                 .context("refreshing static git origin before upload")?;
             let auth =
@@ -12976,6 +13663,7 @@ pub struct ReleaseStorePublish {
     pub config: ApmConfig,
     pub store_path: String,
     pub name: Option<String>,
+    pub version: Option<String>,
     pub platform: Option<String>,
     pub description: Option<String>,
     pub homepage: Option<String>,
@@ -13078,6 +13766,7 @@ pub async fn release(
     semver: &str,
     store_path: Option<&str>,
     name: Option<&str>,
+    version_override: Option<&str>,
     platform: Option<&str>,
     description: Option<&str>,
     homepage: Option<&str>,
@@ -13110,6 +13799,8 @@ pub async fn release(
     jobs: Option<usize>,
     printer: &Printer,
 ) -> Result<()> {
+    validate_release_publish_metadata(store_path, description, license, maintainer)?;
+
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
     if let Some(store_path) = store_path {
@@ -13136,6 +13827,7 @@ pub async fn release(
         config: config.clone(),
         store_path: store_path.to_string(),
         name: name.map(ToString::to_string),
+        version: version_override.map(ToString::to_string),
         platform: platform.map(ToString::to_string),
         description: description.map(ToString::to_string),
         homepage: homepage.map(ToString::to_string),
@@ -13183,11 +13875,9 @@ pub async fn release(
 /// Publish a release's `--store-path` into the registry tree.
 ///
 /// The published package version is **not** the release tag. Like a plain
-/// `apr publish`, the version is taken from the store-path basename (the
-/// package derivation's `version`), so a registry release tag and the package
-/// versions it snapshots are independent. The `version_override` argument to
-/// [`publish`] is therefore left `None`; `--store-path` carries the version
-/// already.
+/// `apr publish`, it defaults to the store-path basename and can be overridden
+/// explicitly, so a registry release tag and the package versions it snapshots
+/// remain independent.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
     signing_key: &str,
@@ -13197,7 +13887,7 @@ async fn publish_release_store_path(
         &publish_opts.config,
         &publish_opts.store_path,
         publish_opts.name.as_deref(),
-        None,
+        publish_opts.version.as_deref(),
         publish_opts.platform.as_deref(),
         publish_opts.description.as_deref(),
         publish_opts.homepage.as_deref(),
@@ -14548,6 +15238,95 @@ mod tests {
             .expect("sd-boot counting filename");
     }
 
+    #[test]
+    fn image_artifact_budgets_match_payload_and_partition_contracts() {
+        let partitions = [
+            ProducerPartitionInfo {
+                number: 1,
+                label: "ESP".into(),
+                kind: "esp".into(),
+                filesystem: "vfat".into(),
+                size_mi_b: 384,
+                offset_bytes: 0,
+                size_bytes: 384 * 1024 * 1024,
+            },
+            ProducerPartitionInfo {
+                number: 2,
+                label: "root-a".into(),
+                kind: "root".into(),
+                filesystem: "erofs".into(),
+                size_mi_b: 512,
+                offset_bytes: 384 * 1024 * 1024,
+                size_bytes: 512 * 1024 * 1024,
+            },
+            ProducerPartitionInfo {
+                number: 3,
+                label: "root-a-hash".into(),
+                kind: "verity".into(),
+                filesystem: "dm-verity".into(),
+                size_mi_b: 16,
+                offset_bytes: 896 * 1024 * 1024,
+                size_bytes: 16 * 1024 * 1024,
+            },
+        ];
+        let mut budgets = ProducerArtifactBudgets {
+            root: 512,
+            verity: 16,
+            initrd: 128,
+            uki: 160,
+            esp: 384,
+            runtime_closure: 768,
+            download: 640,
+        };
+
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_ok()
+        );
+
+        budgets.root = 511;
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_err()
+        );
+
+        budgets.root = 512;
+        budgets.download = 589;
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn logical_disk_geometry_bounds_decompression_before_materialization() {
+        let mib = 1024 * 1024;
+        assert!(validate_logical_disk_geometry(36 * mib, &[(mib, 35 * mib)]).is_ok());
+        assert!(validate_logical_disk_geometry(35 * mib, &[(mib, 35 * mib)]).is_err());
+        assert!(
+            validate_logical_disk_geometry(
+                MAX_LOGICAL_DISK_BYTES + mib,
+                &[(mib, MAX_LOGICAL_DISK_BYTES)]
+            )
+            .is_err()
+        );
+    }
+
     fn write_direct_image_output(
         container: &Path,
         format: &str,
@@ -14557,10 +15336,28 @@ mod tests {
         let uki_root = container.join("uki-output");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&uki_root).unwrap();
-        let extension = if format == "raw" { "img" } else { format };
+        let extension = if format == "raw" { "img.zst" } else { format };
         let filename = format!("aos-test.{extension}");
         let image_path = root.join(&filename);
-        fs::write(&image_path, b"exact disk image bytes").unwrap();
+        let logical_path = container.join("logical.raw");
+        fs::write(&logical_path, b"exact disk image bytes").unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&logical_path)
+            .unwrap()
+            .set_len(36 * 1024 * 1024)
+            .unwrap();
+        let logical_size = fs::metadata(&logical_path).unwrap().len();
+        let (mut logical_file, logical_identity) = open_stable_regular_file(&logical_path).unwrap();
+        let logical_sha256 = sha256_open_file(&mut logical_file, &logical_path).unwrap();
+        verify_stable_regular_file(&logical_path, &logical_file, &logical_identity).unwrap();
+        if format == "raw" {
+            logical_file.seek(SeekFrom::Start(0)).unwrap();
+            let image_file = fs::File::create(&image_path).unwrap();
+            zstd::stream::copy_encode(logical_file, image_file, 1).unwrap();
+        } else {
+            fs::copy(&logical_path, &image_path).unwrap();
+        }
         let (mut image_file, image_identity) = open_stable_regular_file(&image_path).unwrap();
         let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
         verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
@@ -14571,7 +15368,7 @@ mod tests {
         let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
         verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
         let media_type = match format {
-            "raw" => "application/vnd.aos.disk-image.raw",
+            "raw" => "application/vnd.aos.disk-image.raw+zstd",
             "qcow2" => "application/vnd.aos.disk-image.qcow2",
             "vmdk" => "application/x-vmdk",
             "vhd" => "application/vnd.aos.disk-image.vhd",
@@ -14587,12 +15384,21 @@ mod tests {
             "filename": filename,
             "objectKey": immutable_image_object_key(&sha256, &filename),
             "mediaType": media_type,
-            "compression": "none",
+            "compression": if format == "raw" { "zstd" } else { "none" },
             "byteSize": fs::metadata(&image_path).unwrap().len(),
-            "virtualSizeBytes": fs::metadata(&image_path).unwrap().len(),
+            "virtualSizeBytes": logical_size,
             "sha256": &sha256,
-            "logicalDiskSha256": &sha256,
+            "logicalDiskSha256": &logical_sha256,
             "rootfsSha256": "2".repeat(64),
+            "artifactBudgetsMiB": {
+                "root": 1,
+                "verity": 1,
+                "initrd": 1,
+                "uki": 1,
+                "esp": 34,
+                "runtimeClosure": 1,
+                "download": 64,
+            },
             "compatibleTargets": targets,
             "partitionTable": "gpt",
             "kernelParams": "",
@@ -14601,17 +15407,17 @@ mod tests {
                 "label": "ESP",
                 "type": "esp",
                 "filesystem": "vfat",
-                "sizeMiB": 0,
+                "sizeMiB": 34,
                 "offsetBytes": 0,
-                "sizeBytes": 10,
+                "sizeBytes": 34 * 1024 * 1024,
             }, {
                 "number": 2,
                 "label": "root-a",
                 "type": "root",
                 "filesystem": "fake",
-                "sizeMiB": 0,
-                "offsetBytes": 10,
-                "sizeBytes": fs::metadata(&image_path).unwrap().len() - 10,
+                "sizeMiB": 1,
+                "offsetBytes": 34 * 1024 * 1024,
+                "sizeBytes": 1024 * 1024,
             }],
             "esp": {"uki": "EFI/Linux/aos-test.efi", "sdBoot": "EFI/systemd/systemd-bootx64.efi"},
             "uki": {
@@ -14678,7 +15484,7 @@ mod tests {
             serde_json::json!(["qemu-kvm", "openstack"]),
         );
         let image = inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
-        assert_eq!(image.delivery.byte_size, 22);
+        assert_eq!(image.delivery.byte_size, 36 * 1024 * 1024);
         assert_eq!(image.delivery.filename, "aos-test.qcow2");
         assert_eq!(image.delivery.image_info.filename, "image-info.json");
         assert!(image.delivery.object_key.contains(&image.delivery.sha256));
@@ -14866,7 +15672,7 @@ mod tests {
         let store =
             write_direct_image_output(tamper.path(), "raw", serde_json::json!(["bare-metal"]));
         fs::write(
-            Path::new(&store.path).join("aos-test.img"),
+            Path::new(&store.path).join("aos-test.img.zst"),
             b"changed bytes",
         )
         .unwrap();
@@ -14923,7 +15729,7 @@ mod tests {
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
         let target = TempDir::new().unwrap();
         let external = target.path().join("real.img");
-        let image_path = Path::new(&store.path).join("aos-test.img");
+        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         fs::rename(&image_path, &external).unwrap();
         symlink(&external, &image_path).unwrap();
         assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
@@ -14936,7 +15742,7 @@ mod tests {
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
         fs::hard_link(
-            Path::new(&store.path).join("aos-test.img"),
+            Path::new(&store.path).join("aos-test.img.zst"),
             temp.path().join("disk-alias.img"),
         )
         .unwrap();
@@ -14960,7 +15766,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img");
+        let image_path = Path::new(&store.path).join("aos-test.img.zst");
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
         fs::rename(&image_path, temp.path().join("original.img")).unwrap();
         fs::write(&image_path, b"replacement bytes").unwrap();
@@ -14968,36 +15774,57 @@ mod tests {
     }
 
     #[test]
-    fn image_publisher_hashes_sparse_files_as_logical_bytes() {
+    fn image_publisher_distinguishes_transfer_and_logical_disk_identity() {
         let temp = TempDir::new().unwrap();
         let store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image_path = Path::new(&store.path).join("aos-test.img");
-        let sparse_size = 2 * 1024 * 1024_u64;
-        OpenOptions::new()
-            .write(true)
-            .open(&image_path)
-            .unwrap()
-            .set_len(sparse_size)
-            .unwrap();
-        let (mut file, _) = open_stable_regular_file(&image_path).unwrap();
-        let sha256 = sha256_open_file(&mut file, &image_path).unwrap();
-        let info_path = Path::new(&store.path).join("image-info.json");
-        let mut info: serde_json::Value =
-            serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
-        info["byteSize"] = serde_json::json!(sparse_size);
-        info["virtualSizeBytes"] = serde_json::json!(sparse_size);
-        info["sha256"] = serde_json::json!(sha256);
-        info["logicalDiskSha256"] = info["sha256"].clone();
-        info["objectKey"] = serde_json::json!(immutable_image_object_key(
-            info["sha256"].as_str().unwrap(),
-            "aos-test.img"
-        ));
-        info["partitions"][1]["sizeMiB"] = serde_json::json!((sparse_size - 10) / (1024 * 1024));
-        info["partitions"][1]["sizeBytes"] = serde_json::json!(sparse_size - 10);
-        fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-        assert_eq!(image.delivery.byte_size, sparse_size);
+        assert!(image.delivery.byte_size < image.virtual_size_bytes);
+        assert_ne!(image.delivery.sha256, image.delivery.logical_disk_sha256);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compressed_raw_materialization_enforces_exact_logical_size() {
+        let logical = b"canonical raw disk bytes";
+        let compressed = zstd::stream::encode_all(&logical[..], 1).unwrap();
+
+        let mut output = Vec::new();
+        decompress_raw_disk(&compressed[..], &mut output, logical.len() as u64).unwrap();
+        assert_eq!(output, logical);
+
+        assert!(
+            decompress_raw_disk(&compressed[..], &mut Vec::new(), logical.len() as u64 - 1)
+                .is_err()
+        );
+        assert!(
+            decompress_raw_disk(&compressed[..], &mut Vec::new(), logical.len() as u64 + 1)
+                .is_err()
+        );
+        assert!(
+            decompress_raw_disk(
+                &compressed[..compressed.len() - 1],
+                &mut Vec::new(),
+                logical.len() as u64,
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_raw_materialization_rewinds_after_hashing() {
+        let logical = b"canonical raw disk bytes";
+        let compressed = zstd::stream::encode_all(&logical[..], 1).unwrap();
+        let mut pinned = tempfile::tempfile().unwrap();
+        pinned.write_all(&compressed).unwrap();
+        pinned.seek(SeekFrom::Start(0)).unwrap();
+        sha256_open_file(&mut pinned, Path::new("<compressed test image>")).unwrap();
+
+        let mut output = Vec::new();
+        decompress_pinned_raw_disk(&pinned, &mut output, logical.len() as u64).unwrap();
+
+        assert_eq!(output, logical);
     }
 
     #[test]
@@ -15404,10 +16231,10 @@ mod tests {
             "1",
             "x86_64-linux",
             &info,
+            Some("Firewall configuration"),
             None,
-            None,
-            None,
-            None,
+            Some("Apache-2.0"),
+            Some("Andyl, Inc."),
             false,
             None,
             &[],
@@ -15651,6 +16478,8 @@ mod tests {
                     sbat: Vec::new(),
                     expected_pcr11: None,
                     ukis: Vec::new(),
+                    recovery_ukis: Vec::new(),
+                    recovery_bundle: None,
                     root_image: Some("root.img".into()),
                     root_verity: Some("root.verity".into()),
                     root_hash: Some(root_hash.into()),
@@ -15695,6 +16524,62 @@ mod tests {
     #[test]
     fn parse_sbat_csv_rejects_non_numeric_generation() {
         assert!(parse_sbat_csv("aos,notanumber,AOS\n").is_err());
+    }
+
+    fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -> Vec<u8> {
+        assert!(name.len() <= 8);
+        let pe_offset = 0x40_usize;
+        let optional_size = 112_usize;
+        let section_table = pe_offset + 4 + 20 + optional_size;
+        let raw_offset = section_table + 40;
+        let mut pe = vec![0_u8; raw_offset + raw.len()];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
+        pe[pe_offset..pe_offset + 4].copy_from_slice(&0x0000_4550_u32.to_le_bytes());
+        let coff = pe_offset + 4;
+        pe[coff + 2..coff + 4].copy_from_slice(&1_u16.to_le_bytes());
+        pe[coff + 16..coff + 18].copy_from_slice(&(optional_size as u16).to_le_bytes());
+        pe[coff + 20..coff + 22].copy_from_slice(&0x020b_u16.to_le_bytes());
+        pe[section_table..section_table + name.len()].copy_from_slice(name);
+        pe[section_table + 8..section_table + 12].copy_from_slice(&virtual_size.to_le_bytes());
+        pe[section_table + 16..section_table + 20]
+            .copy_from_slice(&(raw.len() as u32).to_le_bytes());
+        pe[section_table + 20..section_table + 24]
+            .copy_from_slice(&(raw_offset as u32).to_le_bytes());
+        pe[raw_offset..].copy_from_slice(raw);
+        pe
+    }
+
+    #[test]
+    fn pe_section_returns_virtual_bytes_without_file_padding() {
+        let pe = synthetic_pe_section(b".cmdline", 5, b"root\0padding");
+        assert_eq!(pe_section(&pe, ".cmdline").unwrap(), Some(&b"root\0"[..]));
+        assert!(pe_section(&pe, ".sbat").unwrap().is_none());
+
+        let zero_virtual = synthetic_pe_section(b".cmdline", 0, b"ignored");
+        assert!(pe_section(&zero_virtual, ".cmdline").unwrap().is_none());
+
+        let larger_virtual = synthetic_pe_section(b".cmdline", 32, b"materialized");
+        assert_eq!(
+            pe_section(&larger_virtual, ".cmdline").unwrap(),
+            Some(&b"materialized"[..])
+        );
+    }
+
+    #[test]
+    fn pe_section_rejects_malformed_and_duplicate_ranges() {
+        let mut malformed = synthetic_pe_section(b".sbat", 5, b"short");
+        let pe_offset = 0x40_usize;
+        let coff = pe_offset + 4;
+        let section_table = coff + 20 + 112;
+        malformed[section_table + 20..section_table + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(pe_section(&malformed, ".sbat").is_err());
+
+        let mut duplicate_pe = synthetic_pe_section(b".sbat", 5, b"short");
+        duplicate_pe[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+        let duplicate = duplicate_pe[section_table..section_table + 40].to_vec();
+        duplicate_pe.splice(section_table + 40..section_table + 40, duplicate);
+        assert!(pe_section(&duplicate_pe, ".sbat").is_err());
     }
 
     #[test]
@@ -15798,10 +16683,13 @@ mod tests {
         let mut tail = Vec::new();
         tail.extend_from_slice(&0x0000_4550u32.to_le_bytes()); // "PE\0\0"
         tail.extend_from_slice(&[0u8; 20]); // COFF header
+        tail[20..22].copy_from_slice(&(112_u16 + 16 * 8).to_le_bytes());
         let opt_start = pe.len() + tail.len();
         tail.extend_from_slice(&0x020bu16.to_le_bytes()); // PE32+ magic
         // Pad optional header up to the data directory (112 bytes from magic).
         tail.resize(tail.len() + (112 - 2), 0);
+        let count_in_tail = (opt_start - pe.len()) + 108;
+        tail[count_in_tail..count_in_tail + 4].copy_from_slice(&16_u32.to_le_bytes());
         let dir_start = opt_start + 112;
         // Security dir is entry index 4 (each entry 8 bytes).
         let cert_off = dir_start + 16 * 8; // place blob after all 16 entries
@@ -15815,8 +16703,23 @@ mod tests {
         assert_eq!(pe.len(), cert_off);
         pe.extend_from_slice(&win_cert);
 
-        let from_pe = leaf_cert_from_pe(&pe).unwrap();
+        let from_pe = leaf_cert_from_pe(&pe).unwrap().unwrap();
         assert_eq!(from_pe, leaf);
+
+        let mut unsigned = pe;
+        let entry_in_pe = 0x40 + entry_in_tail;
+        unsigned[entry_in_pe..entry_in_pe + 8].fill(0);
+        assert!(leaf_cert_from_pe(&unsigned).unwrap().is_none());
+
+        let mut malformed = unsigned;
+        malformed[entry_in_pe..entry_in_pe + 4].copy_from_slice(&(cert_off as u32).to_le_bytes());
+        assert!(leaf_cert_from_pe(&malformed).is_err());
+
+        let mut truncated_optional_header = malformed;
+        let coff_optional_size = 0x40 + 4 + 16;
+        truncated_optional_header[coff_optional_size..coff_optional_size + 2]
+            .copy_from_slice(&64_u16.to_le_bytes());
+        assert!(leaf_cert_from_pe(&truncated_optional_header).is_err());
     }
 
     /// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.
@@ -16972,6 +17875,92 @@ mod tests {
         assert!(!content.contains("nar_size"));
         assert!(content.contains("source_drv = \"\""));
         assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn publish_distribution_metadata_rejects_missing_empty_and_legacy_values() {
+        assert!(required_publish_metadata(None, "--description", "No description").is_err());
+        assert!(required_publish_metadata(Some("  "), "--license", "unknown").is_err());
+        assert!(required_publish_metadata(Some("UNKNOWN"), "--maintainer", "unknown").is_err());
+        assert_eq!(
+            required_publish_metadata(Some("  Andyl, Inc.  "), "--maintainer", "unknown").unwrap(),
+            "Andyl, Inc."
+        );
+    }
+
+    #[test]
+    fn release_store_path_metadata_is_validated_for_dry_run_plans() {
+        assert!(validate_release_publish_metadata(None, None, None, None).is_ok());
+        assert!(
+            validate_release_publish_metadata(Some("/nix/store/example"), None, None, None)
+                .is_err()
+        );
+        assert!(
+            validate_release_publish_metadata(
+                Some("/nix/store/example"),
+                Some("Example package"),
+                Some("MIT"),
+                Some("Andyl, Inc."),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn build_package_toml_refreshes_package_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-curl-8.5.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let existing = r#"
+[package]
+name = "curl"
+description = "No description"
+license = "unknown"
+maintainer = "unknown"
+
+[[versions]]
+version = "8.5.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/old-curl-8.5.0"
+source_drv = ""
+source_nar_hash = ""
+"#;
+
+        let content = build_package_toml(
+            existing,
+            "curl",
+            "8.5.0",
+            "x86_64-linux",
+            &info,
+            Some("Command line tool and library for transferring data with URLs"),
+            Some("https://curl.se"),
+            Some("curl"),
+            Some("Andyl, Inc."),
+            false,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(content.contains(
+            "description = \"Command line tool and library for transferring data with URLs\""
+        ));
+        assert!(content.contains("homepage = \"https://curl.se\""));
+        assert!(content.contains("license = \"curl\""));
+        assert!(content.contains("maintainer = \"Andyl, Inc.\""));
+        assert!(!content.contains("No description"));
+        assert!(!content.contains("unknown"));
     }
 
     #[test]
@@ -19497,10 +20486,10 @@ references = []
             "8.5.0",
             "aarch64-linux",
             &info,
+            Some("URL transfer tool"),
             None,
-            None,
-            None,
-            None,
+            Some("MIT"),
+            Some("aos-team"),
             false,
             None,
             &[],

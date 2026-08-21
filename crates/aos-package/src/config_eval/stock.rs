@@ -11,19 +11,21 @@
 //! # The eval invocation
 //!
 //! ```text
-//! nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
-//!   --option restrict-eval true \                  # read only the eval root + store
+//! nix-instantiate --eval --strict --json --pure-eval \
+//!   --extra-experimental-features 'nix-command flakes' \
+//!   --option restrict-eval true \                  # read only explicit store roots
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
-//!   -I <root> \
-//!   -f <root>/entry.nix manifest
+//!   --option allowed-uris path:/nix/store/ \
+//!   -A manifest -
 //! ```
 //!
 //! `--pure-eval` removes ambient evaluator inputs such as `currentTime`,
 //! `currentSystem`, and environment variables. `restrict-eval` independently
-//! confines filesystem reads to the explicit store/eval roots, while
+//! confines filesystem reads to explicit store roots, while
 //! `allow-import-from-derivation = false` prevents evaluation from triggering a
-//! build. The base library, host module, facts module, and package modules are
-//! all explicit paths admitted below.
+//! build. The generated expression arrives on standard input, so it has no
+//! mutable filesystem identity; facts are rendered inline. Every store input
+//! is admitted through a fixed-NAR-hash `fetchTree` expression.
 //!
 //! `entry.nix` is regenerated each iteration from the current working set, with
 //! the verified `host.nix` injected as an operator-provenance module (the
@@ -31,10 +33,13 @@
 //! imported by store path.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use super::classify::{EvalClass, KillReason, classify};
@@ -60,7 +65,7 @@ pub const DEFAULT_FACTS_PATH: &str = "/run/aos-metadata/facts.json";
 /// `aos-eval.service`; this type does not create the scope, it only invokes the
 /// evaluator and classifies.
 pub struct StockNixEvaluator {
-    /// The eval root (`-I` search path and `entry.nix` location).
+    /// The mutable staging root for generated evaluator source.
     root: PathBuf,
     /// `verbose > 0` adds `--show-trace`.
     verbose: u8,
@@ -86,20 +91,51 @@ impl StockNixEvaluator {
     /// The exact base-lib entrypoint (`evalHostConfig`) is provided by the
     /// in-image module library and is therefore builder-gated; this renderer
     /// only guarantees a syntactically valid, deterministic expression.
-    pub fn render_entry_nix(&self, attempt: &EvalAttempt<'_>) -> String {
-        let package_modules = render_package_module_list(attempt.working_set);
-        let facts_binding = attempt.facts_json.map_or_else(String::new, |_| {
-            format!(
-                "\x20 factsModule = import {};\n",
-                nix_path(&self.root.join("host-facts.nix"))
-            )
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a supplied facts document cannot be read, parsed,
+    /// or normalized into its typed Nix module.
+    #[cfg(test)]
+    pub fn render_entry_nix(&self, attempt: &EvalAttempt<'_>) -> Result<String> {
+        let package_modules = render_package_module_list(attempt.working_set, false)?;
+        self.render_entry_nix_with_inputs(
+            attempt,
+            &package_modules,
+            &nix_path(attempt.base_lib),
+            &nix_path(attempt.host_nix),
+        )
+    }
+
+    fn render_locked_entry_nix(&self, attempt: &EvalAttempt<'_>) -> Result<String> {
+        let package_modules = render_package_module_list(attempt.working_set, true)?;
+        let base = locked_store_input(attempt.base_lib, None)?;
+        let host = locked_store_input(attempt.host_nix, None)?;
+        self.render_entry_nix_with_inputs(attempt, &package_modules, &base, &host)
+    }
+
+    fn render_entry_nix_with_inputs(
+        &self,
+        attempt: &EvalAttempt<'_>,
+        package_modules: &str,
+        base: &str,
+        host: &str,
+    ) -> Result<String> {
+        let facts_module = attempt
+            .facts_json
+            .map(|facts_json| -> Result<String> {
+                let raw = std::fs::read(facts_json)
+                    .with_context(|| format!("reading facts {}", facts_json.display()))?;
+                let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&raw)
+                    .with_context(|| format!("parsing facts {}", facts_json.display()))?;
+                Ok(crate::metadata::facts_render::render_host_facts_nix(&facts))
+            })
+            .transpose()?;
+        let facts_binding = facts_module.as_ref().map_or_else(String::new, |module| {
+            format!("\x20 factsModule = (\n{module}\n\x20 );\n")
         });
-        let facts_modules = if attempt.facts_json.is_some() {
-            "[ factsModule ]"
-        } else {
-            "[ ]"
-        };
-        format!(
+        let facts_modules = facts_module.as_ref().map_or("[ ]", |_| "[ factsModule ]");
+        Ok(format!(
             "# Generated by aos config eval; do not edit.\n\
              let\n\
             \x20 baseLib = import {base};\n\
@@ -117,73 +153,10 @@ impl StockNixEvaluator {
             \x20 }};\n\
             \x20 candidate = system.config.system.build.configManifest;\n\
             \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
-            \x20 imageManifest = baseLib.imageManifest;\n\
-            \x20 listBy = keyOf: values: builtins.listToAttrs (builtins.map\n\
-            \x20   (value: {{ name = keyOf value; inherit value; }})\n\
-            \x20   values);\n\
-            \x20 candidateUsers = listBy (user: user.name) candidate.users;\n\
-            \x20 baselineUsers = listBy (user: user.name) baseline.users;\n\
-            \x20 imageUsers = listBy (user: user.name) imageManifest.users;\n\
-            \x20 presetKey = preset: \"${{preset.unit}}:${{preset.source}}\";\n\
-            \x20 candidatePresets = listBy presetKey candidate.presets;\n\
-            \x20 baselinePresets = listBy presetKey baseline.presets;\n\
-            \x20 imagePresets = listBy presetKey imageManifest.presets;\n\
-            \x20 candidateStorePaths = listBy (path: path) candidate.storePaths;\n\
-            \x20 imageStorePaths = listBy (path: path) imageManifest.storePaths;\n\
-            \x20 changedFromBaseline = name: baselineValues: candidateValues:\n\
-            \x20   let\n\
-            \x20     baselineHas = builtins.hasAttr name baselineValues;\n\
-            \x20     candidateHas = builtins.hasAttr name candidateValues;\n\
-            \x20   in baselineHas != candidateHas\n\
-            \x20      || (candidateHas && candidateValues.${{name}} != baselineValues.${{name}});\n\
-            \x20 mergeImageDefaults = imageValues: baselineValues: candidateValues:\n\
-            \x20   builtins.listToAttrs (builtins.concatMap\n\
-            \x20     (name:\n\
-            \x20       if changedFromBaseline name baselineValues candidateValues then\n\
-            \x20         if builtins.hasAttr name candidateValues\n\
-            \x20         then [ {{ inherit name; value = candidateValues.${{name}}; }} ]\n\
-            \x20         else [ ]\n\
-            \x20       else if builtins.hasAttr name imageValues then\n\
-            \x20         [ {{ inherit name; value = imageValues.${{name}}; }} ]\n\
-            \x20       else if builtins.hasAttr name candidateValues then\n\
-            \x20         [ {{ inherit name; value = candidateValues.${{name}}; }} ]\n\
-            \x20       else [ ])\n\
-            \x20     (builtins.attrNames (imageValues // baselineValues // candidateValues)));\n\
-            \x20 mergeOwners = imageValues: baselineValues: candidateValues:\n\
-            \x20   imageOwners: candidateOwners:\n\
-            \x20   builtins.mapAttrs\n\
-            \x20     (name: _:\n\
-            \x20       let\n\
-            \x20         changed = changedFromBaseline name baselineValues candidateValues;\n\
-            \x20         fromImage = !changed && builtins.hasAttr name imageValues;\n\
-            \x20         owner = if fromImage\n\
-            \x20           then imageOwners.${{name}} or \"@base\"\n\
-            \x20           else candidateOwners.${{name}} or \"@base\";\n\
-            \x20       in if !fromImage && changed && owner == \"@base\" then \"@host\" else owner)\n\
-            \x20     (mergeImageDefaults imageValues baselineValues candidateValues);\n\
-            \x20 mergedEtc = mergeImageDefaults imageManifest.etc baseline.etc candidate.etc;\n\
-            \x20 mergedUnits = mergeImageDefaults imageManifest.units baseline.units candidate.units;\n\
-            \x20 mergedJobScripts = mergeImageDefaults imageManifest.jobScripts baseline.jobScripts candidate.jobScripts;\n\
-            \x20 mergedUsers = mergeImageDefaults imageUsers baselineUsers candidateUsers;\n\
-            \x20 mergedPresets = mergeImageDefaults imagePresets baselinePresets candidatePresets;\n\
-            \x20 mergedStorePaths = imageStorePaths // candidateStorePaths;\n\
+            \x20 mergedManifest = baseLib.mergeImageManifest {{ inherit baseline candidate; }};\n\
              in {{\n\
-            \x20 manifest = candidate // {{\n\
-            \x20   etc = mergedEtc;\n\
-            \x20   units = mergedUnits;\n\
-            \x20   jobScripts = mergedJobScripts;\n\
-            \x20   users = builtins.attrValues mergedUsers;\n\
-            \x20   presets = builtins.attrValues mergedPresets;\n\
-            \x20   storePaths = builtins.attrNames mergedStorePaths;\n\
-            \x20   ownership = candidate.ownership // {{\n\
-            \x20     etc = mergeOwners imageManifest.etc baseline.etc candidate.etc imageManifest.ownership.etc candidate.ownership.etc;\n\
-            \x20     units = mergeOwners imageManifest.units baseline.units candidate.units imageManifest.ownership.units candidate.ownership.units;\n\
-            \x20     jobScripts = mergeOwners imageManifest.jobScripts baseline.jobScripts candidate.jobScripts imageManifest.ownership.jobScripts candidate.ownership.jobScripts;\n\
-            \x20     users = mergeOwners imageUsers baselineUsers candidateUsers imageManifest.ownership.users candidate.ownership.users;\n\
-            \x20     presets = mergeOwners imagePresets baselinePresets candidatePresets imageManifest.ownership.presets candidate.ownership.presets;\n\
-            \x20     # An immutable image path remains image-owned when host configuration also references it.\n\
-            \x20     storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;\n\
-            \x20   }};\n\
+            \x20 optionWrites = system._optionWrites;\n\
+            \x20 manifest = mergedManifest // {{\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     candidate.config\n\
             \x20     system.config.aos.apm.installAtBoot.config;\n\
@@ -204,29 +177,37 @@ impl StockNixEvaluator {
             \x20         system.config.aos.apm.installAtBoot.systemCredentials));\n\
             \x20 }};\n\
              }}\n",
-            base = nix_path(attempt.base_lib),
-            host = nix_path(attempt.host_nix),
+            base = base,
+            host = host,
             modules = package_modules,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
-        )
+        ))
     }
 
-    /// Writes `entry.nix` into the eval root.
+    /// Writes the generated Nix source into a dedicated staging directory.
+    fn write_locked_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
+        self.write_rendered_entry(self.render_locked_entry_nix(attempt)?)
+    }
+
+    #[cfg(test)]
     pub(super) fn write_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
-        let entry = self.root.join("entry.nix");
-        std::fs::create_dir_all(&self.root)
-            .with_context(|| format!("creating eval root {}", self.root.display()))?;
-        if let Some(facts_json) = attempt.facts_json {
-            let raw = std::fs::read(facts_json)
-                .with_context(|| format!("reading facts {}", facts_json.display()))?;
-            let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&raw)
-                .with_context(|| format!("parsing facts {}", facts_json.display()))?;
-            let rendered = crate::metadata::facts_render::render_host_facts_nix(&facts);
-            std::fs::write(self.root.join("host-facts.nix"), rendered)
-                .context("writing rendered host facts module")?;
+        self.write_rendered_entry(self.render_entry_nix(attempt)?)
+    }
+
+    fn write_rendered_entry(&self, expression: String) -> Result<PathBuf> {
+        let source_root = self.root.join("nix-source");
+        let entry = source_root.join("entry.nix");
+        std::fs::create_dir_all(&source_root)
+            .with_context(|| format!("creating eval source root {}", source_root.display()))?;
+        match std::fs::remove_file(source_root.join("host-facts.nix")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).context("removing stale rendered host facts module");
+            }
         }
-        std::fs::write(&entry, self.render_entry_nix(attempt))
+        std::fs::write(&entry, expression)
             .with_context(|| format!("writing {}", entry.display()))?;
         Ok(entry)
     }
@@ -234,38 +215,55 @@ impl StockNixEvaluator {
 
 impl NixEvaluator for StockNixEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass> {
-        let entry = self.write_entry(attempt)?;
+        let staged_entry = self.write_locked_entry(attempt)?;
+        let expression = std::fs::read_to_string(&staged_entry)
+            .with_context(|| format!("reading {}", staged_entry.display()))?;
 
         let mut cmd = pure_eval_command()?;
 
-        // Every path `entry.nix` imports must be an allowed restrict-eval root,
-        // otherwise the import faults with "access to path … is forbidden in
-        // restricted mode". The eval root holds `entry.nix`; the base-lib, the
-        // verified `host.nix`, and each provider's config-output are imported by
-        // store path and so must each be added as an `-I` root.
-        cmd.arg("-I").arg(&self.root);
-        cmd.arg("-I").arg(attempt.base_lib);
-        cmd.arg("-I").arg(attempt.host_nix);
-        for member in attempt.working_set {
-            if let Some(config_output) = member.config_output.as_deref() {
-                cmd.arg("-I").arg(config_output);
-            }
-        }
-
-        cmd.arg("-A").arg("manifest").arg(&entry);
+        // Standard input is not a mutable filesystem input. Every imported
+        // path is independently admitted by its fixed NAR hash in the source.
+        cmd.arg("-A").arg("manifest").arg("-");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
 
-        let output = cmd
-            .output()
-            .context("failed to spawn `nix-instantiate --eval`")?;
+        let output = output_with_expression(&mut cmd, &expression)
+            .context("running `nix-instantiate --eval`")?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         let kill = kill_reason(&output.status, &stderr);
 
         classify(output.status.success(), &stdout, &stderr, kill)
     }
+}
+
+/// Runs a pure evaluator command with its generated expression on stdin.
+///
+/// Feeding the expression through stdin avoids both a mutable source pathname
+/// and the operating system's command-line length limit.
+///
+/// # Errors
+///
+/// Returns an error when the evaluator cannot be spawned, its stdin cannot be
+/// written, or the child cannot be reaped.
+pub(super) fn output_with_expression(command: &mut Command, expression: &str) -> Result<Output> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().context("spawning pure Nix evaluator")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("pure Nix evaluator did not expose stdin")?;
+    let write_result = stdin.write_all(expression.as_bytes());
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .context("waiting for Nix evaluator")?;
+    write_result.context("writing generated expression to Nix evaluator")?;
+    Ok(output)
 }
 
 /// Resolves an AOS-built executable before constructing a scrubbed command.
@@ -284,26 +282,32 @@ fn command_from_path(name: &str) -> Result<Command> {
 /// passes.
 ///
 /// The executable is resolved before the environment is cleared. Callers add
-/// only explicit `-I` inputs and the expression/attribute they need.
+/// only exact authenticated inputs and the expression/attribute they need.
 pub(super) fn pure_eval_command() -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
-    configure_pure_eval_command(&mut command);
+    let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
+    configure_pure_eval_command(&mut command, nix_cache_home.as_deref());
     Ok(command)
 }
 
-fn configure_pure_eval_command(command: &mut Command) {
+fn configure_pure_eval_command(command: &mut Command, nix_cache_home: Option<&OsStr>) {
+    let store = std::env::var_os("AOS_NIX_EVAL_STORE");
     command.env_clear();
+    if let Some(store) = store {
+        command.arg("--store").arg(store);
+    }
+    // Nix creates client cache state even for pure evaluation. Preserve only
+    // the service-owned cache directory across the environment scrub so the
+    // hardened read-only home does not make evaluation fail before it starts.
+    if let Some(nix_cache_home) = nix_cache_home {
+        command.env("XDG_CACHE_HOME", nix_cache_home);
+    }
     command
-        .args([
-            "--store",
-            "dummy://",
-            "--eval",
-            "--strict",
-            "--json",
-            "--pure-eval",
-        ])
+        .args(["--extra-experimental-features", "nix-command flakes"])
+        .args(["--eval", "--strict", "--json", "--pure-eval"])
         .args(["--option", "restrict-eval", "true"])
-        .args(["--option", "allow-import-from-derivation", "false"]);
+        .args(["--option", "allow-import-from-derivation", "false"])
+        .args(["--option", "allowed-uris", "path:/nix/store/"]);
 }
 
 /// Infer a [`KillReason`] when the subprocess was terminated by a signal.
@@ -336,70 +340,135 @@ fn kill_reason(status: &std::process::ExitStatus, stderr: &str) -> Option<KillRe
 }
 
 /// Renders authenticated working-set modules as resolver-owned provenance records.
-fn render_package_module_list(members: &[WorkingSetMember]) -> String {
-    let items: Vec<String> = members
-        .iter()
-        .filter_map(|member| {
-            member.config_output.as_deref().map(|path| {
-                let owns = member
-                    .authorization
-                    .owns
-                    .iter()
-                    .map(|root| nix_string(root))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let contributes = member
-                    .authorization
-                    .contributes
-                    .iter()
-                    .map(|(root, paths)| {
-                        let paths = paths
-                            .iter()
-                            .map(|path| nix_string(path))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        format!("{} = [ {paths} ];", nix_string(root))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let self_output = member
-                    .outputs
-                    .self_output
-                    .as_deref()
-                    .map_or_else(|| "null".to_string(), nix_string);
-                let dependency_outputs = member
-                    .outputs
-                    .dependencies
-                    .iter()
-                    .map(|(package, output)| {
-                        format!("{} = {};", nix_string(package), nix_string(output))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!(
-                    "    {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }}; configRoot = {}; module = {}/module.nix; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }}",
+fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Result<String> {
+    let mut items = Vec::new();
+    for member in members {
+        if let Some(path) = member.config_output.as_deref() {
+            let config_root = if locked {
+                let nar_hash = member.config_output_nar_hash.as_deref().with_context(|| {
+                    format!(
+                        "working-set package {} has a config output without an authenticated NAR hash",
+                        member.package
+                    )
+                })?;
+                locked_store_input(Path::new(path), Some(nar_hash))?
+            } else {
+                nix_path_str(path)
+            };
+            let owns = member
+                .authorization
+                .owns
+                .iter()
+                .map(|root| nix_string(root))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let contributes = member
+                .authorization
+                .contributes
+                .iter()
+                .map(|(root, paths)| {
+                    let paths = paths
+                        .iter()
+                        .map(|path| nix_string(path))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("{} = [ {paths} ];", nix_string(root))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let self_output = member
+                .outputs
+                .self_output
+                .as_deref()
+                .map_or_else(|| "null".to_string(), nix_string);
+            let dependency_outputs = member
+                .outputs
+                .dependencies
+                .iter()
+                .map(|(package, output)| {
+                    format!("{} = {};", nix_string(package), nix_string(output))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            items.push(format!(
+                    "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
-                    nix_path_str(path),
-                    nix_path_str(path)
-                )
-            })
-        })
-        .collect();
-    if items.is_empty() {
-        "[ ]".to_string()
-    } else {
-        format!("[\n{}\n  ]", items.join("\n"))
+                ));
+        }
     }
+    if items.is_empty() {
+        Ok("[ ]".to_string())
+    } else {
+        Ok(format!("[\n{}\n  ]", items.join("\n")))
+    }
+}
+
+/// Renders one store path as a fixed, pure evaluator input.
+pub(super) fn locked_store_input(path: &Path, expected_nar_hash: Option<&str>) -> Result<String> {
+    let (root, suffix) = store_root_and_suffix(path)?;
+    let nar_hash = expected_nar_hash.map_or_else(
+        || super::retained_store_path_nar_hash(&root),
+        |hash| Ok(hash.to_string()),
+    )?;
+    let nar_hash = sha256_sri(&nar_hash)?;
+    let root = root
+        .to_str()
+        .context("evaluator store input path is not UTF-8")?;
+    let fetched = format!(
+        "(builtins.fetchTree {{ type = \"path\"; path = {}; narHash = {}; }}).outPath",
+        nix_string(root),
+        nix_string(&nar_hash),
+    );
+    if suffix.as_os_str().is_empty() {
+        Ok(fetched)
+    } else {
+        let suffix = suffix
+            .to_str()
+            .context("evaluator store input suffix is not UTF-8")?;
+        Ok(format!(
+            "({fetched} + {})",
+            nix_string(&format!("/{suffix}"))
+        ))
+    }
+}
+
+fn store_root_and_suffix(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let relative = path
+        .strip_prefix("/nix/store")
+        .with_context(|| format!("evaluator input {} is outside /nix/store", path.display()))?;
+    let mut components = relative.components();
+    let root_name = components
+        .next()
+        .context("evaluator input has no store object component")?;
+    let root = Path::new("/nix/store").join(root_name);
+    let suffix = components.collect::<PathBuf>();
+    Ok((root, suffix))
+}
+
+fn sha256_sri(hash: &str) -> Result<String> {
+    let hex = crate::verify::sha256_digest_hex(hash)?;
+    let digest = hex::decode(hex).context("decoding normalized evaluator input hash")?;
+    Ok(format!(
+        "sha256-{}",
+        base64::engine::general_purpose::STANDARD.encode(digest)
+    ))
 }
 
 /// Renders a Rust string as a quoted Nix string literal.
 fn nix_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace("${", "\\${")
+    )
 }
 
 /// Render a path as a bare Nix path literal when it is an absolute store-style
 /// path, else as a quoted string (so the expression always parses).
-pub(super) fn nix_path(path: &Path) -> String {
+#[cfg(test)]
+fn nix_path(path: &Path) -> String {
     nix_path_str(&path.to_string_lossy())
 }
 
@@ -407,7 +476,7 @@ fn nix_path_str(path: &str) -> String {
     if path.starts_with('/') && path.bytes().all(is_nix_path_byte) {
         path.to_string()
     } else {
-        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+        nix_string(path)
     }
 }
 
@@ -991,7 +1060,7 @@ mod tests {
             working_set: &working,
             iteration: 0,
         };
-        let text = evaluator.render_entry_nix(&attempt);
+        let text = evaluator.render_entry_nix(&attempt).unwrap();
 
         assert!(text.contains("operatorModules = [ hostModule ]"), "{text}");
         assert!(text.contains("import /nix/store/hash-host.nix"), "{text}");
@@ -1000,27 +1069,20 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains(
-                "{ name = \"web\"; authorization = { owns = [  ]; contributes = {  }; }; configRoot = /nix/store/hash-web-config; module = /nix/store/hash-web-config/module.nix; outputs = { self = null; dependencies = {  }; }; }"
-            ),
+            text.contains("let configRoot = /nix/store/hash-web-config; in { name = \"web\""),
             "{text}"
         );
         assert!(
             text.contains(
-                "{ name = \"firewall\"; authorization = { owns = [  ]; contributes = {  }; }; configRoot = /nix/store/hash-firewall-config; module = /nix/store/hash-firewall-config/module.nix; outputs = { self = null; dependencies = {  }; }; }"
+                "let configRoot = /nix/store/hash-firewall-config; in { name = \"firewall\""
             ),
             "{text}"
         );
-        assert!(text.contains("manifest = candidate //"));
+        assert!(text.contains("module = configRoot + \"/module.nix\""));
         assert!(text.contains("baselineSystem = baseLib.evalHostConfig"));
-        assert!(text.contains("etc = mergedEtc"));
-        assert!(text.contains("mergeImageDefaults imageManifest.etc baseline.etc candidate.etc"));
-        assert!(text.contains(
-            "storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths"
-        ));
-        assert!(!text.contains(
-            "storePaths = imageManifest.ownership.storePaths // candidate.ownership.storePaths"
-        ));
+        assert!(text.contains("baseLib.mergeImageManifest"));
+        assert!(text.contains("manifest = mergedManifest //"));
+        assert!(!text.contains("mergeImageDefaults ="));
         assert!(text.contains("installAtBoot.config"), "{text}");
         assert!(text.contains("installAtBoot.systemCredentials"), "{text}");
         assert!(
@@ -1039,7 +1101,7 @@ mod tests {
             working_set: &[],
             iteration: 0,
         };
-        let text = evaluator.render_entry_nix(&attempt);
+        let text = evaluator.render_entry_nix(&attempt).unwrap();
         assert!(text.contains("packageModules = [ ]"), "{text}");
     }
 
@@ -1067,22 +1129,25 @@ mod tests {
             iteration: 0,
         };
 
-        let entry = evaluator.write_entry(&attempt).unwrap();
-        let entry = std::fs::read_to_string(entry).unwrap();
-        let facts = std::fs::read_to_string(root.join("host-facts.nix")).unwrap();
+        let entry_path = evaluator.write_entry(&attempt).unwrap();
+        assert_eq!(entry_path, root.join("nix-source/entry.nix"));
+        let entry = std::fs::read_to_string(entry_path).unwrap();
         assert!(entry.contains("factsModules = [ factsModule ]"), "{entry}");
-        assert!(facts.contains("hostname = \"node-1\";"), "{facts}");
+        assert!(entry.contains("factsModule = ("), "{entry}");
+        assert!(!entry.contains(root.to_string_lossy().as_ref()), "{entry}");
+        assert!(entry.contains("hostname = \"node-1\";"), "{entry}");
         assert!(
-            facts.contains("\"aa:bb:cc:dd:ee:ff\" = { names = [ \"ens5\" ]"),
-            "{facts}"
+            entry.contains("\"aa:bb:cc:dd:ee:ff\" = { names = [ \"ens5\" ]"),
+            "{entry}"
         );
+        assert!(!root.join("nix-source/host-facts.nix").exists());
     }
 
     #[test]
     fn members_without_config_output_are_skipped() {
         // A seed with no config module contributes nothing to the import list.
         let working = vec![member("web", None)];
-        let rendered = render_package_module_list(&working);
+        let rendered = render_package_module_list(&working, false).unwrap();
         assert_eq!(rendered, "[ ]");
     }
 
@@ -1095,7 +1160,7 @@ mod tests {
             "openssl".to_string(),
             "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-openssl".to_string(),
         );
-        let rendered = render_package_module_list(&[web]);
+        let rendered = render_package_module_list(&[web], false).unwrap();
         assert!(
             rendered.contains(
                 "outputs = { self = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-web\"; dependencies = { \"openssl\" = \"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-openssl\"; }; };"
@@ -1118,13 +1183,17 @@ mod tests {
     fn evaluator_command_is_pure_restricted_and_environment_scrubbed() {
         let mut command = Command::new("nix-instantiate");
         command.env("AOS_AMBIENT_SENTINEL", "must-not-survive");
-        configure_pure_eval_command(&mut command);
+        configure_pure_eval_command(&mut command, Some(OsStr::new("/var/cache/aos/nix-eval")));
 
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(args.iter().any(|arg| arg == "--pure-eval"), "{args:?}");
+        assert!(
+            args.windows(2)
+                .any(|args| { args == ["--extra-experimental-features", "nix-command flakes"] })
+        );
         assert!(
             args.windows(3)
                 .any(|args| { args == ["--option", "restrict-eval", "true"] })
@@ -1134,10 +1203,18 @@ mod tests {
                 .any(|args| { args == ["--option", "allow-import-from-derivation", "false"] })
         );
         assert!(
+            args.windows(3)
+                .any(|args| { args == ["--option", "allowed-uris", "path:/nix/store/"] })
+        );
+        assert!(
             command
                 .get_envs()
                 .all(|(name, _)| name != "AOS_AMBIENT_SENTINEL")
         );
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "XDG_CACHE_HOME"
+                && value.is_some_and(|value| value == "/var/cache/aos/nix-eval")
+        }));
     }
 
     #[test]

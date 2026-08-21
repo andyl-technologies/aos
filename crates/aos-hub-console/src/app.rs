@@ -176,6 +176,8 @@ fn ManagementShell(
                     " · "
                     <a href="/-/orgs">"organizations"</a>
                     " · "
+                    <a href="/-/instance">"hub settings"</a>
+                    " · "
                     <a href="/-/account">"account"</a>
                     " · "
                     <span class="who">{principal}</span>
@@ -461,5 +463,11 @@ mod tests {
                 "supplemental console CSS redefines the shared design with {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn masthead_exposes_instance_settings() {
+        let source = include_str!("app.rs");
+        assert!(source.contains("href=\"/-/instance\">\"hub settings\""));
     }
 }

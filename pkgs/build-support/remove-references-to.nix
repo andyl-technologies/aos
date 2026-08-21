@@ -24,7 +24,7 @@
 # target as a closure edge. Works on text files and on ELF DT_RUNPATH
 # byte strings alike — the replacement is byte-for-byte length-preserving.
 {writeShellScriptBin}:
-writeShellScriptBin "remove-references-to" ''
+(writeShellScriptBin "remove-references-to" ''
   set -e
 
   # References to remove
@@ -58,4 +58,10 @@ writeShellScriptBin "remove-references-to" ''
   for target in "''${targets[@]}"; do
     sed -i -e "s|$target|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" "''${regions[@]}"
   done
-''
+'')
+.overrideAttrs (_: {
+  meta = {
+    description = "Remove selected Nix store references from files";
+    license = "MIT";
+  };
+})

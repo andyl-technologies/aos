@@ -460,13 +460,14 @@ pub enum HubPublishCmd {
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
+    /// Atomically publish a complete APR surface to every required placement
     Upload {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
-        /// Read the exact publication manifest from this JSON file.
+        /// Read a reviewed publication manifest instead of deriving one from --root.
         #[arg(long)]
-        manifest: PathBuf,
+        manifest: Option<PathBuf>,
         /// Read every declared object below this surface root.
         #[arg(long)]
         root: PathBuf,
@@ -801,9 +802,9 @@ pub enum HubStorageBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Limit results to one organization
+        /// Organization slug
         #[arg(long)]
-        org: Option<String>,
+        org: String,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -821,6 +822,9 @@ pub enum HubStorageBindingCmd {
         /// Binding name
         #[arg(long)]
         name: String,
+        /// Stable resource identity (generated when omitted)
+        #[arg(long)]
+        stable_id: Option<String>,
         /// Backend kind: local-fs, s3, r2, or deployment-r2
         #[arg(long, value_parser = ["local-fs", "s3", "r2", "deployment-r2"])]
         kind: Option<String>,
@@ -1036,6 +1040,8 @@ pub enum HubDomainCmd {
     Verify {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Select the domain by DNS hostname or stable identity
+        #[arg(value_name = "HOSTNAME_OR_ID")]
         hostname: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
@@ -1118,6 +1124,9 @@ pub enum HubNetworkBoundaryCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         name: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long, value_parser = ["vpn", "vpc", "tunnel", "source-allowlist", "trusted-ingress"])]
         kind: Option<String>,
         #[arg(long)]
@@ -1132,6 +1141,12 @@ pub enum HubNetworkBoundaryCmd {
         allowlist_id: Option<String>,
         #[arg(long)]
         listener_id: Option<String>,
+        /// Require or waive protected transport for the initial revision
+        #[arg(long, value_parser = ["required", "not-required"])]
+        protected_transport: Option<String>,
+        /// Probe-location configuration for the initial revision
+        #[arg(long)]
+        probe_location: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -1284,6 +1299,9 @@ pub enum HubEndpointCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         origin: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long)]
         org: Option<String>,
         #[arg(long)]
@@ -1292,6 +1310,23 @@ pub enum HubEndpointCmd {
         network_boundary: String,
         #[arg(long, value_parser = ["hub", "external", "layer7"])]
         ingress: String,
+        #[arg(long, value_parser = ["hub-native", "hub-worker", "external", "layer7"])]
+        listener_provider: String,
+        #[arg(long)]
+        listener_resource_id: String,
+        /// Record the HTTPS termination provider
+        #[arg(long, value_parser = ["hub-managed", "external"])]
+        tls_provider: Option<String>,
+        /// Pin the certificate identity used by the termination provider
+        #[arg(long)]
+        certificate_ref: Option<String>,
+        #[arg(long, value_parser = ["native-file", "worker-secret", "external"])]
+        probe_provider: String,
+        #[arg(long)]
+        probe_signer_secret_ref: String,
+        /// Pin the base64url-no-padding Ed25519 probe public key
+        #[arg(long)]
+        probe_public_key: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -1312,10 +1347,13 @@ pub enum HubEndpointCmd {
         tls_provider: Option<String>,
         #[arg(long)]
         certificate_ref: Option<String>,
-        #[arg(long, conflicts_with = "clear_probe_location")]
-        probe_location: Option<String>,
-        #[arg(long, conflicts_with = "probe_location")]
-        clear_probe_location: bool,
+        #[arg(long, value_parser = ["native-file", "worker-secret", "external"])]
+        probe_provider: Option<String>,
+        #[arg(long)]
+        probe_signer_secret_ref: Option<String>,
+        /// Pin the base64url-no-padding Ed25519 probe public key
+        #[arg(long)]
+        probe_public_key: Option<String>,
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
@@ -1385,6 +1423,9 @@ pub enum HubGatewayCmd {
     Add {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[arg(long)]
         binding: String,
         #[arg(long)]
@@ -1511,6 +1552,9 @@ pub enum HubRouteCmd {
         #[command(flatten)]
         access: HubAccessArgs,
         surface_ref: String,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
         #[command(flatten)]
         spec: HubRouteSpecArgs,
         #[command(flatten)]
@@ -1543,8 +1587,11 @@ pub enum HubRouteCmd {
         route: String,
         #[arg(long)]
         path: Option<String>,
+        /// Select the route capability to explain
+        #[arg(long, value_parser = ["web", "git", "nix_cache"], default_value = "web")]
+        access_class: String,
     },
-    /// Enable a successfully probed route
+    /// Enable a route and queue its current configuration probe
     Enable {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -1572,8 +1619,10 @@ pub enum HubRouteCmd {
     Canonical {
         #[command(flatten)]
         access: HubAccessArgs,
+        /// Typed surface ref (`registry:<slug>` or `cache:<slug>`)
+        surface_ref: String,
         route: String,
-        #[arg(long, value_parser = ["git", "cache", "web"])]
+        #[arg(long, value_parser = ["git", "nix_cache", "web"])]
         audience: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
@@ -3098,6 +3147,8 @@ mod tests {
             "andyl",
             "--name",
             "worker-objects",
+            "--stable-id",
+            "storage-binding:worker-objects",
             "--kind",
             "deployment-r2",
             "--bucket-binding",
@@ -3109,12 +3160,28 @@ mod tests {
             Commands::Hub {
                 command: HubCmd::StorageBinding {
                     command: HubStorageBindingCmd::Create {
+                        stable_id: Some(ref stable_id),
                         bucket_binding: Some(ref binding),
                         ..
                     }
                 }
-            } if binding == "STORAGE"
+            } if stable_id == "storage-binding:worker-objects" && binding == "STORAGE"
         ));
+    }
+
+    #[test]
+    fn storage_binding_list_requires_an_organization() {
+        assert!(
+            parse_cli([
+                "aos",
+                "hub",
+                "storage-binding",
+                "list",
+                "--hub",
+                "https://aos.example",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -3147,6 +3214,37 @@ mod tests {
                     command: HubRouteCmd::Add { .. }
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn canonical_route_requires_a_typed_surface() {
+        let cli = parse_cli([
+            "aos",
+            "hub",
+            "route",
+            "canonical",
+            "registry:andyl/main",
+            "route:public",
+            "--audience",
+            "nix_cache",
+            "--plan",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Hub {
+                command: HubCmd::Route {
+                    command: HubRouteCmd::Canonical {
+                        ref surface_ref,
+                        ref route,
+                        ref audience,
+                        ..
+                    }
+                }
+            } if surface_ref == "registry:andyl/main"
+                && route == "route:public"
+                && audience == "nix_cache"
         ));
     }
 

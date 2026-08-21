@@ -57,5 +57,8 @@ mkDerivation {
     };
   };
 
-  meta.description = "RFC-0001 package expose renderer smoke test payload";
+  meta = {
+    description = "Package expose renderer smoke test payload";
+    license = "Apache-2.0";
+  };
 }

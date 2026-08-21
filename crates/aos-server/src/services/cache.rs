@@ -118,7 +118,8 @@ impl CacheService for CacheServiceImpl {
             &self.state.store_dir,
             &self.state.config.compression,
             Some(&self.state.signer),
-        );
+        )
+        .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("narinfo rendering: {e}")))?;
 
         // Parse the narinfo text back into structured fields.
         let response = parse_narinfo_to_proto(&narinfo_text)?;

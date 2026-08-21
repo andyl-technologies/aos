@@ -13,6 +13,10 @@
 //!
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
+//! - [`pack_index`] — bounded SHA-256 pack-index structural and checksum
+//!   validation.
+//! - [`keymap`] — machine paths, mutability, and HTTP response metadata shared
+//!   by producers and serving runtimes.
 //! - [`sshsig`] — OpenSSH SSHSIG signature parsing and Ed25519
 //!   verification (the format `git -c gpg.format=ssh` produces).
 //! - [`tagobject`] — the pure header parser for git tag objects plus the
@@ -31,8 +35,10 @@
 //! those live in the consumer (`aos-hub`'s `surface::load`, or the
 //! SPA's own fetch glue) so this core stays pure.
 
+pub mod keymap;
 pub mod manifest;
 pub mod object;
+pub mod pack_index;
 pub mod refs;
 pub mod sshsig;
 pub mod stack;

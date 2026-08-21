@@ -110,7 +110,7 @@ mkDerivation {
           -H 'connect-protocol-version: 1' \
           --data '{"slug":"demo/cdn","channel":"stable"}' \
           "$HUB/aos.hub.v1.ImageService/ListImages")"
-        if printf '%s' "$api_list" | grep -q 'aos-e2e.img' \
+        if printf '%s' "$api_list" | grep -q 'aos-e2e.img.zst' \
            && printf '%s' "$api_list" | grep -q 'aos-e2e.qcow2'; then
           pass "Image API lists the complete apr-produced integrity catalog"
         else die "Image API omitted producer output"; fi
@@ -181,7 +181,7 @@ mkDerivation {
           aos image download --hub "$HUB" --registry demo/cdn --channel stable \
             --format raw >/dev/null
         )
-        if cmp -s "$work/expected.raw" "$work/default-name/aos-e2e.img"; then
+        if cmp -s "$work/expected.raw" "$work/default-name/aos-e2e.img.zst"; then
           pass "aos image download uses the signed useful filename"
         else die "default image filename or bytes are incorrect"; fi
 
@@ -197,6 +197,19 @@ mkDerivation {
            && printf '%s' "$resume_json" | grep -q '"resumedFrom":3'; then
           pass "aos image download resumes with Range and verifies exact QCOW2 bytes"
         else die "resumed QCOW2 download or JSON result is incorrect"; fi
+
+        # A syntactically valid but corrupt partial must not require a second
+        # invocation. The CLI first attempts a ranged continuation, detects the
+        # whole-file digest mismatch, clears the retained descriptor, and then
+        # retries the same signed URL from byte zero.
+        corrupt_out="$work/corrupt-resume.qcow2"
+        printf 'BAD' > "$work/.corrupt-resume.qcow2.aos-part"
+        corrupt_json="$(aos --json image download --hub "$HUB" --registry demo/cdn \
+          --channel stable --format qcow2 --output "$corrupt_out")"
+        if cmp -s "$work/expected.qcow2" "$corrupt_out" \
+           && printf '%s' "$corrupt_json" | grep -q '"resumedFrom":0'; then
+          pass "aos image download recovers from a corrupt resumable prefix"
+        else die "corrupt resumable prefix was not recovered in one invocation"; fi
 
         # 9. Exchange the seed's one-time provisioning secret for a real JWT.
         #    Anonymous private discovery must fail; org-scoped bearer access

@@ -112,6 +112,17 @@
     import fs from "node:fs";
     import path from "node:path";
     const BASE = "http://127.0.0.1:8799";
+
+    function humanSize(bytes) {
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let value = bytes;
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      return unit === 0 ? `''${bytes} B` : `''${value.toFixed(1)} ''${units[unit]}`;
+    }
     const fixtureRoot = process.env.AOS_HUB_E2E_IMAGE_FIXTURE;
     if (!fixtureRoot) throw new Error("AOS_HUB_E2E_IMAGE_FIXTURE is required");
     const objects = {};
@@ -261,7 +272,7 @@
     if (rawDownload.status !== 200
         || downloaded.length !== rawBytes.length
         || !downloaded.every((byte, index) => byte === rawBytes[index])
-        || !rawDownload.headers.get("content-disposition")?.includes("aos-e2e.img")
+        || !rawDownload.headers.get("content-disposition")?.includes("aos-e2e.img.zst")
         || !rawDownload.headers.get("cache-control")?.includes("immutable")
         || rawDownload.headers.get("x-aos-sha256") !== rawSha256
         || !rawDownload.headers.get("repr-digest")?.startsWith("sha-256=:")) {
@@ -340,8 +351,8 @@
         || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
         || !imagesHtml.includes("x86_64")
-        || !imagesHtml.includes("qemu-kvm")
-        || !imagesHtml.includes(`''${(rawBytes.length / (1024 * 1024)).toFixed(1)} MiB`)
+        || !imagesHtml.includes("QEMU/KVM")
+        || !imagesHtml.includes(humanSize(rawBytes.length))
         || !imagesHtml.includes(rawSha256)
         || !imagesHtml.includes("verified")
         || !imagesHtml.includes("signed, unverified")
@@ -732,7 +743,7 @@ in
             --hub http://127.0.0.1:8799 \
             --registry failure/images-public --channel stable \
             > "\$work/cli-images.json"
-          ${grep}/bin/grep -q 'aos-e2e.img' "\$work/cli-images.json"
+          ${grep}/bin/grep -q 'aos-e2e.img.zst' "\$work/cli-images.json"
           ${aos}/bin/aos image download \
             --hub http://127.0.0.1:8799 \
             --registry failure/images-public --channel stable --format raw \

@@ -202,6 +202,81 @@ Review the returned effects and apply the exact plan with `--plan-id`,
 an HTTP object API. Credentials are separate purpose-scoped secret-version
 references and can be rotated or validated without replacing the binding.
 
+Delivery resources also use reviewed plans. Creation commands generate an
+opaque stable identity and print it in the plan; pass `--stable-id` when an
+external controller needs to choose that identity. A network boundary seals a
+complete initial revision at creation time, including its transport policy and
+the controller location that will verify it:
+
+```sh
+aos hub network-boundary add packages-edge \
+  --kind trusted-ingress \
+  --org acme \
+  --provider cloudflare \
+  --provider-account production \
+  --listener-id packages-worker \
+  --protected-transport required \
+  --probe-location cloudflare-worker \
+  --idempotency-key plan-packages-boundary \
+  --plan
+```
+
+HTTPS endpoints require an explicit record of where TLS terminates:
+
+```sh
+aos hub endpoint add https://packages.example.com \
+  --org acme \
+  --network-boundary instance:public@1 \
+  --ingress hub \
+  --listener-provider hub-worker \
+  --listener-resource-id packages-edge \
+  --tls-provider external \
+  --certificate-ref edge-certificate:packages.example.com \
+  --probe-provider worker-secret \
+  --probe-signer-secret-ref packages-endpoint-v1 \
+  --probe-public-key '<base64url-no-padding Ed25519 public key>' \
+  --idempotency-key plan-packages-endpoint
+```
+
+Use `--tls-provider hub-managed` when the Hub owns certificate issuance.
+Cleartext endpoints require `--acknowledge-cleartext` and reject TLS options.
+The probe identity pins the responder key for this immutable endpoint
+generation; its matching private seed stays in the named runtime secret
+provider and rotates only through a new generation.
+
+Verify a delivery domain by hostname or stable identity after its endpoint and
+probe signer are configured:
+
+```sh
+aos hub domain verify packages.example.com \
+  --if-version <domain-resource-version> \
+  --idempotency-key verify-packages-example \
+  --plan
+```
+
+The probe response is signed over the request nonce, hostname, endpoint
+identity, and exact endpoint generation. Applying successful evidence advances
+the domain observation and promotes that endpoint generation to healthy in one
+transaction. Enabled routes that previously failed while the endpoint was not
+ready are queued for a fresh probe automatically; they do not need to be
+recreated. A concurrently revised endpoint causes the entire reconciliation to
+fail closed without advancing either resource.
+
+Routes are created disabled. Enabling a route queues its current configuration
+probe, and the route remains ineligible for traffic until that probe succeeds.
+Use `aos hub route explain` with
+`--access-class web`, `git`, or `nix_cache` to inspect the selected access
+policy, publication, and placement before enabling a route. Canonical route
+selection is explicit and independent for the `web`, `git`, and `nix_cache`
+audiences, and includes the typed surface so one route identity cannot be
+selected for the wrong registry or cache:
+
+```sh
+aos hub route canonical registry:acme/packages route:packages-public \
+  --audience nix_cache \
+  --plan
+```
+
 The remote client includes registry, cache, organization, project, binding,
 webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never

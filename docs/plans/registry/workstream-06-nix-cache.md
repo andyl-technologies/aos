@@ -235,8 +235,8 @@ publish:
 │
 ├─ for each registry store path (packages/*.toml store_path + SysrootImageEntry):
 │   ├─ 1. read PathInfo (NarHash/NarSize/References/Deriver) from the Nix store (§3.2)
-│   ├─ 2. produce nar/<storehash>-<narhash>.nar.zst  (compress once)         (§3.2)
-│   ├─ 3. compute FileHash/FileSize of that .nar.zst  (reuse / capture)      (§3.2)
+│   ├─ 2. compress once while computing FileHash/FileSize                    (§3.2)
+│   ├─ 3. name nar/<storehash>-<filehash>.nar.zst from captured FileHash    (§3.2)
 │   ├─ 4. render <storehash>.narinfo via format_narinfo, signed w/ the key   (§3.2)
 │   └─ 5. UPLOAD <storehash>.narinfo + nar/<…>.nar.zst as static CDN files    (§3.3)
 │
@@ -311,24 +311,25 @@ For each registry store path, the generator:
 
 1. Reads the path's `PathInfo` from the Nix store (`nix-store --query` /
    `nix path-info`) to fill `CacheEntryInput` (NarHash/NarSize/References/Deriver).
-2. Writes `nar/<storehash>-<narhash>.nar.zst` (the URL scheme `format_narinfo` uses,
-   colon→dash, [`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs)) by
-   `nix-store --dump | zstd`. Capture the SHA-256 and byte length of the compressed
-   output **in the same pass** to get `FileHash`/`FileSize` — equivalent to
+2. Runs `nix-store --dump | zstd` into a temporary file and captures the SHA-256
+   and byte length of the compressed output **in the same pass** to get
+   `FileHash`/`FileSize` — equivalent to
    `compute_file_hash_size` ([`compress.rs:143`](../../../crates/aos-server/src/compress.rs))
    but streaming, so large closures don't buffer the whole compressed NAR in memory
    ([`compress.rs:142`](../../../crates/aos-server/src/compress.rs)).
-3. Renders `<storehash>.narinfo` via `render_static_narinfo` (§3.1), passing the
+3. Renames that file to `nar/<storehash>-<filehash>.nar.zst`, so the exact
+   transferred bytes determine the immutable URL.
+4. Renders `<storehash>.narinfo` via `render_static_narinfo` (§3.1), passing the
    captured `file_hash`/`file_size` and the `NarInfoSigner` loaded with the one
    Ed25519 key — producing a **signed** static narinfo.
-4. Emits one `nix-cache-info` for the whole cache base (`StoreDir: /nix/store`,
+5. Emits one `nix-cache-info` for the whole cache base (`StoreDir: /nix/store`,
    `WantMassQuery: 1`, `Priority:`).
 
 ### 3.3 Upload the static files to the CDN
 
 The static files are uploaded under `{cache-base}`:
 `{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
-`{cache-base}/nar/<storehash>-<narhash>.nar.zst`. Upload is part of the publish
+`{cache-base}/nar/<storehash>-<filehash>.nar.zst`. Upload is part of the publish
 pipeline (alongside the git objects/packs upload — see
 [publishing.md](../../registry/publishing.md) / WS-01/02). The
 [`aos-cache`](../../../crates/aos-cache/src/backend/mod.rs) backend traits
@@ -487,7 +488,7 @@ table marks each as **CURRENT(reusable)** (logic exists, reuse it), **TARGET(bui
 | FileHash/FileSize compute ([`narinfo.rs:45-59`](../../../crates/aos-server/src/narinfo.rs), [`compress.rs:143`](../../../crates/aos-server/src/compress.rs)) | reuse, or capture hash/size while writing `nar/<…>.nar.zst` in one streaming pass (§3.2) | avoid double compression / in-memory buffering for large closures |
 | Ed25519 fingerprint + `Sig:` ([`sign.rs:14-60`](../../../crates/aos-server/src/sign.rs), [`narinfo.rs:87-93`](../../../crates/aos-server/src/narinfo.rs)) | sign each static narinfo at publish with the one key; publish the nix-form pubkey (§3.2, §6.1) | sign logic reused; signing moves to generation time |
 | References basename-expansion ([`narinfo.rs:71-74`](../../../crates/aos-server/src/narinfo.rs)) | reused via `format_narinfo` so the signed fingerprint matches stock `nix` (§2.4) | producer must expand refs identically |
-| NAR URL scheme ([`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs)); consumer follows it ([`download.rs:184`](../../../crates/aos-package/src/download.rs)) | write `nar/<storehash>-<narhash>.nar.zst` under that exact name (§3.2) | narinfo `URL:` and the static file name must agree |
+| NAR URL scheme ([`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs)); consumer follows it ([`download.rs:184`](../../../crates/aos-package/src/download.rs)) | write `nar/<storehash>-<filehash>.nar.zst` under that exact name (§3.2) | narinfo `URL:` and the static file name must agree; the transferred bytes determine the immutable URL |
 | `resolve_mirror` / `resolve_mirrors` over `[[caches]]` ([`download.rs:85-97`](../../../crates/aos-package/src/download.rs), [`registry_ops.rs:404-410`](../../../crates/aos-package/src/registry_ops.rs)) | **commit a `[[caches]]`** entry pointing at `{cache-base}` (§4) | resolution exists (DONE); the registry needs the committed entry |
 | narinfo-driven consumer ([`download.rs`](../../../crates/aos-package/src/download.rs), `7149acf6`) | — (DONE) | consumes the static cache as-is; no WS-06 work |
 
@@ -508,7 +509,7 @@ table marks each as **CURRENT(reusable)** (logic exists, reuse it), **TARGET(bui
 
 - [ ] For each registry store path (`packages/*.toml` `store_path` + each
       `SysrootImageEntry`): read `PathInfo`, write
-      `nar/<storehash>-<narhash>.nar.zst`, capture FileHash/FileSize in one pass.
+      `nar/<storehash>-<filehash>.nar.zst`, capture FileHash/FileSize in one pass.
 - [ ] Render `<storehash>.narinfo` via the extracted renderer, **signed** with the
       one Ed25519 key.
 - [ ] Generate one `nix-cache-info` (`StoreDir` / `WantMassQuery: 1` / `Priority`).

@@ -58,7 +58,8 @@
     && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.store_paths
     && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.nar_hashes
     && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.package_names
-    && ((value.inputs.config_modules.origins or []) == []
+    && ((value.inputs.config_modules.origins or [])
+      == []
       || value.inputs.config_modules.count == builtins.length value.inputs.config_modules.origins)
     && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.module_abi_compat
     && builtins.match "/nix/store/.*" value.inputs.base_lib.store_path != null

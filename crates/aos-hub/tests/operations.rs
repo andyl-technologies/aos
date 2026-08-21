@@ -428,13 +428,7 @@ async fn begin_publication(
                 "sha256": hex::encode(Sha256::digest(bytes)),
                 "byteSize": bytes.len(),
                 "kind": kind,
-                "mediaType": if path.ends_with(".json") {
-                    "application/json"
-                } else if path.ends_with(".toml") {
-                    "application/toml"
-                } else {
-                    "application/octet-stream"
-                },
+                "mediaType": aos_hub_core::keymap::content_type(path),
             })).collect::<Vec<_>>(),
         }),
         Some(auth),
@@ -565,6 +559,61 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     assert!(status.is_success(), "{status}");
     assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
     assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+}
+
+#[tokio::test]
+async fn concurrent_pointer_uploads_share_the_phase_transition() {
+    let (db, _surface, _binding, _placement) = empty_managed().await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let token = bearer(
+        Principal::service_account(1),
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
+        &[Permission::Publish],
+    );
+
+    let objects = [
+        ("objects/ab/cd", b"data".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+        (
+            "nix-cache-info",
+            b"StoreDir: /nix/store\n".as_slice(),
+            "mutable_pointer",
+        ),
+    ];
+    let (status, publication) = begin_publication(
+        &app,
+        &token,
+        "acme/infra/prod/cdn",
+        "pointer-race",
+        &objects,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+
+    let (status, _) = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "objects/ab/cd"),
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+
+    let refs = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "info/refs"),
+        &token,
+        Vec::new(),
+    );
+    let cache_info = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "nix-cache-info"),
+        &token,
+        b"StoreDir: /nix/store\n".to_vec(),
+    );
+    let ((refs_status, _), (cache_info_status, _)) = tokio::join!(refs, cache_info);
+    assert!(refs_status.is_success(), "{refs_status}");
+    assert!(cache_info_status.is_success(), "{cache_info_status}");
 }
 
 #[tokio::test]

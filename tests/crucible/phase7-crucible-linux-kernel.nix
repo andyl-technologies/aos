@@ -49,13 +49,15 @@
     {
       "x86_64-linux" = "ttyS0";
       "aarch64-linux" = "ttyAMA0";
-    }.${pkgs.stdenv.hostPlatform.system}
+    }
+    .${pkgs.stdenv.hostPlatform.system}
     or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
   fixtureSerialConsoleConfig =
     {
       "x86_64-linux" = "CONFIG_SERIAL_8250_CONSOLE=y";
       "aarch64-linux" = "CONFIG_SERIAL_AMBA_PL011_CONSOLE=y";
-    }.${pkgs.stdenv.hostPlatform.system}
+    }
+    .${pkgs.stdenv.hostPlatform.system}
     or (throw "crucible phase7 linux-crucible check does not support ${pkgs.stdenv.hostPlatform.system}");
   linuxCruciblePname = linuxCrucibleMetadata.pname or "(missing)";
   linuxCrucibleFixtureOnly =

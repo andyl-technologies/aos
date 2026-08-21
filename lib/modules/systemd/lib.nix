@@ -560,7 +560,8 @@ in rec {
         else throw "generateUnits: invalid systemd inventory path '${path}' in ${builtins.toString pkg}";
       logicalPath = lib.removePrefix root path;
       safe =
-        path != ""
+        path
+        != ""
         && !(hasPrefix "/" path)
         && !(lib.hasSuffix "/" path)
         && !(elem "" components)
@@ -603,26 +604,31 @@ in rec {
       then throw "generateUnits: upstreamUnits/upstreamWants require package"
       else filter (entry: entry.root == upstreamRoot) (entriesFor package "@base");
     requestedUpstreamEntries = concatLists (
-      builtins.map (name: let
-        matches = filter (entry: entry.logicalPath == name) upstreamInventory;
-      in
-        if length matches == 1
-        then matches
-        else throw "generateUnits: upstream unit '${name}' is missing or ambiguous in systemdUnitInventory.${type}"
-      ) upstreamUnits
-      ++ builtins.map (wanted: let
-        prefix = "${wanted}/";
-        matches = filter (entry: hasPrefix prefix entry.logicalPath) upstreamInventory;
-      in
-        if matches != []
-        then matches
-        else throw "generateUnits: upstream wants directory '${wanted}' is missing from systemdUnitInventory.${type}"
-      ) upstreamWants
+      builtins.map (
+        name: let
+          matches = filter (entry: entry.logicalPath == name) upstreamInventory;
+        in
+          if length matches == 1
+          then matches
+          else throw "generateUnits: upstream unit '${name}' is missing or ambiguous in systemdUnitInventory.${type}"
+      )
+      upstreamUnits
+      ++ builtins.map (
+        wanted: let
+          prefix = "${wanted}/";
+          matches = filter (entry: hasPrefix prefix entry.logicalPath) upstreamInventory;
+        in
+          if matches != []
+          then matches
+          else throw "generateUnits: upstream wants directory '${wanted}' is missing from systemdUnitInventory.${type}"
+      )
+      upstreamWants
     );
 
     allExternalEntries = normalPackageEntries ++ requestedUpstreamEntries;
     externalNames = builtins.map (entry: entry.logicalPath) allExternalEntries;
-    duplicateExternalNames = filter
+    duplicateExternalNames =
+      filter
       (name: length (filter (candidate: candidate == name) externalNames) > 1)
       (lib.unique externalNames);
 
@@ -667,7 +673,8 @@ in rec {
       ++ builtins.map (target: "${target}.requires/${name}") unit.requiredBy
       ++ builtins.map (target: "${target}.upholds/${name}") unit.upheldBy)
     renderedUnits));
-    survivingExternalEntries = filter
+    survivingExternalEntries =
+      filter
       (entry: !(elem entry.logicalPath replacingPaths))
       allExternalEntries;
     externalRecords = builtins.listToAttrs (builtins.map (entry:
@@ -695,8 +702,7 @@ in rec {
   in
     if duplicateExternalNames != []
     then throw "generateUnits: package/upstream unit collision at ${concatStringsSep ", " duplicateExternalNames}"
-    else
-      builtins.seq typeDir (externalRecords // renderedUnits);
+    else builtins.seq typeDir (externalRecords // renderedUnits);
 
   # unitsToEtc — flatten pure unit records into manifest `/etc` entries.
   # This is shared by the config manifest and role exposure so the pure plan
@@ -704,11 +710,13 @@ in rec {
   unitsToEtc = units: let
     checkedEntries = description: entries: let
       names = builtins.map (entry: entry.name) entries;
-      conflicts = builtins.filter
+      conflicts =
+        builtins.filter
         (name:
           builtins.any
           (candidate:
-            candidate != name
+            candidate
+            != name
             && (hasPrefix "${name}/" candidate || hasPrefix "${candidate}/" name))
           names
           || builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
@@ -730,17 +738,18 @@ in rec {
       ]
       else [
         (lib.nameValuePair "systemd/system/${unitPath}" (
-        if unit.enable
-        then {
-          kind = "text";
-          inherit (unit) text mode;
-        }
-        else {
-          kind = "symlink";
-          target = "/dev/null";
-        }
-      ))
-      ]) units);
+          if unit.enable
+          then {
+            kind = "text";
+            inherit (unit) text mode;
+          }
+          else {
+            kind = "symlink";
+            target = "/dev/null";
+          }
+        ))
+      ])
+    units);
 
     installEntries = concatLists (mapAttrsToList (key: unit: let
       name = unit.name or key;
@@ -748,30 +757,30 @@ in rec {
       if unit ? externalEntry
       then []
       else
-      builtins.map (alias:
-        lib.nameValuePair "systemd/system/${alias}" {
-          kind = "symlink";
-          target = name;
-        })
-      unit.aliases
-      ++ builtins.map (target:
-        lib.nameValuePair "systemd/system/${target}.wants/${name}" {
-          kind = "symlink";
-          target = "../${name}";
-        })
-      unit.wantedBy
-      ++ builtins.map (target:
-        lib.nameValuePair "systemd/system/${target}.requires/${name}" {
-          kind = "symlink";
-          target = "../${name}";
-        })
-      unit.requiredBy
-      ++ builtins.map (target:
-        lib.nameValuePair "systemd/system/${target}.upholds/${name}" {
-          kind = "symlink";
-          target = "../${name}";
-        })
-      unit.upheldBy)
+        builtins.map (alias:
+          lib.nameValuePair "systemd/system/${alias}" {
+            kind = "symlink";
+            target = name;
+          })
+        unit.aliases
+        ++ builtins.map (target:
+          lib.nameValuePair "systemd/system/${target}.wants/${name}" {
+            kind = "symlink";
+            target = "../${name}";
+          })
+        unit.wantedBy
+        ++ builtins.map (target:
+          lib.nameValuePair "systemd/system/${target}.requires/${name}" {
+            kind = "symlink";
+            target = "../${name}";
+          })
+        unit.requiredBy
+        ++ builtins.map (target:
+          lib.nameValuePair "systemd/system/${target}.upholds/${name}" {
+            kind = "symlink";
+            target = "../${name}";
+          })
+        unit.upheldBy)
     units);
   in
     checkedEntries "systemd unit/install entries" (unitEntries ++ installEntries);
@@ -780,41 +789,43 @@ in rec {
   # the source unit. This stays pure data and deliberately keys aliases and
   # install symlinks to the unit they point at, not to the target directory.
   unitsToOwnership = units: owners: let
-    entries = concatLists (mapAttrsToList (key: unit: let
-      name = unit.name or key;
-      owner = unit.owner or (owners.${name} or (throw "unitsToOwnership: missing owner for ${name}"));
-      unitPath =
-        if unit.overrideStrategy == "asDropin"
-        then "${name}.d/overrides.conf"
-        else name;
-      owned = path: lib.nameValuePair "systemd/system/${path}" owner;
-    in
-      if unit ? externalEntry
-      then [(owned unitPath)]
-      else
-        [(owned unitPath)]
-        ++ builtins.map owned unit.aliases
-        ++ builtins.map (target: owned "${target}.wants/${name}") unit.wantedBy
-        ++ builtins.map (target: owned "${target}.requires/${name}") unit.requiredBy
-        ++ builtins.map (target: owned "${target}.upholds/${name}") unit.upheldBy
-    )
-    units);
+    entries = concatLists (mapAttrsToList (
+        key: unit: let
+          name = unit.name or key;
+          owner = unit.owner or (owners.${name} or (throw "unitsToOwnership: missing owner for ${name}"));
+          unitPath =
+            if unit.overrideStrategy == "asDropin"
+            then "${name}.d/overrides.conf"
+            else name;
+          owned = path: lib.nameValuePair "systemd/system/${path}" owner;
+        in
+          if unit ? externalEntry
+          then [(owned unitPath)]
+          else
+            [(owned unitPath)]
+            ++ builtins.map owned unit.aliases
+            ++ builtins.map (target: owned "${target}.wants/${name}") unit.wantedBy
+            ++ builtins.map (target: owned "${target}.requires/${name}") unit.requiredBy
+            ++ builtins.map (target: owned "${target}.upholds/${name}") unit.upheldBy
+      )
+      units);
+  in let
+    names = builtins.map (entry: entry.name) entries;
+    conflicts =
+      builtins.filter
+      (name:
+        builtins.any
+        (candidate:
+          candidate
+          != name
+          && (hasPrefix "${name}/" candidate || hasPrefix "${candidate}/" name))
+        names
+        || builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
+      (lib.unique names);
   in
-    let
-      names = builtins.map (entry: entry.name) entries;
-      conflicts = builtins.filter
-        (name:
-          builtins.any
-          (candidate:
-            candidate != name
-            && (hasPrefix "${name}/" candidate || hasPrefix "${candidate}/" name))
-          names
-          || builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
-        (lib.unique names);
-    in
-      if conflicts == []
-      then builtins.listToAttrs entries
-      else throw "systemd ownership entries overlap at final /etc target(s): ${builtins.concatStringsSep ", " conflicts}";
+    if conflicts == []
+    then builtins.listToAttrs entries
+    else throw "systemd ownership entries overlap at final /etc target(s): ${builtins.concatStringsSep ", " conflicts}";
 
   # materializeUnits — thin builder adapter for manifest systemd entries.
   materializeUnits = {
@@ -824,9 +835,11 @@ in rec {
   }: let
     prefix = "systemd/system/";
     systemdEntries = filterAttrs (path: _entry: hasPrefix prefix path) etc;
-    entries = builtins.listToAttrs (mapAttrsToList (path: entry:
-      lib.nameValuePair (lib.removePrefix prefix path) entry
-    ) systemdEntries);
+    entries = builtins.listToAttrs (mapAttrsToList (
+        path: entry:
+          lib.nameValuePair (lib.removePrefix prefix path) entry
+      )
+      systemdEntries);
 
     jobScriptDrvs = mapAttrs (key: script:
       pkgs.writeTextFile {
@@ -853,22 +866,24 @@ in rec {
     textEntries;
 
     materializeText = concatStrings (mapAttrsToList (path: unitDrv: ''
-      mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
-      ln -s ${lib.escapeShellArg "${unitDrv}/${path}"} "$out/${path}"
-    '') unitDrvs);
+        mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
+        ln -s ${lib.escapeShellArg "${unitDrv}/${path}"} "$out/${path}"
+      '')
+      unitDrvs);
     materializeLinks = concatStrings (mapAttrsToList (path: entry: ''
-      mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
-      target=${lib.escapeShellArg entry.target}
-      case "$target" in
-        /nix/store/*)
-          if [ ! -e "$target" ] && [ ! -L "$target" ]; then
-            echo "materializeUnits: inventory target for ${path} does not exist: $target" >&2
-            exit 1
-          fi
-          ;;
-      esac
-      ln -sfn ${lib.escapeShellArg entry.target} "$out/${path}"
-    '') linkEntries);
+        mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
+        target=${lib.escapeShellArg entry.target}
+        case "$target" in
+          /nix/store/*)
+            if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+              echo "materializeUnits: inventory target for ${path} does not exist: $target" >&2
+              exit 1
+            fi
+            ;;
+        esac
+        ln -sfn ${lib.escapeShellArg entry.target} "$out/${path}"
+      '')
+      linkEntries);
   in
     if unsupportedEntries != {}
     then throw "materializeUnits: unsupported manifest entry kinds below /etc/systemd/system"

@@ -1,9 +1,8 @@
 ##! modules/base/checks.nix — Check-to-derivation transformation module
 ##!
-##! Reads check specifications from system.checks and produces runnable VM
-##! test derivations in system.build.checks. This keeps check derivation
-##! construction inside the module fixed point rather than in external
-##! collection scripts.
+##! Reads check specifications from system.checks and adds their runnable VM
+##! derivations to system.build.checks. Other modules may add build-time
+##! artifact checks to the same per-system check namespace.
 ##!
 ##! Each check group defined by a module (e.g. system.checks.ssh) becomes a
 ##! VM test derivation at system.build.checks.ssh.
@@ -26,8 +25,9 @@ in {
     type = lib.types.attrsOf lib.types.package;
     default = {};
     description = ''
-      VM test derivations generated from system.checks specifications.
-      Each check group becomes a runnable VM test derivation.
+      Per-system validation derivations. VM checks are generated from
+      system.checks specifications; image and package modules may add focused
+      build-time artifact checks alongside them.
     '';
   };
 

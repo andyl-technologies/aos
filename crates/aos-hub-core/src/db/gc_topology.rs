@@ -1504,6 +1504,110 @@ impl Database {
             .transpose()
     }
 
+    /// Returns an active write ticket that is safe to hand back to a retrying client.
+    ///
+    /// The lookup pins the complete reconciled writer identity in addition to
+    /// the request identity. An old ticket therefore cannot cross a placement,
+    /// binding, credential, inventory, or authority transition merely because
+    /// its object key still matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid lifecycle state, database failure, or
+    /// malformed persisted data.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reusable_cache_write_ticket(
+        &self,
+        cache_id: i64,
+        object_key: &str,
+        declared_size: i64,
+        upload_kind: &str,
+        state: &str,
+        intended_object_hash: Option<&str>,
+        placement_id: i64,
+        expected_placement_resource_version: i64,
+        expected_binding_write_revision: i64,
+        expected_write_credential_generation: i64,
+        now: i64,
+    ) -> Result<Option<CacheWriteTicketRecord>> {
+        if !matches!(
+            (upload_kind, state),
+            ("single", "observing")
+                | ("single", "active")
+                | ("multipart", "observing" | "active" | "completing")
+        ) {
+            bail!("reusable cache write ticket lifecycle is invalid");
+        }
+        self.backend
+            .query_opt(
+                "SELECT ticket.ticket_id, ticket.cache_id, ticket.object_key,
+                        ticket.declared_size, ticket.observed_final_size,
+                        ticket.uploaded_size, ticket.upload_kind,
+                        ticket.placement_id, ticket.placement_resource_version,
+                        ticket.placement_write_spec_version, ticket.storage_binding_id,
+                        ticket.binding_resource_version, ticket.binding_write_revision,
+                        ticket.write_credential_purpose,
+                        ticket.write_credential_generation,
+                        ticket.presign_credential_purpose,
+                        ticket.presign_credential_generation,
+                        ticket.starting_inventory_generation,
+                        ticket.covered_inventory_generation, ticket.backend_upload_id,
+                        ticket.state, ticket.expires_at, ticket.resource_version,
+                        ticket.prior_object_size, ticket.prior_object_hash,
+                        ticket.prior_object_etag, ticket.intended_object_hash
+                 FROM cache_write_tickets ticket
+                 JOIN surface_placement_effective placement
+                   ON placement.id = ticket.placement_id
+                  AND placement.cache_id = ticket.cache_id
+                 JOIN storage_bindings binding
+                   ON binding.id = ticket.storage_binding_id
+                 JOIN storage_binding_credential_revisions credential
+                   ON credential.storage_binding_id = ticket.storage_binding_id
+                  AND credential.purpose = ticket.write_credential_purpose
+                  AND credential.generation = ticket.write_credential_generation
+                 JOIN cache_gc_state cache_state ON cache_state.cache_id = ticket.cache_id
+                 WHERE ticket.cache_id = ?1 AND ticket.object_key = ?2
+                   AND ticket.declared_size = ?3 AND ticket.upload_kind = ?4
+                   AND ticket.state = ?5 AND ticket.active_cache_slot = 1
+                   AND ticket.expires_at > ?6
+                   AND ((ticket.intended_object_hash = ?7)
+                     OR (ticket.intended_object_hash IS NULL AND ?7 IS NULL)
+                     OR (?4 = 'single' AND ?5 = 'active' AND ?7 IS NULL
+                       AND ticket.intended_object_hash IS NOT NULL))
+                   AND ticket.placement_id = ?8
+                   AND ticket.placement_resource_version = ?9
+                   AND placement.resource_version = ticket.placement_resource_version
+                   AND placement.write_spec_version = ticket.placement_write_spec_version
+                   AND placement.storage_binding_id = ticket.storage_binding_id
+                   AND placement.authority_observed_binding_write_revision
+                     = ticket.binding_write_revision
+                   AND ticket.binding_write_revision = ?10
+                   AND ticket.write_credential_generation = ?11
+                   AND placement.effective_write_enabled = 1
+                   AND binding.resource_version = ticket.binding_resource_version
+                   AND credential.validation_state = 'valid'
+                   AND cache_state.inventory_generation
+                     = ticket.starting_inventory_generation
+                   AND (?5 <> 'completing' OR ticket.backend_upload_id IS NOT NULL)",
+                &vals![
+                    cache_id,
+                    object_key,
+                    declared_size,
+                    upload_kind,
+                    state,
+                    now,
+                    intended_object_hash,
+                    placement_id,
+                    expected_placement_resource_version,
+                    expected_binding_write_revision,
+                    expected_write_credential_generation
+                ],
+            )
+            .await?
+            .map(|row| row_to_cache_write_ticket(&row))
+            .transpose()
+    }
+
     /// Lists expired active write tickets for durable backend recovery.
     ///
     /// # Errors
@@ -1911,7 +2015,56 @@ impl Database {
             .context("reconciled cache ticket disappeared")
     }
 
-    /// Attaches the opaque backend multipart id under ticket CAS.
+    /// Claims the bounded provider-creation window for one multipart ticket.
+    ///
+    /// The provider operation itself cannot participate in the database
+    /// transaction. This lease serializes attempts; a backend advertising
+    /// multipart support must separately guarantee bounded cleanup of an
+    /// incomplete provider upload whose response is lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale, expired, already-attached, or currently
+    /// claimed ticket, invalid identity, or database failure.
+    pub async fn claim_cache_write_backend_creation(
+        &self,
+        ticket_id: &str,
+        expected_version: i64,
+        create_token: &str,
+        lease_expires_at: i64,
+        now: i64,
+    ) -> Result<CacheWriteTicketRecord> {
+        validate_stable_key(create_token, "cache backend creation token")?;
+        if lease_expires_at <= now {
+            bail!("cache backend creation lease is invalid");
+        }
+        self.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets
+                 SET backend_create_token = ?3, backend_create_expires_at = ?4,
+                     resource_version = resource_version + 1
+                 WHERE ticket_id = ?1 AND resource_version = ?2
+                   AND upload_kind = 'multipart' AND state = 'active'
+                   AND active_cache_slot = 1 AND backend_upload_id IS NULL
+                   AND expires_at > ?5
+                   AND (backend_create_token IS NULL
+                     OR backend_create_expires_at <= ?5)",
+                vals![
+                    ticket_id,
+                    expected_version,
+                    create_token,
+                    lease_expires_at,
+                    now
+                ],
+            )
+            .expecting(1)])
+            .await?;
+        self.cache_write_ticket(ticket_id)
+            .await?
+            .context("claimed cache backend creation ticket disappeared")
+    }
+
+    /// Attaches the opaque backend multipart id under ticket and creation-owner CAS.
     ///
     /// # Errors
     ///
@@ -1920,20 +2073,31 @@ impl Database {
         &self,
         ticket_id: &str,
         expected_version: i64,
+        expected_create_token: &str,
         backend_upload_id: &str,
         now: i64,
     ) -> Result<CacheWriteTicketRecord> {
+        validate_stable_key(expected_create_token, "cache backend creation token")?;
         if backend_upload_id.is_empty() {
             bail!("backend multipart upload id is empty");
         }
         self.backend
             .checked_batch(&[Statement::new(
                 "UPDATE cache_write_tickets
-                 SET backend_upload_id = ?3, resource_version = resource_version + 1
+                 SET backend_upload_id = ?4, backend_create_token = NULL,
+                     backend_create_expires_at = NULL,
+                     resource_version = resource_version + 1
                  WHERE ticket_id = ?1 AND resource_version = ?2
                    AND upload_kind = 'multipart' AND state = 'active'
-                   AND backend_upload_id IS NULL AND expires_at > ?4",
-                vals![ticket_id, expected_version, backend_upload_id, now],
+                   AND backend_upload_id IS NULL AND backend_create_token = ?3
+                   AND backend_create_expires_at > ?5 AND expires_at > ?5",
+                vals![
+                    ticket_id,
+                    expected_version,
+                    expected_create_token,
+                    backend_upload_id,
+                    now
+                ],
             )
             .expecting(1)])
             .await?;
@@ -2209,7 +2373,11 @@ impl Database {
             .context("completing cache ticket disappeared")
     }
 
-    /// Resolves an active ticket only while every pinned topology identity matches.
+    /// Resolves a live ticket only while every pinned topology identity matches.
+    ///
+    /// Callers may opt into a completing multipart ticket when replaying its
+    /// immutable part set or deterministic provider completion. Other write
+    /// paths continue to require `active`.
     ///
     /// # Errors
     ///
@@ -2221,6 +2389,7 @@ impl Database {
         cache_id: i64,
         object_key: &str,
         now: i64,
+        allow_completing_multipart: bool,
     ) -> Result<CacheWriteTicketRecord> {
         let row = self
             .backend
@@ -2258,7 +2427,10 @@ impl Database {
                   AND presign.generation = ticket.presign_credential_generation
                  JOIN cache_gc_state state ON state.cache_id = ticket.cache_id
                  WHERE ticket.ticket_id = ?1 AND ticket.cache_id = ?2
-                   AND ticket.object_key = ?3 AND ticket.state = 'active'
+                   AND ticket.object_key = ?3
+                   AND (ticket.state = 'active' OR (?5 = 1
+                     AND ticket.upload_kind = 'multipart'
+                     AND ticket.state = 'completing'))
                    AND ticket.active_cache_slot = 1 AND ticket.expires_at > ?4
                    AND placement.resource_version = ticket.placement_resource_version
                    AND placement.write_spec_version = ticket.placement_write_spec_version
@@ -2272,7 +2444,13 @@ impl Database {
                      OR presign.validation_state = 'valid')
                    AND state.inventory_generation
                      = ticket.starting_inventory_generation",
-                &vals![ticket_id, cache_id, object_key, now],
+                &vals![
+                    ticket_id,
+                    cache_id,
+                    object_key,
+                    now,
+                    allow_completing_multipart
+                ],
             )
             .await?
             .context("cache write ticket is stale, expired, or retargeted")?;
@@ -2295,6 +2473,8 @@ impl Database {
             .checked_batch(&[
                 Statement::new(
                     "UPDATE cache_write_tickets SET state = 'completed',
+                       observed_final_size = CASE WHEN upload_kind = 'single'
+                         THEN declared_size ELSE observed_final_size END,
                        quota_state = CASE WHEN quota_state = 'reserved'
                          THEN 'committed' ELSE quota_state END,
                    active_cache_slot = NULL, finished_at = ?3,
@@ -5683,12 +5863,13 @@ impl Database {
                 "INSERT INTO object_placements
                  (surface_object_id, cache_id, registry_id, placement_id,
                   state, observed_hash, observed_size, etag,
-                  observed_inventory_generation, observed_at)
+                  observed_inventory_generation, observed_at,
+                  catalog_object_resource_version)
                  SELECT object.id, observation.cache_id,
                         NULL, observation.placement_id, observation.state,
                         observation.observed_hash, observation.observed_size,
                         observation.etag, observation.generation,
-                        observation.observed_at
+                        observation.observed_at, object.resource_version
                  FROM cache_inventory_object_observations observation
                  JOIN surface_objects object
                    ON object.cache_id = observation.cache_id
@@ -10493,6 +10674,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reusable_cache_write_ticket_requires_exact_live_request_and_writer() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.install_write_failure_test_tickets().await.unwrap();
+
+        let single = db
+            .reusable_cache_write_ticket(
+                1,
+                "single-pre",
+                1,
+                "single",
+                "observing",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(single.ticket_id, "cache-single-pre");
+        assert!(db
+            .reusable_cache_write_ticket(
+                1,
+                "single-pre",
+                2,
+                "single",
+                "observing",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .reusable_cache_write_ticket(
+                1,
+                "single-pre",
+                1,
+                "single",
+                "observing",
+                None,
+                1,
+                1,
+                1,
+                1,
+                100,
+            )
+            .await
+            .unwrap()
+            .is_none());
+
+        db.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET intended_object_hash = ?1
+                 WHERE ticket_id = 'cache-single-post'",
+                vals!["a".repeat(64)],
+            )
+            .expecting(1)])
+            .await
+            .unwrap();
+        let active_single = db
+            .reusable_cache_write_ticket(
+                1,
+                "single-post",
+                1,
+                "single",
+                "active",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active_single.ticket_id, "cache-single-post");
+
+        let multipart_observing = db
+            .reusable_cache_write_ticket(
+                1,
+                "multipart-pre",
+                1,
+                "multipart",
+                "observing",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(multipart_observing.ticket_id, "cache-multipart-pre");
+
+        db.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET backend_upload_id = 'backend-upload'
+                 WHERE ticket_id = 'cache-multipart-post'",
+                vec![],
+            )
+            .expecting(1)])
+            .await
+            .unwrap();
+        let multipart = db
+            .reusable_cache_write_ticket(
+                1,
+                "multipart-post",
+                1,
+                "multipart",
+                "active",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(multipart.ticket_id, "cache-multipart-post");
+
+        db.backend
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET state = 'completing'
+                 WHERE ticket_id = 'cache-multipart-post'",
+                vec![],
+            )
+            .expecting(1)])
+            .await
+            .unwrap();
+        let completing = db
+            .reusable_cache_write_ticket(
+                1,
+                "multipart-post",
+                1,
+                "multipart",
+                "completing",
+                None,
+                1,
+                1,
+                1,
+                1,
+                50,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completing.ticket_id, "cache-multipart-post");
+    }
+
+    #[tokio::test]
     async fn multipart_parts_admit_and_confirm_independently_under_concurrency() {
         let db = Database::open_in_memory().await.unwrap();
         db.install_write_failure_test_tickets().await.unwrap();
@@ -10701,7 +11044,11 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         assert_eq!(
             db.cache_write_recovery_cursor().await.unwrap(),
-            (i64::MIN, String::new(), 1)
+            (
+                crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START,
+                String::new(),
+                1
+            )
         );
 
         db.advance_cache_write_recovery_cursor(1, 42, "ticket-42", 100)

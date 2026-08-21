@@ -235,7 +235,10 @@ def download_file_with_checksum(url: str, destination_path: Path) -> str:
     last_exc = None
     for attempt in range(5):
         try:
-            with urllib.request.urlopen(req) as response:
+            # A half-open TCP/TLS connection can otherwise wedge a fixed-output
+            # build forever. Each attempt is independently reproducible, so
+            # bound stalled I/O and let the existing retry loop reconnect.
+            with urllib.request.urlopen(req, timeout=60) as response:
                 if response.status >= 400:
                     raise Exception(
                         f"Failed to fetch file from {url}. Status code: {response.status}"
@@ -248,7 +251,12 @@ def download_file_with_checksum(url: str, destination_path: Path) -> str:
                         f.write(chunk)
                         sha256_hash.update(chunk)
             return sha256_hash.hexdigest()
-        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError) as e:
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            ConnectionError,
+            TimeoutError,
+        ) as e:
             last_exc = e
             eprint(f"Fetch attempt {attempt + 1} for {url} failed: {e}; retrying...")
             sha256_hash = hashlib.sha256()

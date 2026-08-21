@@ -4,7 +4,6 @@
   mkCargoPackage,
   fetchCargoVendor,
   bash,
-  binutils,
   git-minimal,
   nix,
   openssh,
@@ -25,7 +24,7 @@
   sbsigntools,
   systemd,
   mtools,
-  qemu,
+  qemu-img,
   tpm2-tools,
   util-linux,
   which,
@@ -50,7 +49,6 @@
   #   systemd       systemctl and systemd-measure; systemctl also captures
   #                 failed-unit diagnostics after activation reconciliation
   #   sbsigntools   sbverify for image signature verification
-  #   binutils      objcopy for UKI section extraction
   #   zstd          pack-delta compression and store decompression
   #   util-linux    mount: scoped EFI System Partition remount transactions
   #   which         check_command_exists() preflight in the drain/sysroot path
@@ -59,7 +57,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash binutils nix sbsigntools systemd mtools qemu util-linux zstd which];
+  runtimeTools = [bash nix sbsigntools systemd mtools qemu-img util-linux zstd which];
   runtimeBinPath = lib.concatStringsSep ":" [
     (lib.makeBinPath runtimeTools)
     "${systemd}/lib/systemd"
@@ -114,6 +112,12 @@ in
     runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
+      # Keep the integration-test executable below the bounded verifier-
+      # capture limit. Cargo's test profile is separate from dev; strip any
+      # linked dependency DWARF in addition to the workspace's size-optimized
+      # test profile. The shipped release artifact is built independently
+      # above and is unaffected.
+      export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
@@ -125,7 +129,7 @@ in
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -190,7 +194,7 @@ in
       export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
       export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu}/bin/qemu-img"
+      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
