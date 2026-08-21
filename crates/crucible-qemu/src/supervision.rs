@@ -85,8 +85,9 @@ pub use ninep_io_servicer::{
 pub use node_step_gate::{
     QemuLiveExactSnapshotReport, QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateConfig,
     QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
-    QemuLiveNodeStepSchedule, launch_qemu_live_node, launch_qemu_live_node_exact_snapshot,
-    launch_qemu_live_node_exact_snapshot_paused, launch_qemu_live_node_restored,
-    run_qemu_live_exact_snapshot_gate, run_qemu_live_node_lifecycle_fault_gate,
-    run_qemu_live_node_step_gate,
+    QemuLiveNodeStepSchedule, QemuLiveRetainedNetworkSnapshotReport, launch_qemu_live_node,
+    launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_exact_snapshot_paused,
+    launch_qemu_live_node_restored, run_qemu_live_exact_snapshot_gate,
+    run_qemu_live_node_lifecycle_fault_gate, run_qemu_live_node_step_gate,
+    run_qemu_live_retained_network_snapshot_gate,
 };

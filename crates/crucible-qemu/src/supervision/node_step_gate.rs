@@ -56,8 +56,8 @@ use std::time::Duration;
 
 use crucible::model::{FaultActionCommitError, FaultActionSink};
 use crucible::{
-    AdvanceOutcome, BasicBlockCoverageConfig, Checkpoint, CheckpointKind, ContentHash,
-    ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
+    AdvanceOutcome, BackendInput, BasicBlockCoverageConfig, Checkpoint, CheckpointKind,
+    ContentHash, ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
 };
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
@@ -65,10 +65,10 @@ use crucible_device::{FsTree, NinepLatency};
 use crucible_shmem::{
     DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_FLAG_NONE,
     FAULT_COMMAND_FLAG_PREPARE_ONLY, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
-    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, NODE_FAULT_POLICY_JSON_MAGIC_V1,
-    NodeFaultEvidenceV1, NodeFaultFieldV1, NodeFaultOperationV1, NodeFaultPayloadV1,
-    NodeFaultTargetKindV1, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
-    node_fault_field,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, FrameDeliveryState,
+    NODE_FAULT_POLICY_JSON_MAGIC_V1, NodeFaultEvidenceV1, NodeFaultFieldV1, NodeFaultOperationV1,
+    NodeFaultPayloadV1, NodeFaultTargetKindV1, RegionAllocation, RegionConfig, SLOT_NET_ROUTER,
+    mmap_setup_region, node_fault_field,
 };
 
 use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
@@ -97,7 +97,10 @@ use super::QemuLiveHostIoRuntimeError;
 mod error;
 pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
-pub use exact_snapshot::run_qemu_live_exact_snapshot_gate;
+pub use exact_snapshot::{
+    QemuLiveRetainedNetworkSnapshotReport, run_qemu_live_exact_snapshot_gate,
+    run_qemu_live_retained_network_snapshot_gate,
+};
 
 /// Content-addressing domain for node-step launch artifacts.
 const GATE_DOMAIN: &str = "crucible.loaded-qemu-live-node-step.v1";
@@ -225,6 +228,7 @@ pub struct QemuLiveNodeStepGateConfig {
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
+    boot_network_backpressure_capture: Option<Vec<u8>>,
     shmem_block: Option<QemuLiveNodeStepBlockConfig>,
     shmem_ninep: Option<QemuLiveNodeStepNinepConfig>,
     accelerator: bool,
@@ -302,6 +306,7 @@ impl QemuLiveNodeStepGateConfig {
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
+            boot_network_backpressure_capture: None,
             shmem_block: None,
             shmem_ninep: None,
             accelerator: false,
@@ -354,6 +359,7 @@ impl QemuLiveNodeStepGateConfig {
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
+            boot_network_backpressure_capture: None,
             shmem_block: None,
             shmem_ninep: None,
             accelerator: false,
@@ -490,6 +496,18 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn with_shmem_network_mac(mut self, mac: impl Into<String>) -> Self {
         self.shmem_network_mac = Some(mac.into());
+        self
+    }
+
+    /// Returns this configuration with one exact-boundary boot RX canary.
+    ///
+    /// This is reserved for the fresh-process retained-network checkpoint gate.
+    /// The initial process stops at icount 1 after real QEMU backpressure; a
+    /// restore launch does not republish the canary because it comes from the
+    /// authenticated node continuation.
+    #[must_use]
+    pub fn with_boot_network_backpressure_capture(mut self, payload: Vec<u8>) -> Self {
+        self.boot_network_backpressure_capture = Some(payload);
         self
     }
 
@@ -1706,6 +1724,7 @@ fn run_one_scenario(
     })
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct LiveNodeIdentity<'a> {
     pub(super) node: &'a str,
     pub(super) router: &'a str,
@@ -1959,14 +1978,17 @@ pub(super) fn build_live_node(
         })
         .transpose()
         .map_err(|source| QemuLiveNodeStepGateError::AcceleratorServicer { source })?;
-    let priming_network_outputs = prime_guest_off_boot_barrier(
+    let restoring_checkpoint = restore.is_some();
+    let priming = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
-        identity.node,
-        identity.router,
+        identity,
         config.coverage,
         block_servicer.as_mut(),
         ninep_servicer.as_mut(),
+        (!restoring_checkpoint)
+            .then_some(config.boot_network_backpressure_capture.as_deref())
+            .flatten(),
     )?;
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
         servicer
@@ -2016,7 +2038,6 @@ pub(super) fn build_live_node(
         QemuCrashDetector::new(identity.crash_detector),
         runtime,
     );
-    let restoring_checkpoint = restore.is_some();
     let mut node = match restore {
         Some(restore) if resume_restored => {
             build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
@@ -2038,9 +2059,18 @@ pub(super) fn build_live_node(
         node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
-        node.retain_priming_network_outputs(priming_network_outputs)
+        node.retain_priming_network_outputs(priming.emitted_frames)
             .map_err(|source| {
                 QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
+            })?;
+    }
+    if let Some(network) = &priming.retained_network {
+        node.restore_network_transport_for_gate(network)
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op(
+                    "bind retained priming network continuation",
+                    source,
+                )
             })?;
     }
     node.synchronize_observed_time().map_err(|source| {

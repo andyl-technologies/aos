@@ -14,9 +14,9 @@ impl SpscRingSnapshot {
     ///
     /// The encoding is little-endian and contains the frame count followed by
     /// each frame's delivery icount, source node, sequence, payload length,
-    /// consumer-owned delivery state, and valid payload bytes. Frame padding
-    /// and unused payload capacity are excluded so equivalent logical snapshots
-    /// content-address identically.
+    /// consumer-owned delivery state, delivery-attempt count, and valid payload
+    /// bytes. Frame padding and unused payload capacity are excluded so
+    /// equivalent logical snapshots content-address identically.
     ///
     /// # Errors
     ///
@@ -45,6 +45,7 @@ impl SpscRingSnapshot {
                 },
             )?;
             bytes.push(delivery_state as u8);
+            bytes.extend_from_slice(&canonical.delivery_attempts().to_le_bytes());
             bytes.extend_from_slice(&canonical.data[..payload_len]);
         }
         Ok(bytes)
@@ -79,6 +80,7 @@ impl SpscRingSnapshot {
             let seq = cursor.read_u32()?;
             let len = usize::from(cursor.read_u16()?);
             let delivery_state = cursor.read_u8()?;
+            let delivery_attempts = cursor.read_u32()?;
             if len > MAX_FRAME_DATA {
                 return Err(SpscRingError::InvalidFrameLength {
                     len,
@@ -100,6 +102,7 @@ impl SpscRingSnapshot {
                 )?,
                 state => return Err(SpscRingError::InvalidFrameDeliveryState { state }),
             }
+            frame.restore_delivery_attempts(delivery_attempts);
             frames.push(frame);
         }
 

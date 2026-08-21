@@ -259,13 +259,14 @@ pub(super) fn emit_constants(out: &mut String) {
             ("LEN", FRAME_ENTRY_LEN_OFFSET),
             ("DELIVERY_STATE", FRAME_ENTRY_DELIVERY_STATE_OFFSET),
             ("PAD", FRAME_ENTRY_PAD_OFFSET),
+            ("DELIVERY_ATTEMPTS", FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET),
             ("DATA", FRAME_ENTRY_DATA_OFFSET),
         ],
     );
     emit_define_usize(
         out,
         "CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN",
-        FRAME_ENTRY_DATA_OFFSET - FRAME_ENTRY_PAD_OFFSET,
+        FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET - FRAME_ENTRY_PAD_OFFSET,
     );
     emit_define_u8(
         out,

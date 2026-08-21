@@ -222,7 +222,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 15;
+pub const ABI_VERSION: u32 = 16;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -508,8 +508,11 @@ pub struct FrameEntry {
     /// Consumer-owned delivery state: 0 pending, 1 retained after a real
     /// QEMU backpressure result. Any other value is invalid.
     delivery_state: AtomicU8, // @ 18
-    // @ 19..24 padding to 8-byte-align the payload start.
-    pub(crate) _pad: [u8; 5], // @ 19
+    // @ 19 one byte padding to align the attempt counter.
+    pub(crate) _pad: [u8; 1], // @ 19
+    /// Consumer-owned count of concrete QEMU RX attempts. The consumer fails
+    /// loudly before attempt 1,025 instead of retrying indefinitely.
+    delivery_attempts: AtomicU32, // @ 20
     /// Frame payload; only `data[..len]` is valid.
     pub data: [u8; MAX_FRAME_DATA], // @ 24
 }
@@ -529,9 +532,12 @@ const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
 - **[SHM-13]** A `FrameEntry` MUST carry, in this field order: the
   `delivery_icount` (the virtual time at which the frame becomes visible to the
   consumer), the `src_node` id, the per-pair `seq`, the valid `len`, the
-  consumer-owned `delivery_state`, and a fixed-size `data` payload of
-  `MAX_FRAME_DATA` bytes. `delivery_state` MUST be pending at publication and
-  may become retained only after the consumer receives real guest backpressure.
+  consumer-owned `delivery_state`, the consumer-owned `delivery_attempts`, and a
+  fixed-size `data` payload of `MAX_FRAME_DATA` bytes. `delivery_state` MUST be
+  pending and `delivery_attempts` zero at publication. The state may become
+  retained only after the consumer receives real guest backpressure. The attempt
+  counter MUST be preserved by exact checkpoint/restore and MUST fail loudly at
+  the compiled 1,024-attempt ceiling.
   `MAX_FRAME_DATA` MUST be at
   least a standard Ethernet frame (1518 bytes) plus headroom, and large enough to
   hold the largest I/O sub-node wire payload (a 4 KiB block response with its
@@ -806,7 +812,8 @@ FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @ 12  seq                u32
   @ 16  len                u16
   @ 18  delivery_state     atomic u8
-  @ 19  _pad[5]
+  @ 19  _pad[1]
+  @ 20  delivery_attempts  atomic u32
   @ 24  data[MAX_FRAME_DATA]
 
 CoverageEntry (size 64, align 64)
@@ -1254,9 +1261,13 @@ by when the producer's store landed in shared memory.
   pending to retained after real guest-device backpressure. A retained head is
   canonical proof that the head and its blocked same-ring FIFO successors may
   remain due after the current icount; a retained non-head or unknown state MUST
-  fail closed. Snapshot/restore MUST preserve the retained-head identity, and
-  successful guest acceptance MUST dequeue it normally. *Gate:*
-  `gate:abi-conformance`, `gate:live-network-io`. *Spec:* §13.3.3, §13.9.
+  fail closed. Each backpressured QEMU delivery attempt MUST increment the
+  canonical per-frame attempt count. A retained retry is admitted no sooner
+  than `delivery_icount + attempt_count * 4,000,000` guest instructions, and
+  attempt 1,025 MUST fail with a typed terminal error. Snapshot/restore MUST
+  preserve both retained-head identity and attempt count, and successful guest
+  acceptance MUST dequeue it normally. *Gate:* `gate:abi-conformance`,
+  `gate:live-network-io`. *Spec:* §13.3.3, §13.9.
 
 ## Implementation checklist
 

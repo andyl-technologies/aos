@@ -227,6 +227,29 @@ impl QemuNodeContinuationCheckpoint {
         self.network_transport.next_plugin_outbound_sequence()
     }
 
+    /// Returns the canonical retained inbound head and its attempt count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeCheckpointCodecError::NetworkTransport`] when retained
+    /// state is malformed or appears away from the unique ring head.
+    pub fn retained_network_inbound_head(
+        &self,
+    ) -> Result<Option<(crucible_shmem::FrameDeliveryKey, u32)>, QemuNodeCheckpointCodecError> {
+        let Some(key) = self.network_transport.retained_inbound_head()? else {
+            return Ok(None);
+        };
+        let attempts = self
+            .network_transport
+            .inbound
+            .frames
+            .first()
+            .filter(|frame| frame.delivery_key() == key)
+            .map(crucible_shmem::FrameEntry::delivery_attempts)
+            .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
+        Ok(Some((key, attempts)))
+    }
+
     /// Encodes the complete scheduler-facing continuation canonically.
     ///
     /// # Errors
@@ -236,7 +259,7 @@ impl QemuNodeContinuationCheckpoint {
     pub fn to_compact_binary(&self) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
         let mut bytes = Vec::new();
         self.network_transport.validate_outbound_sequences()?;
-        bytes.extend_from_slice(b"crucible.qemu-node-continuation.v4\0");
+        bytes.extend_from_slice(b"crucible.qemu-node-continuation.v5\0");
         bytes.extend_from_slice(&self.execution_binding.bytes);
         bytes.extend_from_slice(&self.last_observed_time.ticks.to_le_bytes());
         bytes.extend_from_slice(&self.logical_time_calibration.logical_icount.to_le_bytes());
@@ -303,7 +326,7 @@ impl QemuNodeContinuationCheckpoint {
         bytes: &[u8],
         execution_binding: ContentHash,
     ) -> Result<Self, QemuNodeCheckpointCodecError> {
-        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v4\0";
+        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v5\0";
         let mut reader = NodeContinuationReader::new(bytes, MAGIC)?;
         let observed_binding = ContentHash {
             bytes: reader.fixed::<32>("execution binding")?,

@@ -1913,6 +1913,29 @@ impl QemuNode {
         Ok(())
     }
 
+    pub(crate) fn restore_network_transport_for_gate(
+        &mut self,
+        checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .restore_network_transport(checkpoint)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    pub(crate) fn checkpoint_network_transport_for_gate(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .checkpoint_network_transport()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
     /// Resumes a fully reconstructed node after the factory restores continuation state.
     ///
     /// # Errors

@@ -134,26 +134,47 @@ pub(super) fn assert_runs_match(
 /// Returns [`QemuLiveNodeStepGateError`] when the region cannot be mapped, the
 /// hot path cannot bind, a quantum boundary cannot be published or read, or the
 /// guest never reaches the priming ceiling within `timeout`.
+pub(super) struct PrimeGuestOutcome {
+    pub(super) emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+    pub(super) retained_network: Option<crate::QemuNetworkTransportCheckpoint>,
+}
+
 pub(super) fn prime_guest_off_boot_barrier(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
-    node_name: &str,
-    router_name: &str,
+    identity: LiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
     mut block: Option<&mut QemuLiveBlockIoServicer>,
     mut ninep: Option<&mut QemuLive9pIoServicer>,
-) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
+    boot_backpressure_payload: Option<&[u8]>,
+) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(node_name), GATE_SLOT)
-        .with_router(node_id(router_name), SLOT_NET_ROUTER as u32)
+    let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
+        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
         .with_coverage(basic_block_coverage_config(coverage));
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeHotPath { source })?;
 
+    let prime_ceiling = if let Some(payload) = boot_backpressure_payload {
+        QemuShmemHotPathChannel::deliver_frame_at(
+            &mut hot_path,
+            BackendInput {
+                node: node_id(identity.node),
+                payload: payload.to_vec(),
+            },
+            Icount { retired: 1 },
+        )
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::prime("publish boot backpressure canary", source)
+        })?;
+        1
+    } else {
+        PRIME_CEILING_ICOUNT
+    };
     let horizon = crucible::ExecutionHorizon {
         icount: Icount {
-            retired: PRIME_CEILING_ICOUNT,
+            retired: prime_ceiling,
         },
     };
     let pending = QemuShmemHotPathChannel::start_quantum(&mut hot_path, horizon)
@@ -178,7 +199,7 @@ pub(super) fn prime_guest_off_boot_barrier(
                 .service(current)
                 .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
         }
-        if current >= PRIME_CEILING_ICOUNT {
+        if current >= prime_ceiling {
             reached = true;
             break;
         }
@@ -187,7 +208,7 @@ pub(super) fn prime_guest_off_boot_barrier(
 
     if !reached {
         return Err(QemuLiveNodeStepGateError::PrimeStalled {
-            ceiling_icount: PRIME_CEILING_ICOUNT,
+            ceiling_icount: prime_ceiling,
         });
     }
     let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
@@ -196,7 +217,36 @@ pub(super) fn prime_guest_off_boot_barrier(
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming observations", source))?;
     QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming decisions", source))?;
-    Ok(completion.emitted_frames)
+    let retained_network = if boot_backpressure_payload.is_some() {
+        let checkpoint = QemuShmemHotPathChannel::checkpoint_network_transport(&mut hot_path)
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::prime("capture retained boot network frame", source)
+            })?;
+        let retained = checkpoint.inbound.frames.first().is_some_and(|frame| {
+            frame.delivery_icount == prime_ceiling
+                && frame.delivery_attempts() > 0
+                && frame
+                    .delivery_state()
+                    .is_ok_and(|state| state == FrameDeliveryState::Retained)
+                && boot_backpressure_payload
+                    .is_some_and(|payload| frame.payload().is_ok_and(|actual| actual == payload))
+        });
+        if !retained || checkpoint.inbound.frames.len() != 1 {
+            return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!(
+                    "boot backpressure canary was not retained exactly at icount {prime_ceiling}: {:?}",
+                    checkpoint.inbound.frames
+                ),
+            });
+        }
+        Some(checkpoint)
+    } else {
+        None
+    };
+    Ok(PrimeGuestOutcome {
+        emitted_frames: completion.emitted_frames,
+        retained_network,
+    })
 }
 
 /// Returns the number of priming polls that fit within `timeout`, at least one.
