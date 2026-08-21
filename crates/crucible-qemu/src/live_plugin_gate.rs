@@ -214,8 +214,8 @@ pub struct LivePluginInstallReport {
     /// the guest can only stop exactly at the ceiling if the plugin blocked on
     /// the boot barrier and then honored the scheduler ceiling as time authority.
     pub boot_barrier_ceiling_enforced: bool,
-    /// Execution fingerprint the Rust plugin published at the boundary.
-    pub execution_fingerprint: ExecutionFingerprint,
+    /// Execution fingerprint the Rust plugin published when sampling was enabled.
+    pub execution_fingerprint: Option<ExecutionFingerprint>,
     /// The plugin sent no unsolicited run-phase control frame before `Quit`.
     pub run_control_silent: bool,
     /// The plugin published `Done` after consuming the control `Quit`.
@@ -399,8 +399,14 @@ pub fn run_live_plugin_install_gate(
             actual: completed_icount,
         });
     }
-    let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
-        .map_err(|source| channel_error("read execution fingerprint", source))?;
+    let execution_fingerprint = match config.fingerprint {
+        crate::QemuLaunchPluginSwitch::On => Some(wait_for_execution_fingerprint(
+            &mut hot_path,
+            &mut child,
+            config,
+        )?),
+        crate::QemuLaunchPluginSwitch::Off => None,
+    };
     let causal_decisions = QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
         .map_err(|source| channel_error("drain boundary causal decisions", source))?;
     let app_random_evidence = validate_app_random_decisions(config, causal_decisions)?;
