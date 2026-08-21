@@ -187,6 +187,42 @@ in
             --lib storage_fault_resolver \
             -- --test-threads=1
 
+          production_matrix="$TMPDIR/production-effect-matrix"
+          export CRUCIBLE_PRODUCTION_EFFECT_MATRIX_OUTPUT="$production_matrix"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-api \
+            --test production_effect_matrix \
+            -- --test-threads=1
+          unset CRUCIBLE_PRODUCTION_EFFECT_MATRIX_OUTPUT
+          test -s "$production_matrix"
+          test "$(wc -l < "$production_matrix")" = \
+            "$(cut -d '|' -f 1 "$production_matrix" | sort -u | wc -l)"
+          test "$(grep -c '|network|' "$production_matrix")" -gt 0
+          test "$(grep -c '|storage|' "$production_matrix")" -gt 0
+          test "$(grep -c '|node|' "$production_matrix")" -gt 0
+          if grep '|network|' "$production_matrix" \
+            | grep -Fv '|gate:live-network-io|'
+          then
+            echo 'FAIL: a network effect lacks the live network gate' >&2
+            exit 1
+          fi
+          if grep '|storage|' "$production_matrix" \
+            | grep -Ev '\|gate:live-(block|9p)-io\|'
+          then
+            echo 'FAIL: a storage effect lacks a live storage gate' >&2
+            exit 1
+          fi
+          if grep '|node|' "$production_matrix" \
+            | grep -Ev '\|gate:(live-node-lifecycle-fault|live-fault-hardware|patch-microtests)\|'
+          then
+            echo 'FAIL: a node effect lacks a live QEMU conformance gate' >&2
+            exit 1
+          fi
+
           # These names belonged to the replaced execution hierarchy. Keep the
           # check source-only so prose migration guidance does not trip it.
           if grep -R -n -E \
@@ -333,6 +369,17 @@ in
           cp ${replayOracle}/result "$out/evidence/replay.result"
           cp ${stateSpaceSearch}/result "$out/evidence/search.result"
           cp ${cliSearchFuzz}/result "$out/evidence/cli-search-fuzz.result"
+          cp "$TMPDIR/production-effect-matrix" \
+            "$out/evidence/production-effect-matrix.txt"
+
+          matrix_network_count=$(grep -c '|network|' \
+            "$out/evidence/production-effect-matrix.txt")
+          matrix_storage_count=$(grep -c '|storage|' \
+            "$out/evidence/production-effect-matrix.txt")
+          matrix_node_count=$(grep -c '|node|' \
+            "$out/evidence/production-effect-matrix.txt")
+          matrix_total_count=$(wc -l \
+            < "$out/evidence/production-effect-matrix.txt")
 
           cat > "$out/result" <<RESULT
           CHECKPOINT
@@ -341,13 +388,14 @@ in
           tasks=${taskList}
           status=complete
           effect_registry=closed-and-exhaustive
-          executable_effect_count=71
+          executable_effect_count=$matrix_total_count
           production_adapters=network,storage,node
           specification_only_domains=sensor,power
           retired_execution_paths=absent
           unfinished_production_paths=absent
           per_kind_metadata=admission,capability,replay-evidence,user-reference
-          per_kind_production_execution_matrix=network-31,storage-20,node-20
+          per_kind_production_execution_matrix=network-$matrix_network_count,storage-$matrix_storage_count,node-$matrix_node_count
+          per_kind_production_execution_matrix_artifact=evidence/production-effect-matrix.txt
           missing_acceptance=none
           system_evidence=adapter-dispatch,event-log,checkpoint,recomputed-replay,locked-replay,search,negative-tests
           live_boundary_evidence=network,block,9p,node-lifecycle,qemu-fault-patches,clock,accelerator,fresh-plugin-restore

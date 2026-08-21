@@ -9,7 +9,7 @@
 
 use crucible::model::{
     EffectImplementationContract, EffectImplementationRegistry, EffectImplementationRegistryError,
-    EffectKind, FaultAdapter,
+    EffectKind, FaultAdapter, ProductionConformanceEvidence,
 };
 use crucible_shmem::FaultCommandKind;
 
@@ -148,6 +148,25 @@ fn conformance_test(effect: EffectKind) -> &'static str {
     }
 }
 
+fn production_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
+    let live_gate = match effect {
+        EffectKind::NodeLifecycle | EffectKind::NodeHang => "gate:live-node-lifecycle-fault",
+        EffectKind::ClockTransform
+        | EffectKind::ClockSourceState
+        | EffectKind::AcceleratorLifecycle
+        | EffectKind::AcceleratorResultTransform
+        | EffectKind::AcceleratorMemoryEvent
+        | EffectKind::AcceleratorService => "gate:live-fault-hardware",
+        _ => "gate:patch-microtests",
+    };
+    ProductionConformanceEvidence {
+        case_id: effect.as_str(),
+        harness: conformance_test(effect),
+        live_gate,
+        observed_state: NODE_MUTATION_EVIDENCE,
+    }
+}
+
 /// Returns the complete compiled implementation registry for node/QEMU effects.
 ///
 /// # Errors
@@ -170,7 +189,7 @@ pub fn node_effect_implementation_registry()
             locked_replay_evidence:
                 "authenticated live precondition, command result, event, and execution fingerprint",
             search_evidence: "canonical keyed choices recorded in SearchFrontierChoices",
-            conformance_test: conformance_test(effect),
+            production_conformance: production_conformance(effect),
         }),
     )?;
     registry.require_complete()?;
