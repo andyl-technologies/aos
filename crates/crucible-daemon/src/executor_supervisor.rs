@@ -14,7 +14,9 @@ use std::sync::{
 
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExactCheckpointId, ExecutionId,
     ExecutorControlService, ExecutorRejection, ExecutorService, ExecutorStatusService,
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
     ObservationId, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
@@ -229,6 +231,7 @@ pub struct QueuedAttempt {
     execution: ExecutionId,
     request: SubmitAttemptRequest,
     cancellation: ExecutionCancellation,
+    checkpoint_request: ExecutionCheckpointRequest,
 }
 
 impl QueuedAttempt {
@@ -248,6 +251,12 @@ impl QueuedAttempt {
     #[must_use]
     pub const fn cancellation(&self) -> &ExecutionCancellation {
         &self.cancellation
+    }
+
+    /// Returns the process-local exact-checkpoint request signal.
+    #[must_use]
+    pub const fn checkpoint_request(&self) -> &ExecutionCheckpointRequest {
+        &self.checkpoint_request
     }
 }
 
@@ -273,6 +282,82 @@ impl ExecutionCancellation {
     fn cancel(&self) {
         self.canceled.store(true, Ordering::Release);
     }
+}
+
+/// Cloneable process-local exact-checkpoint request for one execution.
+#[derive(Clone, Debug, Default)]
+pub struct ExecutionCheckpointRequest {
+    requested: Arc<AtomicBool>,
+}
+
+impl ExecutionCheckpointRequest {
+    /// Returns whether an exact checkpoint has been requested.
+    #[must_use]
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    /// Returns whether two handles name the same execution incarnation.
+    #[must_use]
+    pub fn same_incarnation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.requested, &other.requested)
+    }
+
+    fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+}
+
+/// Durable outcome of requesting an exact checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointRequestOutcome {
+    /// This call durably latched the request and signaled the worker.
+    Requested,
+    /// The same execution had already latched the request.
+    AlreadyRequested,
+    /// Publication is in progress under the returned retained root.
+    Publishing {
+        /// Exact root retained before immutable publication.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The execution is paused at a complete durable root.
+    Paused {
+        /// Complete exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
+    /// Canonical completion won before the request.
+    AlreadyCompleted {
+        /// Published immutable observation.
+        observation: ObservationId,
+    },
+    /// Cancellation won before the request.
+    AlreadyCanceled,
+    /// The named execution is not current.
+    NotCurrent,
+}
+
+/// Durable outcome of reserving an exact-checkpoint publication root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointPublicationOutcome {
+    /// Requested state advanced to a retained publication root.
+    Staged,
+    /// The exact root was already staged.
+    AlreadyStaged,
+    /// The exact checkpoint was already complete and paused.
+    AlreadyPaused,
+    /// Completion or cancellation won before publication began.
+    NotCurrent,
+}
+
+/// Idempotent result of publishing and stopping at an exact checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointCompletionOutcome {
+    /// This call durably promoted the complete root and released capacity.
+    Paused,
+    /// The exact complete root was already durable.
+    AlreadyPaused,
+    /// The supplied execution or root is no longer current.
+    NotCurrent,
 }
 
 /// Idempotent result of publishing one executor completion.
@@ -337,6 +422,9 @@ pub enum LocalExecutorError<E> {
     /// One execution produced two different immutable observations.
     #[error("executor completion conflicts with the durable observation")]
     ConflictingCompletion,
+    /// One execution produced two different exact-checkpoint roots.
+    #[error("executor checkpoint conflicts with the durable exact root")]
+    ConflictingCheckpoint,
     /// The semantic validator could not authenticate the completed observation.
     #[error("executor completion validation failed: {reason:?}")]
     CompletionValidation {
@@ -352,6 +440,7 @@ pub enum LocalExecutorError<E> {
 struct ActiveExecution {
     request: SubmitAttemptRequest,
     cancellation: ExecutionCancellation,
+    checkpoint_request: ExecutionCheckpointRequest,
     worker_in_flight: bool,
 }
 
@@ -518,6 +607,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
                     execution,
                     request: active.request.clone(),
                     cancellation: active.cancellation.clone(),
+                    checkpoint_request: active.checkpoint_request.clone(),
                 });
             }
         }
@@ -631,6 +721,244 @@ where
         self.cancel_execution(key, execution)
     }
 
+    /// Durably requests one exact checkpoint before signaling the worker.
+    ///
+    /// The operational state transition is committed first. A crash after the
+    /// transition therefore preserves checkpoint intent for restart recovery;
+    /// a live exact worker receives a sticky process-local signal afterward.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError`] for ledger failures or contradictory
+    /// process-local ownership.
+    pub fn request_checkpoint(
+        &mut self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<CheckpointRequestOutcome, LocalExecutorError<L::Error>> {
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let Some(current) = current else {
+            return Ok(CheckpointRequestOutcome::NotCurrent);
+        };
+        match current {
+            AttemptRuntimeState::Running {
+                execution_basis,
+                daemon_epoch,
+                execution: current_execution,
+            } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
+                let Some(active) = self.active.get(&execution) else {
+                    return Ok(CheckpointRequestOutcome::NotCurrent);
+                };
+                if AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
+                    != key
+                {
+                    return Err(LocalExecutorError::LedgerInvariant {
+                        reason: "checkpoint request attempt does not match active reservation",
+                    });
+                }
+                let next = AttemptRuntimeState::CheckpointRequested {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                if let Some(active) = self.active.get(&execution) {
+                    active.checkpoint_request.request();
+                }
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(CheckpointRequestOutcome::Requested)
+            }
+            AttemptRuntimeState::CheckpointRequested {
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
+                if let Some(active) = self.active.get(&execution) {
+                    active.checkpoint_request.request();
+                }
+                Ok(CheckpointRequestOutcome::AlreadyRequested)
+            }
+            AttemptRuntimeState::CheckpointPublishing {
+                execution: current_execution,
+                checkpoint,
+                ..
+            } if current_execution == execution => {
+                Ok(CheckpointRequestOutcome::Publishing { checkpoint })
+            }
+            AttemptRuntimeState::Paused {
+                execution: current_execution,
+                checkpoint,
+                ..
+            } if current_execution == execution => {
+                Ok(CheckpointRequestOutcome::Paused { checkpoint })
+            }
+            AttemptRuntimeState::Completed {
+                execution: current_execution,
+                observation,
+                ..
+            } if current_execution == execution => {
+                Ok(CheckpointRequestOutcome::AlreadyCompleted { observation })
+            }
+            AttemptRuntimeState::Canceled {
+                execution: current_execution,
+                ..
+            } if current_execution == execution => Ok(CheckpointRequestOutcome::AlreadyCanceled),
+            AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::Publishing { .. }
+            | AttemptRuntimeState::Completed { .. }
+            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointRequestOutcome::NotCurrent),
+        }
+    }
+
+    /// Durably reserves an exact-checkpoint root before immutable writes.
+    ///
+    /// This crate-private actor phase is called only after checkpoint metadata
+    /// and VMState have been prepared without writes. It deliberately keeps
+    /// the worker and resource reservation active until publication completes
+    /// and the QEMU process is reaped.
+    pub(crate) fn stage_checkpoint_publication(
+        &mut self,
+        queued: &QueuedAttempt,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<CheckpointPublicationOutcome, LocalExecutorError<L::Error>> {
+        self.validate_pending_basis(queued)?;
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let Some(current) = current else {
+            return Ok(CheckpointPublicationOutcome::NotCurrent);
+        };
+        match current {
+            AttemptRuntimeState::CheckpointRequested {
+                execution_basis,
+                daemon_epoch,
+                execution,
+            } if daemon_epoch == self.daemon_epoch && execution == queued.execution => {
+                let next = AttemptRuntimeState::CheckpointPublishing {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    checkpoint,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(CheckpointPublicationOutcome::Staged)
+            }
+            AttemptRuntimeState::CheckpointPublishing {
+                execution,
+                checkpoint: current_checkpoint,
+                ..
+            } if execution == queued.execution && current_checkpoint == checkpoint => {
+                Ok(CheckpointPublicationOutcome::AlreadyStaged)
+            }
+            AttemptRuntimeState::CheckpointPublishing { execution, .. }
+                if execution == queued.execution =>
+            {
+                Err(LocalExecutorError::ConflictingCheckpoint)
+            }
+            AttemptRuntimeState::Paused {
+                execution,
+                checkpoint: current_checkpoint,
+                ..
+            } if execution == queued.execution && current_checkpoint == checkpoint => {
+                self.mark_worker_finished(execution);
+                self.release_active_if_present(execution)?;
+                Ok(CheckpointPublicationOutcome::AlreadyPaused)
+            }
+            AttemptRuntimeState::Paused { execution, .. } if execution == queued.execution => {
+                Err(LocalExecutorError::ConflictingCheckpoint)
+            }
+            AttemptRuntimeState::Completed { execution, .. }
+            | AttemptRuntimeState::Canceled { execution, .. }
+                if execution == queued.execution =>
+            {
+                self.mark_worker_finished(execution);
+                self.release_active_if_present(execution)?;
+                Ok(CheckpointPublicationOutcome::NotCurrent)
+            }
+            AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::Publishing { .. }
+            | AttemptRuntimeState::Completed { .. }
+            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointPublicationOutcome::NotCurrent),
+        }
+    }
+
+    /// Promotes a fully published root and releases a physically stopped worker.
+    pub(crate) fn complete_checkpoint(
+        &mut self,
+        queued: &QueuedAttempt,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<CheckpointCompletionOutcome, LocalExecutorError<L::Error>> {
+        self.validate_pending_basis(queued)?;
+        let key = AttemptExecutionKey::new(queued.request.lineage(), queued.request.attempt());
+        let current = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let Some(current) = current else {
+            return Ok(CheckpointCompletionOutcome::NotCurrent);
+        };
+        match current {
+            AttemptRuntimeState::CheckpointPublishing {
+                execution_basis,
+                daemon_epoch,
+                execution,
+                checkpoint: current_checkpoint,
+            } if execution == queued.execution => {
+                if current_checkpoint != checkpoint {
+                    return Err(LocalExecutorError::ConflictingCheckpoint);
+                }
+                let next = AttemptRuntimeState::Paused {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    checkpoint,
+                };
+                let advance = self.advance_attempt(key, current, Some(next))?;
+                self.mark_worker_finished(execution);
+                self.release_active_if_present(execution)?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                Ok(CheckpointCompletionOutcome::Paused)
+            }
+            AttemptRuntimeState::Paused {
+                execution,
+                checkpoint: current_checkpoint,
+                ..
+            } if execution == queued.execution && current_checkpoint == checkpoint => {
+                self.mark_worker_finished(execution);
+                self.release_active_if_present(execution)?;
+                Ok(CheckpointCompletionOutcome::AlreadyPaused)
+            }
+            AttemptRuntimeState::Paused { execution, .. } if execution == queued.execution => {
+                Err(LocalExecutorError::ConflictingCheckpoint)
+            }
+            AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::Publishing { .. }
+            | AttemptRuntimeState::Completed { .. }
+            | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointCompletionOutcome::NotCurrent),
+        }
+    }
+
     /// Durably reserves the exact observation as an in-progress publication root.
     ///
     /// The operational ledger entry is established before immutable candidate
@@ -659,6 +987,11 @@ where
         };
         match current {
             AttemptRuntimeState::Running {
+                execution_basis,
+                daemon_epoch,
+                execution,
+            }
+            | AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
                 daemon_epoch,
                 execution,
@@ -707,6 +1040,9 @@ where
                 Ok(ObservationPublicationOutcome::Canceled)
             }
             AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(ObservationPublicationOutcome::NotCurrent),
@@ -891,6 +1227,23 @@ where
                     daemon_epoch,
                     execution,
                 }
+                | AttemptRuntimeState::CheckpointRequested {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                }
+                | AttemptRuntimeState::CheckpointPublishing {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    ..
+                }
+                | AttemptRuntimeState::Paused {
+                    execution_basis,
+                    daemon_epoch,
+                    execution,
+                    ..
+                }
                 | AttemptRuntimeState::Publishing {
                     execution_basis,
                     daemon_epoch,
@@ -1028,6 +1381,9 @@ where
                 Ok(CompletionOutcome::Completed)
             }
             AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CompletionOutcome::NotCurrent),
@@ -1078,6 +1434,23 @@ where
                 daemon_epoch,
                 execution: current_execution,
             }
+            | AttemptRuntimeState::CheckpointRequested {
+                execution_basis,
+                daemon_epoch,
+                execution: current_execution,
+            }
+            | AttemptRuntimeState::CheckpointPublishing {
+                execution_basis,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
+            | AttemptRuntimeState::Paused {
+                execution_basis,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
             | AttemptRuntimeState::Publishing {
                 execution_basis,
                 daemon_epoch,
@@ -1097,6 +1470,9 @@ where
                 Ok(CancellationOutcome::Canceled)
             }
             AttemptRuntimeState::Running { .. }
+            | AttemptRuntimeState::CheckpointRequested { .. }
+            | AttemptRuntimeState::CheckpointPublishing { .. }
+            | AttemptRuntimeState::Paused { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CancellationOutcome::NotCurrent),
@@ -1158,6 +1534,109 @@ where
             .load_attempt(key)
             .map_err(LocalExecutorError::Ledger)?;
         match prior {
+            Some(AttemptRuntimeState::CheckpointRequested {
+                execution_basis: current_basis,
+                daemon_epoch,
+                execution,
+            })
+            | Some(AttemptRuntimeState::CheckpointPublishing {
+                execution_basis: current_basis,
+                daemon_epoch,
+                execution,
+                ..
+            }) if current_basis == execution_basis
+                && daemon_epoch == self.daemon_epoch
+                && self.active.contains_key(&execution) =>
+            {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::AlreadyRunning { execution },
+                );
+            }
+            Some(AttemptRuntimeState::Paused {
+                execution_basis: current_basis,
+                execution,
+                checkpoint,
+                ..
+            }) if current_basis == execution_basis => {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::AlreadyPaused {
+                        execution,
+                        checkpoint,
+                    },
+                );
+            }
+            Some(
+                requested @ AttemptRuntimeState::CheckpointRequested {
+                    execution_basis: current_basis,
+                    ..
+                },
+            ) if current_basis == execution_basis => {
+                if !self.has_capacity(request.resources()) {
+                    return self.persist_response(
+                        request,
+                        SubmitAttemptDisposition::Rejected {
+                            reason: ExecutorRejection::Backpressure,
+                        },
+                    );
+                }
+                let recovery_execution = self.allocate_execution_id()?;
+                let recovery = AttemptRuntimeState::CheckpointRequested {
+                    execution_basis: current_basis,
+                    daemon_epoch: self.daemon_epoch,
+                    execution: recovery_execution,
+                };
+                let advance = self.advance_attempt(key, requested, Some(recovery))?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                let response = self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::Accepted {
+                        execution: recovery_execution,
+                    },
+                );
+                self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                return response;
+            }
+            Some(
+                publishing @ AttemptRuntimeState::CheckpointPublishing {
+                    execution_basis: current_basis,
+                    checkpoint,
+                    ..
+                },
+            ) if current_basis == execution_basis => {
+                if !self.has_capacity(request.resources()) {
+                    return self.persist_response(
+                        request,
+                        SubmitAttemptDisposition::Rejected {
+                            reason: ExecutorRejection::Backpressure,
+                        },
+                    );
+                }
+                let recovery_execution = self.allocate_execution_id()?;
+                let recovery = AttemptRuntimeState::CheckpointPublishing {
+                    execution_basis: current_basis,
+                    daemon_epoch: self.daemon_epoch,
+                    execution: recovery_execution,
+                    checkpoint,
+                };
+                let advance = self.advance_attempt(key, publishing, Some(recovery))?;
+                if let AttemptAdvance::CommittedAfterError(error) = advance {
+                    self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                    return Err(LocalExecutorError::Ledger(error));
+                }
+                let response = self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::Accepted {
+                        execution: recovery_execution,
+                    },
+                );
+                self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                return response;
+            }
             Some(AttemptRuntimeState::Publishing {
                 execution_basis: current_basis,
                 daemon_epoch,
@@ -1319,7 +1798,27 @@ where
                     },
                 );
             }
-            Some(AttemptRuntimeState::Completed { .. }) => {
+            Some(AttemptRuntimeState::CheckpointRequested {
+                execution_basis: current_basis,
+                daemon_epoch,
+                ..
+            })
+            | Some(AttemptRuntimeState::CheckpointPublishing {
+                execution_basis: current_basis,
+                daemon_epoch,
+                ..
+            }) if daemon_epoch == self.daemon_epoch && current_basis != execution_basis => {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::Rejected {
+                        reason: ExecutorRejection::Incompatible,
+                    },
+                );
+            }
+            Some(AttemptRuntimeState::CheckpointRequested { .. })
+            | Some(AttemptRuntimeState::CheckpointPublishing { .. })
+            | Some(AttemptRuntimeState::Paused { .. })
+            | Some(AttemptRuntimeState::Completed { .. }) => {
                 return self.persist_response(
                     request,
                     SubmitAttemptDisposition::Rejected {
@@ -1490,11 +1989,28 @@ where
             ActiveExecution {
                 request: request.clone(),
                 cancellation: ExecutionCancellation::default(),
+                checkpoint_request: ExecutionCheckpointRequest::default(),
                 worker_in_flight: false,
             },
         );
         self.queued.push_back(execution);
         self.used = used;
+        Ok(())
+    }
+
+    fn reserve_checkpoint_recovery(
+        &mut self,
+        request: &SubmitAttemptRequest,
+        execution: ExecutionId,
+    ) -> Result<(), LocalExecutorError<L::Error>> {
+        self.reserve(request, execution)?;
+        let active = self
+            .active
+            .get(&execution)
+            .ok_or(LocalExecutorError::LedgerInvariant {
+                reason: "checkpoint recovery reservation disappeared",
+            })?;
+        active.checkpoint_request.request();
         Ok(())
     }
 
@@ -1626,6 +2142,15 @@ where
                     | AttemptRuntimeState::Publishing { .. } => {
                         GetAttemptExecutionDisposition::Running
                     }
+                    AttemptRuntimeState::CheckpointRequested { .. } => {
+                        GetAttemptExecutionDisposition::CheckpointRequested
+                    }
+                    AttemptRuntimeState::CheckpointPublishing { checkpoint, .. } => {
+                        GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint }
+                    }
+                    AttemptRuntimeState::Paused { checkpoint, .. } => {
+                        GetAttemptExecutionDisposition::Paused { checkpoint }
+                    }
                     AttemptRuntimeState::Completed { observation, .. } => {
                         GetAttemptExecutionDisposition::Completed { observation }
                     }
@@ -1645,6 +2170,50 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let exact = state.as_ref().is_some_and(|state| {
+            state.daemon_epoch() == request.daemon_epoch()
+                && state.execution() == request.execution()
+                && state.execution_basis() == request.execution_basis()
+        });
+        let disposition = if exact {
+            match self.request_checkpoint(key, request.execution())? {
+                CheckpointRequestOutcome::Requested => {
+                    CheckpointAttemptExecutionDisposition::Requested
+                }
+                CheckpointRequestOutcome::AlreadyRequested => {
+                    CheckpointAttemptExecutionDisposition::AlreadyRequested
+                }
+                CheckpointRequestOutcome::Publishing { checkpoint } => {
+                    CheckpointAttemptExecutionDisposition::Publishing { checkpoint }
+                }
+                CheckpointRequestOutcome::Paused { checkpoint } => {
+                    CheckpointAttemptExecutionDisposition::Paused { checkpoint }
+                }
+                CheckpointRequestOutcome::AlreadyCompleted { observation } => {
+                    CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation }
+                }
+                CheckpointRequestOutcome::AlreadyCanceled => {
+                    CheckpointAttemptExecutionDisposition::AlreadyCanceled
+                }
+                CheckpointRequestOutcome::NotCurrent => {
+                    CheckpointAttemptExecutionDisposition::NotCurrent
+                }
+            }
+        } else {
+            CheckpointAttemptExecutionDisposition::NotCurrent
+        };
+        CheckpointAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,

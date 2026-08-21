@@ -4,17 +4,23 @@
 //! bounded operational ceilings. The strict component-message formats are:
 //!
 //! ```text
-//! SubmitAttemptRequestV1 = version | assignment | daemon-epoch | lineage |
+//! SubmitAttemptRequestV2 = version | assignment | daemon-epoch | lineage |
 //!                          attempt | resource-limits | retention-intent
-//! SubmitAttemptResponseV1 = version | assignment | daemon-epoch | attempt |
+//! SubmitAttemptResponseV2 = version | assignment | daemon-epoch | attempt |
 //!                           request-digest | disposition
-//! GetAttemptExecutionRequestV1 = version | daemon-epoch | lineage | attempt |
+//! GetAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                execution | execution-basis-digest
-//! GetAttemptExecutionResponseV1 = version | daemon-epoch | attempt | execution |
+//! GetAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
 //!                                 request-digest | disposition
-//! CancelAttemptExecutionRequestV1 = version | daemon-epoch | lineage | attempt |
+//! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
+//!                                       attempt | execution |
+//!                                       execution-basis-digest
+//! CheckpointAttemptExecutionResponseV2 = version | daemon-epoch | attempt |
+//!                                        execution | request-digest |
+//!                                        disposition
+//! CancelAttemptExecutionRequestV2 = version | daemon-epoch | lineage | attempt |
 //!                                   execution | execution-basis-digest
-//! CancelAttemptExecutionResponseV1 = version | daemon-epoch | attempt | execution |
+//! CancelAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
 //!                                    request-digest | disposition
 //! ```
 //!
@@ -27,10 +33,11 @@ use std::collections::BTreeMap;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::validate_identifier;
 use crate::{
-    AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId, ObservationId,
+    AttemptId, CampaignCodecError, CampaignHash, CampaignLineage, CampaignLineageId,
+    ExactCheckpointId, ObservationId,
 };
 
-const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 1;
+const EXECUTOR_MESSAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum canonical bytes in one executor component message.
 pub const MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES: usize = 4 * 1024;
@@ -432,7 +439,7 @@ impl SubmitAttemptRequest {
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
         CampaignHash::derive(
-            "crucible.campaign.submit-attempt-request.v1",
+            "crucible.campaign.submit-attempt-request.v2",
             &self.canonical_bytes(),
         )
     }
@@ -570,6 +577,13 @@ pub enum SubmitAttemptDisposition {
         /// Previously published immutable observation identity.
         observation: ObservationId,
     },
+    /// The executor already stopped at a complete exact checkpoint.
+    AlreadyPaused {
+        /// Existing local execution identity.
+        execution: ExecutionId,
+        /// Complete durable exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
     /// The request was rejected before guest execution.
     Rejected {
         /// Stable rejection class.
@@ -596,6 +610,14 @@ impl Canonical for SubmitAttemptDisposition {
                 encoder.u8(3);
                 reason.encode(encoder);
             }
+            Self::AlreadyPaused {
+                execution,
+                checkpoint,
+            } => {
+                encoder.u8(4);
+                execution.encode(encoder);
+                checkpoint.encode(encoder);
+            }
         }
     }
 
@@ -612,6 +634,10 @@ impl Canonical for SubmitAttemptDisposition {
             }),
             3 => Ok(Self::Rejected {
                 reason: ExecutorRejection::decode(decoder)?,
+            }),
+            4 => Ok(Self::AlreadyPaused {
+                execution: ExecutionId::decode(decoder)?,
+                checkpoint: ExactCheckpointId::decode(decoder)?,
             }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "submit-attempt-disposition",
@@ -856,7 +882,7 @@ impl GetAttemptExecutionRequest {
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
         CampaignHash::derive(
-            "crucible.campaign.get-attempt-execution-request.v1",
+            "crucible.campaign.get-attempt-execution-request.v2",
             &self.canonical_bytes(),
         )
     }
@@ -912,6 +938,18 @@ impl Canonical for GetAttemptExecutionRequest {
 pub enum GetAttemptExecutionDisposition {
     /// The accepted execution or its publication reconciliation remains active.
     Running,
+    /// The execution has durably latched an exact-checkpoint request.
+    CheckpointRequested,
+    /// Checkpoint publication is in progress under a retained root.
+    CheckpointPublishing {
+        /// Exact root retained before immutable publication began.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The execution stopped at a complete durable exact checkpoint.
+    Paused {
+        /// Complete exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
     /// The executor durably retained one completed observation.
     Completed {
         /// Immutable observation identity ready for coordinator authentication.
@@ -933,6 +971,15 @@ impl Canonical for GetAttemptExecutionDisposition {
             }
             Self::Canceled => encoder.u8(2),
             Self::NotCurrent => encoder.u8(3),
+            Self::CheckpointRequested => encoder.u8(4),
+            Self::CheckpointPublishing { checkpoint } => {
+                encoder.u8(5);
+                checkpoint.encode(encoder);
+            }
+            Self::Paused { checkpoint } => {
+                encoder.u8(6);
+                checkpoint.encode(encoder);
+            }
         }
     }
 
@@ -944,6 +991,13 @@ impl Canonical for GetAttemptExecutionDisposition {
             }),
             2 => Ok(Self::Canceled),
             3 => Ok(Self::NotCurrent),
+            4 => Ok(Self::CheckpointRequested),
+            5 => Ok(Self::CheckpointPublishing {
+                checkpoint: ExactCheckpointId::decode(decoder)?,
+            }),
+            6 => Ok(Self::Paused {
+                checkpoint: ExactCheckpointId::decode(decoder)?,
+            }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "get-attempt-execution-disposition",
                 tag,
@@ -1101,6 +1155,350 @@ impl Canonical for GetAttemptExecutionResponse {
     }
 }
 
+/// Strict idempotent exact-checkpoint request for one execution incarnation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointAttemptExecutionRequest {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    execution_basis: CampaignHash,
+}
+
+impl CheckpointAttemptExecutionRequest {
+    /// Builds a checkpoint request from the exact accepted assignment basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        assignment: &SubmitAttemptRequest,
+        execution: ExecutionId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: assignment.daemon_epoch(),
+            lineage: assignment.lineage(),
+            attempt: assignment.attempt(),
+            execution,
+            execution_basis: assignment.execution_basis_digest(),
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "checkpoint-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the daemon incarnation that accepted the execution.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the exact compatibility lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> CampaignLineageId {
+        self.lineage
+    }
+
+    /// Returns the immutable semantic attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution incarnation to pause.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub const fn execution_basis(&self) -> CampaignHash {
+        self.execution_basis
+    }
+
+    /// Returns a domain-separated digest of every canonical request field.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign.checkpoint-attempt-execution-request.v2",
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "checkpoint-attempt-execution-request-encoded-bytes")
+    }
+}
+
+impl Canonical for CheckpointAttemptExecutionRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.lineage.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.execution_basis.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            lineage: CampaignLineageId::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            execution_basis: CampaignHash::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "checkpoint-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+}
+
+/// Idempotent outcome of requesting one exact local checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointAttemptExecutionDisposition {
+    /// This call durably latched the checkpoint request.
+    Requested,
+    /// The same execution had already latched a checkpoint request.
+    AlreadyRequested,
+    /// Immutable checkpoint publication is in progress under a durable root.
+    Publishing {
+        /// Exact checkpoint root retained before publication began.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The execution is paused at one complete durable exact checkpoint.
+    Paused {
+        /// Complete exact checkpoint root available to the coordinator.
+        checkpoint: ExactCheckpointId,
+    },
+    /// Canonical completion won before the checkpoint request.
+    AlreadyCompleted {
+        /// Published immutable observation identity.
+        observation: ObservationId,
+    },
+    /// Durable cancellation won before the checkpoint request.
+    AlreadyCanceled,
+    /// The named execution is not the current attempt incarnation.
+    NotCurrent,
+}
+
+impl Canonical for CheckpointAttemptExecutionDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Requested => encoder.u8(0),
+            Self::AlreadyRequested => encoder.u8(1),
+            Self::Publishing { checkpoint } => {
+                encoder.u8(2);
+                checkpoint.encode(encoder);
+            }
+            Self::Paused { checkpoint } => {
+                encoder.u8(3);
+                checkpoint.encode(encoder);
+            }
+            Self::AlreadyCompleted { observation } => {
+                encoder.u8(4);
+                observation.encode(encoder);
+            }
+            Self::AlreadyCanceled => encoder.u8(5),
+            Self::NotCurrent => encoder.u8(6),
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Requested),
+            1 => Ok(Self::AlreadyRequested),
+            2 => Ok(Self::Publishing {
+                checkpoint: ExactCheckpointId::decode(decoder)?,
+            }),
+            3 => Ok(Self::Paused {
+                checkpoint: ExactCheckpointId::decode(decoder)?,
+            }),
+            4 => Ok(Self::AlreadyCompleted {
+                observation: ObservationId::decode(decoder)?,
+            }),
+            5 => Ok(Self::AlreadyCanceled),
+            6 => Ok(Self::NotCurrent),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "checkpoint-attempt-execution-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Strict response bound to one exact checkpoint request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointAttemptExecutionResponse {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    request_digest: CampaignHash,
+    disposition: CheckpointAttemptExecutionDisposition,
+}
+
+impl CheckpointAttemptExecutionResponse {
+    /// Builds one response that cannot be replayed across another execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        request: &CheckpointAttemptExecutionRequest,
+        disposition: CheckpointAttemptExecutionDisposition,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: request.daemon_epoch(),
+            attempt: request.attempt(),
+            execution: request.execution(),
+            request_digest: request.request_digest(),
+            disposition,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "checkpoint-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the daemon incarnation copied from the request.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the semantic attempt copied from the request.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution copied from the request.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the digest of the complete request this response answers.
+    #[must_use]
+    pub const fn request_digest(&self) -> CampaignHash {
+        self.request_digest
+    }
+
+    /// Returns the executor's stable checkpoint-request outcome.
+    #[must_use]
+    pub const fn disposition(&self) -> CheckpointAttemptExecutionDisposition {
+        self.disposition
+    }
+
+    /// Validates that this response answers every field of one exact request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any echoed identity or request digest differs.
+    pub fn validate_for(
+        &self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.daemon_epoch == request.daemon_epoch()
+            && self.attempt == request.attempt()
+            && self.execution == request.execution()
+            && self.request_digest == request.request_digest()
+        {
+            Ok(())
+        } else {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "checkpoint attempt execution response does not match request",
+            })
+        }
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "checkpoint-attempt-execution-response-encoded-bytes")
+    }
+
+    /// Decodes and binds a response to one exact checkpoint request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ordinary strict-decoding error or a cross-request mismatch.
+    pub fn from_canonical_bytes_for(
+        request: &CheckpointAttemptExecutionRequest,
+        bytes: &[u8],
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self::from_canonical_bytes(bytes)?;
+        response.validate_for(request)?;
+        Ok(response)
+    }
+}
+
+impl Canonical for CheckpointAttemptExecutionResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.disposition.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            request_digest: CampaignHash::decode(decoder)?,
+            disposition: CheckpointAttemptExecutionDisposition::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "checkpoint-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
 /// Strict idempotent cancellation request for one exact execution incarnation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CancelAttemptExecutionRequest {
@@ -1172,7 +1570,7 @@ impl CancelAttemptExecutionRequest {
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
         CampaignHash::derive(
-            "crucible.campaign.cancel-attempt-execution-request.v1",
+            "crucible.campaign.cancel-attempt-execution-request.v2",
             &self.canonical_bytes(),
         )
     }
@@ -1461,6 +1859,17 @@ pub trait ExecutorStatusService: ExecutorService {
 
 /// Idempotent cancellation extension implemented by direct and RPC executors.
 pub trait ExecutorControlService: ExecutorStatusService {
+    /// Requests a durable exact checkpoint of one execution incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific error when operational state cannot
+    /// be changed or a protocol response cannot be constructed.
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error>;
+
     /// Requests cancellation of one exact execution incarnation.
     ///
     /// # Errors
@@ -1538,6 +1947,26 @@ impl<S: ExecutorStatusService> ExecutorClient<S> {
 }
 
 impl<S: ExecutorControlService> ExecutorClient<S> {
+    /// Requests and validates one exact local checkpoint operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] for service failure or
+    /// [`ExecutorClientError::InvalidResponse`] for a cross-request response.
+    pub fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, ExecutorClientError<S::Error>> {
+        let response = self
+            .service
+            .checkpoint_attempt_execution(request)
+            .map_err(ExecutorClientError::Service)?;
+        response
+            .validate_for(request)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        Ok(response)
+    }
+
     /// Cancels and validates one exact local execution incarnation.
     ///
     /// # Errors
@@ -1672,11 +2101,11 @@ mod tests {
         );
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.submit-attempt-request-vector.v1",
+                "crucible.test.submit-attempt-request-vector.v2",
                 &request_bytes
             )
             .to_hex(),
-            "13fd6ec80f45be7532261c4defb0616e1b871e79f29d720733fcf5b56894b022"
+            "0e799560b178b6f6d2a8fe1822e141ac55f436b3600bed1e5fa07ce27aaf5e69"
         );
 
         let response = SubmitAttemptResponse::new(
@@ -1699,11 +2128,11 @@ mod tests {
         assert!(response.matches_request(&request));
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.submit-attempt-response-vector.v1",
+                "crucible.test.submit-attempt-response-vector.v2",
                 &response_bytes,
             )
             .to_hex(),
-            "e133cb30a4352172e4efc7109e536aebd41b2ad729143c4493c3461ede3f5a41"
+            "9bf8c3a08b4637c75bca9ff467de181a98ea2828c5e302ed0ed5552dfc60f698"
         );
 
         let different = SubmitAttemptRequest::new(
@@ -1743,7 +2172,7 @@ mod tests {
         );
 
         let mut unsupported_version = request_bytes.clone();
-        unsupported_version[..4].copy_from_slice(&2_u32.to_be_bytes());
+        unsupported_version[..4].copy_from_slice(&1_u32.to_be_bytes());
         assert_eq!(
             SubmitAttemptRequest::from_canonical_bytes(&unsupported_version),
             Err(CampaignCodecError::InvalidValue {
@@ -1787,11 +2216,11 @@ mod tests {
         );
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.get-attempt-execution-request-vector.v1",
+                "crucible.test.get-attempt-execution-request-vector.v2",
                 &request_bytes,
             )
             .to_hex(),
-            "1a5423e378161790b224f0ec09c9ab8683c2de01fb98caed319940b564919e64"
+            "ef1b1a52e9f1bce2ad5f56a3d038c2a48cbd7c3e1809e0cd999edb4f1f64d5f3"
         );
 
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -1813,11 +2242,11 @@ mod tests {
         );
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.get-attempt-execution-response-vector.v1",
+                "crucible.test.get-attempt-execution-response-vector.v2",
                 &response_bytes,
             )
             .to_hex(),
-            "d8160ab0ff7f7c93be260837f7b2fbc66a945e5bc08e62cfe0da28cc5104b542"
+            "52a161cda68e3b020734a39e141906ba8b707768a93964e597884cd1777b03fb"
         );
 
         let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -1858,11 +2287,11 @@ mod tests {
         );
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.cancel-attempt-execution-request-vector.v1",
+                "crucible.test.cancel-attempt-execution-request-vector.v2",
                 &request_bytes,
             )
             .to_hex(),
-            "a2ebce5940c222189062af114c7ff2c3fb7f67117b1e4e493b4c104499cfb2ed"
+            "b3ca93e0286e939ba61708de078d38588c5e9298611b4c30482453ee649e367e"
         );
 
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -1884,11 +2313,11 @@ mod tests {
         );
         assert_eq!(
             CampaignHash::derive(
-                "crucible.test.cancel-attempt-execution-response-vector.v1",
+                "crucible.test.cancel-attempt-execution-response-vector.v2",
                 &response_bytes,
             )
             .to_hex(),
-            "0e99eaf0b0318c3893e5d2990434df1461f3516018016a09c68cab68418ade46"
+            "fd77a046700eedf86394ce59e290a5396105a04b9f1fe224d767eaa79d119fac"
         );
 
         let other = CancelAttemptExecutionRequest::new(
@@ -1914,6 +2343,84 @@ mod tests {
             CancelAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
             Err(CampaignCodecError::UnknownTag {
                 kind: "cancel-attempt-execution-disposition",
+                tag: 0xff
+            })
+        );
+    }
+
+    #[test]
+    fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
+        let assignment = fixture_request();
+        let execution = ExecutionId::from_bytes([0x3b; 16]).expect("execution");
+        let request = CheckpointAttemptExecutionRequest::new(&assignment, execution)
+            .expect("checkpoint request");
+        let request_bytes = request.canonical_bytes();
+        assert_eq!(
+            CheckpointAttemptExecutionRequest::from_canonical_bytes(&request_bytes)
+                .expect("checkpoint request decode"),
+            request
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.checkpoint-attempt-execution-request-vector.v2",
+                &request_bytes,
+            )
+            .to_hex(),
+            "2f1dfdb45541a18fd2b09e3033e982af8e110c8ebd443bc06823751c45cc4a2e"
+        );
+
+        let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            2,
+            b"executor-checkpoint-root",
+        ))
+        .expect("checkpoint root");
+        let response = CheckpointAttemptExecutionResponse::new(
+            &request,
+            CheckpointAttemptExecutionDisposition::Paused { checkpoint },
+        )
+        .expect("checkpoint response");
+        let response_bytes = response.canonical_bytes();
+        assert_eq!(
+            CheckpointAttemptExecutionResponse::from_canonical_bytes_for(
+                &request,
+                &response_bytes,
+            )
+            .expect("checkpoint response decode"),
+            response
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.checkpoint-attempt-execution-response-vector.v2",
+                &response_bytes,
+            )
+            .to_hex(),
+            "ff859c55efc7e56f7e81c6dd969fbe068a0c583e346a37023531a81a8a61877d"
+        );
+
+        let other = CheckpointAttemptExecutionRequest::new(
+            &assignment,
+            ExecutionId::from_bytes([0x3c; 16]).expect("other execution"),
+        )
+        .expect("other checkpoint request");
+        assert_eq!(
+            CheckpointAttemptExecutionResponse::from_canonical_bytes_for(&other, &response_bytes),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "checkpoint attempt execution response does not match request"
+            })
+        );
+
+        let mut unknown_disposition = CheckpointAttemptExecutionResponse::new(
+            &request,
+            CheckpointAttemptExecutionDisposition::AlreadyRequested,
+        )
+        .expect("already requested response")
+        .canonical_bytes();
+        *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+        assert_eq!(
+            CheckpointAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
+            Err(CampaignCodecError::UnknownTag {
+                kind: "checkpoint-attempt-execution-disposition",
                 tag: 0xff
             })
         );

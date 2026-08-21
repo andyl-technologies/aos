@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use crucible_campaign::{
     CampaignCodecError, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorMaterializationLocality, ExecutorService, ExecutorStatusService,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, SubmitAttemptRequest,
@@ -132,6 +133,13 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.supervisor.checkpoint_attempt_execution(request)
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,

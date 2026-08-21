@@ -162,6 +162,154 @@ fn execution_status_is_read_only_and_requires_the_exact_runtime_basis() {
 }
 
 #[test]
+fn checkpoint_request_stages_a_gc_root_and_releases_only_after_pause() {
+    let epoch = daemon_epoch(0x25);
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    let assignment = request(0x16, 0x35, epoch, resources(1, 2048, 4096));
+    let execution = accepted_execution(
+        &supervisor
+            .submit_attempt(&assignment)
+            .expect("accept execution"),
+    );
+    let queued = supervisor.next_queued().expect("take execution");
+    assert!(!queued.checkpoint_request().is_requested());
+
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&assignment, execution).expect("checkpoint request");
+    assert_eq!(
+        supervisor
+            .checkpoint_attempt_execution(&checkpoint_request)
+            .expect("request checkpoint")
+            .disposition(),
+        CheckpointAttemptExecutionDisposition::Requested
+    );
+    assert!(queued.checkpoint_request().is_requested());
+    assert_eq!(supervisor.active_count(), 1);
+    assert!(matches!(
+        supervisor
+            .ledger()
+            .load_attempt(execution_key(&assignment))
+            .expect("load requested state"),
+        Some(AttemptRuntimeState::CheckpointRequested { .. })
+    ));
+
+    let root = checkpoint(0x75);
+    assert_eq!(
+        supervisor
+            .stage_checkpoint_publication(&queued, root)
+            .expect("stage checkpoint"),
+        CheckpointPublicationOutcome::Staged
+    );
+    assert_eq!(supervisor.active_count(), 1);
+    let mut roots = Vec::new();
+    supervisor
+        .ledger()
+        .visit_checkpoint_roots(&mut |checkpoint| roots.push(checkpoint))
+        .expect("visit checkpoint roots");
+    assert_eq!(roots, vec![root]);
+
+    let status = GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&status)
+            .expect("checkpoint status")
+            .disposition(),
+        GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint: root }
+    );
+    assert_eq!(
+        supervisor
+            .complete_checkpoint(&queued, root)
+            .expect("complete checkpoint"),
+        CheckpointCompletionOutcome::Paused
+    );
+    assert_eq!(supervisor.active_count(), 0);
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&status)
+            .expect("paused status")
+            .disposition(),
+        GetAttemptExecutionDisposition::Paused { checkpoint: root }
+    );
+
+    let replay = request(0x17, 0x35, epoch, resources(1, 2048, 4096));
+    assert_eq!(
+        supervisor
+            .submit_attempt(&replay)
+            .expect("replay paused attempt")
+            .disposition(),
+        SubmitAttemptDisposition::AlreadyPaused {
+            execution,
+            checkpoint: root,
+        }
+    );
+}
+
+#[test]
+fn checkpoint_publication_restart_preserves_the_expected_root() {
+    let first_epoch = daemon_epoch(0x26);
+    let capacity = ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity");
+    let mut first = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        first_epoch,
+        capacity,
+    );
+    let first_request = request(0x18, 0x36, first_epoch, resources(1, 2048, 4096));
+    let first_execution = accepted_execution(
+        &first
+            .submit_attempt(&first_request)
+            .expect("accept first execution"),
+    );
+    let first_queued = first.next_queued().expect("take first execution");
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&first_request, first_execution)
+            .expect("checkpoint request");
+    first
+        .checkpoint_attempt_execution(&checkpoint_request)
+        .expect("request checkpoint");
+    let expected = checkpoint(0x76);
+    first
+        .stage_checkpoint_publication(&first_queued, expected)
+        .expect("stage expected root");
+
+    let ledger = first.into_ledger();
+    let second_epoch = daemon_epoch(0x27);
+    let mut second =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, second_epoch, capacity);
+    let recovery = request_in_lineage(
+        0x19,
+        0x36,
+        0x11,
+        second_epoch,
+        resources(1, 2048, 4096),
+        first_request.retention(),
+    );
+    let recovery_execution = accepted_execution(
+        &second
+            .submit_attempt(&recovery)
+            .expect("admit checkpoint recovery"),
+    );
+    let recovery_queued = second.next_queued().expect("take recovery");
+    assert_eq!(recovery_queued.execution(), recovery_execution);
+    assert!(recovery_queued.checkpoint_request().is_requested());
+    assert!(matches!(
+        second.stage_checkpoint_publication(&recovery_queued, checkpoint(0x77)),
+        Err(LocalExecutorError::ConflictingCheckpoint)
+    ));
+    assert_eq!(
+        second
+            .stage_checkpoint_publication(&recovery_queued, expected)
+            .expect("replay expected root"),
+        CheckpointPublicationOutcome::AlreadyStaged
+    );
+}
+
+#[test]
 fn cancellation_requires_the_exact_runtime_basis_before_signaling() {
     let epoch = daemon_epoch(0x25);
     let mut supervisor = LocalExecutorSupervisor::new(
@@ -1123,6 +1271,16 @@ impl AssignmentLedger for FailingCasLedger {
             Err(never) => match never {},
         }
     }
+
+    fn visit_checkpoint_roots(
+        &self,
+        visitor: &mut dyn FnMut(ExactCheckpointId),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_checkpoint_roots(visitor) {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
+    }
 }
 
 struct FailingPublishLedger {
@@ -1190,6 +1348,16 @@ impl AssignmentLedger for FailingPublishLedger {
         visitor: &mut dyn FnMut(ObservationId),
     ) -> Result<(), Self::Error> {
         match self.inner.visit_observation_roots(visitor) {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
+    }
+
+    fn visit_checkpoint_roots(
+        &self,
+        visitor: &mut dyn FnMut(ExactCheckpointId),
+    ) -> Result<(), Self::Error> {
+        match self.inner.visit_checkpoint_roots(visitor) {
             Ok(()) => Ok(()),
             Err(never) => match never {},
         }
@@ -1275,6 +1443,14 @@ fn observation(byte: u8) -> ObservationId {
         byte,
     ))
     .expect("observation")
+}
+
+fn checkpoint(byte: u8) -> ExactCheckpointId {
+    ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        encode_hex(&[byte; 32])
+    ))
+    .expect("checkpoint")
 }
 
 fn typed_id(tag: &str, kind: &str, byte: u8) -> String {

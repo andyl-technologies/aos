@@ -10,9 +10,10 @@ use std::sync::Arc;
 use super::*;
 use crate::{
     AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
-    ExecutorClientError, ExecutorControlService, ExecutorRejection, ExecutorStatusService,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
+    ExecutorClient, ExecutorClientError, ExecutorControlService, ExecutorRejection,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
 };
 
 /// Coordinator-owned bounded driver for one local executor component.
@@ -239,6 +240,24 @@ impl<S> CampaignExecutorDriver<S> {
                 self.reset_scan();
                 Ok(CampaignExecutorStepOutcome::Incorporated(result))
             }
+            SubmitAttemptDisposition::AlreadyPaused {
+                execution,
+                checkpoint,
+            } => {
+                self.active_executions.insert(
+                    worker_slot,
+                    ActiveExecutionPoll {
+                        reservation,
+                        request,
+                        execution,
+                    },
+                );
+                Ok(CampaignExecutorStepOutcome::Checkpointed {
+                    attempt: reservation.attempt(),
+                    execution,
+                    checkpoint,
+                })
+            }
             SubmitAttemptDisposition::Rejected {
                 reason:
                     reason @ (ExecutorRejection::Backpressure | ExecutorRejection::UnavailableInput),
@@ -401,6 +420,93 @@ impl<S> CampaignExecutorDriver<S> {
         }
     }
 
+    /// Requests an exact checkpoint for at most one held execution.
+    ///
+    /// The lowest active worker slot is selected deterministically. A held
+    /// reservation that has not reached the executor is released because it
+    /// owns no guest state to preserve. Active reservations remain held through
+    /// request, publication, and paused outcomes so the semantic attempt cannot
+    /// be reassigned before its checkpoint is incorporated by the owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a checked executor-client, repository, or reservation error.
+    pub fn checkpoint_one(
+        &mut self,
+        campaign: &str,
+    ) -> Result<CampaignExecutorCheckpointOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorControlService,
+    {
+        let Some((worker_slot, active)) = self
+            .active_executions
+            .iter()
+            .next()
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()))
+        else {
+            let Some(reservation) = self.queue.first_reservation() else {
+                return Ok(CampaignExecutorCheckpointOutcome::Idle);
+            };
+            self.queue.release(reservation)?;
+            self.reset_scan();
+            return Ok(CampaignExecutorCheckpointOutcome::Released {
+                attempt: reservation.attempt(),
+            });
+        };
+        let request = CheckpointAttemptExecutionRequest::new(&active.request, active.execution)?;
+        let response = self
+            .executor
+            .checkpoint_attempt_execution(&request)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match response.disposition() {
+            CheckpointAttemptExecutionDisposition::Requested
+            | CheckpointAttemptExecutionDisposition::AlreadyRequested => {
+                Ok(CampaignExecutorCheckpointOutcome::Requested {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    already_requested: matches!(
+                        response.disposition(),
+                        CheckpointAttemptExecutionDisposition::AlreadyRequested
+                    ),
+                })
+            }
+            CheckpointAttemptExecutionDisposition::Publishing { checkpoint } => {
+                Ok(CampaignExecutorCheckpointOutcome::Publishing {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    checkpoint,
+                })
+            }
+            CheckpointAttemptExecutionDisposition::Paused { checkpoint } => {
+                Ok(CampaignExecutorCheckpointOutcome::Paused {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    checkpoint,
+                })
+            }
+            CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation } => {
+                let observation_record = self.repository.load_observation(observation)?;
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result =
+                    self.repository
+                        .publish_observation(campaign, expected, &observation_record)?;
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorCheckpointOutcome::Incorporated(result))
+            }
+            CheckpointAttemptExecutionDisposition::AlreadyCanceled
+            | CheckpointAttemptExecutionDisposition::NotCurrent => {
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorCheckpointOutcome::AssignmentRenewed {
+                    attempt: active.reservation.attempt(),
+                })
+            }
+        }
+    }
+
     /// Returns the checked executor client when coordinator ownership ends.
     #[must_use]
     pub fn into_executor(self) -> ExecutorClient<S> {
@@ -448,11 +554,22 @@ impl<S> CampaignExecutorDriver<S> {
             .get_attempt_execution(&query)
             .map_err(CampaignExecutorDriverError::Executor)?;
         match response.disposition() {
-            GetAttemptExecutionDisposition::Running => Ok(CampaignExecutorStepOutcome::Running {
-                attempt: active.reservation.attempt(),
-                execution: active.execution,
-                newly_accepted: false,
-            }),
+            GetAttemptExecutionDisposition::Running
+            | GetAttemptExecutionDisposition::CheckpointRequested
+            | GetAttemptExecutionDisposition::CheckpointPublishing { .. } => {
+                Ok(CampaignExecutorStepOutcome::Running {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    newly_accepted: false,
+                })
+            }
+            GetAttemptExecutionDisposition::Paused { checkpoint } => {
+                Ok(CampaignExecutorStepOutcome::Checkpointed {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    checkpoint,
+                })
+            }
             GetAttemptExecutionDisposition::Completed { observation } => {
                 let observation_record = self.repository.load_observation(observation)?;
                 let expected = self.repository.head(campaign)?.snapshot_id();
@@ -540,6 +657,15 @@ pub enum CampaignExecutorStepOutcome {
         /// Whether this call first admitted the execution.
         newly_accepted: bool,
     },
+    /// The exact execution stopped at a complete durable checkpoint.
+    Checkpointed {
+        /// Immutable semantic attempt that was paused.
+        attempt: AttemptId,
+        /// Local execution incarnation that produced the checkpoint.
+        execution: ExecutionId,
+        /// Complete durable exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
     /// A transient executor condition released the lease for a fresh assignment.
     RetryScheduled {
         /// Immutable semantic attempt that remains claimable.
@@ -570,6 +696,52 @@ pub enum CampaignExecutorStepOutcome {
     Incorporated(ObservationResult),
     /// A stable non-modeled disposition closed the attempt ordinal.
     Closed(NonModeledAttemptResult),
+}
+
+/// One bounded coordinator exact-checkpoint transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignExecutorCheckpointOutcome {
+    /// No reservation remains to checkpoint.
+    Idle,
+    /// A not-yet-executing reservation was released without guest work.
+    Released {
+        /// Immutable attempt made claimable after resume.
+        attempt: AttemptId,
+    },
+    /// The exact worker has durably latched the checkpoint request.
+    Requested {
+        /// Immutable semantic attempt being paused.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+        /// Whether an earlier call had already latched the request.
+        already_requested: bool,
+    },
+    /// Checkpoint bytes are publishing under a retained root.
+    Publishing {
+        /// Immutable semantic attempt being paused.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+        /// Root retained before publication began.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The execution stopped at a complete durable checkpoint.
+    Paused {
+        /// Immutable semantic attempt that was paused.
+        attempt: AttemptId,
+        /// Exact local execution incarnation.
+        execution: ExecutionId,
+        /// Complete durable exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
+    /// Completion won and advanced authoritative campaign state.
+    Incorporated(ObservationResult),
+    /// Cancellation or a stale execution requires a fresh assignment on resume.
+    AssignmentRenewed {
+        /// Immutable attempt that remains semantically claimable.
+        attempt: AttemptId,
+    },
 }
 
 /// One bounded coordinator cancellation transition.

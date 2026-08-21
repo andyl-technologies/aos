@@ -344,6 +344,7 @@ ExecutorService
   SubmitAttempt
   GetAttemptExecution
   WatchExecutions
+  CheckpointAttemptExecution
   CancelExecution
   QueryMaterializations
   EnsureMaterialization

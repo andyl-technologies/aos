@@ -251,7 +251,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   drains before one planner invocation is enabled; paused campaigns issue no
   new work. Drain polls only held reservations, cancel-and-retry cancels one
   exact execution or releases one unaccepted lease per step, and exact-
-  checkpoint fails closed until the concrete checkpoint owner is composed.
+  checkpoint issues one exact-basis checkpoint request per step while retaining
+  the reservation through publication and durable pause.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -318,9 +319,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   paused VMState/host-I/O capture. The daemon now prepares and durably publishes
   a registered exact-checkpoint root over canonical snapshot metadata and a
   bounded, streamed opaque VMState child, with no writes during preparation and
-  children-before-root durable receipts. Assignment-ledger root staging,
-  restart-resume recovery, and supervisor replacement of the active reservation
-  remain open.
+  children-before-root durable receipts. The executor now persists
+  checkpoint-requested, checkpoint-publishing, and paused ledger states, stages
+  the exact root before writes, preserves it as a restart/GC root, recovers the
+  expected root across daemon epochs, and releases capacity only after durable
+  pause. Concrete modeled-driver capture-result wiring and resume
+  materialization remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -340,9 +344,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   campaign-supervisor scheduling plus drain and cancel-and-retry pause policies
   are implemented. The guarded live session can now capture a basis-checked
   exact snapshot while retaining the paused process and resource guard;
-  durable handoff and restart-resume composition remain open, so the supervisor
-  still reports checkpoint-required without releasing active work. The fixed
-  worker pool and its linear publication/reconciliation path are implemented.
+  exact request/response, durable handoff, root-before-write phase tokens,
+  restart root preservation, GC enumeration, and paused-capacity replacement
+  are implemented. Concrete capture-result wiring and resume materialization
+  remain open. The fixed worker pool and its linear
+  publication/reconciliation path are implemented.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -457,8 +463,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact canonical request in a content-addressed envelope (32-MiB and 65,529
   bundle-object initial store profile) and commits both its ID and digest in
   planner-step schema v4. The executor
-  checkpoint now provides strict 4-KiB canonical `SubmitAttempt` request and
-  response messages, nonzero operational assignment/execution/epoch IDs,
+  checkpoint now provides strict 4-KiB canonical `SubmitAttempt`, execution
+  status, exact-checkpoint, and cancellation request/response messages,
+  nonzero operational assignment/execution/epoch IDs,
   explicit resource and retention fields, exact-request digest binding, stable
   retry/conflict outcomes, golden vectors, malformed-input rejection, an
   implementor-facing service trait, and one checked coordinator client for
@@ -469,8 +476,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   publication, lineage-qualified conditional attempt state, exact
   resource/retention execution-basis deduplication, bounded aggregate and
   per-execution-quanta admission, reauthenticated completed-state reuse,
-  idempotent running/completed/canceled transitions, commit-indeterminate
-  publication recovery, restart conformance tests, a production repository
+  idempotent running/checkpoint-requested/checkpoint-publishing/paused/
+  completed/canceled transitions, commit-indeterminate publication recovery,
+  restart and GC-root conformance tests, a production repository
   admission/completion adapter with an exact immutable executor profile, and a
   strict 4-KiB versioned Unix-loopback binding with finite deadlines,
   close-on-error behavior, direct/loopback equivalence, and hostile/partial

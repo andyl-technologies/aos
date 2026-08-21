@@ -966,7 +966,8 @@ local implementation:
 ```text
 DescribeExecutor      WatchCapacity
 SubmitAttempt         GetAttemptExecution
-WatchExecutions       CancelAttemptExecution
+WatchExecutions       CheckpointAttemptExecution
+CancelAttemptExecution
 QueryMaterializations EnsureMaterialization
 RetainExactClosure    EvictMaterialization
 GetHealth
@@ -975,25 +976,32 @@ GetHealth
 The first bounded assignment messages are:
 
 ```text
-SubmitAttemptRequestV1 = version | assignment_id | daemon_epoch | lineage_id |
+SubmitAttemptRequestV2 = version | assignment_id | daemon_epoch | lineage_id |
                          attempt_id | resource_limits | retention_intent
 
 resource_limits = maximum_vcpus | maximum_resident_bytes |
                   maximum_disk_bytes | maximum_execution_quanta
 
-SubmitAttemptResponseV1 = version | assignment_id | daemon_epoch | attempt_id |
+SubmitAttemptResponseV2 = version | assignment_id | daemon_epoch | attempt_id |
                           request_digest | disposition
 
-GetAttemptExecutionRequestV1 = version | daemon_epoch | lineage_id | attempt_id |
+GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                execution_id | execution_basis_digest
 
-GetAttemptExecutionResponseV1 = version | daemon_epoch | attempt_id | execution_id |
+GetAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
                                 request_digest | disposition
 
-CancelAttemptExecutionRequestV1 = version | daemon_epoch | lineage_id | attempt_id |
+CheckpointAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id |
+                                      attempt_id | execution_id |
+                                      execution_basis_digest
+
+CheckpointAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id |
+                                       execution_id | request_digest | disposition
+
+CancelAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id |
                                   execution_id | execution_basis_digest
 
-CancelAttemptExecutionResponseV1 = version | daemon_epoch | attempt_id | execution_id |
+CancelAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
                                    request_digest | disposition
 ```
 
@@ -1014,6 +1022,7 @@ including resource and retention fields. `SubmitAttempt` returns one of:
 ```text
 accepted(execution ID)
 already-running(execution ID)
+already-paused(execution ID, exact-checkpoint ID)
 already-completed(observation ID)
 rejected(incompatible | backpressure | unavailable-input | unauthorized |
          conflicting-assignment)
@@ -1029,19 +1038,36 @@ than a blind retry.
 
 `GetAttemptExecution` is the read-only completion-poll operation. Its request
 digest is
-`H("crucible.campaign.get-attempt-execution-request.v1", canonical_request)`;
+`H("crucible.campaign.get-attempt-execution-request.v2", canonical_request)`;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
-`running | completed(observation ID) | canceled | not-current`. The executor
-returns `running` for exact durable `running` or `publishing` state,
+`running | checkpoint-requested | checkpoint-publishing(exact-checkpoint ID) |
+paused(exact-checkpoint ID) | completed(observation ID) | canceled |
+not-current`. The executor returns `running` for exact durable `running` or
+observation-`publishing` state,
 `completed` only for exact durable completion, and `canceled` only for exact
 durable cancellation. Absence or any epoch, lineage, attempt, execution, or
 execution-basis mismatch is `not-current`. This operation reads the direct
 lineage-qualified attempt-state record and MUST NOT create an assignment record.
 
+`CheckpointAttemptExecution` is the exact-basis, idempotent pause request. Its
+request digest is
+`H("crucible.campaign.checkpoint-attempt-execution-request.v2",
+canonical_request)`. Its closed disposition vocabulary is `requested |
+already-requested | publishing(exact-checkpoint ID) |
+paused(exact-checkpoint ID) | already-completed(observation ID) |
+already-canceled | not-current`. The executor MUST persist
+`checkpoint-requested` before signaling the running worker. Once capture has
+produced a complete candidate root, it MUST persist
+`checkpoint-publishing(root)` before the first immutable write. It transitions
+to `paused(root)` only after the complete root closure has durable placement;
+only then may it release the process-local execution reservation. A retry
+returns the exact durable phase and root. A different root for the same
+execution is a stable conflict and MUST NOT replace the staged root.
+
 `CancelAttemptExecution` is the idempotent mutation for the same exact
 execution basis. Its request digest is
-`H("crucible.campaign.cancel-attempt-execution-request.v1", canonical_request)`;
+`H("crucible.campaign.cancel-attempt-execution-request.v2", canonical_request)`;
 the response repeats the exact epoch, attempt, and execution and is rejected if
 any echo or the digest differs. Its closed disposition vocabulary is
 `canceled | already-canceled | already-completed(observation ID) | not-current`.
@@ -1075,7 +1101,7 @@ remains the next implementation checkpoint.
 The bounded loopback binding is:
 
 ```text
-ExecutorLoopbackFrameV3 = magic[8] | kind:u8 | reserved[3] |
+ExecutorLoopbackFrameV4 = magic[8] | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 
 kind = submit-attempt-request(1) | submit-attempt-response(2) |
@@ -1083,8 +1109,10 @@ kind = submit-attempt-request(1) | submit-attempt-response(2) |
        watch-capacity-request(5) | capacity-report(6) |
        get-attempt-execution-request(7) | get-attempt-execution-response(8) |
        cancel-attempt-execution-request(9) |
-       cancel-attempt-execution-response(10)
-magic = "CRUCEX03"
+       cancel-attempt-execution-response(10) |
+       checkpoint-attempt-execution-request(11) |
+       checkpoint-attempt-execution-response(12)
+magic = "CRUCEX04"
 ```
 
 The body limit is 4 KiB and is checked before allocation. Reserved bytes must
@@ -1103,10 +1131,13 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV2 = magic | lineage_id | attempt_id |
+AttemptStateRecordV3 = magic | lineage_id | attempt_id |
                        execution_basis_digest |
-                       (running | publishing | completed | canceled) |
-                       daemon_epoch | execution_id | observation_id? |
+                       (running | observation-publishing |
+                        checkpoint-requested | checkpoint-publishing | paused |
+                        completed | canceled) |
+                       daemon_epoch | execution_id |
+                       observation_id? | exact_checkpoint_id? |
                        checksum
 ```
 
@@ -1121,6 +1152,15 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
+
+`checkpoint-publishing` and `paused` records are durable GC roots for their
+exact checkpoint IDs. Restart replaces a stale checkpoint-requested execution
+with a new-epoch recovery execution and keeps the checkpoint request signal
+sticky. It likewise preserves the exact expected root while recovering stale
+checkpoint publication; a regenerated candidate MUST have that ID and cannot
+silently substitute a different checkpoint. An already-paused exact basis is
+replayed without starting guest work. The executor never releases the active
+reservation merely because capture was requested or a root was staged.
 
 The bounded local supervisor persists `running` before publishing `accepted`.
 If response publication is indeterminate, it retains and queues the prepared
@@ -1519,11 +1559,16 @@ further modeled progress and retains the session for guarded reap or
 quarantine. The returned authenticated `QemuVmSnapshot` MUST be durably
 published before the session is finished and its resource guard is released.
 The daemon now prepares a no-write, content-addressed root over canonical
-snapshot metadata and a streamed opaque VMState child, publishes both children
-before that root, and requires exact durable placement receipts. Assignment-
-ledger staging of the expected root, restart recovery, resume materialization,
-and supervisor replacement of the active reservation remain mandatory before
-the campaign supervisor may report exact-checkpoint pause complete.
+snapshot metadata and a streamed opaque VMState child, stages that exact root
+in the assignment ledger before the first immutable write, publishes both
+children before the root, and requires exact durable placement receipts. The
+ledger preserves requested, publishing, and paused phases across restart; the
+worker publication API uses linear prepared, staged, and published tokens so a
+storage or compare-exchange error never requires rerunning a completed capture.
+The campaign supervisor issues the exact checkpoint request and retains its
+reservation until the executor reports durable pause. Concrete modeled-driver
+capture-result wiring and resume materialization remain mandatory before the
+full campaign/QEMU flight may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
