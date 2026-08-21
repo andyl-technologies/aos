@@ -37,6 +37,14 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying copy error.
         source: std::io::Error,
     },
+    /// A canonical exact-snapshot envelope could not be persisted or reloaded.
+    #[error("durable exact-snapshot envelope I/O at {path} failed")]
+    SnapshotEnvelopeIo {
+        /// Canonical envelope path.
+        path: PathBuf,
+        /// Underlying durable file operation error.
+        source: std::io::Error,
+    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {

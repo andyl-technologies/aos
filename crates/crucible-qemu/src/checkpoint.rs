@@ -47,6 +47,8 @@ pub struct QemuLive9pIoServicerCheckpoint {
 pub struct QemuNetworkTransportCheckpoint {
     pub(crate) inbound: SpscRingSnapshot,
     pub(crate) outbound: SpscRingSnapshot,
+    pub(crate) queue_capacity: u32,
+    pub(crate) router_slot: u32,
     pub(crate) next_router_inbound_sequence: u64,
     pub(crate) next_host_outbound_sequence: u64,
     pub(crate) next_plugin_outbound_sequence: u64,
@@ -57,6 +59,8 @@ impl QemuNetworkTransportCheckpoint {
         Self {
             inbound: SpscRingSnapshot { frames: Vec::new() },
             outbound: SpscRingSnapshot { frames: Vec::new() },
+            queue_capacity: crucible_shmem::DEFAULT_QUEUE_CAPACITY,
+            router_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
             next_router_inbound_sequence: 0,
             next_host_outbound_sequence: 0,
             next_plugin_outbound_sequence: 0,
@@ -85,6 +89,9 @@ impl QemuNetworkTransportCheckpoint {
     }
 
     pub(crate) fn validate_outbound_sequences(&self) -> Result<(), QemuNodeCheckpointCodecError> {
+        if self.outbound.frames.len() > self.queue_capacity as usize {
+            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
+        }
         let mut expected = self.next_host_outbound_sequence;
         for frame in &self.outbound.frames {
             if frame.delivery_state() != Ok(crucible_shmem::FrameDeliveryState::Pending) {
@@ -102,6 +109,48 @@ impl QemuNetworkTransportCheckpoint {
         {
             return Err(QemuNodeCheckpointCodecError::NetworkTransport);
         }
+        Ok(())
+    }
+
+    pub(crate) fn validate_inbound_sequences(&self) -> Result<(), QemuNodeCheckpointCodecError> {
+        const MAX_NETWORK_QUEUE_FRAMES: u32 = 1_048_576;
+
+        if self.queue_capacity == 0
+            || !self.queue_capacity.is_power_of_two()
+            || self.queue_capacity > MAX_NETWORK_QUEUE_FRAMES
+            || self.inbound.frames.len() > self.queue_capacity as usize
+            || self.next_router_inbound_sequence > u64::from(u32::MAX) + 1
+        {
+            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
+        }
+        let Some(first) = self.inbound.frames.first() else {
+            return Ok(());
+        };
+        let mut expected = u64::from(first.seq);
+        for frame in &self.inbound.frames {
+            if frame.src_node != self.router_slot || u64::from(frame.seq) != expected {
+                return Err(QemuNodeCheckpointCodecError::NetworkTransport);
+            }
+            expected = expected
+                .checked_add(1)
+                .ok_or(QemuNodeCheckpointCodecError::NetworkTransport)?;
+        }
+        if expected != self.next_router_inbound_sequence {
+            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), QemuNodeCheckpointCodecError> {
+        self.validate_inbound_sequences()?;
+        self.validate_outbound_sequences()?;
+        self.inbound
+            .canonical_bytes()
+            .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
+        self.outbound
+            .canonical_bytes()
+            .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
+        self.retained_inbound_head()?;
         Ok(())
     }
 
@@ -258,8 +307,8 @@ impl QemuNodeContinuationCheckpoint {
     /// retained network ring contains a malformed frame.
     pub fn to_compact_binary(&self) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
         let mut bytes = Vec::new();
-        self.network_transport.validate_outbound_sequences()?;
-        bytes.extend_from_slice(b"crucible.qemu-node-continuation.v5\0");
+        self.network_transport.validate()?;
+        bytes.extend_from_slice(b"crucible.qemu-node-continuation.v6\0");
         bytes.extend_from_slice(&self.execution_binding.bytes);
         bytes.extend_from_slice(&self.last_observed_time.ticks.to_le_bytes());
         bytes.extend_from_slice(&self.logical_time_calibration.logical_icount.to_le_bytes());
@@ -280,7 +329,8 @@ impl QemuNodeContinuationCheckpoint {
             bytes.extend_from_slice(&frame.sequence.to_le_bytes());
             write_node_continuation_blob(&mut bytes, &frame.payload);
         }
-        self.network_transport.retained_inbound_head()?;
+        bytes.extend_from_slice(&self.network_transport.queue_capacity.to_le_bytes());
+        bytes.extend_from_slice(&self.network_transport.router_slot.to_le_bytes());
         let inbound = self
             .network_transport
             .inbound
@@ -326,7 +376,7 @@ impl QemuNodeContinuationCheckpoint {
         bytes: &[u8],
         execution_binding: ContentHash,
     ) -> Result<Self, QemuNodeCheckpointCodecError> {
-        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v5\0";
+        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v6\0";
         let mut reader = NodeContinuationReader::new(bytes, MAGIC)?;
         let observed_binding = ContentHash {
             bytes: reader.fixed::<32>("execution binding")?,
@@ -379,23 +429,31 @@ impl QemuNodeContinuationCheckpoint {
                 payload,
             });
         }
+        let queue_capacity = reader.u32("network queue capacity")?;
+        let router_slot = reader.u32("network router slot")?;
+        if queue_capacity == 0 || !queue_capacity.is_power_of_two() || queue_capacity > 1_048_576 {
+            return Err(QemuNodeCheckpointCodecError::NetworkTransport);
+        }
         let inbound = SpscRingSnapshot::from_canonical_bytes(
             reader.blob_bounded("network inbound ring", MAX_NODE_CONTINUATION_RING_BYTES)?,
+            queue_capacity as usize,
         )
         .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
         let outbound = SpscRingSnapshot::from_canonical_bytes(
             reader.blob_bounded("network outbound ring", MAX_NODE_CONTINUATION_RING_BYTES)?,
+            queue_capacity as usize,
         )
         .map_err(|_| QemuNodeCheckpointCodecError::NetworkTransport)?;
         let network_transport = QemuNetworkTransportCheckpoint {
             inbound,
             outbound,
+            queue_capacity,
+            router_slot,
             next_router_inbound_sequence: reader.u64("network inbound sequence")?,
             next_host_outbound_sequence: reader.u64("network host outbound sequence")?,
             next_plugin_outbound_sequence: reader.u64("network plugin outbound sequence")?,
         };
-        network_transport.validate_outbound_sequences()?;
-        network_transport.retained_inbound_head()?;
+        network_transport.validate()?;
         let checkpoint = Self {
             execution_binding: observed_binding,
             last_observed_time,
@@ -510,6 +568,10 @@ impl<'a> NodeContinuationReader<'a> {
         Ok(u64::from_le_bytes(self.fixed(role)?))
     }
 
+    fn u32(&mut self, role: &'static str) -> Result<u32, QemuNodeCheckpointCodecError> {
+        Ok(u32::from_le_bytes(self.fixed(role)?))
+    }
+
     fn count(
         &mut self,
         role: &'static str,
@@ -605,274 +667,5 @@ impl QemuHostIoCheckpoint {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crucible::{Icount, IrqVector, PreemptionKind, VcpuId};
-    use crucible_device::{BaseImage, BlockDevice, BlockLatency, IoCore};
-    use crucible_shmem::{RegionConfig, RegionHeader, RegionLayout};
-
-    #[test]
-    fn host_io_checkpoint_codec_round_trips_device_free_state() {
-        let binding = ContentHash::from_bytes(b"host-io-checkpoint-binding");
-        let checkpoint = QemuHostIoCheckpoint::without_devices(binding);
-        let bytes = checkpoint
-            .to_canonical_bytes()
-            .unwrap_or_else(|error| panic!("encode host I/O checkpoint: {error}"));
-        assert_eq!(
-            QemuHostIoCheckpoint::from_canonical_bytes(&bytes, binding)
-                .unwrap_or_else(|error| panic!("decode host I/O checkpoint: {error}")),
-            checkpoint
-        );
-        assert_eq!(
-            QemuHostIoCheckpoint::from_canonical_bytes(
-                &bytes,
-                ContentHash::from_bytes(b"wrong binding")
-            ),
-            Err(QemuHostIoCheckpointCodecError::ExecutionBinding)
-        );
-    }
-
-    #[test]
-    fn host_io_checkpoint_codec_round_trips_block_state() {
-        let binding = ContentHash::from_bytes(b"host-io-block-binding");
-        let layout = RegionLayout::for_config(RegionConfig::new(1, 8, 0))
-            .unwrap_or_else(|error| panic!("valid test region: {error}"));
-        let region_header = RegionHeader::new(layout).snapshot();
-        let device = BlockDevice::new(
-            IoCore::new(8, crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
-                .unwrap_or_else(|error| panic!("valid test core: {error}")),
-            BaseImage::new(vec![0; 8_192]),
-            BlockLatency::default(),
-        );
-        let checkpoint = QemuHostIoCheckpoint {
-            execution_binding: binding,
-            block: Some(QemuLiveBlockIoServicerCheckpoint {
-                execution_binding: binding,
-                storage_device: Some(ContentHash::from_bytes(b"storage identity")),
-                region_header,
-                vm_slot: 0,
-                size_bytes: 8_192,
-                device: device.snapshot(),
-                requests: SpscRingSnapshot { frames: Vec::new() },
-                responses: SpscRingSnapshot { frames: Vec::new() },
-                frames_processed: 4,
-                frames_delivered: 3,
-            }),
-            ninep: None,
-            #[cfg(target_os = "linux")]
-            accelerator: None,
-        };
-        let bytes = checkpoint
-            .to_canonical_bytes()
-            .unwrap_or_else(|error| panic!("encode block host I/O checkpoint: {error}"));
-        assert_eq!(
-            QemuHostIoCheckpoint::from_canonical_bytes(&bytes, binding)
-                .unwrap_or_else(|error| panic!("decode block host I/O checkpoint: {error}")),
-            checkpoint
-        );
-    }
-
-    #[test]
-    fn node_continuation_codec_round_trips_complete_state() {
-        let binding = ContentHash::from_bytes(b"node-continuation-binding");
-        let retained_inbound = crucible_shmem::FrameEntry::new(72, 31, 5, &[4, 5])
-            .unwrap_or_else(|error| panic!("inbound frame should encode: {error}"));
-        retained_inbound
-            .mark_delivery_retained()
-            .unwrap_or_else(|error| panic!("inbound frame should retain: {error}"));
-        let checkpoint = QemuNodeContinuationCheckpoint {
-            execution_binding: binding,
-            last_observed_time: VirtualTime { ticks: 70 },
-            logical_time_calibration: crate::QemuLogicalTimeCalibration {
-                logical_icount: 70,
-                raw_icount: 65,
-            },
-            console_observation_boundary: VirtualTime { ticks: 69 },
-            pending_preemption: Some(PreemptionDecision {
-                node: NodeId {
-                    name: String::from("vm-0"),
-                },
-                at: Icount { retired: 71 },
-                kind: PreemptionKind::InterruptAt {
-                    target_vcpu: VcpuId { index: 1 },
-                    irq: IrqVector { vector: 32 },
-                },
-            }),
-            pending_network_outputs: vec![crate::QemuNodeEmittedFrame {
-                source: NodeId {
-                    name: String::from("vm-0"),
-                },
-                destination: NodeId {
-                    name: String::from("vm-1"),
-                },
-                emit_icount: Icount { retired: 68 },
-                sequence: 4,
-                payload: vec![1, 2, 3],
-            }],
-            network_transport: QemuNetworkTransportCheckpoint {
-                inbound: SpscRingSnapshot {
-                    frames: vec![retained_inbound],
-                },
-                outbound: SpscRingSnapshot {
-                    frames: vec![
-                        crucible_shmem::FrameEntry::new(68, 0, 6, &[6, 7]).unwrap_or_else(
-                            |error| panic!("outbound frame should encode: {error}"),
-                        ),
-                    ],
-                },
-                next_router_inbound_sequence: 12,
-                next_host_outbound_sequence: 6,
-                next_plugin_outbound_sequence: 7,
-            },
-            next_fault_command_sequence: 7,
-            next_fault_event_sequence: 9,
-        };
-        let bytes = checkpoint
-            .to_compact_binary()
-            .unwrap_or_else(|error| panic!("node continuation should encode: {error}"));
-        let restored = QemuNodeContinuationCheckpoint::from_compact_binary(&bytes, binding)
-            .unwrap_or_else(|error| panic!("node continuation should decode: {error}"));
-        assert_eq!(restored, checkpoint);
-        assert_eq!(
-            restored.network_transport.inbound.frames[0].delivery_state(),
-            Ok(crucible_shmem::FrameDeliveryState::Retained)
-        );
-        assert_eq!(
-            restored
-                .to_compact_binary()
-                .unwrap_or_else(|error| panic!("restored continuation should encode: {error}")),
-            bytes
-        );
-    }
-
-    #[test]
-    fn network_transport_binds_host_and_plugin_cursors_around_live_frames() {
-        let mut transport = QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot { frames: Vec::new() },
-            outbound: SpscRingSnapshot {
-                frames: vec![
-                    crucible_shmem::FrameEntry::new(68, 0, 9, &[1])
-                        .unwrap_or_else(|error| panic!("first frame should encode: {error}")),
-                    crucible_shmem::FrameEntry::new(69, 0, 10, &[2])
-                        .unwrap_or_else(|error| panic!("second frame should encode: {error}")),
-                ],
-            },
-            next_router_inbound_sequence: 0,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 0,
-        };
-
-        transport
-            .bind_outbound_sequence(9)
-            .unwrap_or_else(|error| panic!("contiguous transport should bind: {error}"));
-
-        assert_eq!(transport.next_host_outbound_sequence, 9);
-        assert_eq!(transport.next_plugin_outbound_sequence(), 11);
-        assert_eq!(transport.validate_outbound_sequences(), Ok(()));
-    }
-
-    #[test]
-    fn network_transport_rejects_a_gap_or_inconsistent_plugin_cursor() {
-        let frame = crucible_shmem::FrameEntry::new(68, 0, 10, &[1])
-            .unwrap_or_else(|error| panic!("frame should encode: {error}"));
-        let mut gap = QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot { frames: Vec::new() },
-            outbound: SpscRingSnapshot {
-                frames: vec![frame],
-            },
-            next_router_inbound_sequence: 0,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 0,
-        };
-        assert_eq!(
-            gap.bind_outbound_sequence(9),
-            Err(QemuNodeCheckpointCodecError::NetworkTransport)
-        );
-
-        gap.next_host_outbound_sequence = 10;
-        gap.next_plugin_outbound_sequence = 12;
-        assert_eq!(
-            gap.validate_outbound_sequences(),
-            Err(QemuNodeCheckpointCodecError::NetworkTransport)
-        );
-    }
-
-    #[test]
-    fn network_transport_rejects_noncanonical_retained_state() {
-        let retained_non_head = crucible_shmem::FrameEntry::new(69, 31, 1, &[2])
-            .unwrap_or_else(|error| panic!("retained frame should encode: {error}"));
-        retained_non_head
-            .mark_delivery_retained()
-            .unwrap_or_else(|error| panic!("frame should retain: {error}"));
-        let inbound = QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot {
-                frames: vec![
-                    crucible_shmem::FrameEntry::new(68, 31, 0, &[1])
-                        .unwrap_or_else(|error| panic!("head frame should encode: {error}")),
-                    retained_non_head,
-                ],
-            },
-            outbound: SpscRingSnapshot { frames: Vec::new() },
-            next_router_inbound_sequence: 2,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 0,
-        };
-        assert_eq!(
-            inbound.retained_inbound_head(),
-            Err(QemuNodeCheckpointCodecError::NetworkTransport)
-        );
-
-        let retained_outbound = crucible_shmem::FrameEntry::new(68, 0, 0, &[1])
-            .unwrap_or_else(|error| panic!("outbound frame should encode: {error}"));
-        retained_outbound
-            .mark_delivery_retained()
-            .unwrap_or_else(|error| panic!("frame should retain: {error}"));
-        let outbound = QemuNetworkTransportCheckpoint {
-            inbound: SpscRingSnapshot { frames: Vec::new() },
-            outbound: SpscRingSnapshot {
-                frames: vec![retained_outbound],
-            },
-            next_router_inbound_sequence: 0,
-            next_host_outbound_sequence: 0,
-            next_plugin_outbound_sequence: 1,
-        };
-        assert_eq!(
-            outbound.validate_outbound_sequences(),
-            Err(QemuNodeCheckpointCodecError::NetworkTransport)
-        );
-    }
-
-    #[test]
-    fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
-        let binding = ContentHash::from_bytes(b"node-continuation-binding");
-        let checkpoint = QemuNodeContinuationCheckpoint {
-            execution_binding: binding,
-            last_observed_time: VirtualTime { ticks: 1 },
-            logical_time_calibration: crate::QemuLogicalTimeCalibration {
-                logical_icount: 1,
-                raw_icount: 1,
-            },
-            console_observation_boundary: VirtualTime { ticks: 1 },
-            pending_preemption: None,
-            pending_network_outputs: Vec::new(),
-            network_transport: QemuNetworkTransportCheckpoint::empty(),
-            next_fault_command_sequence: 2,
-            next_fault_event_sequence: 1,
-        };
-        let mut bytes = checkpoint
-            .to_compact_binary()
-            .unwrap_or_else(|error| panic!("node continuation should encode: {error}"));
-        assert_eq!(
-            QemuNodeContinuationCheckpoint::from_compact_binary(
-                &bytes,
-                ContentHash::from_bytes(b"wrong")
-            ),
-            Err(QemuNodeCheckpointCodecError::ExecutionBinding)
-        );
-        bytes.push(0);
-        assert_eq!(
-            QemuNodeContinuationCheckpoint::from_compact_binary(&bytes, binding),
-            Err(QemuNodeCheckpointCodecError::Trailing)
-        );
-    }
-}
+#[path = "checkpoint/tests.rs"]
+mod tests;

@@ -15,11 +15,11 @@ use thiserror::Error;
 
 use crucible_shmem::{
     FrameDeliveryAttemptError, FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError,
-    FrameEntry, FrameEntryError,
+    FrameEntry, FrameEntryError, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
 
 /// Hard ceiling on concrete QEMU RX attempts for one canonical frame.
-pub const NETWORK_RX_DELIVERY_ATTEMPT_LIMIT: u32 = 1_024;
+pub const NETWORK_RX_DELIVERY_ATTEMPT_LIMIT: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
 /// Minimum guest-instruction distance between retained-frame RX retries.
 pub const NETWORK_RX_RETRY_INTERVAL_ICOUNT: u64 = 4_000_000;
 
@@ -458,16 +458,9 @@ fn retained_retry_icount(frame: &FrameEntry) -> Result<u64, NetworkRxError> {
             frame: frame.delivery_key(),
         });
     }
-    let distance = u64::from(attempts)
-        .checked_mul(NETWORK_RX_RETRY_INTERVAL_ICOUNT)
-        .ok_or(NetworkRxError::RetryCoordinateOverflow {
-            frame: frame.delivery_key(),
-            attempts,
-            interval_icount: NETWORK_RX_RETRY_INTERVAL_ICOUNT,
-        })?;
     frame
-        .delivery_icount
-        .checked_add(distance)
+        .last_delivery_attempt_icount()
+        .checked_add(NETWORK_RX_RETRY_INTERVAL_ICOUNT)
         .ok_or(NetworkRxError::RetryCoordinateOverflow {
             frame: frame.delivery_key(),
             attempts,
@@ -489,6 +482,8 @@ fn network_rx_delivery_state_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod retained_retry;
 
     use crucible::{
         AdvanceOutcome, ExecutionHorizon, Icount, SchedulerError, SchedulerNodeId,
@@ -688,62 +683,9 @@ mod tests {
         assert_eq!(queue.pending_payloads, vec![b"queued".to_vec()]);
         assert_eq!(queue.queued_payloads, Vec::<Vec<u8>>::new());
         frames[0]
-            .record_delivery_attempt(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
+            .record_delivery_attempt(20, NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
             .unwrap_or_else(|error| panic!("retained attempt should be recorded: {error}"));
         assert_eq!(frames[0].delivery_attempts(), 1);
-    }
-
-    #[test]
-    fn network_rx_fails_loudly_at_canonical_delivery_attempt_limit() {
-        let network_rx = PluginNetworkRx::new();
-        let mut queue = RecordingRxQueue::not_ready();
-        let frame = frame(20, 1, 0, b"bounded");
-        let first = network_rx
-            .inject_due_frames_from_idle_context(&mut queue, 20, 20, std::slice::from_ref(&frame))
-            .unwrap_or_else(|error| panic!("first bounded attempt should be admitted: {error}"));
-        assert_eq!(first.retained_frame_key(), Some(frame.delivery_key()));
-        frame
-            .record_delivery_attempt(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
-            .unwrap_or_else(|error| panic!("first retained attempt should be recorded: {error}"));
-        frame.mark_delivery_retained().unwrap_or_else(|error| {
-            panic!("first retained attempt should authorize retry: {error}")
-        });
-
-        for attempt in 1..NETWORK_RX_DELIVERY_ATTEMPT_LIMIT {
-            let current_icount = 20 + u64::from(attempt) * NETWORK_RX_RETRY_INTERVAL_ICOUNT;
-            let injection = network_rx
-                .inject_due_frames_from_idle_context(
-                    &mut queue,
-                    current_icount,
-                    current_icount,
-                    std::slice::from_ref(&frame),
-                )
-                .unwrap_or_else(|error| panic!("bounded attempt should be admitted: {error}"));
-            assert_eq!(injection.retained_frame_key(), Some(frame.delivery_key()));
-            frame
-                .record_delivery_attempt(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
-                .unwrap_or_else(|error| panic!("retained attempt should be recorded: {error}"));
-        }
-
-        let terminal_icount =
-            20 + u64::from(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT) * NETWORK_RX_RETRY_INTERVAL_ICOUNT;
-        assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
-                &mut queue,
-                terminal_icount,
-                terminal_icount,
-                std::slice::from_ref(&frame),
-            ),
-            Err(NetworkRxError::DeliveryAttemptLimit {
-                frame: frame.delivery_key(),
-                current_icount: terminal_icount,
-                source: FrameDeliveryAttemptError::LimitReached {
-                    attempts: NETWORK_RX_DELIVERY_ATTEMPT_LIMIT,
-                    limit: NETWORK_RX_DELIVERY_ATTEMPT_LIMIT,
-                },
-            })
-        );
-        assert_eq!(frame.delivery_attempts(), NETWORK_RX_DELIVERY_ATTEMPT_LIMIT);
     }
 
     #[test]
@@ -768,41 +710,6 @@ mod tests {
     }
 
     #[test]
-    fn network_rx_retries_canonically_retained_past_frame() {
-        let network_rx = PluginNetworkRx::new();
-        let mut queue = RecordingRxQueue::ready();
-        let late = frame(19, 1, 0, b"late");
-        late.record_delivery_attempt(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
-            .unwrap_or_else(|error| panic!("record retained attempt: {error}"));
-        late.mark_delivery_retained()
-            .unwrap_or_else(|error| panic!("mark retained frame: {error}"));
-        let retry_icount = 19 + NETWORK_RX_RETRY_INTERVAL_ICOUNT;
-
-        let waiting = network_rx
-            .inject_due_frames_from_idle_context(
-                &mut queue,
-                retry_icount - 1,
-                retry_icount - 1,
-                std::slice::from_ref(&late),
-            )
-            .unwrap_or_else(|error| panic!("early retained retry should wait: {error}"));
-        assert!(waiting.delivered_frame_keys().is_empty());
-        assert!(waiting.retained_frame_key().is_none());
-        assert!(queue.queued_payloads.is_empty());
-
-        let injection = network_rx
-            .inject_due_frames_from_idle_context(
-                &mut queue,
-                retry_icount,
-                retry_icount,
-                std::slice::from_ref(&late),
-            )
-            .unwrap_or_else(|error| panic!("retained frame should retry: {error}"));
-        assert_eq!(injection.delivered_frame_keys(), &[late.delivery_key()]);
-        assert_eq!(queue.queued_payloads, vec![b"late".to_vec()]);
-    }
-
-    #[test]
     fn network_rx_rejects_unproven_late_frame() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
@@ -822,36 +729,6 @@ mod tests {
             })
         );
         assert!(queue.queued_payloads.is_empty());
-    }
-
-    #[test]
-    fn network_rx_retained_head_authorizes_blocked_fifo_backlog() {
-        let network_rx = PluginNetworkRx::new();
-        let mut queue = RecordingRxQueue::ready();
-        let retained = frame(18, 1, 0, b"retained");
-        retained
-            .record_delivery_attempt(NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
-            .unwrap_or_else(|error| panic!("record retained attempt: {error}"));
-        retained
-            .mark_delivery_retained()
-            .unwrap_or_else(|error| panic!("mark retained frame: {error}"));
-        let successor = frame(19, 1, 1, b"successor");
-        let retry_icount = 18 + NETWORK_RX_RETRY_INTERVAL_ICOUNT;
-
-        let injection = network_rx
-            .inject_due_frames_from_idle_context(
-                &mut queue,
-                retry_icount,
-                retry_icount,
-                &[retained, successor],
-            )
-            .unwrap_or_else(|error| panic!("retained backlog should retry: {error}"));
-
-        assert_eq!(injection.delivered_frame_keys().len(), 2);
-        assert_eq!(
-            queue.queued_payloads,
-            vec![b"retained".to_vec(), b"successor".to_vec()]
-        );
     }
 
     #[test]

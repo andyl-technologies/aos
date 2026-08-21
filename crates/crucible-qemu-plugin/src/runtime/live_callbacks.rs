@@ -1637,7 +1637,7 @@ impl LiveVcpuTimeCallbackState {
         }
         if let Some(retained) = injection.and_then(|result| result.retained_frame_key()) {
             let inbound = network.inbound.inbound();
-            PluginInboundFrames::mark_retained_head([inbound], retained)
+            PluginInboundFrames::mark_retained_head([inbound], retained, current_icount)
                 .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
         }
         Ok(())

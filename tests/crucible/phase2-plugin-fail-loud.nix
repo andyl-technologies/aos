@@ -21,7 +21,10 @@
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  pluginInbound = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  };
   pluginIdleLoop = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests.rs)
