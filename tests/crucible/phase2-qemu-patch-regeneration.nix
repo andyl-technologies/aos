@@ -217,6 +217,7 @@ in
             commit_count=$(git rev-list --count "$base_commit..refs/heads/patch-stack")
             test "$commit_count" = "${toString patchCount}" \
               || fail "branch commit count $commit_count does not match manifest count ${toString patchCount}"
+            expected_patch_epoch=$(date -d "${series.deterministicPatchDate}" +%s)
 
             : > "$out/patch-branch-manifest.actual"
             line_number=0
@@ -235,6 +236,12 @@ in
                 || fail "subject for $patch_name is $subject, expected $patch_subject"
               test "$tree" = "$expected_tree" \
                 || fail "tree for $patch_name is $tree, expected $expected_tree"
+              author_epoch=$(git log -1 --format=%at "$commit")
+              committer_epoch=$(git log -1 --format=%ct "$commit")
+              test "$author_epoch" = "$expected_patch_epoch" \
+                || fail "$patch_name author timestamp is not the deterministic patch timestamp"
+              test "$committer_epoch" = "$expected_patch_epoch" \
+                || fail "$patch_name committer timestamp is not the deterministic patch timestamp"
               dco_count=$(git log -1 --format=%B "$commit" | gawk '
                 /^Signed-off-by:/ { total++ }
                 $0 == "Signed-off-by: ${series.deterministicAuthorName} <${series.deterministicAuthorEmail}>" { expected++ }

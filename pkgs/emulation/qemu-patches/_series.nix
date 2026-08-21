@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "1ffc00beadbd07162cddcd9febcd65632251ac763a610a8ac6c53fa87df12b2f";
+  patchBranchBundleSha256 = "a52620f47e514e6cf2e0977254d24c1eb04ae7a542db0afca300f1af6877f98c";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "51e99862db3d19451032cdd2ef7ceaa440e44d4b";
+  patchBranchHeadCommit = "2422b561703d42d9f3a35b54bbe39db3fec35cae";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1009,7 +1009,7 @@ let
     {
       file = "0108-crucible-deterministic-network-kick.patch";
       branchSubject = "crucible: preserve deterministic network continuation";
-      branchCommit = "51e99862db3d19451032cdd2ef7ceaa440e44d4b";
+      branchCommit = "2422b561703d42d9f3a35b54bbe39db3fec35cae";
       branchTree = "04b7dbc328e54051b90e98bbcbf40e1a891b96f1";
       catalogName = "crucible-deterministic-network-kick";
       class = "D";
