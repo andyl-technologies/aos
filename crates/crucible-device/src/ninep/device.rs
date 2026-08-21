@@ -168,4 +168,4 @@ mod request_execution;
 mod snapshot;
 
 use request_execution::*;
-pub use snapshot::{NinepSnapshot, NinepSnapshotCodecError};
+pub use snapshot::{MAX_NINEP_SNAPSHOT_BYTES, NinepSnapshot, NinepSnapshotCodecError};

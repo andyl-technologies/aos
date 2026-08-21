@@ -11,10 +11,23 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(BlockSnapshot::from_canonical_bytes(&bytes)), snapshot);
 
+    let configured = u64::try_from(bytes.len() - 1)
+        .unwrap_or_else(|error| panic!("fixture length is representable: {error}"));
+    assert_eq!(
+        BlockSnapshot::from_canonical_bytes_with_limit(&bytes, configured),
+        Err(BlockSnapshotCodecError::ResourceLimit {
+            field: "block snapshot bytes",
+            current: 0,
+            requested: bytes.len() as u64,
+            configured,
+            hard: MAX_BLOCK_SNAPSHOT_BYTES,
+        })
+    );
+
     let mut prior_version = bytes.clone();
     let version_index = b"crucible.block-snapshot.v".len();
-    assert_eq!(prior_version[version_index], b'2');
-    prior_version[version_index] = b'1';
+    assert_eq!(prior_version[version_index], b'3');
+    prior_version[version_index] = b'2';
     assert_eq!(
         BlockSnapshot::from_canonical_bytes(&prior_version),
         Err(BlockSnapshotCodecError::Version)

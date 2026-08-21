@@ -1,12 +1,15 @@
 //! Durable 9p device snapshots and canonical codecs.
 
 use super::*;
+use crate::ninep::HARD_NINEP_OBJECT_VERSIONS;
 use crate::ninep::server::{FidEntry, FidState};
 use crate::snapshot_codec::{
     BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed,
     map_decode_error,
 };
 use crate::subnode::IoCoreSnapshotCodecError;
+use serde::ser::SerializeSeq;
+use serde::{Serialize, Serializer};
 
 /// The device half of a 9p sub-node's `MaterializedState` ([IO-19], [IO-23]).
 ///
@@ -79,6 +82,73 @@ struct FidEntryWire {
     state: FidState,
 }
 
+#[derive(Serialize)]
+struct NinepSnapshotEncodeWire<'a> {
+    core: SnapshotBytes,
+    server: NinepServerEncodeWire<'a>,
+    latency: [u64; 3],
+    require_fault_directives: bool,
+    directives: SnapshotDirectivesRef<'a>,
+    visibility: &'a NinepVisibilityState,
+    virtual_fids: SnapshotVirtualFidsRef<'a>,
+    session_epoch: u64,
+}
+
+#[derive(Serialize)]
+struct NinepServerEncodeWire<'a> {
+    msize: u32,
+    negotiated: bool,
+    fids: SnapshotFidsRef<'a>,
+}
+
+struct SnapshotFidsRef<'a>(&'a [(u32, FidEntry)]);
+
+impl Serialize for SnapshotFidsRef<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (fid, entry) in self.0 {
+            sequence.serialize_element(&(
+                *fid,
+                FidEntryEncodeWire {
+                    path: &entry.path,
+                    state: entry.state,
+                },
+            ))?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct FidEntryEncodeWire<'a> {
+    path: &'a [String],
+    state: FidState,
+}
+
+struct SnapshotDirectivesRef<'a>(&'a BTreeMap<NinepRequestIdentity, ResolvedNinepRequestDirective>);
+
+impl Serialize for SnapshotDirectivesRef<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (identity, directive) in self.0 {
+            sequence.serialize_element(&(*identity, directive))?;
+        }
+        sequence.end()
+    }
+}
+
+struct SnapshotVirtualFidsRef<'a>(&'a BTreeMap<u32, NinepVirtualFid>);
+
+impl Serialize for SnapshotVirtualFidsRef<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (fid, binding) in self.0 {
+            sequence.serialize_element(&(*fid, binding))?;
+        }
+        sequence.end()
+    }
+}
+
 impl NinepSnapshot {
     /// Returns the in-flight responses captured in the snapshot.
     #[must_use]
@@ -99,41 +169,48 @@ impl NinepSnapshot {
     /// Returns [`NinepSnapshotCodecError`] for invalid nested state or an
     /// over-limit serialized checkpoint.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, NinepSnapshotCodecError> {
+        self.to_canonical_bytes_with_limit(MAX_NINEP_SNAPSHOT_BYTES)
+    }
+
+    /// Encodes the snapshot under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinepSnapshotCodecError`] under the same conditions as
+    /// [`Self::to_canonical_bytes`], and when the representation exceeds
+    /// `maximum`.
+    pub fn to_canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, NinepSnapshotCodecError> {
+        admit_ninep_snapshot_resources(self)?;
         validate_ninep_snapshot(self)?;
-        let wire = NinepSnapshotWire {
+        let wire = NinepSnapshotEncodeWire {
             core: bounded_bytes(
                 self.core.canonical_bytes().map_err(map_io_core_error)?,
                 "9p I/O core bytes",
             )?,
-            server: encode_server(&self.server)?,
+            server: NinepServerEncodeWire {
+                msize: self.server.msize,
+                negotiated: self.server.negotiated,
+                fids: SnapshotFidsRef(&self.server.fids),
+            },
             latency: [
                 self.latency.control_ns,
                 self.latency.data_ns,
                 self.latency.per_byte_ns,
             ],
             require_fault_directives: self.require_fault_directives,
-            directives: bounded_vec_from_iter(
-                self.directives
-                    .iter()
-                    .map(|(identity, directive)| (*identity, directive.clone())),
-                self.directives.len(),
-                "9p directives",
-            )?,
-            visibility: self.visibility.clone(),
-            virtual_fids: bounded_vec_from_iter(
-                self.virtual_fids
-                    .iter()
-                    .map(|(fid, binding)| (*fid, binding.clone())),
-                self.virtual_fids.len(),
-                "9p virtual fids",
-            )?,
+            directives: SnapshotDirectivesRef(&self.directives),
+            visibility: &self.visibility,
+            virtual_fids: SnapshotVirtualFidsRef(&self.virtual_fids),
             session_epoch: self.session_epoch,
         };
         encode_prefixed(
             &wire,
             NINEP_SNAPSHOT_MAGIC,
             "9p snapshot bytes",
-            MAX_NINEP_SNAPSHOT_BYTES,
+            maximum,
             MAX_NINEP_SNAPSHOT_BYTES,
         )
         .map_err(map_encode_error)
@@ -146,13 +223,27 @@ impl NinepSnapshot {
     /// Returns [`NinepSnapshotCodecError`] for unsupported, malformed,
     /// over-limit, noncanonical, or restore-invalid state.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, NinepSnapshotCodecError> {
+        Self::from_canonical_bytes_with_limit(bytes, MAX_NINEP_SNAPSHOT_BYTES)
+    }
+
+    /// Decodes the snapshot under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinepSnapshotCodecError`] under the same conditions as
+    /// [`Self::from_canonical_bytes`], and before decoding when `bytes` exceeds
+    /// `maximum`.
+    pub fn from_canonical_bytes_with_limit(
+        bytes: &[u8],
+        maximum: u64,
+    ) -> Result<Self, NinepSnapshotCodecError> {
         let payload = bytes
             .strip_prefix(NINEP_SNAPSHOT_MAGIC)
             .ok_or(NinepSnapshotCodecError::Version)?;
         admit_input(
             bytes,
             "9p snapshot bytes",
-            MAX_NINEP_SNAPSHOT_BYTES,
+            maximum,
             MAX_NINEP_SNAPSHOT_BYTES,
         )
         .map_err(map_resource_error)?;
@@ -170,8 +261,9 @@ impl NinepSnapshot {
             virtual_fids: collect_strict(wire.virtual_fids.into_inner())?,
             session_epoch: wire.session_epoch,
         };
+        admit_ninep_snapshot_resources(&snapshot)?;
         validate_ninep_snapshot(&snapshot)?;
-        if snapshot.to_canonical_bytes()?.as_slice() != bytes {
+        if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(NinepSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
@@ -223,36 +315,6 @@ fn collect_strict<K: Ord, V>(
     Ok(entries.into_iter().collect())
 }
 
-fn encode_server(server: &NinepServerSnapshot) -> Result<NinepServerWire, NinepSnapshotCodecError> {
-    let mut fids = Vec::new();
-    fids.try_reserve_exact(server.fids.len()).map_err(|_| {
-        resource_limit(
-            "9p server fids",
-            0,
-            server.fids.len() as u64,
-            MAX_NINEP_FIDS,
-        )
-    })?;
-    for (fid, entry) in &server.fids {
-        fids.push((
-            *fid,
-            FidEntryWire {
-                path: bounded_vec_from_iter(
-                    entry.path.iter().cloned(),
-                    entry.path.len(),
-                    "9p fid path components",
-                )?,
-                state: entry.state,
-            },
-        ));
-    }
-    Ok(NinepServerWire {
-        msize: server.msize,
-        negotiated: server.negotiated,
-        fids: SnapshotFids::new(fids, "9p server fids").map_err(map_resource_error)?,
-    })
-}
-
 fn decode_server(wire: NinepServerWire) -> Result<NinepServerSnapshot, NinepSnapshotCodecError> {
     Ok(NinepServerSnapshot {
         msize: wire.msize,
@@ -279,19 +341,6 @@ fn bounded_bytes(
     field: &'static str,
 ) -> Result<SnapshotBytes, NinepSnapshotCodecError> {
     SnapshotBytes::new(bytes, field).map_err(map_resource_error)
-}
-
-fn bounded_vec_from_iter<T, const MAX: u64>(
-    values: impl IntoIterator<Item = T>,
-    length: usize,
-    field: &'static str,
-) -> Result<BoundedVec<T, MAX>, NinepSnapshotCodecError> {
-    let mut encoded = Vec::new();
-    encoded
-        .try_reserve_exact(length)
-        .map_err(|_| resource_limit(field, 0, length as u64, MAX))?;
-    encoded.extend(values);
-    BoundedVec::new(encoded, field).map_err(map_resource_error)
 }
 
 fn map_encode_error(error: SnapshotEncodeError) -> NinepSnapshotCodecError {
@@ -353,14 +402,11 @@ fn validate_ninep_snapshot(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshot
         .map_err(|_| NinepSnapshotCodecError::Invalid)?;
     if snapshot.server.msize < MIN_MSIZE
         || snapshot.server.msize > MAX_MSIZE
-        || u64::try_from(snapshot.server.fids.len()).unwrap_or(u64::MAX) > MAX_NINEP_FIDS
         || snapshot
             .server
             .fids
             .windows(2)
             .any(|pair| pair[0].0 >= pair[1].0)
-        || u64::try_from(snapshot.directives.len()).unwrap_or(u64::MAX) > MAX_NINEP_DIRECTIVES
-        || u64::try_from(snapshot.virtual_fids.len()).unwrap_or(u64::MAX) > MAX_NINEP_FIDS
     {
         return Err(NinepSnapshotCodecError::Invalid);
     }
@@ -389,6 +435,51 @@ fn validate_ninep_snapshot(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshot
         binding
             .validate()
             .map_err(|_| NinepSnapshotCodecError::Invalid)?;
+    }
+    Ok(())
+}
+
+fn admit_ninep_snapshot_resources(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshotCodecError> {
+    for (field, count, hard) in [
+        ("9p server fids", snapshot.server.fids.len(), MAX_NINEP_FIDS),
+        (
+            "9p directives",
+            snapshot.directives.len(),
+            MAX_NINEP_DIRECTIVES,
+        ),
+        (
+            "9p virtual fids",
+            snapshot.virtual_fids.len(),
+            MAX_NINEP_FIDS,
+        ),
+    ] {
+        admit_collection_count(field, count, hard)?;
+    }
+    for (_, entry) in &snapshot.server.fids {
+        admit_collection_count(
+            "9p fid path components",
+            entry.path.len(),
+            MAX_NINEP_PATH_COMPONENTS,
+        )?;
+    }
+    for count in snapshot.visibility.checkpoint_collection_counts() {
+        admit_collection_count(
+            "9p visibility entries",
+            count,
+            HARD_NINEP_OBJECT_VERSIONS as u64,
+        )?;
+    }
+    Ok(())
+}
+
+fn admit_collection_count(
+    field: &'static str,
+    count: usize,
+    hard: u64,
+) -> Result<(), NinepSnapshotCodecError> {
+    let requested = u64::try_from(count).unwrap_or(u64::MAX);
+    if requested > hard {
+        return Err(resource_limit(field, 0, requested, hard));
     }
     Ok(())
 }
