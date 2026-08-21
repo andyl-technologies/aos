@@ -2089,7 +2089,7 @@ impl RouteReservationKeyring for ConfiguredRouteReservationKeyring {
 pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
 /// Maximum number of objects admitted by one registry publication manifest.
-pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 10_000;
+pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
 
 /// Maximum encoded length of one registry publication object key.
 pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
