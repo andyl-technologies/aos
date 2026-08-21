@@ -14,17 +14,17 @@ use crucible_campaign::{
     CampaignCommandId, CampaignControlAction, CampaignExecutorDriver, CampaignExecutorStepOutcome,
     CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode,
     CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
-    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact,
-    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactRational,
-    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
-    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorRejection, ExecutorService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
-    ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
-    RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, WorkerSlotId,
+    CancelAttemptExecutionResponse, CandidateSource, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId,
+    ControlRequest, CoverageProjection, DaemonEpoch, ExactRational, ExecutionRetentionIntent,
+    ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection, ExecutorService,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
+    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
@@ -135,6 +135,13 @@ impl<S: ExecutorStatusService> ExecutorStatusService for CountingExecutorService
 }
 
 impl<S: ExecutorControlService> ExecutorControlService for CountingExecutorService<S> {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.inner.checkpoint_attempt_execution(request)
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,

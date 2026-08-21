@@ -11,11 +11,13 @@ use std::time::Duration;
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId,
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
-    ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
-    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, SubmitAttemptDisposition,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
+    ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExecutorMaterializationCapability, ExecutorRejection, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -81,6 +83,17 @@ impl ExecutorStatusService for CapabilityExecutor {
 }
 
 impl ExecutorControlService for CapabilityExecutor {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        Ok(CheckpointAttemptExecutionResponse::new(
+            request,
+            CheckpointAttemptExecutionDisposition::AlreadyRequested,
+        )
+        .expect("bounded checkpoint response"))
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,
@@ -256,6 +269,45 @@ fn direct_and_loopback_execution_cancellation_are_identical() {
 }
 
 #[test]
+fn direct_and_loopback_checkpoint_requests_are_identical() {
+    let (description, report) = capability_fixture();
+    let assignment = request(0x1b);
+    let checkpoint_request = CheckpointAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x63; 16]).expect("execution"),
+    )
+    .expect("checkpoint request");
+    let direct = ExecutorClient::new(CapabilityExecutor {
+        description: description.clone(),
+        report: report.clone(),
+    })
+    .checkpoint_attempt_execution(&checkpoint_request)
+    .expect("direct checkpoint request");
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description,
+            report,
+        };
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve checkpoint request");
+    });
+    let loopback = ExecutorClient::new(
+        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
+    )
+    .checkpoint_attempt_execution(&checkpoint_request)
+    .expect("loopback checkpoint request");
+    server.join().expect("server thread");
+
+    assert_eq!(loopback, direct);
+}
+
+#[test]
 fn frame_header_and_canonical_body_have_one_exact_encoding() {
     let request = request(0x12);
     let body = request.canonical_bytes();
@@ -270,7 +322,7 @@ fn frame_header_and_canonical_body_have_one_exact_encoding() {
 
     let mut encoded = vec![0; FRAME_HEADER_BYTES + body.len()];
     reader.read_exact(&mut encoded).expect("read exact frame");
-    assert_eq!(&encoded[..8], b"CRUCEX03");
+    assert_eq!(&encoded[..8], b"CRUCEX04");
     assert_eq!(encoded[8], SUBMIT_ATTEMPT_REQUEST_KIND);
     assert_eq!(&encoded[9..12], &[0, 0, 0]);
     assert_eq!(
@@ -477,10 +529,65 @@ fn client_poisons_after_cross_execution_cancellation_response() {
 }
 
 #[test]
-fn executor_loopback_v3_rejects_v2_frames() {
+fn client_poisons_after_cross_execution_checkpoint_response() {
+    let assignment = request(0x27);
+    let submitted = CheckpointAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x75; 16]).expect("execution"),
+    )
+    .expect("checkpoint request");
+    let other = CheckpointAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x76; 16]).expect("other execution"),
+    )
+    .expect("other checkpoint request");
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let _request = read_frame(
+            &mut server_stream,
+            CHECKPOINT_ATTEMPT_EXECUTION_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read checkpoint request");
+        let response = CheckpointAttemptExecutionResponse::new(
+            &other,
+            CheckpointAttemptExecutionDisposition::NotCurrent,
+        )
+        .expect("other response");
+        write_frame(
+            &mut server_stream,
+            CHECKPOINT_ATTEMPT_EXECUTION_RESPONSE_KIND,
+            &response.canonical_bytes(),
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("write wrong checkpoint response");
+        thread::sleep(Duration::from_millis(100));
+    });
+    let deadlines =
+        LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+            .expect("finite deadlines");
+    let mut service = LoopbackExecutorService::with_timeouts(client_stream, deadlines)
+        .expect("configure client deadlines");
+    assert!(matches!(
+        service.checkpoint_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Codec(_))
+    ));
+    assert!(matches!(
+        service.checkpoint_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Io(ref error))
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+    ));
+    server.join().expect("server thread");
+}
+
+#[test]
+fn executor_loopback_v4_rejects_v3_frames() {
     let (mut client, mut server) = UnixStream::pair().expect("loopback pair");
     let mut header = [0_u8; FRAME_HEADER_BYTES];
-    header[..8].copy_from_slice(b"CRUCEX02");
+    header[..8].copy_from_slice(b"CRUCEX03");
     header[8] = SUBMIT_ATTEMPT_REQUEST_KIND;
     client.write_all(&header).expect("write legacy header");
 

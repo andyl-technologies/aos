@@ -3,9 +3,10 @@
 use super::*;
 use crate::{
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
-    CancelAttemptExecutionResponse, ExecutorClient, ExecutorControlService, ExecutorService,
-    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExecutorClient,
+    ExecutorControlService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -142,6 +143,17 @@ impl ExecutorStatusService for CancellableExecutor {
 }
 
 impl ExecutorControlService for CancellableExecutor {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        CheckpointAttemptExecutionResponse::new(
+            request,
+            CheckpointAttemptExecutionDisposition::NotCurrent,
+        )
+        .map_err(|_| "response encoding")
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,

@@ -1889,6 +1889,17 @@ impl crate::ExecutorStatusService for SupervisorExecutor {
 }
 
 impl crate::ExecutorControlService for SupervisorExecutor {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &crate::CheckpointAttemptExecutionRequest,
+    ) -> Result<crate::CheckpointAttemptExecutionResponse, Self::Error> {
+        crate::CheckpointAttemptExecutionResponse::new(
+            request,
+            crate::CheckpointAttemptExecutionDisposition::Requested,
+        )
+        .map_err(|_| "response encoding")
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &crate::CancelAttemptExecutionRequest,
@@ -2115,7 +2126,7 @@ fn campaign_supervisor_applies_cancel_and_checkpoint_pause_policies_without_plan
             ..
         } if attempt == admitted.attempt
     ));
-    let checkpoint_pause = repository
+    let _checkpoint_pause = repository
         .apply_control(
             "campaign-supervisor-pause",
             &command(
@@ -2126,12 +2137,12 @@ fn campaign_supervisor_applies_cancel_and_checkpoint_pause_policies_without_plan
         )
         .expect("pause for exact checkpoint");
     assert_eq!(
-        supervisor.step().expect("require exact checkpoint"),
-        CampaignSupervisorStepOutcome::ExactCheckpointRequired {
-            snapshot: checkpoint_pause.new_snapshot,
-            reservations: 1,
-            active_executions: 1,
-        }
+        supervisor.step().expect("request exact checkpoint"),
+        CampaignSupervisorStepOutcome::Checkpoint(CampaignExecutorCheckpointOutcome::Requested {
+            attempt: admitted.attempt,
+            execution,
+            already_requested: false,
+        })
     );
     assert_eq!(supervisor.reservation_count(), 1);
     assert_eq!(cancellations.load(std::sync::atomic::Ordering::SeqCst), 1);

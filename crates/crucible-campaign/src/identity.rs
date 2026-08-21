@@ -370,6 +370,21 @@ content_object_id!(
     "Identifies exact canonical configuration bytes."
 );
 content_object_id!(
+    ExactCheckpointId,
+    ObjectKind::ExactManifest,
+    2,
+    "crucible.executor.exact-checkpoint-root",
+    "Identifies one complete, durable exact-checkpoint closure."
+);
+
+impl TryFrom<ContentId> for ExactCheckpointId {
+    type Error = CampaignCodecError;
+
+    fn try_from(value: ContentId) -> Result<Self, Self::Error> {
+        Self::from_content_id(value)
+    }
+}
+content_object_id!(
     CampaignLineageId,
     ObjectKind::CampaignFact,
     "crucible.campaign.lineage",

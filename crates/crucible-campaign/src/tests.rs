@@ -242,11 +242,13 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.get-attempt-execution-response",
         "crucible.campaign.cancel-attempt-execution-request",
         "crucible.campaign.cancel-attempt-execution-response",
+        "crucible.campaign.checkpoint-attempt-execution-request",
+        "crucible.campaign.checkpoint-attempt-execution-response",
     ] {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor component schema {schema}"));
-        assert_eq!(message[1], "1");
+        assert_eq!(message[1], "2");
         assert_eq!(message[2], "crucible-campaign::execution");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
@@ -304,7 +306,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     }
     for (schema, version) in [
         ("crucible.executor.assignment-record", "1"),
-        ("crucible.executor.attempt-state-record", "2"),
+        ("crucible.executor.attempt-state-record", "3"),
     ] {
         let record = rows
             .get(schema)
@@ -343,7 +345,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
-    assert_eq!(loopback[1], "3");
+    assert_eq!(loopback[1], "4");
     assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
     assert_eq!(loopback[3], "component-message");
     let planner_loopback = rows

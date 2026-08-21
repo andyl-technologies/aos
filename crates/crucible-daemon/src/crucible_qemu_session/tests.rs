@@ -11,6 +11,7 @@ use std::{
     },
 };
 
+use crate::ExecutionCheckpointRequest;
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, Configuration, ContentHash,
     Decision, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, RngDecision, RngStreamId,
@@ -934,6 +935,7 @@ fn execution_context(resources: AttemptResourceLimits) -> AttemptExecutionContex
         resources,
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
     )
 }
 

@@ -264,21 +264,23 @@ executor scan enables at most one planner invocation on the following step, so
 the ready buffer remains bounded. Paused campaigns never page new work or invoke
 the planner. `drain` polls only already-held reservations,
 `cancel-and-retry` cancels or releases one exact reservation per step, and
-`exact-checkpoint` fails closed with an explicit checkpoint-required outcome
-while any reservation remains. Resume reconstructs the frontier from semantic
-roots, so canceled attempts become claimable without a modeled state change.
+`exact-checkpoint` requests one exact execution checkpoint per step and retains
+that reservation through durable publication and pause. Resume reconstructs
+the frontier from semantic roots, so canceled attempts become claimable
+without a modeled state change.
 
 The real-node realization boundary now has an executor-owned exact-capture
-primitive for that future checkpoint-required path. It seals the unified event
+primitive for that checkpoint path. It seals the unified event
 log, exact-checks the installed configuration and current node instruction
 count against a materialized scheduler checkpoint, captures VMState plus the
 host-I/O continuation while leaving QEMU paused, and keeps the attempt resource
 guard charged until the lifecycle owner explicitly finishes the session.
-Modeled attempt drivers do not receive capture or guard-release authority.
-Durable snapshot publication, assignment-ledger recovery, and supervisor
-replacement of the active reservation with that retained snapshot remain open;
-until those land, `CampaignSupervisor` continues to return the explicit
-checkpoint-required outcome rather than releasing the reservation.
+Modeled attempt drivers do not receive capture or guard-release authority. The
+executor persists checkpoint-requested, checkpoint-publishing, and paused
+states; stages the expected root before immutable writes; retains that root for
+GC and restart; and releases capacity only after durable pause. The campaign
+supervisor drives this exact request/status protocol. Concrete modeled-driver
+capture-result wiring and resume materialization remain open.
 
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or

@@ -289,9 +289,10 @@ than two independently reusable objects. Preparation validates and hashes both
 children without writes. Publication places metadata and VMState first,
 requires durable receipts for both, and places the root last. The caller MUST
 durably stage the expected root in its bounded assignment ledger before the
-first put; that later ledger composition is the retention root across
-publication and restart. A failed put may leave unreachable immutable children
-for GC, but may not make an incomplete root visible.
+first put. The executor's `checkpoint-publishing` and `paused` records are the
+retention roots across publication and restart. A failed put may leave
+unreachable immutable children for GC, but may not make an incomplete root
+visible.
 
 The store admits only durable, conditional-create, streaming-read and
 streaming-put backends. The VMState source is finite and reopenable and is

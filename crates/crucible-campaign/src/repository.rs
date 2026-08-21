@@ -654,8 +654,8 @@ use attempt_closure::non_modeled_attempt_key;
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{
-    CampaignExecutorCancelOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
-    CampaignExecutorDriverError, CampaignExecutorStepOutcome,
+    CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome, CampaignExecutorDriver,
+    CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
 };
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,

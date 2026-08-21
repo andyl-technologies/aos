@@ -141,11 +141,11 @@ impl<P, E> CampaignSupervisor<P, E> {
                         lifecycle,
                     })
                 } else {
-                    Ok(CampaignSupervisorStepOutcome::ExactCheckpointRequired {
-                        snapshot: head.snapshot_id(),
-                        reservations: self.executor.reservation_count(),
-                        active_executions: self.executor.active_execution_count(),
-                    })
+                    let outcome = self
+                        .executor
+                        .checkpoint_one(self.campaign.as_str())
+                        .map_err(CampaignSupervisorError::Executor)?;
+                    Ok(CampaignSupervisorStepOutcome::Checkpoint(outcome))
                 }
             }
         }
@@ -244,15 +244,8 @@ pub enum CampaignSupervisorStepOutcome {
     },
     /// One held reservation was released, canceled, or completed.
     Cancellation(CampaignExecutorCancelOutcome),
-    /// Paused work requires an exact checkpoint owner before release.
-    ExactCheckpointRequired {
-        /// Exact snapshot declaring the checkpoint pause policy.
-        snapshot: CampaignSnapshotId,
-        /// Total volatile reservations still held.
-        reservations: usize,
-        /// Accepted execution incarnations among those reservations.
-        active_executions: usize,
-    },
+    /// One exact-checkpoint request or status transition was performed.
+    Checkpoint(CampaignExecutorCheckpointOutcome),
 }
 
 /// Failure while advancing one campaign supervisor step.

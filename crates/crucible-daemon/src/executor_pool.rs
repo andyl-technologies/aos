@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use crucible_campaign::{
     CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorRejection, ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
@@ -184,6 +185,17 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator + Send + Sync,
 {
+    fn checkpoint_attempt_execution(
+        &mut self,
+        request: &CheckpointAttemptExecutionRequest,
+    ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.shared.require_running()?;
+        self.shared
+            .lock_executor()?
+            .checkpoint_attempt_execution(request)
+            .map_err(LocalExecutorPoolServiceError::Supervisor)
+    }
+
     fn cancel_attempt_execution(
         &mut self,
         request: &CancelAttemptExecutionRequest,

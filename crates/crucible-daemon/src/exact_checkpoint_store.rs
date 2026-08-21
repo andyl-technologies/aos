@@ -21,6 +21,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use crucible::ContentHash;
+pub use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, ObjectKind, PutReceipt, StoreError,
@@ -48,51 +49,6 @@ const QEMU_VMSTATE_ROLE: &str = "qemu-vmstate";
 const ROOT_BODY_BYTES: usize = 80;
 const MAX_ROOT_BYTES: u64 = 4 * 1024;
 
-/// Typed identity of one complete exact-checkpoint root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExactCheckpointId(ContentId);
-
-impl ExactCheckpointId {
-    /// Validates and wraps an exact-checkpoint root content identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactCheckpointStoreError::InvalidRoot`] when the ID has the
-    /// wrong logical kind or schema version.
-    pub fn from_content_id(id: ContentId) -> Result<Self, ExactCheckpointStoreError> {
-        require_id_kind(
-            id,
-            ObjectKind::ExactManifest,
-            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
-            "root identity",
-        )?;
-        Ok(Self(id))
-    }
-
-    /// Parses and validates canonical content-ID text.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store error for malformed text or
-    /// [`ExactCheckpointStoreError::InvalidRoot`] for the wrong kind or
-    /// version.
-    pub fn parse(value: &str) -> Result<Self, ExactCheckpointStoreError> {
-        Self::from_content_id(ContentId::parse(value)?)
-    }
-
-    /// Returns the underlying generic content identity.
-    #[must_use]
-    pub const fn content_id(self) -> ContentId {
-        self.0
-    }
-}
-
-impl fmt::Display for ExactCheckpointId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
 /// A fully authenticated exact-checkpoint publication prepared without writes.
 pub struct PreparedExactCheckpoint {
     root: ExactCheckpointId,
@@ -103,6 +59,20 @@ pub struct PreparedExactCheckpoint {
     vmstate_source: BlobHandle,
     snapshot_identity: ContentHash,
     configuration: ContentHash,
+}
+
+impl fmt::Debug for PreparedExactCheckpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedExactCheckpoint")
+            .field("root", &self.root)
+            .field("metadata_id", &self.metadata_id)
+            .field("vmstate_id", &self.vmstate_id)
+            .field("snapshot_identity", &self.snapshot_identity)
+            .field("configuration", &self.configuration)
+            .field("vmstate_bytes", &self.vmstate_source.logical_length())
+            .finish()
+    }
 }
 
 impl PreparedExactCheckpoint {
@@ -320,9 +290,8 @@ impl ExactCheckpointStore {
             body,
         )?;
         let root_bytes = root_envelope.canonical_bytes();
-        let root = ExactCheckpointId::from_content_id(
-            root_envelope.content_id(ObjectKind::ExactManifest),
-        )?;
+        let root = ExactCheckpointId::try_from(root_envelope.content_id(ObjectKind::ExactManifest))
+            .map_err(|_| invalid_root("root identity"))?;
 
         Ok(PreparedExactCheckpoint {
             root,

@@ -14,15 +14,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
     AssignmentId, AttemptId, CampaignCodecError, CampaignHash, CampaignLineageId, DaemonEpoch,
-    ExecutionId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
+    ExactCheckpointId, ExecutionId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
+const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v2";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v3";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_TYPED_ID_BYTES: usize = 256;
@@ -103,6 +105,37 @@ pub enum AttemptRuntimeState {
         /// Process-local execution identity.
         execution: ExecutionId,
     },
+    /// One execution has durably latched an exact-checkpoint request.
+    CheckpointRequested {
+        /// Digest of lineage, attempt, resources, and retention.
+        execution_basis: CampaignHash,
+        /// Daemon incarnation that admitted the execution.
+        daemon_epoch: DaemonEpoch,
+        /// Process-local execution identity.
+        execution: ExecutionId,
+    },
+    /// One execution has durably reserved an exact-checkpoint publication root.
+    CheckpointPublishing {
+        /// Digest of lineage, attempt, resources, and retention.
+        execution_basis: CampaignHash,
+        /// Daemon incarnation that admitted the execution.
+        daemon_epoch: DaemonEpoch,
+        /// Process-local execution identity.
+        execution: ExecutionId,
+        /// Expected exact root, whether or not all immutable bytes are present.
+        checkpoint: ExactCheckpointId,
+    },
+    /// One execution stopped at a complete durable exact checkpoint.
+    Paused {
+        /// Digest of lineage, attempt, resources, and retention.
+        execution_basis: CampaignHash,
+        /// Daemon incarnation that admitted the paused execution.
+        daemon_epoch: DaemonEpoch,
+        /// Process-local execution identity.
+        execution: ExecutionId,
+        /// Complete durable exact-checkpoint root.
+        checkpoint: ExactCheckpointId,
+    },
     /// One execution has durably reserved an observation publication root.
     Publishing {
         /// Digest of lineage, attempt, resources, and retention.
@@ -144,6 +177,15 @@ impl AttemptRuntimeState {
             Self::Running {
                 execution_basis, ..
             }
+            | Self::CheckpointRequested {
+                execution_basis, ..
+            }
+            | Self::CheckpointPublishing {
+                execution_basis, ..
+            }
+            | Self::Paused {
+                execution_basis, ..
+            }
             | Self::Publishing {
                 execution_basis, ..
             }
@@ -161,6 +203,9 @@ impl AttemptRuntimeState {
     pub const fn daemon_epoch(self) -> DaemonEpoch {
         match self {
             Self::Running { daemon_epoch, .. }
+            | Self::CheckpointRequested { daemon_epoch, .. }
+            | Self::CheckpointPublishing { daemon_epoch, .. }
+            | Self::Paused { daemon_epoch, .. }
             | Self::Publishing { daemon_epoch, .. }
             | Self::Completed { daemon_epoch, .. }
             | Self::Canceled { daemon_epoch, .. } => daemon_epoch,
@@ -172,6 +217,9 @@ impl AttemptRuntimeState {
     pub const fn execution(self) -> ExecutionId {
         match self {
             Self::Running { execution, .. }
+            | Self::CheckpointRequested { execution, .. }
+            | Self::CheckpointPublishing { execution, .. }
+            | Self::Paused { execution, .. }
             | Self::Publishing { execution, .. }
             | Self::Completed { execution, .. }
             | Self::Canceled { execution, .. } => execution,
@@ -185,7 +233,26 @@ impl AttemptRuntimeState {
             Self::Publishing { observation, .. } | Self::Completed { observation, .. } => {
                 Some(observation)
             }
-            Self::Running { .. } | Self::Canceled { .. } => None,
+            Self::Running { .. }
+            | Self::CheckpointRequested { .. }
+            | Self::CheckpointPublishing { .. }
+            | Self::Paused { .. }
+            | Self::Canceled { .. } => None,
+        }
+    }
+
+    /// Returns an exact-checkpoint retention root, when one is durable.
+    #[must_use]
+    pub const fn checkpoint(self) -> Option<ExactCheckpointId> {
+        match self {
+            Self::CheckpointPublishing { checkpoint, .. } | Self::Paused { checkpoint, .. } => {
+                Some(checkpoint)
+            }
+            Self::Running { .. }
+            | Self::CheckpointRequested { .. }
+            | Self::Publishing { .. }
+            | Self::Completed { .. }
+            | Self::Canceled { .. } => None,
         }
     }
 }
@@ -284,6 +351,20 @@ pub trait AssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(ObservationId),
     ) -> Result<(), Self::Error>;
+
+    /// Streams durable in-progress and paused exact-checkpoint roots.
+    ///
+    /// GC root discovery invokes the visitor once per runtime record naming a
+    /// checkpoint. Implementations must authenticate every record and stream
+    /// without materializing the complete ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when enumeration is incomplete or corrupt.
+    fn visit_checkpoint_roots(
+        &self,
+        visitor: &mut dyn FnMut(ExactCheckpointId),
+    ) -> Result<(), Self::Error>;
 }
 
 /// In-memory assignment ledger for component tests and fake executors.
@@ -354,6 +435,18 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         for state in self.attempts.values().copied() {
             if let Some(observation) = state.observation() {
                 visitor(observation);
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_checkpoint_roots(
+        &self,
+        visitor: &mut dyn FnMut(ExactCheckpointId),
+    ) -> Result<(), Self::Error> {
+        for state in self.attempts.values().copied() {
+            if let Some(checkpoint) = state.checkpoint() {
+                visitor(checkpoint);
             }
         }
         Ok(())
@@ -448,6 +541,57 @@ impl DirectoryAssignmentLedger {
             CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material).to_hex();
         self.root.join("attempts").join(&encoded[..2]).join(encoded)
     }
+
+    fn visit_attempt_states(
+        &self,
+        visitor: &mut dyn FnMut(AttemptRuntimeState),
+    ) -> Result<(), AssignmentLedgerError> {
+        let attempts = self.root.join("attempts");
+        let shards = match fs::read_dir(&attempts) {
+            Ok(shards) => shards,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
+        };
+        for shard in shards {
+            let shard =
+                shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
+            let shard_path = shard.path();
+            if !shard
+                .file_type()
+                .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
+                .is_dir()
+            {
+                return Err(corrupt("attempt-root-shard-is-not-directory"));
+            }
+            let records = fs::read_dir(&shard_path)
+                .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?;
+            for record in records {
+                let record = record
+                    .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
+                let path = record.path();
+                let name = record.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.') {
+                    continue;
+                }
+                if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(corrupt("attempt-root-record-name"));
+                }
+                if !record
+                    .file_type()
+                    .map_err(|source| io_error("stat-attempt-root-record", &path, source))?
+                    .is_file()
+                {
+                    return Err(corrupt("attempt-root-record-is-not-file"));
+                }
+                let bytes = read_optional_bounded(&path)?
+                    .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
+                let (_, state) = decode_attempt_state(&bytes)?;
+                visitor(state);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AssignmentLedger for DirectoryAssignmentLedger {
@@ -536,53 +680,22 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(ObservationId),
     ) -> Result<(), Self::Error> {
-        let attempts = self.root.join("attempts");
-        let shards = match fs::read_dir(&attempts) {
-            Ok(shards) => shards,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
-        };
-        for shard in shards {
-            let shard =
-                shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
-            let shard_path = shard.path();
-            if !shard
-                .file_type()
-                .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
-                .is_dir()
-            {
-                return Err(corrupt("attempt-root-shard-is-not-directory"));
+        self.visit_attempt_states(&mut |state| {
+            if let Some(observation) = state.observation() {
+                visitor(observation);
             }
-            let records = fs::read_dir(&shard_path)
-                .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?;
-            for record in records {
-                let record = record
-                    .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
-                let path = record.path();
-                let name = record.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with('.') {
-                    continue;
-                }
-                if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    return Err(corrupt("attempt-root-record-name"));
-                }
-                if !record
-                    .file_type()
-                    .map_err(|source| io_error("stat-attempt-root-record", &path, source))?
-                    .is_file()
-                {
-                    return Err(corrupt("attempt-root-record-is-not-file"));
-                }
-                let bytes = read_optional_bounded(&path)?
-                    .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-                let (_, state) = decode_attempt_state(&bytes)?;
-                if let Some(observation) = state.observation() {
-                    visitor(observation);
-                }
+        })
+    }
+
+    fn visit_checkpoint_roots(
+        &self,
+        visitor: &mut dyn FnMut(ExactCheckpointId),
+    ) -> Result<(), Self::Error> {
+        self.visit_attempt_states(&mut |state| {
+            if let Some(checkpoint) = state.checkpoint() {
+                visitor(checkpoint);
             }
-        }
-        Ok(())
+        })
     }
 }
 
@@ -624,6 +737,37 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&daemon_epoch.as_bytes());
             payload.extend_from_slice(&execution.as_bytes());
         }
+        AttemptRuntimeState::CheckpointRequested {
+            daemon_epoch,
+            execution,
+            ..
+        } => {
+            payload.push(4);
+            payload.extend_from_slice(&daemon_epoch.as_bytes());
+            payload.extend_from_slice(&execution.as_bytes());
+        }
+        AttemptRuntimeState::CheckpointPublishing {
+            daemon_epoch,
+            execution,
+            checkpoint,
+            ..
+        } => {
+            payload.push(5);
+            payload.extend_from_slice(&daemon_epoch.as_bytes());
+            payload.extend_from_slice(&execution.as_bytes());
+            push_bytes(&mut payload, checkpoint.to_text().as_bytes());
+        }
+        AttemptRuntimeState::Paused {
+            daemon_epoch,
+            execution,
+            checkpoint,
+            ..
+        } => {
+            payload.push(6);
+            payload.extend_from_slice(&daemon_epoch.as_bytes());
+            payload.extend_from_slice(&execution.as_bytes());
+            push_bytes(&mut payload, checkpoint.to_text().as_bytes());
+        }
         AttemptRuntimeState::Completed {
             daemon_epoch,
             execution,
@@ -662,12 +806,15 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
 fn decode_attempt_state(
     bytes: &[u8],
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
-    let (payload, magic) = match open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
-        Ok(payload) => (payload, ATTEMPT_STATE_MAGIC),
-        Err(_) => (
+    let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
+        (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
+        (payload, ATTEMPT_STATE_MAGIC_V2)
+    } else {
+        (
             open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1)?,
             ATTEMPT_STATE_MAGIC_V1,
-        ),
+        )
     };
     let mut cursor = RecordCursor::new(payload);
     cursor.require(magic)?;
@@ -694,11 +841,30 @@ fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
-        3 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::Publishing {
+        3 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V2 => {
+            AttemptRuntimeState::Publishing {
+                execution_basis,
+                daemon_epoch,
+                execution,
+                observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
+            }
+        }
+        4 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointRequested {
             execution_basis,
             daemon_epoch,
             execution,
-            observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
+        },
+        5 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointPublishing {
+            execution_basis,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+        },
+        6 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::Paused {
+            execution_basis,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
         },
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };

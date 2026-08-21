@@ -455,9 +455,11 @@ On the single-host executor, the lineage-qualified operational assignment
 ledger is the owner of result-publication roots. It streams the expected
 `ObservationId` from every authenticated `publishing` record and the retained
 `ObservationId` from every authenticated `completed` record into the GC root
-enumeration without materializing ledger history. `Publishing` is durable
-before the first candidate-object write and survives restart; completion or an
-explicit cancellation/quarantine transition is the only way to replace it.
+enumeration without materializing ledger history. It likewise streams the
+`ExactCheckpointId` from authenticated `checkpoint-publishing` and `paused`
+records. Publication state is durable before the first candidate-object write
+and survives restart; completion, durable pause, or an explicit
+cancellation/quarantine transition is the only way to replace it.
 These operational records do not grant the executor authority to mutate a
 campaign ref.
 

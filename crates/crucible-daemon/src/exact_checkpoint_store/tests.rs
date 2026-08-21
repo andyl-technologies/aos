@@ -8,6 +8,11 @@ use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
+use crucible_campaign::{
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId,
+    CheckpointAttemptExecutionRequest, DaemonEpoch, ExecutionRetentionIntent,
+    ExecutorControlService, ExecutorService, SubmitAttemptDisposition, SubmitAttemptRequest,
+};
 use crucible_cas::content_store::{
     BackendCapabilities, BlobSource, ByteRange, DirectoryBlobBackend, MemoryBlobBackend,
     PlacementReceipt,
@@ -15,6 +20,13 @@ use crucible_cas::content_store::{
 use crucible_qemu::QemuReplayOracleValidation;
 
 use super::*;
+use crate::{
+    AllowAllAttemptAdmission, AssignmentLedger, CancellationOutcome, CheckpointCompletionOutcome,
+    CheckpointResultAbortToken, CheckpointResultStageOutcome, ExecutorCapacity,
+    LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedCheckpointResult,
+    abort_checkpoint_result, publish_staged_checkpoint_result,
+    reconcile_published_checkpoint_result, stage_prepared_checkpoint_result,
+};
 
 const STORE_LIMIT: u64 = 1024 * 1024;
 
@@ -156,6 +168,152 @@ fn prepare_is_write_free_and_publication_round_trips_streamed_vmstate() {
 }
 
 #[test]
+fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let epoch = DaemonEpoch::from_bytes([0x41; 16]).expect("daemon epoch");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x42; 16]).expect("assignment"),
+        epoch,
+        CampaignLineageId::parse(&typed_id(
+            "crucible.campaign.lineage",
+            "campaign-fact",
+            1,
+            0x43,
+        ))
+        .expect("lineage"),
+        AttemptId::parse(&typed_id(
+            "crucible.campaign.attempt",
+            "campaign-fact",
+            1,
+            0x44,
+        ))
+        .expect("attempt"),
+        AttemptResourceLimits::new(1, 2048, 4096, 32).expect("resources"),
+        ExecutionRetentionIntent::RetainAlways,
+    )
+    .expect("request");
+    let response = supervisor
+        .submit_attempt(&request)
+        .expect("accept execution");
+    let execution = match response.disposition() {
+        SubmitAttemptDisposition::Accepted { execution } => execution,
+        other => panic!("expected accepted execution, got {other:?}"),
+    };
+    let queued = supervisor.next_queued().expect("take execution");
+    supervisor
+        .checkpoint_attempt_execution(
+            &CheckpointAttemptExecutionRequest::new(&request, execution)
+                .expect("checkpoint request"),
+        )
+        .expect("request checkpoint");
+
+    let prepared = store
+        .prepare(
+            &snapshot("phase-ordering"),
+            BlobHandle::from_bytes(vec![0x55; 8192]),
+        )
+        .expect("prepare checkpoint");
+    let root = prepared.root();
+    let staged = match stage_prepared_checkpoint_result(
+        &mut supervisor,
+        PreparedCheckpointResult::new(queued, prepared),
+    )
+    .expect("stage root")
+    {
+        CheckpointResultStageOutcome::Publish(staged) => *staged,
+        other => panic!("expected publish token, got {other:?}"),
+    };
+    assert_eq!(backend.object_count(), 0);
+    assert_eq!(supervisor.active_count(), 1);
+    let mut roots = Vec::new();
+    supervisor
+        .ledger()
+        .visit_checkpoint_roots(&mut |checkpoint| roots.push(checkpoint))
+        .expect("visit staged roots");
+    assert_eq!(roots, vec![root]);
+
+    let published = publish_staged_checkpoint_result(&store, staged).expect("publish checkpoint");
+    assert_eq!(backend.object_count(), 3);
+    assert_eq!(store.load(root).expect("load published root").root(), root);
+    assert_eq!(supervisor.active_count(), 1);
+    assert_eq!(
+        reconcile_published_checkpoint_result(&mut supervisor, published)
+            .expect("reconcile checkpoint"),
+        CheckpointCompletionOutcome::Paused
+    );
+    assert_eq!(supervisor.active_count(), 0);
+
+    let abort_request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x45; 16]).expect("abort assignment"),
+        epoch,
+        request.lineage(),
+        AttemptId::parse(&typed_id(
+            "crucible.campaign.attempt",
+            "campaign-fact",
+            1,
+            0x46,
+        ))
+        .expect("abort attempt"),
+        request.resources(),
+        request.retention(),
+    )
+    .expect("abort request");
+    let abort_response = supervisor
+        .submit_attempt(&abort_request)
+        .expect("accept abort execution");
+    let abort_execution = match abort_response.disposition() {
+        SubmitAttemptDisposition::Accepted { execution } => execution,
+        other => panic!("expected accepted abort execution, got {other:?}"),
+    };
+    let abort_queued = supervisor.next_queued().expect("take abort execution");
+    supervisor
+        .checkpoint_attempt_execution(
+            &CheckpointAttemptExecutionRequest::new(&abort_request, abort_execution)
+                .expect("abort checkpoint request"),
+        )
+        .expect("request abort checkpoint");
+    let abort_prepared = store
+        .prepare(
+            &snapshot("phase-abort"),
+            BlobHandle::from_bytes(vec![0x66; 4096]),
+        )
+        .expect("prepare abort checkpoint");
+    let abort_root = abort_prepared.root();
+    let abort_staged = match stage_prepared_checkpoint_result(
+        &mut supervisor,
+        PreparedCheckpointResult::new(abort_queued, abort_prepared),
+    )
+    .expect("stage abort root")
+    {
+        CheckpointResultStageOutcome::Publish(staged) => staged,
+        other => panic!("expected abort publish token, got {other:?}"),
+    };
+    assert_eq!(
+        abort_checkpoint_result(
+            &mut supervisor,
+            CheckpointResultAbortToken::Staged(abort_staged),
+        )
+        .expect("abort staged checkpoint"),
+        CancellationOutcome::Canceled
+    );
+    assert_eq!(supervisor.active_count(), 0);
+    let mut retained = Vec::new();
+    supervisor
+        .ledger()
+        .visit_checkpoint_roots(&mut |checkpoint| retained.push(checkpoint))
+        .expect("visit roots after abort");
+    assert_eq!(retained, vec![root]);
+    assert_ne!(abort_root, root);
+}
+
+#[test]
 fn directory_publication_is_reloadable_after_store_restart() {
     let directory = tempfile::tempdir().expect("create exact-checkpoint store directory");
     let root_path = directory.path().join("objects");
@@ -278,9 +436,8 @@ fn load_rejects_extraneous_root_children_before_child_reads() {
         root.body().to_vec(),
     )
     .expect("bounded malformed root");
-    let malformed_id =
-        ExactCheckpointId::from_content_id(malformed.content_id(ObjectKind::ExactManifest))
-            .expect("typed malformed root");
+    let malformed_id = ExactCheckpointId::try_from(malformed.content_id(ObjectKind::ExactManifest))
+        .expect("typed malformed root");
     backend
         .put_if_absent(
             malformed_id.content_id(),
@@ -336,9 +493,8 @@ fn root_binds_snapshot_semantics_not_only_child_shape() {
         forged_body,
     )
     .expect("forge structurally valid root");
-    let forged_id =
-        ExactCheckpointId::from_content_id(forged.content_id(ObjectKind::ExactManifest))
-            .expect("typed forged root");
+    let forged_id = ExactCheckpointId::try_from(forged.content_id(ObjectKind::ExactManifest))
+        .expect("typed forged root");
     backend
         .put_if_absent(
             forged_id.content_id(),
@@ -377,4 +533,18 @@ fn snapshot(name: &str) -> QemuVmSnapshot {
     .expect("build checkpoint");
     QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("build snapshot")
+}
+
+fn typed_id(tag: &str, kind: &str, version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{version}.{}", encode_hex(&[byte; 32]))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }

@@ -15,9 +15,11 @@ use crucible_campaign::{
 };
 
 use crate::{
-    AssignmentLedger, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
-    ExecutionCancellation, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, QueuedAttempt,
+    AssignmentLedger, AttemptAdmissionValidator, CancellationOutcome, CheckpointCompletionOutcome,
+    CheckpointPublicationOutcome, CompletionOutcome, ExactCheckpointPublication,
+    ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
+    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
+    ObservationPublicationOutcome, PreparedExactCheckpoint, QueuedAttempt,
 };
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -90,6 +92,7 @@ pub struct AttemptExecutionContext {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     cancellation: ExecutionCancellation,
+    checkpoint_request: ExecutionCheckpointRequest,
 }
 
 impl AttemptExecutionContext {
@@ -99,11 +102,13 @@ impl AttemptExecutionContext {
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
         cancellation: ExecutionCancellation,
+        checkpoint_request: ExecutionCheckpointRequest,
     ) -> Self {
         Self {
             resources,
             retention,
             cancellation,
+            checkpoint_request,
         }
     }
 
@@ -125,12 +130,21 @@ impl AttemptExecutionContext {
         &self.cancellation
     }
 
+    /// Returns the process-local exact-checkpoint request signal.
+    #[must_use]
+    pub const fn checkpoint_request(&self) -> &ExecutionCheckpointRequest {
+        &self.checkpoint_request
+    }
+
     /// Returns whether another context names the exact same execution contract.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
         self.resources == other.resources
             && self.retention == other.retention
             && self.cancellation.same_incarnation(&other.cancellation)
+            && self
+                .checkpoint_request
+                .same_incarnation(&other.checkpoint_request)
     }
 }
 
@@ -287,6 +301,7 @@ where
             queued.request().resources(),
             queued.request().retention(),
             queued.cancellation().clone(),
+            queued.checkpoint_request().clone(),
         );
         let candidate = self
             .model
@@ -464,6 +479,149 @@ pub struct StagedAttemptResult {
     prepared: PreparedAttemptResult,
 }
 
+/// Prepared exact checkpoint bound to the sole execution reconciliation token.
+#[derive(Debug)]
+pub struct PreparedCheckpointResult {
+    queued: QueuedAttempt,
+    checkpoint: PreparedExactCheckpoint,
+}
+
+impl PreparedCheckpointResult {
+    /// Binds a no-write checkpoint preparation to its consumed worker token.
+    #[must_use]
+    pub const fn new(queued: QueuedAttempt, checkpoint: PreparedExactCheckpoint) -> Self {
+        Self { queued, checkpoint }
+    }
+
+    /// Returns the exact execution token.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        &self.queued
+    }
+
+    /// Returns the exact root that must be staged before publication.
+    #[must_use]
+    pub const fn root(&self) -> crucible_campaign::ExactCheckpointId {
+        self.checkpoint.root()
+    }
+}
+
+/// Linear proof that a checkpoint publication root is durable.
+#[derive(Debug)]
+pub struct StagedCheckpointResult {
+    prepared: PreparedCheckpointResult,
+}
+
+impl StagedCheckpointResult {
+    /// Returns the exact execution token owned by this publication phase.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        &self.prepared.queued
+    }
+
+    /// Returns the exact staged checkpoint root.
+    #[must_use]
+    pub const fn root(&self) -> crucible_campaign::ExactCheckpointId {
+        self.prepared.root()
+    }
+}
+
+/// Complete durable checkpoint awaiting the final paused-state CAS.
+#[derive(Debug)]
+pub struct PublishedCheckpointResult {
+    queued: QueuedAttempt,
+    publication: ExactCheckpointPublication,
+}
+
+impl PublishedCheckpointResult {
+    /// Returns the exact execution token owned by paused-state reconciliation.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        &self.queued
+    }
+
+    /// Returns the complete durable exact-checkpoint root.
+    #[must_use]
+    pub const fn root(&self) -> crucible_campaign::ExactCheckpointId {
+        self.publication.root()
+    }
+}
+
+/// Actor result of consuming one prepared exact checkpoint.
+#[derive(Debug)]
+pub enum CheckpointResultStageOutcome {
+    /// Immutable publication may proceed outside the supervisor actor.
+    Publish(Box<StagedCheckpointResult>),
+    /// Another idempotent or terminal state won without further writes.
+    Finished {
+        /// Exact deterministic checkpoint root that was not republished.
+        checkpoint: crucible_campaign::ExactCheckpointId,
+        /// Durable stage disposition.
+        outcome: CheckpointPublicationOutcome,
+    },
+}
+
+/// Checkpoint-root staging failure retaining the sole prepared token.
+#[derive(Debug, thiserror::Error)]
+#[error("local exact-checkpoint root staging failed")]
+pub struct CheckpointResultStagingError<L> {
+    /// Prepared checkpoint retained for exact actor retry.
+    pub prepared: Box<PreparedCheckpointResult>,
+    /// Supervisor or operational-ledger failure.
+    pub source: L,
+}
+
+/// Checkpoint publication failure retaining the staged token.
+#[derive(Debug, thiserror::Error)]
+#[error("local exact-checkpoint publication failed")]
+pub struct CheckpointResultPublicationError {
+    /// Staged checkpoint retained for direct publication retry.
+    pub staged: Box<StagedCheckpointResult>,
+    /// Immutable-store failure.
+    pub source: ExactCheckpointStoreError,
+}
+
+/// Paused-state reconciliation failure retaining the published root token.
+#[derive(Debug, thiserror::Error)]
+#[error("local exact-checkpoint reconciliation failed")]
+pub struct CheckpointResultReconcileError<L> {
+    /// Published checkpoint retained for exact actor retry.
+    pub published: Box<PublishedCheckpointResult>,
+    /// Supervisor or operational-ledger failure.
+    pub source: L,
+}
+
+/// Any post-capture checkpoint phase that can be explicitly abandoned.
+#[derive(Debug)]
+pub enum CheckpointResultAbortToken {
+    /// The checkpoint is prepared but has no durable publication root.
+    Prepared(Box<PreparedCheckpointResult>),
+    /// The root is durable but immutable publication is incomplete.
+    Staged(Box<StagedCheckpointResult>),
+    /// Immutable publication completed but paused-state reconciliation did not.
+    Published(Box<PublishedCheckpointResult>),
+}
+
+impl CheckpointResultAbortToken {
+    fn queued(&self) -> &QueuedAttempt {
+        match self {
+            Self::Prepared(prepared) => prepared.queued(),
+            Self::Staged(staged) => staged.queued(),
+            Self::Published(published) => published.queued(),
+        }
+    }
+}
+
+/// Explicit checkpoint-abort failure retaining the complete phase token.
+#[derive(Debug, thiserror::Error)]
+#[error("local exact-checkpoint abort failed")]
+pub struct CheckpointResultAbortError<L> {
+    /// Captured checkpoint retained for exact cancellation retry.
+    pub token: CheckpointResultAbortToken,
+    /// Supervisor or operational-ledger failure.
+    pub source: L,
+}
+
 impl StagedAttemptResult {
     /// Returns the exact execution token owned by this publication phase.
     #[must_use]
@@ -602,6 +760,123 @@ pub struct PublishedAttemptResultAbortError<L> {
     pub published: Box<PublishedAttemptResult>,
     /// Supervisor or operational-ledger failure.
     pub source: L,
+}
+
+/// Installs the durable checkpoint root with a short supervisor CAS.
+///
+/// The consumed token is returned on every actor failure, so a ledger error
+/// never forces QEMU execution or checkpoint capture to repeat.
+///
+/// # Errors
+///
+/// Returns [`CheckpointResultStagingError`] with the complete prepared token
+/// when the operational ledger cannot safely establish the root.
+pub fn stage_prepared_checkpoint_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    prepared: PreparedCheckpointResult,
+) -> Result<CheckpointResultStageOutcome, CheckpointResultStagingError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let checkpoint = prepared.root();
+    let stage = match supervisor.stage_checkpoint_publication(prepared.queued(), checkpoint) {
+        Ok(stage) => stage,
+        Err(source) => {
+            return Err(CheckpointResultStagingError {
+                prepared: Box::new(prepared),
+                source,
+            });
+        }
+    };
+    match stage {
+        CheckpointPublicationOutcome::Staged | CheckpointPublicationOutcome::AlreadyStaged => Ok(
+            CheckpointResultStageOutcome::Publish(Box::new(StagedCheckpointResult { prepared })),
+        ),
+        CheckpointPublicationOutcome::AlreadyPaused | CheckpointPublicationOutcome::NotCurrent => {
+            Ok(CheckpointResultStageOutcome::Finished {
+                checkpoint,
+                outcome: stage,
+            })
+        }
+    }
+}
+
+/// Publishes every exact-checkpoint child and its root outside actor ownership.
+///
+/// # Errors
+///
+/// Returns [`CheckpointResultPublicationError`] with the staged token when any
+/// exact durable placement or authentication step fails.
+pub fn publish_staged_checkpoint_result(
+    store: &ExactCheckpointStore,
+    staged: StagedCheckpointResult,
+) -> Result<PublishedCheckpointResult, CheckpointResultPublicationError> {
+    let publication = match store.publish(&staged.prepared.checkpoint) {
+        Ok(publication) => publication,
+        Err(source) => {
+            return Err(CheckpointResultPublicationError {
+                staged: Box::new(staged),
+                source,
+            });
+        }
+    };
+    Ok(PublishedCheckpointResult {
+        queued: staged.prepared.queued,
+        publication,
+    })
+}
+
+/// Promotes one fully published checkpoint to durable paused state.
+///
+/// The worker/session owner must call this only after QEMU teardown has
+/// attested physical process exit. Capacity is released by the successful or
+/// idempotent paused-state transition, never merely by publishing bytes.
+///
+/// # Errors
+///
+/// Returns [`CheckpointResultReconcileError`] with the published token when
+/// the operational ledger cannot safely reconcile the paused state.
+pub fn reconcile_published_checkpoint_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    published: PublishedCheckpointResult,
+) -> Result<CheckpointCompletionOutcome, CheckpointResultReconcileError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let checkpoint = published.root();
+    match supervisor.complete_checkpoint(&published.queued, checkpoint) {
+        Ok(outcome) => Ok(outcome),
+        Err(source) => Err(CheckpointResultReconcileError {
+            published: Box::new(published),
+            source,
+        }),
+    }
+}
+
+/// Explicitly abandons one captured checkpoint without re-running the guest.
+///
+/// Cancellation removes any staged checkpoint root only after the worker has
+/// physically returned. Partial immutable objects then become ordinary
+/// collection candidates; no active capacity or linear result token is lost.
+///
+/// # Errors
+///
+/// Returns [`CheckpointResultAbortError`] with the complete phase token when
+/// durable cancellation cannot be reconciled safely.
+pub fn abort_checkpoint_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    token: CheckpointResultAbortToken,
+) -> Result<CancellationOutcome, CheckpointResultAbortError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    match supervisor.stage_and_reconcile_cancellation(token.queued()) {
+        Ok(outcome) => Ok(outcome),
+        Err(source) => Err(CheckpointResultAbortError { token, source }),
+    }
 }
 
 /// Preflights one independently executed worker result outside supervision.

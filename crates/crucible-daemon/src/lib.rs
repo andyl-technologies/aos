@@ -124,22 +124,27 @@ pub use executor_pool::{
     MAX_LOCAL_EXECUTOR_WORKERS,
 };
 pub use executor_supervisor::{
-    AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
-    CompletionValidationFailure, ExecutionCancellation, ExecutorAvailability, ExecutorCapacity,
-    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
-    ObservationPublicationOutcome, QueuedAttempt,
+    AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,
+    CheckpointCompletionOutcome, CheckpointPublicationOutcome, CheckpointRequestOutcome,
+    CompletionOutcome, CompletionValidationFailure, ExecutionCancellation,
+    ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError,
+    LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
 };
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptResultAbortError,
     AttemptResultPreparationError, AttemptResultPublicationError, AttemptResultStageOutcome,
     AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
-    AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, LocalAttemptWorker,
-    PendingAttemptResult, PreparedAttemptResult, PublishedAttemptResult,
-    PublishedAttemptResultAbortError, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
-    ResolvedAttemptStart, StagedAttemptResult, abort_prepared_attempt_result,
+    AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, CheckpointResultAbortError,
+    CheckpointResultAbortToken, CheckpointResultPublicationError, CheckpointResultReconcileError,
+    CheckpointResultStageOutcome, CheckpointResultStagingError, LocalAttemptWorker,
+    PendingAttemptResult, PreparedAttemptResult, PreparedCheckpointResult, PublishedAttemptResult,
+    PublishedAttemptResultAbortError, PublishedCheckpointResult, RepositoryAttemptWorker,
+    RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
+    StagedCheckpointResult, abort_checkpoint_result, abort_prepared_attempt_result,
     abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
-    publish_prepared_attempt_result, reconcile_attempt_failure, reconcile_published_attempt_result,
-    retry_pending_attempt_result, stage_prepared_attempt_result,
+    publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
+    reconcile_published_attempt_result, reconcile_published_checkpoint_result,
+    retry_pending_attempt_result, stage_prepared_attempt_result, stage_prepared_checkpoint_result,
 };
 pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,

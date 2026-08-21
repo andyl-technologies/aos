@@ -61,12 +61,13 @@ pub use choice::{
 pub use codec::CampaignCodecError;
 pub use execution::{
     AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId,
-    ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile,
-    ExecutorControlService, ExecutorRejection, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorRejection, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
@@ -87,11 +88,11 @@ pub use identity::{
     CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
     ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
-    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExpansionStateId,
-    FindingId, MeasurementSetId, ObservationId, PlannerEngineId, PlannerInvocationId,
-    PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId, PropertyVerdictSetId,
-    ProposalId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, SelectableId,
-    SelectableSemanticId, SelectionId,
+    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
+    ExpansionStateId, FindingId, MeasurementSetId, ObservationId, PlannerEngineId,
+    PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
+    PropertyVerdictSetId, ProposalId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
+    SelectableId, SelectableSemanticId, SelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -136,11 +137,11 @@ pub use policy::{
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignDerivationResult,
-    CampaignExecutorCancelOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
-    CampaignExecutorDriverError, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead,
-    CampaignLifecycle, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
-    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
-    CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome, CampaignExecutorDriver,
+    CampaignExecutorDriverConfigError, CampaignExecutorDriverError, CampaignExecutorStepOutcome,
+    CampaignExecutorStore, CampaignHead, CampaignLifecycle, CampaignPlannerDriver,
+    CampaignPlannerDriverConfigError, CampaignPlannerDriverError, CampaignPlannerStepOutcome,
+    CampaignRepository, CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
     CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscoveryResult,
     ClaimableAttemptPage, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObservationCandidate,
