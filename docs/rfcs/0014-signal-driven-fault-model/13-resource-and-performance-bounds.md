@@ -108,7 +108,13 @@ bytes, admits the declared frame count before reservation, and does not
 materialize fixed-size shared-memory frame slots until copying into an already
 configured destination ring. This prevents a small zero-payload checkpoint from
 requesting gigabytes of decoded heap while preserving the full configured frame
-ceiling.
+ceiling. The enclosing QEMU node continuation measures both canonical rings
+before allocating, applies the same 1,610,612,736-byte aggregate ceiling on
+encode and decode, reserves the outer encoding fallibly once, and streams each
+ring into that allocation without a ring-sized temporary copy. Rejection reports
+`current`, `requested`, `configured`, and compiled `hard` values. Its
+production-envelope tests round-trip both the full 1,048,576-frame queue
+capacity and a populated ring beyond the obsolete 64 MiB boundary.
 
 ## 13.5 Storage and 9p limits
 

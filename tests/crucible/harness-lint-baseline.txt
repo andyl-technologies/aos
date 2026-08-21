@@ -249,6 +249,8 @@ confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive.rs	host n
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive.rs	host nondeterminism reaching State	BackendInput		1
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive.rs	host nondeterminism reaching State	ExecutionHorizon		3
 confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive.rs	host nondeterminism reaching State	step		4
+confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/retry.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/supervision/network_io_gate/drive/retry.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/network_io_servicer.rs	host nondeterminism reaches API/session route	step		6
 confinement	crates/crucible-qemu/src/supervision/network_io_servicer.rs	host nondeterminism reaching State	step		6
 confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2

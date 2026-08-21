@@ -346,3 +346,113 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         Err(QemuNodeCheckpointCodecError::Trailing)
     );
 }
+
+#[test]
+fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
+    const FRAMES_ABOVE_OLD_LIMIT: usize = 16_384;
+    const PAYLOAD_ABOVE_OLD_LIMIT: usize = 4_066;
+    const MAX_QUEUE_FRAMES: usize = 1_048_576;
+
+    {
+        let checkpoint =
+            node_checkpoint_with_inbound_ring(FRAMES_ABOVE_OLD_LIMIT, PAYLOAD_ABOVE_OLD_LIMIT);
+        let bytes = checkpoint
+            .to_compact_binary()
+            .unwrap_or_else(|error| panic!("large ring should encode: {error}"));
+        assert!(
+            bytes.len() > 64 * 1024 * 1024,
+            "test must cross the obsolete 64 MiB decoder ceiling"
+        );
+        let restored = QemuNodeContinuationCheckpoint::from_compact_binary(
+            &bytes,
+            checkpoint.execution_binding,
+        )
+        .unwrap_or_else(|error| panic!("large ring should decode: {error}"));
+        assert_eq!(restored, checkpoint);
+    }
+
+    {
+        let checkpoint = node_checkpoint_with_inbound_ring(MAX_QUEUE_FRAMES, 0);
+        let bytes = checkpoint
+            .to_compact_binary()
+            .unwrap_or_else(|error| panic!("full-capacity ring should encode: {error}"));
+        let restored = QemuNodeContinuationCheckpoint::from_compact_binary(
+            &bytes,
+            checkpoint.execution_binding,
+        )
+        .unwrap_or_else(|error| panic!("full-capacity ring should decode: {error}"));
+        assert_eq!(
+            restored.network_transport.inbound.frames.len(),
+            MAX_QUEUE_FRAMES
+        );
+        assert_eq!(restored, checkpoint);
+    }
+}
+
+#[test]
+fn node_continuation_reports_typed_aggregate_resource_limit() {
+    assert_eq!(
+        admit_node_resource(
+            "node continuation",
+            MAX_NODE_CONTINUATION_BYTES,
+            1,
+            MAX_NODE_CONTINUATION_BYTES,
+        ),
+        Err(QemuNodeCheckpointCodecError::ResourceLimit {
+            field: "node continuation",
+            current: MAX_NODE_CONTINUATION_BYTES as u64,
+            requested: 1,
+            configured: MAX_NODE_CONTINUATION_BYTES as u64,
+            hard: MAX_NODE_CONTINUATION_BYTES as u64,
+        })
+    );
+}
+
+fn node_checkpoint_with_inbound_ring(
+    frame_count: usize,
+    payload_len: usize,
+) -> QemuNodeContinuationCheckpoint {
+    let binding = ContentHash::from_bytes(b"large-node-continuation-binding");
+    QemuNodeContinuationCheckpoint {
+        execution_binding: binding,
+        last_observed_time: VirtualTime { ticks: 1 },
+        logical_time_calibration: crate::QemuLogicalTimeCalibration {
+            logical_icount: 1,
+            raw_icount: 1,
+        },
+        console_observation_boundary: VirtualTime { ticks: 1 },
+        pending_preemption: None,
+        pending_network_outputs: Vec::new(),
+        network_transport: QemuNetworkTransportCheckpoint {
+            inbound: synthetic_compact_ring(frame_count, payload_len, 31),
+            outbound: SpscRingSnapshot { frames: Vec::new() },
+            queue_capacity: frame_count as u32,
+            router_slot: 31,
+            next_router_inbound_sequence: frame_count as u64,
+            next_host_outbound_sequence: 0,
+            next_plugin_outbound_sequence: 0,
+        },
+        next_fault_command_sequence: 2,
+        next_fault_event_sequence: 1,
+    }
+}
+
+fn synthetic_compact_ring(frame_count: usize, payload_len: usize, source: u32) -> SpscRingSnapshot {
+    const METADATA_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
+    let encoded_len = 8 + frame_count * (METADATA_BYTES + payload_len);
+    let mut bytes = Vec::with_capacity(encoded_len);
+    bytes.extend_from_slice(&(frame_count as u64).to_le_bytes());
+    let payload = vec![0x5a; payload_len];
+    for sequence in 0..frame_count {
+        bytes.extend_from_slice(&(sequence as u64).to_le_bytes());
+        bytes.extend_from_slice(&source.to_le_bytes());
+        bytes.extend_from_slice(&(sequence as u32).to_le_bytes());
+        bytes.extend_from_slice(&(payload_len as u16).to_le_bytes());
+        bytes.push(crucible_shmem::FRAME_DELIVERY_PENDING);
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    SpscRingSnapshot::from_canonical_bytes(&bytes, frame_count)
+        .unwrap_or_else(|error| panic!("synthetic compact ring should decode: {error}"))
+}
