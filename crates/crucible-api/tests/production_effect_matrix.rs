@@ -33,7 +33,7 @@ fn every_advertised_effect_is_bound_to_production_and_live_gate_evidence()
     assert_eq!(rows.len(), EffectKind::all().len());
     assert_eq!(
         rows.keys().copied().collect::<Vec<_>>(),
-        EffectKind::all().iter().copied().collect::<Vec<_>>()
+        EffectKind::all().to_vec()
     );
 
     if let Ok(path) = std::env::var("CRUCIBLE_PRODUCTION_EFFECT_MATRIX_OUTPUT") {
