@@ -5,8 +5,8 @@ use std::error::Error as StdError;
 
 use crucible_campaign::{CampaignHash, CampaignRepository, CampaignRepositoryError};
 use crucible_cas::content_store::{
-    BlobStoreAdmin, ContentId, RefInventorySummary, RefStoreAdmin, StoreError,
-    WriteBackRetentionAdmin,
+    BlobStoreAdmin, ContentId, RefInventorySummary, RefStoreAdmin, StoreError, StoreGraphAdmin,
+    StoreGraphPhysicalAdmin, WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -44,6 +44,18 @@ impl<'a> CampaignGcPhysicalStore<'a> {
     ) -> Result<Self, CampaignGcPlanError> {
         validate_backend_id(backend)?;
         Ok(Self { backend, admin })
+    }
+
+    /// Binds one physical leaf borrowed from a separately held graph admin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcPlanError::InvalidBackendId`] if the admitted graph
+    /// node ID violates the canonical GC backend identifier grammar.
+    pub fn from_graph_leaf(
+        physical: StoreGraphPhysicalAdmin<'a>,
+    ) -> Result<Self, CampaignGcPlanError> {
+        Self::new(physical.node().as_str(), physical.admin())
     }
 
     /// Returns the physical backend identifier.
@@ -99,6 +111,8 @@ impl CampaignGcPreparedPlan {
 /// authenticates the union of those logical closures. Finally each physical
 /// leaf is inventoried under its own fence and every placement whose logical
 /// ID is absent from the reachable union enters the candidate manifest.
+/// `store_graph` supplies both the exact canonical graph identity and its
+/// construction-time physical capabilities, so those bases cannot be mixed.
 ///
 /// This operation deliberately does not delete. A later apply must reacquire
 /// every fence, reproduce the root and physical generations, and additionally
@@ -114,6 +128,34 @@ impl CampaignGcPreparedPlan {
 /// plan cannot be represented canonically. Visitor prefixes are discarded on
 /// every error.
 pub fn plan_single_host_campaign_gc<L>(
+    repository: &CampaignRepository,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CampaignGcPlanningError::Plan)?;
+    plan_single_host_campaign_gc_with_physical(
+        repository,
+        refs,
+        ledger,
+        write_back,
+        CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
+pub(crate) fn plan_single_host_campaign_gc_with_physical<L>(
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,

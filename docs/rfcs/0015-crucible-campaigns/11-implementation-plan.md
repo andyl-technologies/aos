@@ -773,19 +773,29 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
-  and operational root inventory plus the exclusive generation-bound memory and
-  directory loose-leaf inventory/delete, authoritative-ref inventory, and
-  operational-ledger inventory primitives plus the canonical bounded plan
-  identity are implemented. The daemon now constructs the canonical root and
-  physical-candidate manifests, authenticates their complete logical closure,
+  and operational root inventory plus the exclusive generation-bound memory,
+  directory, and packed physical-leaf inventory/delete, authoritative-ref
+  inventory, and operational-ledger inventory primitives plus the canonical
+  bounded plan identity are implemented. The daemon now constructs the
+  canonical root and physical-candidate manifests, authenticates their complete
+  logical closure,
   produces a non-destructive plan across an ordered set of physical leaves,
   persists the exact plan/manifests and phase in a durable external journal, and
   excludes campaign children-before-ref publication with a shared/exclusive ref
-  lifecycle fence. Exact-generation single-host loose-leaf apply now
-  revalidates every root and physical basis, deletes under the leaf fence, and
-  leaves interrupted journals recovery-required. Exact-pin materialization
-  selection, composed cache/durable/pack fencing, and full operator-flight tests
-  remain open. Implement
+  lifecycle fence. `StoreGraph::build_with_admin` now returns a separate,
+  non-cloneable maintenance capability containing every current physical leaf
+  in canonical node-ID order; the ordinary graph retained by the repository has
+  no administrative escape. The graph and administrative value share one
+  registered canonical configuration identity, and public GC plan/apply derive
+  both that identity and the exact physical capability set from the
+  administrative value rather than accepting independently supplied inputs.
+  Exact-generation single-host physical-leaf apply now revalidates every root
+  and physical basis, deletes under the leaf fence, and leaves interrupted
+  journals recovery-required. A restart regression applies
+  that path to a sparse packed leaf and proves logical deletion retains the live
+  object and shared pack. Exact-pin materialization selection, transform/S3
+  administration, policy-aware reachable-cache eviction, and full
+  operator-flight tests remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

@@ -35,8 +35,9 @@ pub use admin::{
 };
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
-    StoreGraph, StoreGraphConfig, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
+    StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId,
+    StoreGraphPhysicalAdmin, StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
+    StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use packed::{
@@ -764,6 +765,10 @@ pub enum GraphViolation {
     InvalidWriteBackBounds,
     /// A journal and another persistent graph path overlap lexically.
     OverlappingAdministrativePath,
+    /// A persistent graph path is relative to ambient process state.
+    RelativeAdministrativePath,
+    /// An administrative path cannot be represented by the frozen graph schema.
+    AdministrativePathTooLong,
 }
 
 impl fmt::Display for GraphViolation {
@@ -783,6 +788,8 @@ impl fmt::Display for GraphViolation {
             Self::UnsupportedChild => "unsupported child capability",
             Self::InvalidWriteBackBounds => "invalid write-back bounds",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
+            Self::RelativeAdministrativePath => "relative administrative path",
+            Self::AdministrativePathTooLong => "administrative path is too long",
         })
     }
 }

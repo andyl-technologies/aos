@@ -3,8 +3,9 @@
 //! This module owns the small immutable plan header, canonical logical-root and
 //! physical-candidate manifests, the non-destructive single-host planner that
 //! binds them to every administrative generation, the durable external apply
-//! journal, and exact-generation loose-leaf deletion under publication/root
-//! fences. Composed cache/durable/pack policy remains a higher-level owner.
+//! journal, and exact-generation physical-leaf logical deletion under
+//! publication/root fences. Policy-aware cache eviction and transform/S3
+//! administration remain higher-level owner responsibilities.
 //!
 //! The v1 body is:
 //!
@@ -26,6 +27,8 @@ mod journal;
 mod manifest;
 mod planner;
 
+#[cfg(test)]
+use apply::apply_single_host_campaign_gc_with_physical;
 pub use apply::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
     apply_single_host_campaign_gc,
@@ -38,6 +41,8 @@ pub use manifest::{
     CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcManifestError,
     CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
+#[cfg(test)]
+use planner::plan_single_host_campaign_gc_with_physical;
 pub use planner::{
     CampaignGcPhysicalStore, CampaignGcPlanningError, CampaignGcPreparedPlan,
     plan_single_host_campaign_gc,
@@ -153,7 +158,7 @@ impl CampaignGcCandidateSetSummary {
     }
 }
 
-/// One physical loose-object inventory basis bound into a GC plan.
+/// One physical logical-object inventory basis bound into a GC plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcBlobInventoryBasis {
     backend: String,

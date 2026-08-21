@@ -1134,19 +1134,28 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
             },
         ),
     ]);
-    let graph = StoreGraph::build(StoreGraphConfig {
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::RamExtent]),
         nodes,
     })
     .expect("valid closed graph");
     assert_eq!(graph.root_id(), &root);
+    assert_eq!(graph.configuration_id(), admin.configuration_id());
     assert_eq!(graph.describe().len(), 7);
     assert!(
         graph
             .describe()
             .iter()
             .any(|node| node.kind == StoreNodeKind::Routed)
+    );
+    assert_eq!(
+        admin
+            .physical()
+            .into_iter()
+            .map(|physical| physical.node().as_str())
+            .collect::<Vec<_>>(),
+        vec!["directory", "metadata-cache", "ram-cache"]
     );
 
     let fact_bytes = b"graph fact";
@@ -1175,6 +1184,37 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
             ..
         })
     ));
+}
+
+#[test]
+fn store_graph_configuration_identity_is_canonical_and_complete() {
+    let root = node_id("root");
+    let config = |maximum| StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            root.clone(),
+            StoreNodeSpec::Memory {
+                max_logical_bytes: maximum,
+            },
+        )]),
+    };
+
+    let (first, first_admin) = StoreGraph::build_with_admin(config(1_024)).expect("first graph");
+    let (restarted, restarted_admin) =
+        StoreGraph::build_with_admin(config(1_024)).expect("restarted graph");
+    let (changed, changed_admin) =
+        StoreGraph::build_with_admin(config(2_048)).expect("changed graph");
+
+    assert_eq!(first.configuration_id(), first_admin.configuration_id());
+    assert_eq!(first.configuration_id(), restarted.configuration_id());
+    assert_eq!(first.configuration_id(), restarted_admin.configuration_id());
+    assert_eq!(changed.configuration_id(), changed_admin.configuration_id());
+    assert_ne!(first.configuration_id(), changed.configuration_id());
+    assert_eq!(
+        encode_hex(&first.configuration_id().as_bytes()),
+        "9054c4182515f09b43494c07f5bb3f8e93b62d6251b449ebf128d7142a8528d5"
+    );
 }
 
 #[test]
@@ -1684,7 +1724,7 @@ fn packed_backend_rejects_corruption_and_cleans_unindexed_complete_packs() {
 fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     let temp = TempDir::new().expect("temporary directory");
     let packed = node_id("packed");
-    let graph = StoreGraph::build(StoreGraphConfig {
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
         root: packed.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -1697,6 +1737,19 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     })
     .expect("packed store graph");
     assert_eq!(graph.describe()[0].kind, StoreNodeKind::Packed);
+    let physical = admin.physical();
+    assert_eq!(physical.len(), 1);
+    assert_eq!(physical[0].node(), &packed);
+    let mut fence = physical[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("packed graph maintenance fence");
+    let empty = fence
+        .visit_inventory(&mut |_record| Ok(()))
+        .expect("empty packed graph inventory");
+    assert_eq!(empty.backend(), packed.as_str());
+    assert_eq!(empty.objects(), 0);
+    drop(fence);
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"graph packed page");
     put_bytes(&graph, id, b"graph packed page").expect("graph packed put");
 
@@ -1909,6 +1962,45 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
         }),
         Err(StoreError::InvalidGraph {
             violation: GraphViolation::UnreachableNode,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn closed_store_graph_rejects_unbounded_or_ambient_administrative_paths() {
+    let root = node_id("directory");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(
+                root,
+                StoreNodeSpec::Directory {
+                    root: PathBuf::from("relative-store-root"),
+                },
+            )]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::RelativeAdministrativePath,
+            ..
+        })
+    ));
+
+    let root = node_id("oversized-directory");
+    assert!(matches!(
+        StoreGraph::build(StoreGraphConfig {
+            root: root.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([(
+                root,
+                StoreNodeSpec::Directory {
+                    root: PathBuf::from(format!("/{}", "a".repeat(4_096))),
+                },
+            )]),
+        }),
+        Err(StoreError::InvalidGraph {
+            violation: GraphViolation::AdministrativePathTooLong,
             ..
         })
     ));
