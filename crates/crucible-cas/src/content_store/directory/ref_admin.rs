@@ -126,7 +126,7 @@ impl RefInventoryFence for DirectoryRefInventoryFence<'_> {
                 });
             }
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(RefInventorySummary::new(generation, 0));
+                return Ok(RefInventorySummary::from_parts(generation, 0));
             }
             Err(source) => {
                 return Err(StoreError::Io {
@@ -137,7 +137,7 @@ impl RefInventoryFence for DirectoryRefInventoryFence<'_> {
             }
         }
         visit_ref_directory(self.backend, &root, &root, 0, visitor, &mut refs)?;
-        Ok(RefInventorySummary::new(generation, refs))
+        Ok(RefInventorySummary::from_parts(generation, refs))
     }
 }
 

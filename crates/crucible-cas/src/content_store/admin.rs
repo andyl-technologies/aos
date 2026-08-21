@@ -14,6 +14,12 @@ use super::*;
 pub struct InventoryGeneration([u8; 32]);
 
 impl InventoryGeneration {
+    /// Builds a backend generation from exactly 32 canonical bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the raw generation digest.
     #[must_use]
     pub const fn as_bytes(self) -> [u8; 32] {
@@ -156,6 +162,12 @@ pub trait BlobStoreAdmin: Send + Sync {
 pub struct RefInventoryGeneration([u8; 32]);
 
 impl RefInventoryGeneration {
+    /// Builds a ref-namespace generation from exactly 32 canonical bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the raw generation digest.
     #[must_use]
     pub const fn as_bytes(self) -> [u8; 32] {
@@ -202,7 +214,9 @@ pub struct RefInventorySummary {
 }
 
 impl RefInventorySummary {
-    pub(crate) const fn new(generation: RefInventoryGeneration, refs: u64) -> Self {
+    /// Builds terminal counters for one completed backend ref inventory.
+    #[must_use]
+    pub const fn from_parts(generation: RefInventoryGeneration, refs: u64) -> Self {
         Self { generation, refs }
     }
 

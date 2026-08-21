@@ -309,7 +309,7 @@ impl RefInventoryFence for MemoryRefInventoryFence<'_> {
             refs = refs.checked_add(1).ok_or(StoreError::Quota)?;
             visitor(RefInventoryRecord::new(name.clone(), *target))?;
         }
-        Ok(RefInventorySummary::new(generation, refs))
+        Ok(RefInventorySummary::from_parts(generation, refs))
     }
 }
 

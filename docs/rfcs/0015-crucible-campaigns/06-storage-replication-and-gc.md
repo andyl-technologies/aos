@@ -602,6 +602,40 @@ An error after the state advance is conservative because it only invalidates an
 older plan. The memory ledger uses a process-local hash-chain generation for its
 ephemeral backend instance.
 
+The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
+header that composes these independently fenced inputs. It does not embed an
+unbounded root set or candidate list. Instead it binds their separately
+authenticated canonical manifest hashes and terminal counters. The future
+candidate manifest names physical `(backend_id, ContentId, logical_length)`
+placements rather than ambiguous logical IDs alone. Its canonical binary layout
+is:
+
+```text
+"crucible.campaign.gc-plan.v1\0"
+store_graph_hash[32]
+root_set_manifest_hash[32]
+ref_generation[32] || ref_count:u64be
+ledger_generation[32] || attempt_count:u64be
+    || observation_root_count:u64be || checkpoint_root_count:u64be
+candidate_manifest_hash[32] || candidate_count:u64be || candidate_bytes:u64be
+physical_inventory_count:u16be
+repeated physical_inventory_count times:
+    backend_length:u16be || backend_utf8[backend_length]
+    || blob_generation[32] || object_count:u64be || logical_bytes:u64be
+```
+
+The physical list contains 1 through 256 entries in strictly increasing backend
+identifier order. An identifier is 1 through 64 ASCII bytes from letters,
+digits, `.`, `_`, and `-`. The complete header is at most 64 KiB. Counts are
+checked for overflow; operational roots cannot outnumber attempt records, and
+candidate placements/bytes cannot exceed the summed physical inventory. Its
+identity is
+`CampaignHash::derive("crucible.campaign.gc-plan.v1", canonical_header)`.
+Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
+basis therefore changes the plan identity. The current checkpoint defines and
+strictly decodes this identity only; construction of the authenticated manifests
+and durable apply journal remains open.
+
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
 roots. Assignment-ledger roots are lineage-qualified and host-local rather than
@@ -639,9 +673,12 @@ step. The assignment ledger likewise provides one exclusive, persistent
 generation over its combined operational root inventory. Directory generations
 survive restart; memory generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon
-maintenance owner. No campaign repository, planner, executor, or ordinary
-store-graph handle receives them, and no deletion is safe until the full plan
-and remaining store-graph fence above have been implemented and revalidated.
+maintenance owner. The canonical bounded v1 plan header now binds these
+generations to external root and candidate manifests. No campaign repository,
+planner, executor, or ordinary store-graph handle receives the administrative
+capabilities, and no deletion is safe until manifest construction, the complete
+store-graph fence, and interruption-safe apply have been implemented and
+revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing
