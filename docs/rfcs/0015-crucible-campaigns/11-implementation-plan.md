@@ -747,9 +747,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   and operational root inventory plus the exclusive generation-bound memory and
   directory loose-leaf inventory/delete, authoritative-ref inventory, and
   operational-ledger inventory primitives plus the canonical bounded plan
-  identity are implemented; exact-pin materialization selection, root/candidate
-  manifest construction, composed-store fencing, and destructive physical
-  plan/apply remain open. Implement
+  identity are implemented. The daemon now constructs the canonical root and
+  physical-candidate manifests, authenticates their complete logical closure,
+  and produces a non-destructive plan across an ordered set of physical leaves.
+  Exact-pin materialization selection, durable external manifest/apply-journal
+  ownership, transaction-lifecycle and composed-store fencing, and destructive
+  physical apply remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

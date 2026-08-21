@@ -43,7 +43,8 @@ use crate::{
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 const MAX_SNAPSHOT_ANCESTRY: usize = 1_000_001;
-const MAX_CLOSURE_OBJECTS: usize = 64_000_000;
+/// Maximum unique object-position work charged to one authenticated closure.
+pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 /// Maximum source positions served by one coordinator planner page.

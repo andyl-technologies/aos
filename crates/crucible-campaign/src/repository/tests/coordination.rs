@@ -4603,7 +4603,7 @@ fn conservative_closure_limit_rebases_through_complete_validation() {
         .expect("validation checkpoints")
         .get_mut(&discovered.new_snapshot.content_id())
         .expect("discovery checkpoint")
-        .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
+        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
 
     let accepted = repository
         .submit_branch_request("closure-rebase", discovered.new_snapshot, &request)
@@ -4617,7 +4617,7 @@ fn conservative_closure_limit_rebases_through_complete_validation() {
         .get(&accepted.new_snapshot.content_id())
         .expect("rebased child checkpoint");
     assert_eq!(checkpoint.ancestry_depth, 3);
-    assert!(checkpoint.closure_objects < MAX_CLOSURE_OBJECTS);
+    assert!(checkpoint.closure_objects < MAX_CAMPAIGN_CLOSURE_OBJECTS);
 }
 
 #[test]
@@ -4682,7 +4682,7 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
         .expect("validation checkpoints")
         .get_mut(&discovered.new_snapshot.content_id())
         .expect("discovery checkpoint")
-        .closure_objects = MAX_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 32;
+        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 32;
     let accepted = repository
         .submit_branch_request("generator-anchor", discovered.new_snapshot, &request)
         .expect("accept anchored generator request");
@@ -4695,7 +4695,7 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
         .expect("incremental child checkpoint");
 
     assert!(
-        checkpoint.closure_objects > MAX_CLOSURE_OBJECTS / 2,
+        checkpoint.closure_objects > MAX_CAMPAIGN_CLOSURE_OBJECTS / 2,
         "reused generator closure forced an unnecessary complete rebase"
     );
 }

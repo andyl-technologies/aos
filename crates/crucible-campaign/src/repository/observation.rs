@@ -1052,7 +1052,7 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
         if dependency_objects
             .checked_add(virtual_records)
-            .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+            .is_none_or(|objects| objects > MAX_CAMPAIGN_CLOSURE_OBJECTS)
         {
             return Err(integrity("campaign-closure-object-limit"));
         }

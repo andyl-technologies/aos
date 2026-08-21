@@ -1243,7 +1243,7 @@ impl CampaignRepository {
         root: CandidateGeneratorSpecId,
         domain: &ChoiceDomain,
     ) -> Result<(), CampaignRepositoryError> {
-        let mut remaining = MAX_CLOSURE_OBJECTS;
+        let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
         self.validate_generator_for_domain_with_budget(root, domain, &mut remaining)
     }
 

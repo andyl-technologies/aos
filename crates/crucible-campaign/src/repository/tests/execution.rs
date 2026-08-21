@@ -1645,7 +1645,7 @@ fn observation_growth_bound_rebases_and_remains_restart_readable() {
         .expect("validation checkpoints")
         .get_mut(&admitted.new_snapshot.content_id())
         .expect("admitted checkpoint")
-        .closure_objects = MAX_CLOSURE_OBJECTS - growth;
+        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - growth;
 
     let accepted = repository
         .publish_observation("observation-growth", admitted.new_snapshot, &observation)

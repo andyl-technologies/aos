@@ -602,13 +602,48 @@ An error after the state advance is conservative because it only invalidates an
 older plan. The memory ledger uses a process-local hash-chain generation for its
 ephemeral backend instance.
 
+The registered `crucible.campaign.gc-root-manifest` and
+`crucible.campaign.gc-candidate-manifest` schemas v1 are streamed external
+administrative records. Each admits at most 64,000,000 entries, matching the
+complete campaign-closure work bound. A root manifest deduplicates roots and
+orders them by `(ContentId.kind ASCII tag, schema version as an unsigned
+integer, digest bytes)`. Its canonical binary layout is:
+
+```text
+"crucible.campaign.gc-root-manifest.v1\0"
+root_count:u64be
+repeated root_count times:
+    content_id_length:u16be || canonical_content_id_utf8
+```
+
+A candidate manifest names exact physical
+`(backend_id, ContentId, logical_length)` placements rather than ambiguous
+logical IDs. Entries are unique and ordered first by backend ASCII bytes, then
+by the same ContentId tuple. Its canonical layout is:
+
+```text
+"crucible.campaign.gc-candidate-manifest.v1\0"
+candidate_count:u64be
+repeated candidate_count times:
+    backend_length:u16be || backend_utf8
+    content_id_length:u16be || canonical_content_id_utf8
+    logical_length:u64be
+```
+
+For either manifest, let `D` be respectively
+`crucible.campaign.gc-root-manifest.v1` or
+`crucible.campaign.gc-candidate-manifest.v1`, and let `M` be the complete
+canonical bytes above. Its 32-byte manifest hash is
+`BLAKE3(BE64(len(D)) || D || M)`. Decoders enforce the entry limit before
+allocation proportional to a claimed count, bound every individual string,
+require strict order and exact EOF, and recompute terminal candidate count and
+logical-byte totals.
+
 The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
-header that composes these independently fenced inputs. It does not embed an
-unbounded root set or candidate list. Instead it binds their separately
-authenticated canonical manifest hashes and terminal counters. The future
-candidate manifest names physical `(backend_id, ContentId, logical_length)`
-placements rather than ambiguous logical IDs alone. Its canonical binary layout
-is:
+header that composes these independently fenced inputs. It does not embed the
+potentially large root set or candidate list. Instead it binds their separately
+authenticated canonical manifest hashes and terminal counters. Its canonical
+binary layout is:
 
 ```text
 "crucible.campaign.gc-plan.v1\0"
@@ -632,9 +667,21 @@ candidate placements/bytes cannot exceed the summed physical inventory. Its
 identity is
 `CampaignHash::derive("crucible.campaign.gc-plan.v1", canonical_header)`.
 Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
-basis therefore changes the plan identity. The current checkpoint defines and
-strictly decodes this identity only; construction of the authenticated manifests
-and durable apply journal remains open.
+basis therefore changes the plan identity. The daemon's non-destructive
+single-host planner now fences and inventories the complete ref namespace and
+assignment ledger, deduplicates their logical roots, authenticates their union
+through the campaign repository's semantic, generic-envelope, Merkle, and
+opaque-leaf closure verifier, then inventories each named physical leaf. Every
+placement whose logical ID is absent from that authenticated reachable set is
+written into the candidate manifest. A physical capability must report the same
+backend identifier configured by the maintenance owner, and physical inputs are
+strictly ordered. Any incomplete visitor prefix is discarded. Because apply
+later revalidates every generation, mutations between these non-destructive
+phases only make the plan stale; they cannot authorize deletion.
+
+Persisting these streamed manifests outside the inventoried store, excluding a
+campaign transaction across its children-before-ref publication window, and
+the interruption-safe destructive apply journal remain open.
 
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
@@ -674,11 +721,11 @@ generation over its combined operational root inventory. Directory generations
 survive restart; memory generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon
 maintenance owner. The canonical bounded v1 plan header now binds these
-generations to external root and candidate manifests. No campaign repository,
-planner, executor, or ordinary store-graph handle receives the administrative
-capabilities, and no deletion is safe until manifest construction, the complete
-store-graph fence, and interruption-safe apply have been implemented and
-revalidated.
+generations to constructed root and candidate manifests. No campaign
+repository, planner, executor, or ordinary store-graph handle receives the
+administrative capabilities, and no deletion is safe until durable external
+manifest ownership, the complete transaction/store-graph fence, and
+interruption-safe apply have been implemented and revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

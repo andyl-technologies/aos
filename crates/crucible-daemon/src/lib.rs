@@ -67,10 +67,12 @@ pub use assignment_ledger::{
     DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
 pub use campaign_gc::{
-    CampaignGcBlobInventoryBasis, CampaignGcCandidateSetId, CampaignGcCandidateSetSummary,
-    CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId, CampaignGcRootSetId,
-    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
-    MAX_CAMPAIGN_GC_PLAN_BYTES,
+    CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
+    CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcManifestError,
+    CampaignGcPhysicalStore, CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId,
+    CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest, CampaignGcRootSetId,
+    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
+    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, MAX_CAMPAIGN_GC_PLAN_BYTES, plan_single_host_campaign_gc,
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,

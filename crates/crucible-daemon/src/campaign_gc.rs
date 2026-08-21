@@ -1,10 +1,10 @@
 //! Canonical generation-bound campaign garbage-collection plans.
 //!
-//! This module owns the small immutable plan header that binds logical root
-//! and deletion-candidate manifests to every administrative generation needed
-//! by apply. It deliberately does not compute reachability or delete content;
-//! those operations require the separately held blob, ref, and assignment
-//! ledger fences.
+//! This module owns the small immutable plan header, canonical logical-root and
+//! physical-candidate manifests, and the non-destructive single-host planner
+//! that binds them to every administrative generation needed by apply. It does
+//! not delete content; apply additionally requires a durable journal and a
+//! transaction-lifecycle fence spanning campaign publication.
 //!
 //! The v1 body is:
 //!
@@ -20,6 +20,18 @@
 //!   backend_length:u16be | backend UTF-8
 //!   blob_generation[32] | objects:u64be | logical_bytes:u64be
 //! ```
+
+mod manifest;
+mod planner;
+
+pub use manifest::{
+    CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcManifestError,
+    CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
+};
+pub use planner::{
+    CampaignGcPhysicalStore, CampaignGcPlanningError, CampaignGcPreparedPlan,
+    plan_single_host_campaign_gc,
+};
 
 use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::{
