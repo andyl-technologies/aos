@@ -34,7 +34,7 @@ use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
 use crate::types::{
     RegistryConfig, RegistryState, TrackingMode, validate_attestation_provenance_ref,
 };
-use aos_core::output::Printer;
+use aos_core::output::{Printer, TransferProgress};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,9 +114,10 @@ pub async fn sync_git(
 ) -> Result<SyncResult> {
     let git_url = normalize_git_url(&config.url);
     let repo_dir = cache_dir.join(&config.name).join("repo.git");
+    let progress = printer.transfer(&format!("Updating registry '{}'", config.name), 0);
 
     // Step 1: Ensure repo; assemble the trusted key set.
-    printer.info(&format!("Syncing registry '{}' via git...", config.name));
+    progress.phase("Preparing registry update");
     let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
     let enforcing = signing_enforced(config);
     let trusted_keys = assemble_trusted_set(&key_store, config);
@@ -147,9 +148,18 @@ pub async fn sync_git(
     }
 
     // Step 2: Fetch refs.
+    progress.phase("Fetching registry objects");
     let fetch_roster_head = enforcing && uses_remote_head_roster(tracking_mode);
     let fetched_roster_head = if matches!(tracking_mode, TrackingMode::Channel(_)) {
-        match fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await {
+        match fetch_refs(
+            &repo_dir,
+            &git_url,
+            tracking_mode,
+            fetch_roster_head,
+            &progress,
+        )
+        .await
+        {
             Ok(fetched_roster_head) => fetched_roster_head,
             Err(err) => {
                 return Err(channel_refresh_error(
@@ -161,9 +171,17 @@ pub async fn sync_git(
             }
         }
     } else {
-        fetch_refs(&repo_dir, &git_url, tracking_mode, fetch_roster_head).await?
+        fetch_refs(
+            &repo_dir,
+            &git_url,
+            tracking_mode,
+            fetch_roster_head,
+            &progress,
+        )
+        .await?
     };
 
+    progress.phase("Verifying registry trust");
     let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         if !fetched_roster_head {
             Some(
@@ -266,7 +284,15 @@ pub async fn sync_git(
             .ok_or_else(|| anyhow::anyhow!("channel resolution did not persist a semver floor"))?;
         let target = semver::Version::parse(target)
             .with_context(|| format!("parsing resolved channel release {target}"))?;
-        fetch::resolve_objects(&repo_dir, &git_url, &target, &retained_before, printer).await?;
+        fetch::resolve_objects_with_progress(
+            &repo_dir,
+            &git_url,
+            &target,
+            &retained_before,
+            printer,
+            Some(&progress),
+        )
+        .await?;
     }
 
     // Verify the selected release commit. When the selected commit is also
@@ -327,6 +353,7 @@ pub async fn sync_git(
     };
 
     // Step 7: Extract authenticated tree files used by consumers.
+    progress.phase("Installing registry catalog");
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
@@ -404,10 +431,7 @@ pub async fn sync_git(
         state.tuf_timestamp_version = Some(verified_tuf.timestamp_version);
     }
 
-    printer.info(&format!(
-        "Registry '{}': {} packages ({} added, {} updated, {} removed)",
-        config.name, new_packages, added, updated, removed,
-    ));
+    progress.finish();
 
     Ok(SyncResult {
         new_commit,
@@ -745,6 +769,7 @@ async fn fetch_refs(
     url: &str,
     tracking_mode: &TrackingMode,
     fetch_roster_head: bool,
+    progress: &TransferProgress,
 ) -> Result<bool> {
     let refspecs: Vec<String> = match tracking_mode {
         // Fetch the specific commit by object id (no local ref).
@@ -764,12 +789,12 @@ async fn fetch_refs(
         TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
     };
 
-    repo::fetch(repo_dir, url, &refspecs)
+    repo::fetch_with_progress(repo_dir, url, &refspecs, Some(progress.clone()))
         .await
         .with_context(|| format!("fetching from {url}"))?;
 
     if fetch_roster_head {
-        fetch_origin_head(repo_dir, url).await
+        fetch_origin_head(repo_dir, url, progress).await
     } else {
         Ok(false)
     }
@@ -780,11 +805,16 @@ async fn fetch_refs(
 /// Returns `Ok(false)` when the origin advertises no `HEAD` (the historical
 /// "couldn't find remote ref HEAD" case), so channel/tag/version tracking can
 /// fall back to the selected ref.
-async fn fetch_origin_head(repo_dir: &Path, url: &str) -> Result<bool> {
-    match repo::fetch(
+async fn fetch_origin_head(
+    repo_dir: &Path,
+    url: &str,
+    progress: &TransferProgress,
+) -> Result<bool> {
+    match repo::fetch_with_progress(
         repo_dir,
         url,
         &["+HEAD:refs/remotes/origin/HEAD".to_string()],
+        Some(progress.clone()),
     )
     .await
     {
@@ -2267,11 +2297,13 @@ mod tests {
         ensure_repo(&repo_dir, &origin_dir.to_string_lossy())
             .await
             .unwrap();
+        let progress = Printer::new(0, true, false).transfer("test registry fetch", 0);
         fetch_refs(
             &repo_dir,
             &origin_dir.to_string_lossy(),
             &TrackingMode::Default,
             false,
+            &progress,
         )
         .await
         .unwrap();
