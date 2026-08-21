@@ -10,6 +10,7 @@ use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
 use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
 pub(crate) mod bounded_cbor;
+mod host_io_accessors;
 mod host_io_codec;
 pub use host_io_codec::QemuHostIoCheckpointCodecError;
 mod node_codec;
@@ -192,6 +193,21 @@ impl QemuNodeContinuationCheckpoint {
     /// malformed, a field exceeds its configured bound, or the exact output
     /// allocation cannot be admitted.
     pub fn to_compact_binary(&self) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
+        self.to_compact_binary_with_limit(MAX_NODE_CONTINUATION_BYTES)
+    }
+
+    /// Encodes the continuation under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeCheckpointCodecError`] under the same conditions as
+    /// [`Self::to_compact_binary`], and when the exact representation exceeds
+    /// `maximum`.
+    pub fn to_compact_binary_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, QemuNodeCheckpointCodecError> {
+        let maximum = maximum.min(MAX_NODE_CONTINUATION_BYTES);
         self.network_transport.validate()?;
         let inbound_len =
             ring_canonical_len(&self.network_transport.inbound, "network inbound ring")?;
@@ -228,6 +244,7 @@ impl QemuNodeContinuationCheckpoint {
             )?;
         }
         let encoded_len = self.encoded_len(preemption.as_deref(), inbound_len, outbound_len)?;
+        admit_node_resource("node continuation", 0, encoded_len, maximum)?;
 
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(encoded_len).map_err(|_| {
@@ -235,13 +252,13 @@ impl QemuNodeContinuationCheckpoint {
                 field: "node continuation",
                 current: 0,
                 requested: encoded_len as u64,
-                configured: MAX_NODE_CONTINUATION_BYTES,
+                configured: maximum,
                 hard: MAX_NODE_CONTINUATION_BYTES,
             }
         })?;
         write_node_continuation_bytes(
             &mut bytes,
-            b"crucible.qemu-node-continuation.v6\0",
+            b"crucible.qemu-node-continuation.v7\0",
             "node continuation",
         )?;
         write_node_continuation_bytes(
@@ -364,7 +381,7 @@ impl QemuNodeContinuationCheckpoint {
         inbound_len: usize,
         outbound_len: usize,
     ) -> Result<usize, QemuNodeCheckpointCodecError> {
-        let mut length = b"crucible.qemu-node-continuation.v6\0".len() + 32 + 32 + 1 + 8;
+        let mut length = b"crucible.qemu-node-continuation.v7\0".len() + 32 + 32 + 1 + 8;
         if let Some(preemption) = preemption {
             length = checked_node_encoded_len(length, 8 + preemption.len(), "preemption")?;
         }
@@ -400,13 +417,24 @@ impl QemuNodeContinuationCheckpoint {
         bytes: &[u8],
         execution_binding: ContentHash,
     ) -> Result<Self, QemuNodeCheckpointCodecError> {
-        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v6\0";
-        admit_node_resource(
-            "node continuation",
-            0,
-            bytes.len(),
-            MAX_NODE_CONTINUATION_BYTES,
-        )?;
+        Self::from_compact_binary_with_limit(bytes, execution_binding, MAX_NODE_CONTINUATION_BYTES)
+    }
+
+    /// Decodes a continuation under an enclosing checkpoint byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeCheckpointCodecError`] under the same conditions as
+    /// [`Self::from_compact_binary`], and before decoding when `bytes` exceeds
+    /// `maximum`.
+    pub fn from_compact_binary_with_limit(
+        bytes: &[u8],
+        execution_binding: ContentHash,
+        maximum: u64,
+    ) -> Result<Self, QemuNodeCheckpointCodecError> {
+        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v7\0";
+        let maximum = maximum.min(MAX_NODE_CONTINUATION_BYTES);
+        admit_node_resource("node continuation", 0, bytes.len(), maximum)?;
         let mut reader = NodeContinuationReader::new(bytes, MAGIC)?;
         let observed_binding = ContentHash {
             bytes: reader.fixed::<32>("execution binding")?,
@@ -517,60 +545,6 @@ impl QemuNodeContinuationCheckpoint {
             return Err(QemuNodeCheckpointCodecError::FaultSequence);
         }
         Ok(checkpoint)
-    }
-}
-
-impl QemuHostIoCheckpoint {
-    /// Builds a checkpoint for a runtime with no shared-memory host devices.
-    #[must_use]
-    pub const fn without_devices(execution_binding: ContentHash) -> Self {
-        Self {
-            execution_binding,
-            block: None,
-            ninep: None,
-            #[cfg(target_os = "linux")]
-            accelerator: None,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) const fn with_devices(
-        execution_binding: ContentHash,
-        block: Option<QemuLiveBlockIoServicerCheckpoint>,
-        ninep: Option<QemuLive9pIoServicerCheckpoint>,
-        accelerator: Option<crate::QemuLiveAcceleratorCheckpoint>,
-    ) -> Self {
-        Self {
-            execution_binding,
-            block,
-            ninep,
-            accelerator,
-        }
-    }
-
-    /// Returns the QEMU VMState identity paired with this host continuation.
-    #[must_use]
-    pub const fn execution_binding(&self) -> ContentHash {
-        self.execution_binding
-    }
-
-    /// Returns the block continuation when the captured runtime owned one.
-    #[must_use]
-    pub const fn block(&self) -> Option<&QemuLiveBlockIoServicerCheckpoint> {
-        self.block.as_ref()
-    }
-
-    /// Returns the 9p continuation when the captured runtime owned one.
-    #[must_use]
-    pub const fn ninep(&self) -> Option<&QemuLive9pIoServicerCheckpoint> {
-        self.ninep.as_ref()
-    }
-
-    /// Returns the accelerator continuation when the captured runtime owned one.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub const fn accelerator(&self) -> Option<&crate::QemuLiveAcceleratorCheckpoint> {
-        self.accelerator.as_ref()
     }
 }
 
