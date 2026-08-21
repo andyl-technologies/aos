@@ -85,6 +85,14 @@ begin with `_`, and files named `default.nix`, are not published as packages.
 The file above therefore creates `pkgs.acme-health-agent` and the flake output
 `pkg-acme-health-agent`.
 
+A discovered file that returns a callable package factory instead of a
+derivation must be listed in `packageFactories` in `pkgs/default.nix`. Keep the
+factory available through `pkgs.<name>` for its callers, but exclude it from
+`packageNames`, the `pkg-*` flake outputs, and `packages.<system>.all`; Nix
+cannot build a function. Use this explicit inventory because dynamically
+probing every discovered value would evaluate unrelated packages and trigger
+their IFDs during otherwise isolated builds.
+
 The builder shell is POSIX `sh`. Keep phase scripts portable, and use explicit
 AOS package paths in generated scripts. Do not use `/bin/bash`,
 `/usr/bin/env`, host tools, or nixpkgs packages.
@@ -101,8 +109,34 @@ Use the dependency field that matches why the package is needed:
 
 `mkDerivation` already supplies the wrapped compiler and bootstrap tools.
 List application-specific build tools, libraries, and runtime commands
-explicitly. If a dependency is missing from AOS, package it from source rather
-than reaching into the host or importing nixpkgs.
+explicitly. Include tools that an upstream configure script probes before the
+compile even when the build phases do not invoke them directly; for example,
+declare Perl in `buildDeps` when configure rejects a missing Perl interpreter.
+If a dependency is missing from AOS, package it from source rather than
+reaching into the host or importing nixpkgs.
+
+`mkDerivation` also enables the repository hardening profile. Keep that profile
+unless an upstream representation is incompatible with one specific flag. For
+example, code that deliberately uses a trailing one-element or zero-length
+array as variable-length storage can trigger false `_FORTIFY_SOURCE` aborts
+under `strictflexarrays3`. In that case, preserve fortify and the other
+hardening checks while selecting the compatible flexible-array interpretation:
+
+```nix
+hardeningDisable = ["strictflexarrays3"];
+hardeningEnable = ["strictflexarrays1"];
+```
+
+Document the upstream data layout and reproduce the actual build-time or
+runtime abort before adding this exception. Do not disable all hardening to
+work around one incompatible flag.
+
+Use `$NIX_BUILD_CORES` for build systems whose parallel graph is safe. Keep a
+legacy bootstrap stage serial when its upstream tool writes shared outputs from
+multiple recursive branches; for example, IcedTea 2.6 must use `make -j1`
+because concurrent boot-javac writers can abort in `ClassWriter.writePool`.
+Record the reproduced failure beside the serialized command so a future
+upgrade can remove the restriction deliberately.
 
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:

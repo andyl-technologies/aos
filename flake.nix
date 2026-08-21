@@ -60,38 +60,50 @@
 
     # Expose every individual aos package as `pkg-<name>` so a single
     # component (e.g. `pkg-zlib`, `pkg-gcc`) can be built/benchmarked in
-    # isolation rather than only the whole OS. Filtered to derivations
-    # so the non-package helpers in the set (lib, mkDerivation, fetchurl,
-    # …) don't leak into the flake outputs and break `nix flake check`.
+    # isolation rather than only the whole OS. packageNames comes from the
+    # structural filesystem discovery pass, so enumerating flake outputs does
+    # not force every package or trigger unrelated IFDs.
     pkgPackages = aos: let
       p = aos.pkgs;
-      isDrv = name: let
-        r = builtins.tryEval p.${name};
-      in
-        r.success && builtins.isAttrs r.value && (r.value.type or null) == "derivation";
-      names = builtins.filter isDrv (builtins.attrNames p);
     in
       builtins.listToAttrs (map (name: {
           name = "pkg-${name}";
           value = p.${name};
         })
-        names);
+        p.packageNames);
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
     packages = genAttrs systems (
       system: let
         aos = aosFor system;
+        individualPackages = pkgPackages aos;
+        allPackages = aos.pkgs.mkDerivation {
+          pname = "aos-all-packages";
+          version = "0";
+          src = null;
+          buildDeps = builtins.attrValues individualPackages;
+          phases = [
+            {
+              name = "assemble";
+              script = ''
+                mkdir -p $out
+                echo "PASS" > $out/result
+              '';
+            }
+          ];
+        };
       in
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+          all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
           };
         }
         // systemPackages aos
-        // pkgPackages aos
+        // individualPackages
     );
 
     devShells = genAttrs systems (
