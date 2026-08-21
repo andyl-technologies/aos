@@ -26,8 +26,11 @@ use super::service::{
     BlockServiceCompletion, BlockServiceJob, BlockServiceState, ResolvedBlockServiceRule,
 };
 
+mod checkpoint_codec;
 mod state_admission;
 mod state_execution;
+
+pub use checkpoint_codec::{BlockFaultStateCodecError, MAX_BLOCK_FAULT_STATE_BYTES};
 
 /// Hard maximum directives waiting for their exact request.
 pub const HARD_PENDING_BLOCK_FAULT_DIRECTIVES: usize = 1_048_576;
@@ -1391,79 +1394,6 @@ pub struct BlockFaultState {
     array_rebuild: BlockArrayRebuildCursor,
 }
 
-/// Maximum canonical byte length of one persisted block-fault continuation.
-pub const MAX_BLOCK_FAULT_STATE_BYTES: usize = 536_870_912;
-
-const BLOCK_FAULT_STATE_MAGIC: &[u8] = b"crucible.block-fault-state.v1\0";
-
-impl BlockFaultState {
-    /// Encodes every storage-fault continuation field in its canonical envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BlockFaultStateCodecError`] if serialization fails or the
-    /// resulting state exceeds the compiled checkpoint ceiling.
-    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, BlockFaultStateCodecError> {
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(self, &mut payload)
-            .map_err(|_| BlockFaultStateCodecError::Malformed)?;
-        if payload.len() > MAX_BLOCK_FAULT_STATE_BYTES {
-            return Err(BlockFaultStateCodecError::Limit);
-        }
-        let mut bytes = Vec::with_capacity(BLOCK_FAULT_STATE_MAGIC.len() + payload.len());
-        bytes.extend_from_slice(BLOCK_FAULT_STATE_MAGIC);
-        bytes.extend_from_slice(&payload);
-        Ok(bytes)
-    }
-
-    /// Decodes and deeply validates a complete block-fault continuation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BlockFaultStateCodecError`] for unsupported, malformed,
-    /// over-limit, noncanonical, or restore-invalid state.
-    pub fn from_canonical_bytes(
-        bytes: &[u8],
-        device_length: u64,
-    ) -> Result<Self, BlockFaultStateCodecError> {
-        let payload = bytes
-            .strip_prefix(BLOCK_FAULT_STATE_MAGIC)
-            .ok_or(BlockFaultStateCodecError::Version)?;
-        if payload.len() > MAX_BLOCK_FAULT_STATE_BYTES {
-            return Err(BlockFaultStateCodecError::Limit);
-        }
-        let state: Self =
-            ciborium::de::from_reader(payload).map_err(|_| BlockFaultStateCodecError::Malformed)?;
-        state
-            .validate_restore(device_length)
-            .map_err(|_| BlockFaultStateCodecError::Invalid)?;
-        if state.to_canonical_bytes()?.as_slice() != bytes {
-            return Err(BlockFaultStateCodecError::Noncanonical);
-        }
-        Ok(state)
-    }
-}
-
-/// Failure to encode or authenticate persisted block-fault state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum BlockFaultStateCodecError {
-    /// The envelope version is unsupported.
-    #[error("unsupported block-fault state version")]
-    Version,
-    /// The state could not be serialized or decoded.
-    #[error("malformed block-fault state")]
-    Malformed,
-    /// The state exceeds its compiled resource ceiling.
-    #[error("block-fault state exceeds its size limit")]
-    Limit,
-    /// The state violates live restore invariants.
-    #[error("block-fault state violates restore invariants")]
-    Invalid,
-    /// The accepted representation is not byte-canonical.
-    #[error("noncanonical block-fault state")]
-    Noncanonical,
-}
-
 fn transport_pending_response(
     identity: BlockRequestIdentity,
     policy: BlockTransportPending,
@@ -2020,6 +1950,10 @@ fn block_response_to_uniform(response: &BlockResponse) -> Result<Response, Devic
         response.encode().map_err(DeviceError::Codec)?,
     ))
 }
+
+#[cfg(test)]
+#[path = "fault/codec_tests.rs"]
+mod codec_tests;
 
 #[cfg(test)]
 #[path = "fault_tests.rs"]

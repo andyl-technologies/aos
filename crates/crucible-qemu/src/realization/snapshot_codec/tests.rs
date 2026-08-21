@@ -26,7 +26,7 @@ fn production_envelope_rejects_pre_policy_version() {
     let mut bytes = snapshot
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("encode current snapshot: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.qemu-vm-snapshot.v1\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.qemu-vm-snapshot.v2\0");
 
     assert_eq!(
         QemuVmSnapshot::from_canonical_bytes(&bytes),

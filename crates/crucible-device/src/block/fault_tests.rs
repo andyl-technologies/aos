@@ -21,24 +21,6 @@ fn state(durability: BlockCompletionDurability) -> BlockFaultState {
 }
 
 #[test]
-fn block_fault_checkpoint_codec_round_trips_and_rejects_trailing_bytes() {
-    let state = state(BlockCompletionDurability::VolatileCacheAccepted);
-    let bytes = state
-        .to_canonical_bytes()
-        .unwrap_or_else(|error| panic!("encode checkpoint: {error}"));
-    let restored = BlockFaultState::from_canonical_bytes(&bytes, 32)
-        .unwrap_or_else(|error| panic!("decode checkpoint: {error}"));
-    assert_eq!(restored, state);
-
-    let mut trailing = bytes;
-    trailing.push(0);
-    assert_eq!(
-        BlockFaultState::from_canonical_bytes(&trailing, 32),
-        Err(BlockFaultStateCodecError::Noncanonical)
-    );
-}
-
-#[test]
 fn external_write_dependency_uses_the_destination_completion_policy() {
     for durability in [
         BlockCompletionDurability::ControllerAccepted,

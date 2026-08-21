@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 
 use super::{
     ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
@@ -38,7 +39,7 @@ struct CheckpointWire {
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
     qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
     qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
-    qemu_action_commits: BTreeMap<ContentHash, QemuActionCommitWire>,
+    qemu_action_commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
     qemu_active_rule_ids: BTreeSet<ContentHash>,
     network_state: Option<NetworkWire>,
     emitted_events: BoundedVec<ReferencedSignalEvent, MAX_EVENT_RECORDS>,
@@ -47,34 +48,34 @@ struct CheckpointWire {
     identity: ContentHash,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QemuActionCommitWire {
-    command_sequence: u64,
-    command_kind: u16,
-    before_hash: [u8; 32],
-    after_hash: [u8; 32],
+#[derive(Serialize)]
+struct CheckpointEncodeWire<'a> {
+    runtime: Option<CheckpointBytes>,
+    host: CheckpointBytes,
+    qemu_fingerprints: &'a BTreeMap<NodeId, ContentHash>,
+    qemu_fault_sequences: &'a BTreeMap<NodeId, u64>,
+    qemu_fault_event_sequences: &'a BTreeMap<NodeId, u64>,
+    qemu_issued_actions: &'a BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_action_commits: &'a BTreeMap<ContentHash, CommittedQemuActionEvidence>,
+    qemu_active_rule_ids: &'a BTreeSet<ContentHash>,
+    network_state: Option<NetworkEncodeWire<'a>>,
+    emitted_events: &'a [ReferencedSignalEvent],
+    pending_qemu_observations: &'a [FaultObservation],
+    pending_qemu_events: EncodedQemuEventMap<'a>,
+    identity: ContentHash,
 }
 
-impl From<CommittedQemuActionEvidence> for QemuActionCommitWire {
-    fn from(value: CommittedQemuActionEvidence) -> Self {
-        Self {
-            command_sequence: value.command_sequence,
-            command_kind: value.command_kind,
-            before_hash: value.before_hash,
-            after_hash: value.after_hash,
-        }
-    }
+struct EncodedQemuEventMap<'a> {
+    entries: Vec<(&'a NodeId, CheckpointByteRecords)>,
 }
 
-impl From<QemuActionCommitWire> for CommittedQemuActionEvidence {
-    fn from(value: QemuActionCommitWire) -> Self {
-        Self {
-            command_sequence: value.command_sequence,
-            command_kind: value.command_kind,
-            before_hash: value.before_hash,
-            after_hash: value.after_hash,
+impl Serialize for EncodedQemuEventMap<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (node, events) in &self.entries {
+            map.serialize_entry(node, events)?;
         }
+        map.end()
     }
 }
 
@@ -86,6 +87,15 @@ struct NetworkWire {
     committed_frontier_ticks: u64,
     pending_outputs: CheckpointByteRecords,
     adapter_state: CheckpointBytes,
+}
+
+#[derive(Serialize)]
+struct NetworkEncodeWire<'a> {
+    identity: ContentHash,
+    scheduler: CheckpointBytes,
+    committed_frontier_ticks: u64,
+    pending_outputs: CheckpointByteRecords,
+    adapter_state: &'a [u8],
 }
 
 impl ProductionFaultRuntimeCheckpoint {
@@ -112,7 +122,13 @@ impl ProductionFaultRuntimeCheckpoint {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
-        let wire = CheckpointWire {
+        admit_checkpoint_record_count("emitted fault events", self.emitted_events.len())?;
+        admit_checkpoint_record_count(
+            "pending QEMU observations",
+            self.pending_qemu_observations.len(),
+        )?;
+
+        let wire = CheckpointEncodeWire {
             runtime: self
                 .runtime
                 .as_ref()
@@ -126,37 +142,20 @@ impl ProductionFaultRuntimeCheckpoint {
                     .canonical_bytes()
                     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Host)?,
             )?,
-            qemu_fingerprints: self.qemu_fingerprints.clone(),
-            qemu_fault_sequences: self.qemu_fault_sequences.clone(),
-            qemu_fault_event_sequences: self.qemu_fault_event_sequences.clone(),
-            qemu_issued_actions: self.qemu_issued_actions.clone(),
-            qemu_action_commits: self
-                .qemu_action_commits
-                .iter()
-                .map(|(identity, commit)| (*identity, (*commit).into()))
-                .collect(),
-            qemu_active_rule_ids: self.qemu_active_rule_ids.clone(),
+            qemu_fingerprints: &self.qemu_fingerprints,
+            qemu_fault_sequences: &self.qemu_fault_sequences,
+            qemu_fault_event_sequences: &self.qemu_fault_event_sequences,
+            qemu_issued_actions: &self.qemu_issued_actions,
+            qemu_action_commits: &self.qemu_action_commits,
+            qemu_active_rule_ids: &self.qemu_active_rule_ids,
             network_state: self
                 .network_state
                 .as_ref()
                 .map(encode_network)
                 .transpose()?,
-            emitted_events: BoundedVec::new(self.emitted_events.clone())
-                .map_err(map_bounded_cbor_error)?,
-            pending_qemu_observations: BoundedVec::new(self.pending_qemu_observations.clone())
-                .map_err(map_bounded_cbor_error)?,
-            pending_qemu_events: self
-                .pending_qemu_events
-                .iter()
-                .map(|(node, events)| {
-                    let encoded = events
-                        .iter()
-                        .map(DequeuedFaultEvent::canonical_bytes)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
-                    Ok((node.clone(), bounded_checkpoint_records(encoded)?))
-                })
-                .collect::<Result<_, ProductionFaultRuntimeCheckpointCodecError>>()?,
+            emitted_events: &self.emitted_events,
+            pending_qemu_observations: &self.pending_qemu_observations,
+            pending_qemu_events: encode_qemu_event_map(&self.pending_qemu_events)?,
             identity: self.identity,
         };
         encode_prefixed(&wire, MAGIC, "production fault checkpoint", maximum)
@@ -242,19 +241,21 @@ impl ProductionFaultRuntimeCheckpoint {
         let host = HostFaultActionState::from_canonical_bytes(wire.host.as_slice())
             .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Host)?;
         let network_state = wire.network_state.map(decode_network).transpose()?;
-        let pending_qemu_events = wire
-            .pending_qemu_events
-            .into_iter()
-            .map(|(node, events)| {
-                let decoded = events
-                    .into_inner()
-                    .into_iter()
-                    .map(|encoded| DequeuedFaultEvent::from_canonical_bytes(encoded.as_slice()))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
-                Ok((node, decoded))
-            })
-            .collect::<Result<_, ProductionFaultRuntimeCheckpointCodecError>>()?;
+        let mut pending_qemu_events = BTreeMap::new();
+        for (node, events) in wire.pending_qemu_events {
+            let events = events.into_inner();
+            let mut decoded = Vec::new();
+            decoded
+                .try_reserve_exact(events.len())
+                .map_err(|_| record_allocation_limit("pending QEMU event count", events.len()))?;
+            for encoded in events {
+                decoded.push(
+                    DequeuedFaultEvent::from_canonical_bytes(encoded.as_slice())
+                        .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?,
+                );
+            }
+            pending_qemu_events.insert(node, decoded);
+        }
         let checkpoint = Self {
             runtime,
             host,
@@ -262,11 +263,7 @@ impl ProductionFaultRuntimeCheckpoint {
             qemu_fault_sequences: wire.qemu_fault_sequences,
             qemu_fault_event_sequences: wire.qemu_fault_event_sequences,
             qemu_issued_actions: wire.qemu_issued_actions,
-            qemu_action_commits: wire
-                .qemu_action_commits
-                .into_iter()
-                .map(|(identity, commit)| (identity, commit.into()))
-                .collect(),
+            qemu_action_commits: wire.qemu_action_commits,
             qemu_active_rule_ids: wire.qemu_active_rule_ids,
             network_state,
             emitted_events: wire.emitted_events.into_inner(),
@@ -393,8 +390,29 @@ const fn resource_limit(
 
 fn encode_network(
     checkpoint: &ProductionNetworkStateCheckpoint,
-) -> Result<NetworkWire, ProductionFaultRuntimeCheckpointCodecError> {
-    Ok(NetworkWire {
+) -> Result<NetworkEncodeWire<'_>, ProductionFaultRuntimeCheckpointCodecError> {
+    let mut pending_outputs = Vec::new();
+    pending_outputs
+        .try_reserve_exact(checkpoint.pending_outputs.len())
+        .map_err(|_| {
+            record_allocation_limit(
+                "pending network output count",
+                checkpoint.pending_outputs.len(),
+            )
+        })?;
+    for output in &checkpoint.pending_outputs {
+        let encoded = output
+            .canonical_bytes()
+            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?;
+        pending_outputs.push(bounded_checkpoint_bytes(encoded)?);
+    }
+    let pending_outputs = BoundedVec::new(pending_outputs).map_err(map_bounded_cbor_error)?;
+    admit_checkpoint_bytes(
+        "network adapter checkpoint bytes",
+        checkpoint.adapter_state.len(),
+    )?;
+
+    Ok(NetworkEncodeWire {
         identity: checkpoint.identity,
         scheduler: bounded_checkpoint_bytes(
             checkpoint
@@ -403,21 +421,28 @@ fn encode_network(
                 .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
         )?,
         committed_frontier_ticks: checkpoint.committed_frontier.ticks,
-        pending_outputs: bounded_checkpoint_records(
-            checkpoint
-                .pending_outputs
-                .iter()
-                .map(BackendNetworkOutput::canonical_bytes)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
-        )?,
-        adapter_state: bounded_checkpoint_bytes(checkpoint.adapter_state.clone())?,
+        pending_outputs,
+        adapter_state: &checkpoint.adapter_state,
     })
 }
 
 fn decode_network(
     wire: NetworkWire,
 ) -> Result<ProductionNetworkStateCheckpoint, ProductionFaultRuntimeCheckpointCodecError> {
+    let pending_outputs = wire.pending_outputs.into_inner();
+    let mut decoded_outputs = Vec::new();
+    decoded_outputs
+        .try_reserve_exact(pending_outputs.len())
+        .map_err(|_| {
+            record_allocation_limit("pending network output count", pending_outputs.len())
+        })?;
+    for encoded in pending_outputs {
+        decoded_outputs.push(
+            BackendNetworkOutput::from_canonical_bytes(encoded.as_slice())
+                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+        );
+    }
+
     Ok(ProductionNetworkStateCheckpoint {
         identity: wire.identity,
         scheduler: SchedulerNetworkCheckpoint::from_canonical_bytes(wire.scheduler.as_slice())
@@ -425,13 +450,7 @@ fn decode_network(
         committed_frontier: crucible::VirtualTime {
             ticks: wire.committed_frontier_ticks,
         },
-        pending_outputs: wire
-            .pending_outputs
-            .into_inner()
-            .into_iter()
-            .map(|encoded| BackendNetworkOutput::from_canonical_bytes(encoded.as_slice()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+        pending_outputs: decoded_outputs,
         adapter_state: wire.adapter_state.into_inner(),
     })
 }
@@ -442,23 +461,70 @@ fn bounded_checkpoint_bytes(
     BoundedVec::new(bytes).map_err(map_bounded_cbor_error)
 }
 
-fn bounded_checkpoint_records(
-    records: Vec<Vec<u8>>,
-) -> Result<CheckpointByteRecords, ProductionFaultRuntimeCheckpointCodecError> {
-    let mut bounded = Vec::new();
-    bounded.try_reserve_exact(records.len()).map_err(|_| {
-        resource_limit(
-            "checkpoint record count",
-            0,
-            records.len() as u64,
-            MAX_EVENT_RECORDS,
-            MAX_EVENT_RECORDS,
-        )
-    })?;
-    for record in records {
-        bounded.push(bounded_checkpoint_bytes(record)?);
+fn encode_qemu_event_map(
+    events_by_node: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+) -> Result<EncodedQemuEventMap<'_>, ProductionFaultRuntimeCheckpointCodecError> {
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(events_by_node.len())
+        .map_err(|_| {
+            record_allocation_limit("pending QEMU event node count", events_by_node.len())
+        })?;
+
+    for (node, events) in events_by_node {
+        let mut encoded_events = Vec::new();
+        encoded_events
+            .try_reserve_exact(events.len())
+            .map_err(|_| record_allocation_limit("pending QEMU event count", events.len()))?;
+        for event in events {
+            let encoded = event
+                .canonical_bytes()
+                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
+            encoded_events.push(bounded_checkpoint_bytes(encoded)?);
+        }
+        let encoded_events = BoundedVec::new(encoded_events).map_err(map_bounded_cbor_error)?;
+        entries.push((node, encoded_events));
     }
-    BoundedVec::new(bounded).map_err(map_bounded_cbor_error)
+
+    Ok(EncodedQemuEventMap { entries })
+}
+
+fn admit_checkpoint_record_count(
+    field: &'static str,
+    count: usize,
+) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    let requested = u64::try_from(count)
+        .map_err(|_| resource_limit(field, 0, u64::MAX, MAX_EVENT_RECORDS, MAX_EVENT_RECORDS))?;
+    if requested > MAX_EVENT_RECORDS {
+        return Err(resource_limit(
+            field,
+            0,
+            requested,
+            MAX_EVENT_RECORDS,
+            MAX_EVENT_RECORDS,
+        ));
+    }
+    Ok(())
+}
+
+fn admit_checkpoint_bytes(
+    field: &'static str,
+    count: usize,
+) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    let requested = u64::try_from(count)
+        .map_err(|_| resource_limit(field, 0, u64::MAX, MAX_BYTES, MAX_BYTES))?;
+    if requested > MAX_BYTES {
+        return Err(resource_limit(field, 0, requested, MAX_BYTES, MAX_BYTES));
+    }
+    Ok(())
+}
+
+fn record_allocation_limit(
+    field: &'static str,
+    count: usize,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    let requested = u64::try_from(count).unwrap_or(u64::MAX);
+    resource_limit(field, 0, requested, MAX_EVENT_RECORDS, MAX_EVENT_RECORDS)
 }
 
 fn validate_checkpoint(

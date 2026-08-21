@@ -9,7 +9,7 @@ use crucible::{Checkpoint, ContentHash};
 
 use crate::checkpoint::bounded_cbor::{BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input};
 
-const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v2\0";
+const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v3\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 
 /// Maximum canonical byte length of one complete QEMU VM snapshot metadata record.
@@ -448,7 +448,7 @@ fn snapshot_identity_from_bytes(
     live_capture: bool,
 ) -> Result<ContentHash, QemuVmSnapshotCodecError> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.qemu.exact-snapshot.v5\0");
+    hasher.update(b"crucible.qemu.exact-snapshot.v6\0");
     hash_blob(&mut hasher, checkpoint)?;
     hash_blob(&mut hasher, host_io)?;
     hash_blob(&mut hasher, node)?;
