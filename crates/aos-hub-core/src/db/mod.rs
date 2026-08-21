@@ -4027,64 +4027,63 @@ impl Database {
                         image.format
                     );
                 }
-                if image.delivery.is_store_backed() {
-                    continue;
-                }
-                for (role, key, hash, size) in [
-                    (
-                        "disk",
-                        image.delivery.object_key.as_str(),
-                        image.delivery.sha256.as_str(),
-                        image.delivery.byte_size,
-                    ),
-                    (
-                        "image_info",
-                        image.delivery.image_info.object_key.as_str(),
-                        image.delivery.image_info.sha256.as_str(),
-                        image.delivery.image_info.byte_size,
-                    ),
-                ] {
-                    let size = i64::try_from(size)
-                        .context("signed image object size exceeds database range")?;
-                    if let Some(existing) = self
-                        .surface_object_named(SurfaceTarget::Registry(registry_id), key)
-                        .await?
-                    {
-                        if existing.object_kind != "immutable"
-                            || existing.content_hash.as_deref() != Some(hash)
-                            || existing.size != Some(size)
+                if !image.delivery.is_store_backed() {
+                    for (role, key, hash, size) in [
+                        (
+                            "disk",
+                            image.delivery.object_key.as_str(),
+                            image.delivery.sha256.as_str(),
+                            image.delivery.byte_size,
+                        ),
+                        (
+                            "image_info",
+                            image.delivery.image_info.object_key.as_str(),
+                            image.delivery.image_info.sha256.as_str(),
+                            image.delivery.image_info.byte_size,
+                        ),
+                    ] {
+                        let size = i64::try_from(size)
+                            .context("signed image object size exceeds database range")?;
+                        if let Some(existing) = self
+                            .surface_object_named(SurfaceTarget::Registry(registry_id), key)
+                            .await?
                         {
-                            bail!(
-                                "signed image object key '{}' conflicts with existing surface identity",
-                                key
-                            );
+                            if existing.object_kind != "immutable"
+                                || existing.content_hash.as_deref() != Some(hash)
+                                || existing.size != Some(size)
+                            {
+                                bail!(
+                                    "signed image object key '{}' conflicts with existing surface identity",
+                                    key
+                                );
+                            }
                         }
-                    }
-                    stmts.push(Statement::new(
-                        "INSERT INTO surface_objects
-                         (registry_id, cache_id, object_key, object_kind,
-                          partition_key, content_hash, size,
-                          mutable_publication_id, created_at, updated_at)
-                         VALUES (?1, NULL, ?2, 'immutable', ?3, ?4, ?5,
-                                 NULL, ?6, ?6)
-                         ON CONFLICT(registry_id, object_key) DO NOTHING",
-                        vals![
-                            registry_id,
-                            key,
-                            sha2::Sha256::digest(key.as_bytes()).to_vec(),
-                            hash,
+                        stmts.push(Statement::new(
+                            "INSERT INTO surface_objects
+                             (registry_id, cache_id, object_key, object_kind,
+                              partition_key, content_hash, size,
+                              mutable_publication_id, created_at, updated_at)
+                             VALUES (?1, NULL, ?2, 'immutable', ?3, ?4, ?5,
+                                     NULL, ?6, ?6)
+                             ON CONFLICT(registry_id, object_key) DO NOTHING",
+                            vals![
+                                registry_id,
+                                key,
+                                sha2::Sha256::digest(key.as_bytes()).to_vec(),
+                                hash,
+                                size,
+                                indexed_at
+                            ]
+                            .to_vec(),
+                        ));
+                        image_roots.push((
+                            catalog.release_tag.clone(),
+                            key.to_string(),
+                            hash.to_string(),
                             size,
-                            indexed_at
-                        ]
-                        .to_vec(),
-                    ));
-                    image_roots.push((
-                        catalog.release_tag.clone(),
-                        key.to_string(),
-                        hash.to_string(),
-                        size,
-                        role.to_string(),
-                    ));
+                            role.to_string(),
+                        ));
+                    }
                 }
                 stmts.push(Statement::new(
                     "INSERT INTO registry_system_images
@@ -25072,6 +25071,30 @@ source_nar_hash = ""
         }
     }
 
+    fn store_backed_image_package() -> aos_registry_surface::manifest::PackageToml {
+        let mut package = signed_image_package();
+        for version in &mut package.versions {
+            for artifact in version.platforms.values_mut() {
+                for image in &mut artifact.images {
+                    let store_hash = match image.format.as_str() {
+                        "raw" => "cccccccccccccccccccccccccccccccc",
+                        "qcow2" => "dddddddddddddddddddddddddddddddd",
+                        other => panic!("unsupported image test format {other}"),
+                    };
+                    image.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.schema_version = 2;
+                    image.delivery.object_key.clear();
+                    image.delivery.image_info.object_key.clear();
+                    image.delivery.image_info.store_path =
+                        format!("/aos/store/{store_hash}-aos-system-{}-info", image.format);
+                    image.delivery.image_info.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.image_info.nar_size = 1;
+                }
+            }
+        }
+        package
+    }
+
     #[tokio::test]
     async fn webhook_limit_is_serialized_inside_the_create_transaction() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
@@ -25784,6 +25807,54 @@ source_nar_hash = ""
             db.all_store_hashes(id).await.unwrap(),
             vec!["abc".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn store_backed_images_remain_discoverable_without_legacy_object_roots() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("store-images", &[], false)
+            .await
+            .unwrap();
+        let package = store_backed_image_package();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "AOS system".into(),
+            packages: vec![package.clone()],
+            releases: vec![ReleaseRow {
+                semver: "2026.8.0".into(),
+                tag_oid: "a".repeat(64),
+                commit_oid: "c".repeat(64),
+                signer: Some("release-signer".into()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            release_images: vec![signed_image_release_snapshot(
+                &package,
+                "2026.8.0",
+                &"c".repeat(64),
+                &"a".repeat(64),
+            )],
+            ..Default::default()
+        };
+
+        db.apply_snapshot(registry_id, &snapshot).await.unwrap();
+
+        let images = db.list_system_images(registry_id).await.unwrap();
+        assert_eq!(images.len(), 2);
+        assert!(images.iter().all(|image| image.delivery.is_store_backed()));
+        let legacy_root_count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM registry_image_roots WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(legacy_root_count, 0);
     }
 
     #[tokio::test]
