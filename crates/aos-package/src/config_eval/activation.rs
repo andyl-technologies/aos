@@ -694,7 +694,20 @@ fn verify_manifest_store_paths_realized(manifest: &ConfigManifest) -> Result<()>
     Ok(())
 }
 
-fn acquire_switch_lock(path: &Path) -> Result<File> {
+pub(crate) struct SwitchLockGuard {
+    file: File,
+}
+
+impl Drop for SwitchLockGuard {
+    fn drop(&mut self) {
+        // Release the process-wide exclusion independently of descriptor
+        // closure. A duplicated descriptor may otherwise retain the flock
+        // after this guard leaves scope and reject the next system switch.
+        let _ = flock(&self.file, FlockOperation::Unlock);
+    }
+}
+
+fn acquire_switch_lock(path: &Path) -> Result<SwitchLockGuard> {
     let parent = path.parent().context("switch lock path has no parent")?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("creating switch lock directory {}", parent.display()))?;
@@ -711,7 +724,7 @@ fn acquire_switch_lock(path: &Path) -> Result<File> {
             path.display()
         )
     })?;
-    Ok(file)
+    Ok(SwitchLockGuard { file })
 }
 
 /// Releases a switch lock explicitly before closing its descriptor.
@@ -732,7 +745,7 @@ impl Drop for HeldSwitchLock {
 /// # Errors
 ///
 /// Returns an error when the lock cannot be created or another switch owns it.
-pub(crate) fn acquire_switch_lock_pub(path: &Path) -> Result<File> {
+pub(crate) fn acquire_switch_lock_pub(path: &Path) -> Result<SwitchLockGuard> {
     acquire_switch_lock(path)
 }
 
@@ -1018,6 +1031,20 @@ mod tests {
             resolve_switch_lock(Some("/tmp/aos-root"), Some("relative.lock")),
             Path::new("/tmp/aos-root/run/apm/switch.lock")
         );
+    }
+
+    #[test]
+    fn switch_lock_guard_unlocks_before_the_last_descriptor_closes() {
+        let root = tempfile::tempdir().unwrap();
+        let lock_path = root.path().join("switch.lock");
+        let guard = acquire_switch_lock(&lock_path).unwrap();
+        let duplicate = guard.file.try_clone().unwrap();
+
+        drop(guard);
+
+        let replacement = acquire_switch_lock(&lock_path).unwrap();
+        drop(replacement);
+        drop(duplicate);
     }
 
     fn setup() -> (TempDir, ActivateConfigParams, Value) {

@@ -238,7 +238,7 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     }
 
     prepare_partial_identity(&output, &image, args.no_resume, printer)?;
-    let mut transfer = printer.transfer("Checking partial download", image.byte_size);
+    let transfer = printer.transfer("Checking partial download", image.byte_size);
     let mut destination = SecureDestination::open(&output, args.no_resume, Some(&transfer))?;
     let mut resumed_from = destination.existing_len();
     let mut may_retry_without_partial = resumed_from > 0 && !args.no_resume;

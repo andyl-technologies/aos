@@ -130,7 +130,9 @@ specification.
 - [x] Config pruning holds the activation switch lock, writes a versioned
       durable journal, publishes reduced state before removing directories,
       completes an interrupted prune before a later activation, reconciles
-      base-library roots, and treats runtime-upper cleanup as best effort.
+      base-library roots, and treats runtime-upper cleanup as best effort. The
+      lock guard explicitly unlocks when it leaves scope, so a duplicated file
+      descriptor cannot retain stale exclusion against the next switch.
 - [x] After pruning and `apm gc`, retained outputs and cross-ABI inputs survive,
       pruned-only roots are collectable, and retained rollback still materializes
       the expected `/etc`.

@@ -55,6 +55,15 @@ in
     ];
     propagatedDeps = [];
 
+    # CPython models PyTupleObject's variable-length ob_item storage as a
+    # trailing one-element array. GCC 14's strictest flexible-array mode treats
+    # that declaration as a fixed-size object, so _FORTIFY_SOURCE can abort
+    # interpreter bootstrap and ordinary tuple-heavy operations. Level 1
+    # preserves the upstream convention while retaining fortify3 and the
+    # remaining hardening flags.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     # Guard: scrubPhase's nuke-refs pass should keep these out of the
     # closure. Fails the build if a future regression re-introduces a
     # _sysconfigdata*.py(c) or Makefile reference to the build toolchain.
