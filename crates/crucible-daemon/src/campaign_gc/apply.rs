@@ -1,8 +1,10 @@
 //! Exact-generation destructive apply for one journaled single-host GC plan.
 
-use std::collections::BTreeSet;
 use std::error::Error as StdError;
 
+use crucible_campaign::{
+    CampaignFactId, CampaignName, CampaignRepository, CampaignRepositoryError, ConfigurationId,
+};
 use crucible_cas::content_store::{
     BlobInventoryFence, PlannedDeleteDisposition, RefStoreAdmin, StoreError, StoreGraphAdmin,
     WriteBackRetentionAdmin,
@@ -11,14 +13,14 @@ use thiserror::Error;
 
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
-    AssignmentRetentionVisitorError,
+    AssignmentRetentionVisitorError, ExactPinRetentionAdmin, ExactPinRetentionError,
 };
 
+use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcJournalError,
     CampaignGcJournalPhase, CampaignGcManifestError, CampaignGcPhysicalStore, CampaignGcPlanError,
-    CampaignGcRootManifest, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
-    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    CampaignGcRootManifest, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
 };
 
 /// Terminal disposition of one idempotent campaign GC apply request.
@@ -60,9 +62,10 @@ impl CampaignGcApplyReport {
 
 /// Revalidates and destructively applies one exact journaled single-host plan.
 ///
-/// Apply acquires fences in the fixed order ref publication/namespace, ledger,
-/// pending write-back transfers, then physical leaves in canonical backend
-/// order. It reproduces the exact ref, ledger, root-manifest, and every
+/// Apply acquires fences in the fixed order ref publication/namespace,
+/// exact-pin selections, ledger, pending write-back transfers, then physical
+/// leaves in canonical backend order. It reproduces the exact ref, current
+/// exact-pin roots, ledger, root-manifest, and every
 /// physical-inventory basis before durably entering `Applying`. Root fences
 /// remain held throughout. Each physical leaf is then reacquired, revalidated
 /// against the same plan, and retained through its candidate deletions. This
@@ -71,6 +74,8 @@ impl CampaignGcApplyReport {
 /// The construction-time `store_graph` capability supplies both the graph
 /// identity and every physical leaf; independently supplied graph hashes or
 /// deletion capabilities are not accepted by this public boundary.
+/// Omitting `exact_pins` is valid only when the complete authoritative campaign
+/// inventory contains no current exact pin.
 ///
 /// A journal reopened in `Applying` is intentionally not resumed because at
 /// least one backend generation may already have advanced. The operator must
@@ -83,9 +88,11 @@ impl CampaignGcApplyReport {
 /// An error after `Applying` requires a fresh plan and must not reuse this one.
 pub fn apply_single_host_campaign_gc<L>(
     journal: &mut DirectoryCampaignGcJournal,
+    repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
     write_back: Option<&dyn WriteBackRetentionAdmin>,
+    exact_pins: Option<&mut dyn ExactPinRetentionAdmin>,
     store_graph: &StoreGraphAdmin,
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
 where
@@ -100,19 +107,43 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     apply_single_host_campaign_gc_with_physical(
         journal,
-        refs,
-        ledger,
-        write_back,
+        CampaignGcApplySources::new(repository, refs, ledger, write_back, exact_pins),
         crucible_campaign::CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
     )
 }
 
+pub(crate) struct CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'exact, L> {
+    repository: &'repository CampaignRepository,
+    refs: &'refs dyn RefStoreAdmin,
+    ledger: &'ledger mut L,
+    write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+    exact_pins: Option<&'exact mut dyn ExactPinRetentionAdmin>,
+}
+
+impl<'repository, 'refs, 'ledger, 'write_back, 'exact, L>
+    CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'exact, L>
+{
+    pub(crate) const fn new(
+        repository: &'repository CampaignRepository,
+        refs: &'refs dyn RefStoreAdmin,
+        ledger: &'ledger mut L,
+        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        exact_pins: Option<&'exact mut dyn ExactPinRetentionAdmin>,
+    ) -> Self {
+        Self {
+            repository,
+            refs,
+            ledger,
+            write_back,
+            exact_pins,
+        }
+    }
+}
+
 pub(crate) fn apply_single_host_campaign_gc_with_physical<L>(
     journal: &mut DirectoryCampaignGcJournal,
-    refs: &dyn RefStoreAdmin,
-    ledger: &mut L,
-    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    sources: CampaignGcApplySources<'_, '_, '_, '_, '_, L>,
     store_graph: crucible_campaign::CampaignHash,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
@@ -120,6 +151,13 @@ where
     L: AssignmentRetentionAdmin,
     L::Error: StdError + Send + Sync + 'static,
 {
+    let CampaignGcApplySources {
+        repository,
+        refs,
+        ledger,
+        write_back,
+        exact_pins,
+    } = sources;
     let summary = journal.plan().candidates();
     if journal.phase() == CampaignGcJournalPhase::Complete {
         return Ok(CampaignGcApplyReport {
@@ -139,6 +177,10 @@ where
     let mut ref_fence = refs
         .acquire_ref_inventory_fence()
         .map_err(CampaignGcApplyError::Ref)?;
+    let mut exact_pin_fence = exact_pins
+        .map(ExactPinRetentionAdmin::acquire_exact_pin_retention_fence)
+        .transpose()
+        .map_err(CampaignGcApplyError::ExactPin)?;
     let mut ledger_fence = ledger
         .acquire_retention_fence()
         .map_err(CampaignGcApplyError::Ledger)?;
@@ -148,13 +190,13 @@ where
         .map_err(CampaignGcApplyError::WriteBack)?;
 
     let mut roots = RootAccumulator::default();
-    let ref_summary = ref_fence
-        .visit_refs(&mut |record| {
-            roots
-                .insert(record.target())
-                .map_err(|()| StoreError::Quota)
-        })
-        .map_err(CampaignGcApplyError::Ref)?;
+    let ref_summary = inventory_authoritative_refs(
+        repository,
+        ref_fence.as_mut(),
+        &mut exact_pin_fence,
+        &mut roots,
+    )
+    .map_err(map_root_inventory_error)?;
     if ref_summary.generation() != journal.plan().ref_generation()
         || ref_summary.refs() != journal.plan().refs()
     {
@@ -285,6 +327,30 @@ where
     /// Pending write-back roots could not be fenced or enumerated.
     #[error("campaign GC write-back retention revalidation failed")]
     WriteBack(#[source] StoreError),
+    /// One authoritative campaign snapshot or pin projection failed authentication.
+    #[error(transparent)]
+    Campaign(#[from] CampaignRepositoryError),
+    /// The exact-pin materialization journal could not be fenced or read.
+    #[error("campaign GC exact-pin materialization revalidation failed")]
+    ExactPin(#[source] ExactPinRetentionError),
+    /// An authoritative campaign ref had an invalid namespace or snapshot ID.
+    #[error("campaign GC authoritative campaign ref is invalid: {name}")]
+    InvalidCampaignRef {
+        /// Exact invalid authoritative ref spelling.
+        name: String,
+    },
+    /// A current exact semantic pin has no matching selected checkpoint.
+    #[error(
+        "campaign {campaign:?} configuration {configuration} exact pin {pin_fact} has no current materialization"
+    )]
+    MissingExactPinMaterialization {
+        /// Exact campaign containing the semantic pin.
+        campaign: CampaignName,
+        /// Exact semantic configuration requiring materialization.
+        configuration: ConfigurationId,
+        /// Latest accepted pin fact that must own the selection.
+        pin_fact: CampaignFactId,
+    },
     /// A physical blob leaf could not be fenced, enumerated, or mutated.
     #[error("campaign GC physical apply failed for backend {backend}")]
     Blob {
@@ -303,6 +369,32 @@ where
     /// A physical inventory basis was invalid.
     #[error(transparent)]
     Plan(#[from] CampaignGcPlanError),
+}
+
+fn map_root_inventory_error<E>(source: CampaignGcRootInventoryError) -> CampaignGcApplyError<E>
+where
+    E: StdError + 'static,
+{
+    match source {
+        CampaignGcRootInventoryError::Ref(source) => CampaignGcApplyError::Ref(source),
+        CampaignGcRootInventoryError::Campaign(source) => CampaignGcApplyError::Campaign(source),
+        CampaignGcRootInventoryError::ExactPin(source) => CampaignGcApplyError::ExactPin(source),
+        CampaignGcRootInventoryError::InvalidCampaignRef { name } => {
+            CampaignGcApplyError::InvalidCampaignRef { name }
+        }
+        CampaignGcRootInventoryError::MissingExactPinMaterialization {
+            campaign,
+            configuration,
+            pin_fact,
+        } => CampaignGcApplyError::MissingExactPinMaterialization {
+            campaign,
+            configuration,
+            pin_fact,
+        },
+        CampaignGcRootInventoryError::Limit => {
+            CampaignGcApplyError::Manifest(CampaignGcManifestError::EntryLimit)
+        }
+    }
 }
 
 fn validate_physical_basis<E>(
@@ -374,21 +466,4 @@ where
         });
     }
     Ok(())
-}
-
-#[derive(Default)]
-struct RootAccumulator {
-    unique: BTreeSet<crucible_cas::content_store::ContentId>,
-    observed: usize,
-}
-
-impl RootAccumulator {
-    fn insert(&mut self, root: crucible_cas::content_store::ContentId) -> Result<(), ()> {
-        self.observed = self.observed.checked_add(1).ok_or(())?;
-        if self.observed > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
-            return Err(());
-        }
-        self.unique.insert(root);
-        Ok(())
-    }
 }

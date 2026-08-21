@@ -26,6 +26,7 @@ mod apply;
 mod journal;
 mod manifest;
 mod planner;
+mod roots;
 
 #[cfg(test)]
 use apply::apply_single_host_campaign_gc_with_physical;

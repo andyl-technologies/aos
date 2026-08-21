@@ -25,6 +25,8 @@
 //! publishes immutable observation candidates; [`executor_pool`] owns the
 //! fixed worker threads and their short supervisor reconciliation phases;
 //! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
+//! [`exact_pin_retention`] binds current exact semantic pins to authenticated
+//! durable checkpoint materializations for generation-fenced GC;
 //! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
@@ -51,6 +53,7 @@ pub mod crucible_execution;
 pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
 pub mod exact_checkpoint_store;
+pub mod exact_pin_retention;
 pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_pool;
@@ -132,6 +135,13 @@ pub use exact_checkpoint_store::{
     ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
     LoadedExactCheckpoint, PreparedExactCheckpoint, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
     QEMU_VMSTATE_SCHEMA_VERSION,
+};
+pub use exact_pin_retention::{
+    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA,
+    EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION, ExactPinMaterializationSelection,
+    ExactPinRetentionAdmin, ExactPinRetentionError, ExactPinRetentionFence,
+    ExactPinSelectionClearDisposition, ExactPinSelectionDisposition,
+    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

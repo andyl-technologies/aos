@@ -1289,6 +1289,13 @@ legal result of the admitted attempt, and only then incorporates it. An executor
 may capture an exact closure but cannot claim archival durability. The
 coordinator asks the store layer to ensure the complete closure under a named
 durability policy before publishing a durable pin or successful hibernation.
+For an accepted semantic `Exact` pin, the local executor/maintenance owner
+separately selects one authenticated `ExactCheckpointId` whose modeled
+configuration equals the pin target. That operational selection is bound to the
+latest accepted pin fact and enters GC only while that fact remains the current
+exact projection. It does not enter campaign semantic identity or grant the
+executor campaign-ref authority. RFC 06 defines the journal, bounds, and
+plan/apply fences.
 
 The repository executor handoff is deliberately phased. First it validates the
 complete in-memory child-configuration, measurement, property, coverage,

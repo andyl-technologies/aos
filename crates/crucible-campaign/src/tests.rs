@@ -322,12 +322,22 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "1",
             "administrative-record",
         ),
+        (
+            "crucible.executor.exact-pin-materialization-selection",
+            "1",
+            "administrative-record",
+        ),
     ] {
         let record = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor ledger schema {schema}"));
         assert_eq!(record[1], version);
-        assert_eq!(record[2], "crucible-daemon::assignment_ledger");
+        let expected_owner = if schema == "crucible.executor.exact-pin-materialization-selection" {
+            "crucible-daemon::exact_pin_retention"
+        } else {
+            "crucible-daemon::assignment_ledger"
+        };
+        assert_eq!(record[2], expected_owner);
         assert_eq!(record[3], kind);
     }
     for (schema, version, owner, kind) in [

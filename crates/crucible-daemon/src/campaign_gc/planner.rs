@@ -1,20 +1,24 @@
 //! Generation-bound non-destructive GC planning for one single-host store graph.
 
-use std::collections::BTreeSet;
 use std::error::Error as StdError;
 
-use crucible_campaign::{CampaignHash, CampaignRepository, CampaignRepositoryError};
+use crucible_campaign::{
+    CampaignFactId, CampaignHash, CampaignName, CampaignRepository, CampaignRepositoryError,
+    ConfigurationId,
+};
 use crucible_cas::content_store::{
-    BlobStoreAdmin, ContentId, RefInventorySummary, RefStoreAdmin, StoreError, StoreGraphAdmin,
-    StoreGraphPhysicalAdmin, WriteBackRetentionAdmin,
+    BlobStoreAdmin, RefStoreAdmin, StoreError, StoreGraphAdmin, StoreGraphPhysicalAdmin,
+    WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
-    AssignmentRetentionSummary, AssignmentRetentionVisitorError,
+    AssignmentRetentionSummary, AssignmentRetentionVisitorError, ExactPinRetentionAdmin,
+    ExactPinRetentionError,
 };
 
+use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
     CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError, CampaignGcRootManifest,
@@ -106,9 +110,12 @@ impl CampaignGcPreparedPlan {
 
 /// Builds a complete generation-bound deletion plan without mutating storage.
 ///
-/// Ref and assignment-ledger fences are used only long enough to authenticate
-/// the exact root manifest and terminal generations. The repository then
-/// authenticates the union of those logical closures. Finally each physical
+/// Ref, exact-pin selection, and assignment-ledger fences are used only long
+/// enough to authenticate the exact root manifest and terminal generations.
+/// Every fenced campaign ref is authenticated as a snapshot; each current
+/// exact pin must resolve to a journal selection bound to its latest pin fact.
+/// The repository then authenticates the union of those logical closures.
+/// Finally each physical
 /// leaf is inventoried under its own fence and every placement whose logical
 /// ID is absent from the reachable union enters the candidate manifest.
 /// `store_graph` supplies both the exact canonical graph identity and its
@@ -118,7 +125,8 @@ impl CampaignGcPreparedPlan {
 /// every fence, reproduce the root and physical generations, and additionally
 /// exclude an in-flight campaign transaction across its children-before-ref
 /// publication window and every pending write-back transfer through its
-/// children-before-journal window.
+/// children-before-journal window. Omitting `exact_pins` is valid only when the
+/// complete authoritative campaign inventory contains no current exact pin.
 ///
 /// # Errors
 ///
@@ -132,6 +140,7 @@ pub fn plan_single_host_campaign_gc<L>(
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
     write_back: Option<&dyn WriteBackRetentionAdmin>,
+    exact_pins: Option<&mut dyn ExactPinRetentionAdmin>,
     store_graph: &StoreGraphAdmin,
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
 where
@@ -150,6 +159,7 @@ where
         refs,
         ledger,
         write_back,
+        exact_pins,
         CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
         &physical,
     )
@@ -160,6 +170,7 @@ pub(crate) fn plan_single_host_campaign_gc_with_physical<L>(
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
     write_back: Option<&dyn WriteBackRetentionAdmin>,
+    exact_pins: Option<&mut dyn ExactPinRetentionAdmin>,
     store_graph: CampaignHash,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
@@ -170,7 +181,16 @@ where
     validate_physical_inputs(physical).map_err(CampaignGcPlanningError::Plan)?;
 
     let mut roots = RootAccumulator::default();
-    let ref_summary = inventory_refs(refs, &mut roots)?;
+    let mut ref_fence = refs
+        .acquire_ref_inventory_fence()
+        .map_err(CampaignGcPlanningError::Ref)?;
+    let mut exact_fence = exact_pins
+        .map(ExactPinRetentionAdmin::acquire_exact_pin_retention_fence)
+        .transpose()
+        .map_err(CampaignGcPlanningError::ExactPin)?;
+    let ref_summary =
+        inventory_authoritative_refs(repository, ref_fence.as_mut(), &mut exact_fence, &mut roots)
+            .map_err(map_root_inventory_error)?;
     let ledger_summary = inventory_ledger(ledger, &mut roots)?;
     inventory_write_back(write_back, &mut roots)?;
     let root_manifest = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
@@ -257,6 +277,27 @@ where
     /// A pending write-back root set could not be fenced or enumerated.
     #[error("campaign GC write-back retention inventory failed")]
     WriteBack(#[source] StoreError),
+    /// The exact-pin materialization journal could not be fenced or read.
+    #[error("campaign GC exact-pin materialization inventory failed")]
+    ExactPin(#[source] ExactPinRetentionError),
+    /// An authoritative campaign ref had an invalid namespace or snapshot ID.
+    #[error("campaign GC authoritative campaign ref is invalid: {name}")]
+    InvalidCampaignRef {
+        /// Exact invalid authoritative ref spelling.
+        name: String,
+    },
+    /// A current exact semantic pin has no matching selected checkpoint.
+    #[error(
+        "campaign {campaign:?} configuration {configuration} exact pin {pin_fact} has no current materialization"
+    )]
+    MissingExactPinMaterialization {
+        /// Exact campaign containing the semantic pin.
+        campaign: CampaignName,
+        /// Exact semantic configuration requiring materialization.
+        configuration: ConfigurationId,
+        /// Latest accepted pin fact that must own the selection.
+        pin_fact: CampaignFactId,
+    },
     /// A physical blob leaf could not be fenced or enumerated.
     #[error("campaign GC physical inventory failed for backend {backend}")]
     Blob {
@@ -285,23 +326,30 @@ where
     Plan(#[from] CampaignGcPlanError),
 }
 
-fn inventory_refs<E>(
-    refs: &dyn RefStoreAdmin,
-    roots: &mut RootAccumulator,
-) -> Result<RefInventorySummary, CampaignGcPlanningError<E>>
+fn map_root_inventory_error<E>(source: CampaignGcRootInventoryError) -> CampaignGcPlanningError<E>
 where
     E: StdError + 'static,
 {
-    let mut fence = refs
-        .acquire_ref_inventory_fence()
-        .map_err(CampaignGcPlanningError::Ref)?;
-    fence
-        .visit_refs(&mut |record| {
-            roots
-                .insert(record.target())
-                .map_err(|()| StoreError::Quota)
-        })
-        .map_err(CampaignGcPlanningError::Ref)
+    match source {
+        CampaignGcRootInventoryError::Ref(source) => CampaignGcPlanningError::Ref(source),
+        CampaignGcRootInventoryError::Campaign(source) => CampaignGcPlanningError::Campaign(source),
+        CampaignGcRootInventoryError::ExactPin(source) => CampaignGcPlanningError::ExactPin(source),
+        CampaignGcRootInventoryError::InvalidCampaignRef { name } => {
+            CampaignGcPlanningError::InvalidCampaignRef { name }
+        }
+        CampaignGcRootInventoryError::MissingExactPinMaterialization {
+            campaign,
+            configuration,
+            pin_fact,
+        } => CampaignGcPlanningError::MissingExactPinMaterialization {
+            campaign,
+            configuration,
+            pin_fact,
+        },
+        CampaignGcRootInventoryError::Limit => {
+            CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit)
+        }
+    }
 }
 
 fn inventory_ledger<L>(
@@ -350,23 +398,6 @@ where
         .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
         .map_err(CampaignGcPlanningError::WriteBack)?;
     Ok(())
-}
-
-#[derive(Default)]
-struct RootAccumulator {
-    unique: BTreeSet<ContentId>,
-    observed: usize,
-}
-
-impl RootAccumulator {
-    fn insert(&mut self, root: ContentId) -> Result<(), ()> {
-        self.observed = self.observed.checked_add(1).ok_or(())?;
-        if self.observed > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
-            return Err(());
-        }
-        self.unique.insert(root);
-        Ok(())
-    }
 }
 
 fn validate_physical_inputs(

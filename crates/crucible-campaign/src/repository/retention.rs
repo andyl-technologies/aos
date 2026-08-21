@@ -129,9 +129,35 @@ impl CampaignRepository {
         visitor: &mut dyn FnMut(CampaignPinRetentionRecord),
     ) -> Result<CampaignPinRetentionSummary, CampaignRepositoryError> {
         let head = self.head(name)?;
-        let snapshot = head.snapshot_id();
-        let roots = head.snapshot().roots();
-        let lineage = self.read_retention_lineage(head.snapshot().lineage().content_id())?;
+        self.visit_pin_retention_roots_at(head.snapshot_id(), visitor)
+    }
+
+    /// Streams semantic pin-retention roots from one exact snapshot.
+    ///
+    /// This variant does not read a mutable campaign ref. It is intended for a
+    /// maintenance owner that already holds the authoritative ref-inventory
+    /// fence and obtained `snapshot` from that fenced inventory. The complete
+    /// snapshot and its ancestry are authenticated before any projected pin is
+    /// emitted.
+    ///
+    /// The visitor may have observed a prefix if this method returns an error.
+    /// Callers must treat that prefix as tentative until they receive the
+    /// terminal [`CampaignPinRetentionSummary`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when the snapshot, pin projection,
+    /// projected fact, graph membership, or replay artifact closure is missing,
+    /// malformed, corrupt, or semantically inconsistent.
+    pub fn visit_pin_retention_roots_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        visitor: &mut dyn FnMut(CampaignPinRetentionRecord),
+    ) -> Result<CampaignPinRetentionSummary, CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let roots = loaded.snapshot.roots();
+        let lineage = self.read_retention_lineage(loaded.snapshot.lineage().content_id())?;
         let mut after = None;
         let mut entries = 0_u64;
         let mut thin_pins = 0_u64;
