@@ -486,14 +486,20 @@ in {
       # Quote generations only after systemd has advanced PCR 11 to its stable
       # runtime (`ready`) phase. On non-UKI or non-TPM boots the phase unit's
       # conditions make this a clean no-op.
-      wants = ["network-online.target"];
+      # A refresh failure must remain visible without suppressing host policy
+      # that does not need registry data (SSH keys, networking, storage, and
+      # similar base options). Package-name resolution still fails closed in
+      # the evaluator when no authenticated snapshot can satisfy it.
+      wants = [
+        "network-online.target"
+        "aos-registry-sync.service"
+      ];
       requires =
         [
           "aos-credential-recovery.service"
           "aos-host-config-restore.service"
           "aos-firstboot-reeval.service"
           "aos-nix-db.service"
-          "aos-registry-sync.service"
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service"

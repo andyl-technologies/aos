@@ -21,10 +21,24 @@
     ../../systems/server.nix
     {aos.system.moduleAbi = 2;}
   ];
+  serverRoleSystem = mkSystem [
+    ../../systems/server.nix
+    {aos.roles.server.enable = true;}
+  ];
   baseLibFollowsImageAbi =
     if abiOverrideSystem.config.aos.config.evalAtBoot.baseLib.passthru.moduleAbi == 2
     then "2"
     else throw "the base library ABI must follow inline image module overrides";
+  serverSshWaitsForHostEvaluation =
+    if
+      builtins.elem
+      "aos-eval.service"
+      serverRoleSystem.config.systemd.services.sshd.after
+      && !(builtins.elem
+        "aos-graph-compile.service"
+        serverRoleSystem.config.systemd.services.sshd.after)
+    then "ordered without activation cycle"
+    else throw "server sshd must wait for host evaluation without depending on graph activation";
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -247,8 +261,13 @@
     else if
       !(builtins.elem
         "aos-registry-sync.service"
-        system.config.systemd.services.aos-eval.requires)
-    then throw "host evaluation must require the signed registry snapshot refresh"
+        system.config.systemd.services.aos-eval.wants)
+    then throw "host evaluation must request the signed registry snapshot refresh"
+    else if
+      builtins.elem
+      "aos-registry-sync.service"
+      system.config.systemd.services.aos-eval.requires
+    then throw "registry refresh failure must not suppress registry-independent host evaluation"
     else if
       !(builtins.elem
         "aos-eval.service"
@@ -1240,6 +1259,7 @@ in
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
+        echo "server SSH:      waits for host evaluation (${serverSshWaitsForHostEvaluation})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"

@@ -445,7 +445,16 @@ in {
       description = "OpenSSH Daemon";
       wantedBy = ["multi-user.target"];
       requires = ["sshd-keygen.service"];
-      after = ["network.target" "sshd-keygen.service"];
+      # The image seed contains no operator keys. Wait for host evaluation so
+      # registry refresh and evaluation cannot leave sshd advertising a service
+      # that is guaranteed to reject freshly provisioned keys. Do not order on
+      # graph compilation: activation may synchronously start or restart sshd,
+      # which would create a cycle with the compiler awaiting activation.
+      after = [
+        "network.target"
+        "sshd-keygen.service"
+        "aos-eval.service"
+      ];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
