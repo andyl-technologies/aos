@@ -615,9 +615,15 @@ The checked local porcelain exposes these proof-bearing reads through
 `campaign graph-object`, `campaign choice-object`, and
 `campaign frontier-object` as exact graph configuration/opportunity, choice
 declaration/domain, and frontier-request views in table, Markdown, JSON, and
-JSONL. Arbitrary non-graph object reads, paged finding inspection, and
-explanation messages are still open. The strict local transport frames exactly
-one canonical request or response as:
+JSONL. `campaign explain` composes one declaration read and one frontier-request
+read at the same named snapshot, then requires the request opportunity and
+domain to equal the graph-authenticated opportunity and declaration domain
+before rendering legality, producer, cause, budget, stop, and continuation
+state. This composition grants only the union of those two existing operation
+capabilities and introduces no generic object read. Arbitrary non-graph object
+reads, paged finding inspection, and proposal/attempt/finding explanations are
+still open. The strict local transport frames exactly one canonical request or
+response as:
 
 ```text
 CampaignLoopbackFrameV12 = "CRUCCS12" | kind:u8 | reserved[3] |

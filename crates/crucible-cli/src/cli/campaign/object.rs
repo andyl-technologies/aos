@@ -366,7 +366,7 @@ fn campaign_domain_view(
     })
 }
 
-const fn campaign_choice_domain_kind(domain: &ChoiceDomain) -> &'static str {
+pub(super) const fn campaign_choice_domain_kind(domain: &ChoiceDomain) -> &'static str {
     match domain {
         ChoiceDomain::Boolean(_) => "boolean",
         ChoiceDomain::Discrete(_) => "discrete",
@@ -374,7 +374,7 @@ const fn campaign_choice_domain_kind(domain: &ChoiceDomain) -> &'static str {
     }
 }
 
-fn campaign_choice_source_label(source: &ChoiceSource) -> String {
+pub(super) fn campaign_choice_source_label(source: &ChoiceSource) -> String {
     match source {
         ChoiceSource::Environment { adapter, target } => {
             format!("environment:{adapter}:{}", target.to_hex())
@@ -388,7 +388,7 @@ fn campaign_choice_source_label(source: &ChoiceSource) -> String {
     }
 }
 
-fn campaign_choice_value_label(value: &ChoiceValue) -> String {
+pub(super) fn campaign_choice_value_label(value: &ChoiceValue) -> String {
     match value {
         ChoiceValue::Boolean(value) => value.to_string(),
         ChoiceValue::Discrete(value) => format!("discrete:{value}"),
@@ -397,7 +397,7 @@ fn campaign_choice_value_label(value: &ChoiceValue) -> String {
     }
 }
 
-fn campaign_branch_cause_label(cause: BranchRequestCause) -> String {
+pub(super) fn campaign_branch_cause_label(cause: BranchRequestCause) -> String {
     match cause {
         BranchRequestCause::Planner(value) => format!("planner:{value}"),
         BranchRequestCause::Operator(value) => format!("operator:{value}"),
@@ -406,7 +406,7 @@ fn campaign_branch_cause_label(cause: BranchRequestCause) -> String {
     }
 }
 
-fn campaign_stop_condition_label(stop: &StopCondition) -> String {
+pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
     match stop {
         StopCondition::NextChoice => String::from("next-choice"),
         StopCondition::NamedBoundary(value) => format!("boundary:{value}"),

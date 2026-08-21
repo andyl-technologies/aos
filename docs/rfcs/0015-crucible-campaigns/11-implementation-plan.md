@@ -707,8 +707,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   semantic source, budget, continuation, and provenance fields. Exact historical
   snapshot inspection and two-snapshot comparison use independently checked
   named-history reads and report policy, transition, direct-parent, and all-root
-  changes. Paged findings, explanation operations, and richer filtered or
-  aggregated views remain open.
+  changes. The first explanation operation joins an authenticated choice
+  declaration to an authenticated frontier request and fails closed unless
+  their opportunity and domain agree before reporting legality, producer,
+  cause, budget, stop, and continuation state. Paged findings,
+  proposal/attempt/finding explanations, and richer filtered or aggregated
+  views remain open.
 - [ ] **T-CAM-8.3** Implement pin/unpin, replay/debug, export/import,
   push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage

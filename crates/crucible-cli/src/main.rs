@@ -318,6 +318,8 @@ enum CampaignCommand {
     Snapshot(CampaignSnapshotArgs),
     /// Compare two exact historical campaign snapshots.
     Compare(CampaignCompareArgs),
+    /// Explain one exact choice and frontier-request basis.
+    Explain(CampaignExplainArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
     /// Inspect one exact object named by the authenticated graph.
@@ -453,6 +455,22 @@ struct CampaignCompareArgs {
     /// Second exact historical snapshot.
     #[arg(long, value_name = "SNAPSHOT", required = true)]
     right: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing both records.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice opportunity whose legality is explained.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Exact frontier request whose cause is explained.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
