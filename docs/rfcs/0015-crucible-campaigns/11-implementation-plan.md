@@ -622,18 +622,20 @@ namespaced authorization, S3, composed administrative inventory/GC, and host-sid
 latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
 by this checkpoint.
 
-The memory and directory loose-object leaves now expose a separately held,
-exclusive administrative fence that streams exact physical inventory under a
+The memory and directory leaves now expose separately held, exclusive
+administrative fences for both physical objects and the complete authoritative
+ref namespace. Object inventory streams exact placements under a
 backend-instance generation and supports idempotent deletion of an already
-planned candidate. Directory generations use the registered checksummed v1
-state record, persist across restart, and advance durably before cooperating
-puts or deletes; tests cover restart, delete/reinsert ABA, early visitor failure,
-malformed placement rejection, and put exclusion while fenced. This is only the
-physical leaf primitive. Store-graph administrative composition, a fenced
-canonical ref and operational-root snapshot, complete reachability planning,
-an immutable plan identity, interruption-safe apply/recovery, and production
-maintenance ownership remain open, so no Phase 5 task is checked by this
-checkpoint.
+planned candidate. Ref inventory streams exact name bindings under its own
+monotonic generation; every accepted replacement advances it, so same-value ABA
+is distinct across restart. Directory generations use registered checksummed v1
+state records and advance durably before cooperating mutation. Tests cover
+restart, object and ref ABA, early visitor failure, malformed/oversized input,
+valid staging-prefix names, and mutation exclusion while fenced. Store-graph
+administrative composition, a fenced operational-ledger root snapshot, complete
+reachability planning, an immutable plan identity, interruption-safe
+apply/recovery, and production maintenance ownership remain open, so no Phase 5
+task is checked by this checkpoint.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's overlay and
@@ -739,9 +741,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory and
-  directory loose-leaf inventory/delete primitive are implemented; exact-pin
-  materialization selection, composed-store/ref/ledger fencing, and destructive
-  physical plan/apply remain open. Implement
+  directory loose-leaf inventory/delete and authoritative-ref inventory
+  primitives are implemented; exact-pin materialization selection,
+  composed-store/ledger fencing, and destructive physical plan/apply remain
+  open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

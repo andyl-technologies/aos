@@ -123,6 +123,85 @@ fn memory_blob_and_ref_contracts_are_idempotent() {
 }
 
 #[test]
+fn memory_ref_inventory_is_exclusive_and_aba_bound() {
+    let refs = Arc::new(MemoryRefBackend::new());
+    let first_name = RefName::new("campaigns/first").expect("first ref name");
+    let second_name = RefName::new("campaigns/second").expect("second ref name");
+    let first = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"first");
+    let second = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"second");
+    let third = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"third");
+    refs.compare_exchange(&first_name, None, first)
+        .expect("create first memory ref");
+    refs.compare_exchange(&second_name, None, second)
+        .expect("create second memory ref");
+
+    let mut fence = refs
+        .acquire_ref_inventory_fence()
+        .expect("acquire memory ref fence");
+    let mut inventory = BTreeMap::new();
+    let before = fence
+        .visit_refs(&mut |record| {
+            inventory.insert(record.name().clone(), record.target());
+            Ok(())
+        })
+        .expect("visit memory refs");
+    assert_eq!(before.refs(), 2);
+    assert_eq!(
+        inventory,
+        BTreeMap::from([(first_name.clone(), first), (second_name, second)])
+    );
+    drop(fence);
+
+    assert_eq!(
+        refs.compare_exchange(&first_name, Some(third), second)
+            .expect("reject stale memory ref replacement"),
+        RefCasOutcome::Conflict {
+            expected: Some(third),
+            current: Some(first),
+        }
+    );
+    let mut fence = refs
+        .acquire_ref_inventory_fence()
+        .expect("reacquire memory ref fence after conflict");
+    let after_conflict = fence
+        .visit_refs(&mut |_| Ok(()))
+        .expect("visit memory refs after conflict");
+    assert_eq!(after_conflict.generation(), before.generation());
+
+    let writer_refs = Arc::clone(&refs);
+    let writer_name = first_name.clone();
+    let writer_started = Arc::new(AtomicBool::new(false));
+    let writer_finished = Arc::new(AtomicBool::new(false));
+    let writer_started_clone = Arc::clone(&writer_started);
+    let writer_finished_clone = Arc::clone(&writer_finished);
+    let writer = thread::spawn(move || {
+        writer_started_clone.store(true, Ordering::Release);
+        writer_refs
+            .compare_exchange(&writer_name, Some(first), third)
+            .expect("update fenced memory ref");
+        writer_finished_clone.store(true, Ordering::Release);
+    });
+    while !writer_started.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(std::time::Duration::from_millis(10));
+    assert!(!writer_finished.load(Ordering::Acquire));
+    drop(fence);
+    writer.join().expect("join memory ref writer");
+
+    refs.compare_exchange(&first_name, Some(third), first)
+        .expect("restore memory ref after ABA");
+    let mut after_fence = refs
+        .acquire_ref_inventory_fence()
+        .expect("reacquire memory ref fence");
+    let after = after_fence
+        .visit_refs(&mut |_| Ok(()))
+        .expect("visit memory refs after ABA");
+    assert_ne!(after.generation(), before.generation());
+    assert_eq!(after.refs(), before.refs());
+}
+
+#[test]
 fn memory_administration_is_generation_bound_and_idempotent() {
     let blobs = MemoryBlobBackend::new("memory-admin", 1_024);
     let first_bytes = b"first retained object";
@@ -263,6 +342,94 @@ fn directory_backend_publishes_objects_and_refs_durably() {
     assert!(matches!(
         reopened_refs.read_ref(&name),
         Err(StoreError::InvalidId)
+    ));
+}
+
+#[test]
+fn directory_ref_inventory_is_persistent_fenced_and_fail_closed() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("authority");
+    let refs = Arc::new(DirectoryRefBackend::new(&root));
+    let first_name = RefName::new("campaigns/first").expect("first ref name");
+    let staging_prefix_name =
+        RefName::new(".ref-staging-user").expect("valid staging-prefix ref name");
+    let third_name = RefName::new("campaigns/third").expect("third ref name");
+    let first = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"first");
+    let second = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"second");
+    let third = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, b"third");
+    refs.compare_exchange(&first_name, None, first)
+        .expect("create first directory ref");
+    refs.compare_exchange(&staging_prefix_name, None, second)
+        .expect("create staging-prefix directory ref");
+
+    let mut fence = refs
+        .acquire_ref_inventory_fence()
+        .expect("acquire directory ref fence");
+    let mut inventory = BTreeMap::new();
+    let before = fence
+        .visit_refs(&mut |record| {
+            inventory.insert(record.name().clone(), record.target());
+            Ok(())
+        })
+        .expect("visit directory refs");
+    assert_eq!(before.refs(), 2);
+    assert_eq!(
+        inventory,
+        BTreeMap::from([(first_name.clone(), first), (staging_prefix_name, second),])
+    );
+
+    let writer_refs = Arc::clone(&refs);
+    let writer_started = Arc::new(AtomicBool::new(false));
+    let writer_finished = Arc::new(AtomicBool::new(false));
+    let writer_started_clone = Arc::clone(&writer_started);
+    let writer_finished_clone = Arc::clone(&writer_finished);
+    let writer = thread::spawn(move || {
+        writer_started_clone.store(true, Ordering::Release);
+        writer_refs
+            .compare_exchange(&third_name, None, third)
+            .expect("create fenced directory ref");
+        writer_finished_clone.store(true, Ordering::Release);
+    });
+    while !writer_started.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(std::time::Duration::from_millis(10));
+    assert!(!writer_finished.load(Ordering::Acquire));
+    drop(fence);
+    writer.join().expect("join directory ref writer");
+
+    refs.compare_exchange(&first_name, Some(first), second)
+        .expect("advance directory ref away from original");
+    refs.compare_exchange(&first_name, Some(second), first)
+        .expect("restore directory ref after ABA");
+    let reopened = DirectoryRefBackend::new(&root);
+    let mut reopened_fence = reopened
+        .acquire_ref_inventory_fence()
+        .expect("reopen directory ref fence");
+    let reopened_summary = reopened_fence
+        .visit_refs(&mut |_| Ok(()))
+        .expect("visit reopened refs");
+    assert_ne!(reopened_summary.generation(), before.generation());
+    assert_eq!(reopened_summary.refs(), 3);
+    drop(reopened_fence);
+
+    fs::write(root.join("refs/campaigns/first"), [0_u8; 257]).expect("inject oversized ref record");
+    let mut malformed_fence = reopened
+        .acquire_ref_inventory_fence()
+        .expect("acquire malformed directory ref fence");
+    assert!(matches!(
+        malformed_fence.visit_refs(&mut |_| Ok(())),
+        Err(StoreError::InvalidId)
+    ));
+    drop(malformed_fence);
+
+    fs::write(root.join(".ref-admin/state-v1"), [0_u8; 257])
+        .expect("inject oversized ref inventory state");
+    assert!(matches!(
+        reopened.acquire_ref_inventory_fence(),
+        Err(StoreError::InvalidComposition {
+            reason: "directory ref inventory state exceeds its byte limit"
+        })
     ));
 }
 

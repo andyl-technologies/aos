@@ -6,15 +6,21 @@
 //! <blob-root>/<kind>/<schema-version>/<digest-prefix>/<digest>
 //! <blob-root>/.inventory-admin/lock
 //! <blob-root>/.inventory-admin/state-v1
+//! <ref-root>/refs/<validated RefName>
+//! <ref-root>/.ref-admin/lock
+//! <ref-root>/.ref-admin/state-v1
 //! ```
 //!
 //! `state-v1` is canonical UTF-8 text. It contains `version`, a persistent
 //! random backend `instance`, a monotonic `generation`, and a BLAKE3 checksum
 //! over the preceding fields under the
-//! `crucible.content-store.directory-inventory-state.v1` domain. Cooperating
-//! puts and administrative deletion serialize on `lock`; the directory root
-//! must not be mutated by an uncooperating process. Readers reject state larger
-//! than 256 bytes before retaining more input.
+//! `crucible.content-store.directory-inventory-state.v1` domain. Ref inventory
+//! state uses the same field grammar under the registered
+//! `crucible.content-store.directory-ref-inventory-state.v1` domain.
+//! Cooperating object puts, ref replacements, and administrative enumeration
+//! serialize on their corresponding lock; neither root may be mutated by an
+//! uncooperating process. State readers reject input larger than 256 bytes
+//! before retaining more input.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -29,6 +35,8 @@ use rustix::fs::{FlockOperation, flock};
 use super::admin::{InventoryCounter, persistent_inventory_generation};
 use super::*;
 
+mod ref_admin;
+
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -37,6 +45,7 @@ const INVENTORY_LOCK_FILE: &str = "lock";
 const INVENTORY_STATE_FILE: &str = "state-v1";
 const INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-inventory-state.v1";
 const MAX_INVENTORY_STATE_BYTES: u64 = 256;
+const MAX_REF_RECORD_BYTES: u64 = 256;
 
 /// Durable loose-object directory backend.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -809,8 +818,8 @@ impl DirectoryRefBackend {
 
     fn read_unlocked(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let path = self.ref_path(name);
-        let value = match fs::read_to_string(&path) {
-            Ok(value) => value,
+        let file = match File::open(&path) {
+            Ok(file) => file,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
                 return Err(StoreError::Io {
@@ -820,6 +829,18 @@ impl DirectoryRefBackend {
                 });
             }
         };
+        let mut bytes = Vec::new();
+        file.take(MAX_REF_RECORD_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|source| StoreError::Io {
+                operation: "read-ref",
+                path,
+                source,
+            })?;
+        if u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)? > MAX_REF_RECORD_BYTES {
+            return Err(StoreError::InvalidId);
+        }
+        let value = std::str::from_utf8(&bytes).map_err(|_| StoreError::InvalidId)?;
         let record = value.strip_suffix('\n').ok_or(StoreError::InvalidId)?;
         if record.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
             return Err(StoreError::InvalidId);
@@ -873,6 +894,7 @@ impl DirectoryRefBackend {
 
 impl MutableRefBackend for DirectoryRefBackend {
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
         let _lock = self.acquire_lock(name, FlockOperation::LockShared)?;
         self.read_unlocked(name)
     }
@@ -883,11 +905,14 @@ impl MutableRefBackend for DirectoryRefBackend {
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError> {
+        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
+        let mut inventory_state = self.load_or_create_ref_inventory_state()?;
         let _lock = self.acquire_lock(name, FlockOperation::LockExclusive)?;
         let current = self.read_unlocked(name)?;
         if current != expected {
             return Ok(RefCasOutcome::Conflict { expected, current });
         }
+        self.advance_ref_inventory_state(&mut inventory_state)?;
         self.publish_ref(name, next)?;
         Ok(RefCasOutcome::Advanced { next })
     }
