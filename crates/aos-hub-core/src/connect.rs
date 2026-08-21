@@ -715,6 +715,7 @@ fn is_reserved_control_path(path: &str) -> bool {
     let trimmed = path.trim_start_matches('/');
     trimmed.is_empty()
         || trimmed.split('/').any(|segment| segment == "-")
+        || registry_document_path(trimmed).is_some()
         || matches!(
             trimmed,
             "_assets"
@@ -736,6 +737,29 @@ fn is_reserved_control_path(path: &str) -> bool {
         || trimmed.starts_with("logout/")
         || trimmed.starts_with("oauth2/")
         || trimmed.starts_with("aos.hub.v1.")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegistryDocument {
+    Robots,
+    Llms,
+}
+
+/// Splits a registry-scoped crawler document from an arbitrarily nested slug.
+fn registry_document_path(path: &str) -> Option<(&str, RegistryDocument)> {
+    let path = path.trim_start_matches('/');
+    for (suffix, document) in [
+        ("/robots.txt", RegistryDocument::Robots),
+        ("/llms.txt", RegistryDocument::Llms),
+    ] {
+        if let Some(slug) = path
+            .strip_suffix(suffix)
+            .filter(|slug| slug.contains('/') && !slug.ends_with('/'))
+        {
+            return Some((slug, document));
+        }
+    }
+    None
 }
 
 async fn domain_probe_handler(
@@ -3330,6 +3354,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         return StatusCode::NOT_FOUND.into_response();
                     }
                     let nested = uri.path().trim_start_matches('/');
+                    if let Some((slug, document)) = registry_document_path(nested) {
+                        return match document {
+                            RegistryDocument::Robots => match svc.serve_registry_robots(slug).await
+                            {
+                                Ok(Some(body)) => text_plain_response(body),
+                                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                                Err(err) => error_response(&err),
+                            },
+                            RegistryDocument::Llms => match svc.serve_registry_llms(slug).await {
+                                Ok(Some(body)) => text_plain_response(body),
+                                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                                Err(err) => error_response(&err),
+                            },
+                        };
+                    }
                     let marker = format!("/{BROWSE_MARKER}/");
                     if let Some((slug, rest)) = nested.split_once(&marker) {
                         if slug.is_empty() || !slug.contains('/') {
@@ -3724,6 +3763,9 @@ mod tests {
             "/_assets/style.css",
             "/robots.txt",
             "/llms.txt",
+            "/acme/main/robots.txt",
+            "/acme/main/llms.txt",
+            "/acme/project/main/llms.txt",
         ] {
             assert!(is_reserved_control_path(path), "rejected {path}");
         }
@@ -3739,6 +3781,20 @@ mod tests {
                 "admitted legacy serving path {serving_path}"
             );
         }
+    }
+
+    #[test]
+    fn registry_documents_preserve_nested_slugs() {
+        assert_eq!(
+            registry_document_path("/acme/main/robots.txt"),
+            Some(("acme/main", RegistryDocument::Robots))
+        );
+        assert_eq!(
+            registry_document_path("/acme/project/main/llms.txt"),
+            Some(("acme/project/main", RegistryDocument::Llms))
+        );
+        assert_eq!(registry_document_path("/llms.txt"), None);
+        assert_eq!(registry_document_path("/acme/llms.txt"), None);
     }
 
     #[test]
