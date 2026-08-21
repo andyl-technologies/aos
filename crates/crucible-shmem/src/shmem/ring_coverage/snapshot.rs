@@ -66,6 +66,8 @@ impl SpscRingSnapshot {
     /// [`SpscRingError::InvalidFrameLength`] when a frame length exceeds
     /// [`MAX_FRAME_DATA`], [`SpscRingError::SnapshotFrameCountOverflow`] when
     /// the encoded frame count cannot fit in memory on this target, or
+    /// [`SpscRingError::SnapshotAllocationFailed`] when the bounded decoded
+    /// representation cannot reserve memory, or
     /// [`SpscRingError::SnapshotDecodeTrailingBytes`] when extra bytes remain
     /// after the declared frames.
     pub fn from_canonical_bytes(bytes: &[u8], max_frames: usize) -> Result<Self, SpscRingError> {
@@ -79,7 +81,24 @@ impl SpscRingSnapshot {
                 capacity: max_frames as u64,
             });
         }
-        let mut frames = Vec::with_capacity(frame_count);
+        const MIN_CANONICAL_FRAME_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
+        let minimum_body_bytes = frame_count.checked_mul(MIN_CANONICAL_FRAME_BYTES).ok_or(
+            SpscRingError::SnapshotFrameCountOverflow {
+                count: frame_count as u64,
+            },
+        )?;
+        let available_body_bytes = bytes.len().saturating_sub(core::mem::size_of::<u64>());
+        if minimum_body_bytes > available_body_bytes {
+            return Err(SpscRingError::SnapshotDecodeTruncated {
+                offset: core::mem::size_of::<u64>(),
+                needed: minimum_body_bytes,
+                available: available_body_bytes,
+            });
+        }
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(frame_count)
+            .map_err(|_| SpscRingError::SnapshotAllocationFailed { count: frame_count })?;
 
         for _ in 0..frame_count {
             let delivery_icount = cursor.read_u64()?;

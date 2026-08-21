@@ -12,10 +12,10 @@ use crucible::{
 };
 
 use super::{
-    DRIVE_POLL_INTERVAL, GATE_DOMAIN, GATE_NODE, HOST_LOAD_WORKERS, LIVE_NETWORK_ACK_PAYLOAD,
-    LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
-    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL,
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
+    DRIVE_POLL_INTERVAL, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, GATE_DOMAIN, GATE_NODE,
+    HOST_LOAD_WORKERS, LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD,
+    LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome,
+    QMP_PRIMER_WAKE_INTERVAL, QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
 };
 use crate::{
     CrucibleShmemNetworkDevice, QemuHostPluginSetup, QemuLaunchArtifact, QemuNodeChild,
@@ -28,7 +28,7 @@ pub(super) struct NetworkDeterministicProjection {
     reply_latency_icount: Option<u64>,
     backpressure_delivery_attempts: u32,
     backpressure_last_attempt_icount: u64,
-    backpressure_consumed_icount: Option<u64>,
+    backpressure_retry_icount: Option<u64>,
     backpressure_acknowledgement_icount: Option<u64>,
 }
 
@@ -48,7 +48,7 @@ pub(super) fn deterministic_projection(
         protocol_frames,
         backpressure_delivery_attempts: outcome.backpressure_delivery_attempts,
         backpressure_last_attempt_icount: outcome.backpressure_last_attempt_icount,
-        backpressure_consumed_icount: outcome.backpressure_consumed_icount,
+        backpressure_retry_icount: outcome.backpressure_retry_icount,
         backpressure_acknowledgement_icount: outcome.backpressure_acknowledgement_icount,
     }
 }
@@ -122,6 +122,12 @@ pub(super) fn certify_run(
         || outcome.backpressure_acknowledgement_icount.is_none()
     {
         Some("guest did not acknowledge the exact retained backpressure frame")
+    } else if outcome.backpressure_retry_icount
+        != outcome
+            .backpressure_last_attempt_icount
+            .checked_add(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
+    {
+        Some("retained backpressure retry missed its canonical deadline")
     } else if require_delay && !outcome.delayed_reply_applied {
         Some("hostile-host leg did not delay physical reply publication")
     } else if !outcome.orderly_child_exit {
