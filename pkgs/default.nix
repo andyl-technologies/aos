@@ -29,6 +29,9 @@
     inherit lib;
     pkgs = self;
   };
+  cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
+    inherit lib mkDerivation;
+  };
 
   # Turn a package-authored `configModule` arg into the package's logical
   # `config` output (a pure-data store path carrying `module.nix` plus a
@@ -412,6 +415,14 @@
   # Attrs that mkCargoPackage consumes (not passed to mkDerivation)
   cargoSpecificAttrs = [
     "cargoDeps"
+    "cargoArtifacts"
+    "cargoRoot"
+    "cargoEnv"
+    "cargoBuildCommands"
+    "installCargoArtifacts"
+    "cargoArtifactContract"
+    "cargoNextest"
+    "nextestFlags"
     "cargoFlags"
     "buildType"
     "checkType"
@@ -506,6 +517,28 @@
     };
 
   mkCargoPackage = args: let
+    cargoArtifactContract =
+      {
+        schema = "aos.cargo-artifact-contract/v1";
+        system = stdenv.hostPlatform.system;
+        rust = builtins.unsafeDiscardStringContext (toString self.rust);
+        buildType = args.buildType or "release";
+        checkType = args.checkType or (args.buildType or "release");
+        buildFeatures = args.buildFeatures or [];
+        buildNoDefaultFeatures = args.buildNoDefaultFeatures or false;
+        cargoEnv = args.cargoEnv or {};
+        nativeInputs =
+          map
+          (dep: builtins.unsafeDiscardStringContext (toString dep))
+          ((args.buildDeps or []) ++ (args.runtimeDeps or []));
+      }
+      // (args.cargoArtifactContract or {});
+    inheritedArtifacts = args.cargoArtifacts or null;
+    artifactsCompatible =
+      inheritedArtifacts
+      == null
+      || !(inheritedArtifacts ? passthru.cargoArtifactContract)
+      || inheritedArtifacts.passthru.cargoArtifactContract == cargoArtifactContract;
     # Extract cargo-specific attrs for the phase generator
     cargoArgs =
       builtins.intersectAttrs (builtins.listToAttrs (
@@ -515,18 +548,60 @@
         })
         cargoSpecificAttrs
       ))
-      args;
+      (args // {inherit cargoArtifactContract;});
     # Remove cargo-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
-    addBuilderOverrides mkCargoPackage args (
-      mkDerivation (
-        restArgs
-        // {
-          buildDeps = [self.rust] ++ (args.buildDeps or []);
-          phases = phases.cargoPhases cargoArgs;
-        }
-      )
+    if !artifactsCompatible
+    then throw "mkCargoPackage (${args.pname or args.name or "unnamed"}): cargoArtifacts compatibility contract does not match the consumer"
+    else
+      addBuilderOverrides mkCargoPackage args (
+        mkDerivation (
+          restArgs
+          // {
+            buildDeps =
+              [self.rust self.jq]
+              ++ (
+                if args.cargoNextest or false
+                then [self.cargo-nextest]
+                else []
+              )
+              ++ (args.buildDeps or []);
+            phases = phases.cargoPhases cargoArgs;
+            passthru = (args.passthru or {}) // {inherit cargoArtifactContract;};
+          }
+        )
+      );
+
+  # Builds a reusable Cargo target directory from a manifest-only dummy
+  # workspace. The caller owns dummy-source construction so ordinary Rust
+  # implementation edits do not alter this derivation's identity.
+  mkCargoArtifacts = args:
+    mkCargoPackage (
+      args
+      // {
+        pname = args.pname or "cargo-artifacts";
+        installBins = false;
+        installLibs = false;
+        installCargoArtifacts = true;
+        doCheck = false;
+        dontStrip = true;
+        dontPatchELF = true;
+        dontNukeRefs = true;
+      }
+    );
+
+  mkCargoNextestCheck = args:
+    mkCargoPackage (
+      args
+      // {
+        pname = args.pname or "cargo-nextest-check";
+        cargoNextest = true;
+        installBins = false;
+        installLibs = false;
+        doCheck = true;
+        buildDeps = args.buildDeps or [];
+      }
     );
 
   mkGoPackage = args: let
@@ -750,7 +825,8 @@
     {
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib packageNames;
-      inherit mkCargoPackage mkGoPackage mkBazelPackage;
+      inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;

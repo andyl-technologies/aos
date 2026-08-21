@@ -114,6 +114,8 @@
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev
+          aos.pkgs.cargo-nextest
+          aos.pkgs.cargo-hakari
           aos.pkgs.bootstrapTools
           aos.pkgs.perl
           aos.pkgs.pkg-config
@@ -205,6 +207,11 @@
 
           eval = aos.checks.eval;
           build = aos.checks.build;
+          rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
+          rust-aos = aos.checks.rust.aos;
+          rust-crucible-controller = aos.checks.rust.crucible-controller;
+          rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
+          rust-crucible-guest = aos.checks.rust.crucible-guest;
         }
         # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
         // prefixAttrs "server" aos.systems.server.checks

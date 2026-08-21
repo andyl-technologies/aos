@@ -9,7 +9,7 @@
   cargoDeps = pkgs.fetchCargoDeps {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   };
 
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;

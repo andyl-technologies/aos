@@ -1007,6 +1007,13 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    rust = {
+      cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
+      aos = pkgs.aos;
+      crucible-controller = pkgs.crucible-controller;
+      crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
+      crucible-guest = pkgs.crucible-guest;
+    };
     eval-standalone = import ./lib/testing/eval.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;

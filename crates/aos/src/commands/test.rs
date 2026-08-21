@@ -1,9 +1,9 @@
 //! `aos test` — run the repository's test layers.
 //!
 //! Tests are Nix derivations under the `checks` attribute, grouped into
-//! four layers of increasing cost: `eval` (pure evaluation checks),
-//! `build` (package build checks), `vm` (QEMU VM integration tests), and
-//! `fleet` (multi-VM fleet tests). A subcommand runs one layer
+//! five layers of increasing cost: `eval` (pure evaluation checks), `rust`
+//! (parallel nextest checks), `build` (package build checks), `vm` (QEMU VM
+//! integration tests), and `fleet` (multi-VM fleet tests). A subcommand runs one layer
 //! (optionally a single named suite); with no subcommand, all four run
 //! in sequence with a pass/fail summary. Concurrency maps to
 //! `nix-build --max-jobs`, defaulting to the host CPU count.
@@ -114,6 +114,11 @@ pub fn run(
     let jobs = resolve_jobs(jobs);
     match cmd {
         Some(TestCmd::Eval) => run_layer(nix, printer, "checks.eval", "eval", jobs),
+        Some(TestCmd::Rust { suite }) => {
+            let attr = suite_attr("checks.rust", suite.as_deref())?;
+            let label = suite_label("rust", suite.as_deref());
+            run_layer(nix, printer, &attr, &label, jobs)
+        }
         Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build", jobs),
         Some(TestCmd::Vm { suite }) => {
             let attr = match suite {
@@ -163,6 +168,7 @@ pub fn run(
 fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
     let layers: &[(&str, &str)] = &[
         ("checks.eval", "eval"),
+        ("checks.rust", "rust"),
         ("checks.build", "build"),
         ("checks.vm", "vm"),
         ("checks.fleet", "fleet"),
@@ -225,6 +231,22 @@ fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
 
     printer.success("All tests passed");
     Ok(())
+}
+
+/// Returns a checked Nix attribute path for an optional suite.
+fn suite_attr(root: &str, suite: Option<&str>) -> Result<String> {
+    match suite {
+        Some(suite) => {
+            validate_suite_name(suite)?;
+            Ok(format!("{root}.{suite}"))
+        }
+        None => Ok(root.to_string()),
+    }
+}
+
+/// Returns the display label for an optional suite.
+fn suite_label(root: &str, suite: Option<&str>) -> String {
+    suite.map_or_else(|| root.to_string(), |suite| format!("{root}/{suite}"))
 }
 
 /// `aos test fleet <suite> --interactive --ssh-authorized-key <key>`.
