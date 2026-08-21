@@ -453,7 +453,10 @@ in {
 
     systemd.services.aos-eval = {
       description = "Evaluate host configuration to a converged manifest";
-      environment.XDG_CACHE_HOME = "/var/cache/aos/nix-eval";
+      environment = {
+        HOME = "/var/cache/aos/nix-eval";
+        XDG_CACHE_HOME = "/var/cache/aos/nix-eval";
+      };
       wantedBy = ["multi-user.target"];
       # Quote generations only after systemd has advanced PCR 11 to its stable
       # runtime (`ready`) phase. On non-UKI or non-TPM boots the phase unit's
