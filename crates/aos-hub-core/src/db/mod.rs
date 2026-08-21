@@ -14125,6 +14125,21 @@ impl Database {
                     store_hash: store_hash_component(image_path),
                     store_path: image_path.to_string(),
                 });
+                if let Some(image_info_path) = image
+                    .get("delivery")
+                    .and_then(|delivery| delivery.get("image_info"))
+                    .and_then(|image_info| image_info.get("store_path"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package_name.clone(),
+                        package_version: package_version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "image".to_string(),
+                        store_hash: store_hash_component(image_info_path),
+                        store_path: image_info_path.to_string(),
+                    });
+                }
             }
         }
         artifacts.sort_by(|left, right| {

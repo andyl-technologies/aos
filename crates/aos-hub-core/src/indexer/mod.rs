@@ -712,7 +712,7 @@ fn release_snapshot_artifacts(
                             package_name: package.package.name.clone(),
                             package_version: version.version.clone(),
                             platform: platform.clone(),
-                            artifact_kind: "image_metadata".to_string(),
+                            artifact_kind: "image".to_string(),
                             store_hash: store_hash_component(&image.delivery.image_info.store_path),
                             store_path: image.delivery.image_info.store_path.clone(),
                         });
