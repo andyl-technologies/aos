@@ -78,6 +78,7 @@ pub mod inflight;
 pub mod netlink;
 pub mod ninep;
 pub mod request;
+mod snapshot_codec;
 pub mod subnode;
 
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};

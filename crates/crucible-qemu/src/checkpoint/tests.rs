@@ -34,8 +34,8 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
         })
     ));
     let mut old_version = bytes;
-    old_version[..b"crucible.qemu-host-io-checkpoint.v2\0".len()]
-        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v1\0");
+    old_version[..b"crucible.qemu-host-io-checkpoint.v3\0".len()]
+        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v2\0");
     assert_eq!(
         QemuHostIoCheckpoint::from_canonical_bytes(&old_version, binding),
         Err(QemuHostIoCheckpointCodecError::Version)

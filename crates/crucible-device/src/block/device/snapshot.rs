@@ -3,26 +3,36 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::inflight::PendingResponse;
-use crate::subnode::IoCoreSnapshot;
+use crate::snapshot_codec::{
+    BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed,
+    map_decode_error,
+};
+use crate::subnode::{IoCoreSnapshot, IoCoreSnapshotCodecError};
 
 use super::super::BlockFaultState;
 use super::super::overlay::{OverlayDelta, PAGE_SIZE};
 use super::BlockLatency;
 
-const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v1\0";
-const MAX_BLOCK_SNAPSHOT_PAGES: usize = 4_194_304;
-const MAX_BLOCK_SNAPSHOT_BYTES: usize = 1_073_741_824;
+const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v2\0";
+const MAX_BLOCK_SNAPSHOT_PAGES: u64 = 4_194_304;
+/// Compiled byte ceiling for one block-device snapshot.
+pub const MAX_BLOCK_SNAPSHOT_BYTES: u64 = 1_073_741_824;
+
+type SnapshotBytes = BoundedVec<u8, MAX_BLOCK_SNAPSHOT_BYTES>;
+type SnapshotPage = BoundedVec<u8, { PAGE_SIZE as u64 }>;
+type SnapshotPages = BoundedVec<(u64, SnapshotPage), MAX_BLOCK_SNAPSHOT_PAGES>;
+type SnapshotDirtyPages = BoundedVec<u64, MAX_BLOCK_SNAPSHOT_PAGES>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockSnapshotWire {
-    core: Vec<u8>,
+    core: SnapshotBytes,
     base_hash: [u8; 32],
     device_length: u64,
-    overlay_delta: Vec<(u64, Vec<u8>)>,
-    full_pages: Vec<(u64, Vec<u8>)>,
-    dirty: Vec<u64>,
-    storage_faults: Vec<u8>,
+    overlay_delta: SnapshotPages,
+    full_pages: SnapshotPages,
+    dirty: SnapshotDirtyPages,
+    storage_faults: SnapshotBytes,
     latency: [u64; 5],
 }
 
@@ -78,19 +88,25 @@ impl BlockSnapshot {
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, BlockSnapshotCodecError> {
         validate_snapshot(self)?;
         let wire = BlockSnapshotWire {
-            core: self
-                .core
-                .canonical_bytes()
-                .map_err(|_| BlockSnapshotCodecError::Nested)?,
+            core: bounded_bytes(
+                self.core.canonical_bytes().map_err(map_io_core_error)?,
+                "block I/O core bytes",
+            )?,
             base_hash: self.base_hash,
             device_length: self.device_length,
-            overlay_delta: encode_pages(&self.overlay_delta.pages),
-            full_pages: encode_pages(&self.full_pages),
-            dirty: self.dirty.iter().copied().collect(),
-            storage_faults: self
-                .storage_faults
-                .to_canonical_bytes()
-                .map_err(|_| BlockSnapshotCodecError::Nested)?,
+            overlay_delta: encode_pages(&self.overlay_delta.pages, "block overlay delta")?,
+            full_pages: encode_pages(&self.full_pages, "block full pages")?,
+            dirty: bounded_vec_from_iter(
+                self.dirty.iter().copied(),
+                self.dirty.len(),
+                "block dirty pages",
+            )?,
+            storage_faults: bounded_bytes(
+                self.storage_faults
+                    .to_canonical_bytes()
+                    .map_err(|_| BlockSnapshotCodecError::Nested)?,
+                "block storage-fault bytes",
+            )?,
             latency: [
                 self.latency.read_base_ns,
                 self.latency.write_base_ns,
@@ -99,16 +115,14 @@ impl BlockSnapshot {
                 self.latency.per_byte_ns,
             ],
         };
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&wire, &mut payload)
-            .map_err(|_| BlockSnapshotCodecError::Malformed)?;
-        if payload.len() > MAX_BLOCK_SNAPSHOT_BYTES {
-            return Err(BlockSnapshotCodecError::Limit);
-        }
-        let mut bytes = Vec::with_capacity(BLOCK_SNAPSHOT_MAGIC.len() + payload.len());
-        bytes.extend_from_slice(BLOCK_SNAPSHOT_MAGIC);
-        bytes.extend_from_slice(&payload);
-        Ok(bytes)
+        encode_prefixed(
+            &wire,
+            BLOCK_SNAPSHOT_MAGIC,
+            "block snapshot bytes",
+            MAX_BLOCK_SNAPSHOT_BYTES,
+            MAX_BLOCK_SNAPSHOT_BYTES,
+        )
+        .map_err(map_encode_error)
     }
 
     /// Decodes and validates a complete block-device continuation.
@@ -121,23 +135,28 @@ impl BlockSnapshot {
         let payload = bytes
             .strip_prefix(BLOCK_SNAPSHOT_MAGIC)
             .ok_or(BlockSnapshotCodecError::Version)?;
-        if payload.len() > MAX_BLOCK_SNAPSHOT_BYTES {
-            return Err(BlockSnapshotCodecError::Limit);
-        }
-        let wire: BlockSnapshotWire =
-            ciborium::de::from_reader(payload).map_err(|_| BlockSnapshotCodecError::Malformed)?;
+        admit_input(
+            bytes,
+            "block snapshot bytes",
+            MAX_BLOCK_SNAPSHOT_BYTES,
+            MAX_BLOCK_SNAPSHOT_BYTES,
+        )
+        .map_err(map_resource_error)?;
+        let wire: BlockSnapshotWire = ciborium::de::from_reader(payload).map_err(|error| {
+            map_decode_error(error).map_or(BlockSnapshotCodecError::Malformed, map_resource_error)
+        })?;
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes(&wire.core)
-                .map_err(|_| BlockSnapshotCodecError::Nested)?,
+            core: IoCoreSnapshot::from_canonical_bytes(wire.core.as_slice())
+                .map_err(map_io_core_error)?,
             base_hash: wire.base_hash,
             device_length: wire.device_length,
             overlay_delta: OverlayDelta {
                 pages: decode_pages(wire.overlay_delta)?,
             },
             full_pages: decode_pages(wire.full_pages)?,
-            dirty: wire.dirty.into_iter().collect(),
+            dirty: wire.dirty.into_inner().into_iter().collect(),
             storage_faults: BlockFaultState::from_canonical_bytes(
-                &wire.storage_faults,
+                wire.storage_faults.as_slice(),
                 wire.device_length,
             )
             .map_err(|_| BlockSnapshotCodecError::Nested)?,
@@ -172,32 +191,61 @@ pub enum BlockSnapshotCodecError {
     /// The snapshot violates block geometry or overlay invariants.
     #[error("invalid block snapshot state")]
     Invalid,
-    /// The snapshot exceeds a compiled resource ceiling.
-    #[error("block snapshot exceeds its size limit")]
-    Limit,
+    /// The snapshot exceeds a configured or compiled resource ceiling.
+    #[error(
+        "block snapshot resource `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
+    )]
+    ResourceLimit {
+        /// Resource field that rejected the operation.
+        field: &'static str,
+        /// Bytes or entries already retained by the operation.
+        current: u64,
+        /// Additional bytes or entries requested.
+        requested: u64,
+        /// Active configured ceiling.
+        configured: u64,
+        /// Compiled hard ceiling.
+        hard: u64,
+    },
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical block snapshot")]
     Noncanonical,
 }
 
-fn encode_pages(pages: &BTreeMap<u64, [u8; PAGE_SIZE]>) -> Vec<(u64, Vec<u8>)> {
-    pages
-        .iter()
-        .map(|(offset, page)| (*offset, page.to_vec()))
-        .collect()
+fn encode_pages(
+    pages: &BTreeMap<u64, [u8; PAGE_SIZE]>,
+    field: &'static str,
+) -> Result<SnapshotPages, BlockSnapshotCodecError> {
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(pages.len())
+        .map_err(|_| resource_limit(field, 0, pages.len() as u64, MAX_BLOCK_SNAPSHOT_PAGES))?;
+    for (offset, page) in pages {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(PAGE_SIZE).map_err(|_| {
+            resource_limit("block page bytes", 0, PAGE_SIZE as u64, PAGE_SIZE as u64)
+        })?;
+        bytes.extend_from_slice(page);
+        encoded.push((
+            *offset,
+            SnapshotPage::new(bytes, "block page bytes").map_err(map_resource_error)?,
+        ));
+    }
+    SnapshotPages::new(encoded, field).map_err(map_resource_error)
 }
 
 fn decode_pages(
-    pages: Vec<(u64, Vec<u8>)>,
+    pages: SnapshotPages,
 ) -> Result<BTreeMap<u64, [u8; PAGE_SIZE]>, BlockSnapshotCodecError> {
-    if pages.len() > MAX_BLOCK_SNAPSHOT_PAGES || pages.windows(2).any(|pair| pair[0].0 >= pair[1].0)
-    {
-        return Err(BlockSnapshotCodecError::Limit);
+    let pages = pages.into_inner();
+    if pages.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(BlockSnapshotCodecError::Noncanonical);
     }
     pages
         .into_iter()
         .map(|(offset, bytes)| {
             let page = bytes
+                .into_inner()
                 .try_into()
                 .map_err(|_| BlockSnapshotCodecError::Invalid)?;
             Ok((offset, page))
@@ -205,18 +253,86 @@ fn decode_pages(
         .collect()
 }
 
+fn bounded_bytes(
+    bytes: Vec<u8>,
+    field: &'static str,
+) -> Result<SnapshotBytes, BlockSnapshotCodecError> {
+    SnapshotBytes::new(bytes, field).map_err(map_resource_error)
+}
+
+fn bounded_vec_from_iter<T>(
+    values: impl IntoIterator<Item = T>,
+    length: usize,
+    field: &'static str,
+) -> Result<BoundedVec<T, MAX_BLOCK_SNAPSHOT_PAGES>, BlockSnapshotCodecError> {
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(length)
+        .map_err(|_| resource_limit(field, 0, length as u64, MAX_BLOCK_SNAPSHOT_PAGES))?;
+    encoded.extend(values);
+    BoundedVec::new(encoded, field).map_err(map_resource_error)
+}
+
+fn map_encode_error(error: SnapshotEncodeError) -> BlockSnapshotCodecError {
+    match error {
+        SnapshotEncodeError::Malformed => BlockSnapshotCodecError::Malformed,
+        SnapshotEncodeError::Resource(error) => map_resource_error(error),
+    }
+}
+
+fn map_resource_error(error: SnapshotResourceError) -> BlockSnapshotCodecError {
+    BlockSnapshotCodecError::ResourceLimit {
+        field: error.field,
+        current: error.current,
+        requested: error.requested,
+        configured: error.configured,
+        hard: error.hard,
+    }
+}
+
+fn map_io_core_error(error: IoCoreSnapshotCodecError) -> BlockSnapshotCodecError {
+    match error {
+        IoCoreSnapshotCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => BlockSnapshotCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        },
+        _ => BlockSnapshotCodecError::Nested,
+    }
+}
+
+fn resource_limit(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    hard: u64,
+) -> BlockSnapshotCodecError {
+    BlockSnapshotCodecError::ResourceLimit {
+        field,
+        current,
+        requested,
+        configured: hard,
+        hard,
+    }
+}
+
 fn validate_snapshot(snapshot: &BlockSnapshot) -> Result<(), BlockSnapshotCodecError> {
-    snapshot
-        .core
-        .canonical_bytes()
-        .map_err(|_| BlockSnapshotCodecError::Nested)?;
+    snapshot.core.canonical_bytes().map_err(map_io_core_error)?;
     snapshot
         .storage_faults
         .validate_restore(snapshot.device_length)
         .map_err(|_| BlockSnapshotCodecError::Nested)?;
     let maximum_pages = snapshot.device_length.div_ceil(PAGE_SIZE as u64);
     for pages in [&snapshot.overlay_delta.pages, &snapshot.full_pages] {
-        if pages.len() > MAX_BLOCK_SNAPSHOT_PAGES
+        if u64::try_from(pages.len()).unwrap_or(u64::MAX) > MAX_BLOCK_SNAPSHOT_PAGES
             || u64::try_from(pages.len()).map_or(true, |count| count > maximum_pages)
             || pages
                 .keys()
@@ -234,7 +350,7 @@ fn validate_snapshot(snapshot: &BlockSnapshot) -> Result<(), BlockSnapshotCodecE
             .dirty
             .iter()
             .any(|offset| !snapshot.full_pages.contains_key(offset))
-        || snapshot.dirty.len() > MAX_BLOCK_SNAPSHOT_PAGES
+        || u64::try_from(snapshot.dirty.len()).unwrap_or(u64::MAX) > MAX_BLOCK_SNAPSHOT_PAGES
     {
         return Err(BlockSnapshotCodecError::Invalid);
     }

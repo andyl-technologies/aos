@@ -19,6 +19,7 @@ use crucible_shmem::DequeuedFaultEvent;
 
 use crate::checkpoint::bounded_cbor::{
     BoundedCborError, BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
+    map_decode_error,
 };
 
 const MAGIC: &[u8] = b"crucible.production-fault-runtime.v4\0";
@@ -222,7 +223,8 @@ impl ProductionFaultRuntimeCheckpoint {
             .reserve("fat_checkpoint_bytes", 0, requested)
             .map_err(map_plan_resource_error)?;
         let wire: CheckpointWire = ciborium::de::from_reader(payload)
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Malformed)?;
+            .map_err(map_decode_error)
+            .map_err(map_bounded_cbor_error)?;
         let runtime = wire
             .runtime
             .map(|encoded| {
