@@ -680,7 +680,9 @@ transition maintains a second nested set
 from each exact child configuration artifact to every authenticated cumulative
 path that reached it; direct non-genesis admission checks membership in that
 set. Reward, novelty, and finding statistics remain zero until their richer
-canonical folds land. Loading an
+canonical folds land. The exact fixed-point PUCT arithmetic is already a pure
+conformance-tested primitive, but no planner version may consume it while
+these owner projections remain zero. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.

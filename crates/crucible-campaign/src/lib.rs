@@ -78,9 +78,10 @@ pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptStart, BranchBudget, BranchPath,
     BranchPathSegment, BranchRequest, BranchRequestCause, CandidateSource, ContinuationProjection,
     ContinuationState, ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait,
-    FiniteCandidateSource, GuidanceEvidence, PlannerDisposition, PlannerProposalDisposition,
-    PlannerStep, PlannerStepProposal, PlanningAccounting, PlanningScanCursor, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, Proposal, StopCondition,
+    FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence, PlannerDisposition,
+    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage, Proposal,
+    PuctEdgeStatistics, PuctScore, StopCondition,
 };
 pub use identity::{
     AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,

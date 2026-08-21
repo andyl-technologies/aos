@@ -163,8 +163,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   authenticates its prefix against that nested index after restart/import.
   Atomic planner `Issue` chooses the lowest authenticated parent path, requires
   it to be scoped version 2, derives the cumulative attempt, and recomputes the
-  same owner rule after convergence and restart. Reward, novelty, finding,
-  interval, and PUCT folds remain open.
+  same owner rule after convergence and restart. The exact fixed-point PUCT
+  term arithmetic, including staged rounding, integer square root, input
+  invariants, and saturation, is implemented and conformance-tested. Reward,
+  novelty, finding, interval-feedback, and planner-ranking folds remain open.
 - [ ] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -200,7 +202,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   request index. Static continuation projection remains valid after modeled
   observations exist: it binds the exact observation root and projects exact
   completed visits from canonical branch-point credit sets while leaving richer
-  reward, novelty, and finding statistics zero. Other
+  reward, novelty, and finding statistics zero. The independent exact PUCT
+  arithmetic primitive is available but intentionally cannot affect this
+  engine's canonical ordering. Other
   generated requests remain conservatively `Open` and
   fail closed when proposal or expansion semantics are requested. Legacy
   snapshots remain unindexed and queries fail closed rather than constructing a
