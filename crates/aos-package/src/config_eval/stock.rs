@@ -33,6 +33,7 @@
 //! imported by store path.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -284,15 +285,22 @@ fn command_from_path(name: &str) -> Result<Command> {
 /// only exact authenticated inputs and the expression/attribute they need.
 pub(super) fn pure_eval_command() -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
-    configure_pure_eval_command(&mut command);
+    let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
+    configure_pure_eval_command(&mut command, nix_cache_home.as_deref());
     Ok(command)
 }
 
-fn configure_pure_eval_command(command: &mut Command) {
+fn configure_pure_eval_command(command: &mut Command, nix_cache_home: Option<&OsStr>) {
     let store = std::env::var_os("AOS_NIX_EVAL_STORE");
     command.env_clear();
     if let Some(store) = store {
         command.arg("--store").arg(store);
+    }
+    // Nix creates client cache state even for pure evaluation. Preserve only
+    // the service-owned cache directory across the environment scrub so the
+    // hardened read-only home does not make evaluation fail before it starts.
+    if let Some(nix_cache_home) = nix_cache_home {
+        command.env("XDG_CACHE_HOME", nix_cache_home);
     }
     command
         .args(["--extra-experimental-features", "nix-command flakes"])
@@ -1175,7 +1183,7 @@ mod tests {
     fn evaluator_command_is_pure_restricted_and_environment_scrubbed() {
         let mut command = Command::new("nix-instantiate");
         command.env("AOS_AMBIENT_SENTINEL", "must-not-survive");
-        configure_pure_eval_command(&mut command);
+        configure_pure_eval_command(&mut command, Some(OsStr::new("/var/cache/aos/nix-eval")));
 
         let args = command
             .get_args()
@@ -1203,6 +1211,10 @@ mod tests {
                 .get_envs()
                 .all(|(name, _)| name != "AOS_AMBIENT_SENTINEL")
         );
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "XDG_CACHE_HOME"
+                && value.is_some_and(|value| value == "/var/cache/aos/nix-eval")
+        }));
     }
 
     #[test]
