@@ -1074,9 +1074,9 @@
   #
   # Fixed-output derivation that vendors Cargo dependencies via `cargo vendor`.
   #
-  # gitDeps: list of { url, rev, crate } for git-sourced crates.
-  #   Each is fetched via builtins.fetchGit (no git binary needed in sandbox)
-  #   and copied into the vendor directory alongside crates-io deps.
+  # gitDeps: list of { url, rev, crate, sourceArchive? } for git-sourced crates.
+  #   A pinned fixed-output sourceArchive keeps restricted evaluation
+  #   network-free. Entries without one retain the builtins.fetchGit fallback.
   fetchCargoDeps = {
     cargo,
     bootstrapTools,
@@ -1094,18 +1094,34 @@
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
 
-    # Fetch each git dependency via builtins.fetchGit (Nix builtin, no git binary)
+    # Resolve each Git dependency to a fixed-output archive or a pure fetchGit
+    # store path before the vendoring derivation runs.
     fetchedGitDeps =
       builtins.map (
         dep:
           dep
           // {
-            fetched = builtins.fetchGit {
-              inherit (dep) url rev;
-            };
+            fetched =
+              if dep ? sourceArchive
+              then dep.sourceArchive
+              else
+                builtins.fetchGit {
+                  inherit (dep) url rev;
+                };
           }
       )
       gitDeps;
+
+    gitPrepareScript = builtins.concatStringsSep "\n" (
+      builtins.map (dep:
+        if dep ? sourceArchive
+        then ''
+          mkdir -p "$TMPDIR/git-deps/${dep.crate}"
+          tar xf "${dep.fetched}" --strip-components=1 -C "$TMPDIR/git-deps/${dep.crate}"
+        ''
+        else "")
+      fetchedGitDeps
+    );
 
     # Shell commands to patch Cargo.toml so cargo vendor ignores git deps,
     # then copy git deps into the vendor output with .cargo-checksum.json
@@ -1120,8 +1136,13 @@
               printf '\n' >> Cargo.toml
             ''
           ]
-          ++ builtins.map (dep: ''
-            printf '[patch."${dep.url}"]\n${dep.crate} = { path = "${dep.fetched}" }\n' >> Cargo.toml
+          ++ builtins.map (dep: let
+            sourcePath =
+              if dep ? sourceArchive
+              then "$TMPDIR/git-deps/${dep.crate}"
+              else builtins.toString dep.fetched;
+          in ''
+            printf '[patch."${dep.url}"]\n${dep.crate} = { path = "%s" }\n' "${sourcePath}" >> Cargo.toml
           '')
           fetchedGitDeps
         );
@@ -1132,12 +1153,21 @@
       then ""
       else
         builtins.concatStringsSep "\n" (
-          builtins.map (dep: ''
-            # Copy ${dep.crate} from builtins.fetchGit into vendor dir
-            cp -r "${dep.fetched}" "$out/${dep.crate}"
-            chmod -R u+w "$out/${dep.crate}"
-            printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
-          '')
+          builtins.map (dep:
+            if dep ? sourceArchive
+            then ''
+              # Copy the prepared fixed-output source into the vendor tree.
+              rm -rf "$out/${dep.crate}"
+              cp -r "$TMPDIR/git-deps/${dep.crate}" "$out/${dep.crate}"
+              chmod -R u+w "$out/${dep.crate}"
+              printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
+            ''
+            else ''
+              # Copy ${dep.crate} from builtins.fetchGit into vendor dir.
+              cp -r "${dep.fetched}" "$out/${dep.crate}"
+              chmod -R u+w "$out/${dep.crate}"
+              printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
+            '')
           fetchedGitDeps
         );
   in
@@ -1171,6 +1201,8 @@
 
           # Apply cargo patches if any
           ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
+
+          ${gitPrepareScript}
 
           ${gitPatchScript}
 

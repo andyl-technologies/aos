@@ -46,6 +46,15 @@ in
     ];
     propagatedDeps = [];
 
+    # CPython models PyTupleObject's variable-length ob_item storage as a
+    # trailing one-element array. GCC 14's strictest flexible-array mode treats
+    # that declaration as a fixed-size object, so _FORTIFY_SOURCE aborts the
+    # freshly built _freeze_module when it writes tuples with multiple items.
+    # Level 1 preserves the upstream trailing-array convention while retaining
+    # fortify3 and the remaining hardening flags.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     phases = [
       {
         name = "unpack";

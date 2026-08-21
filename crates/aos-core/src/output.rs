@@ -16,11 +16,22 @@
 
 use console::Style;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::fmt::Display;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PLAIN_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 const PLAIN_PROGRESS_PERCENT_STEP: u64 = 10;
+const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(80);
+const SPINNER_TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"];
+const ACTIVITY_TEMPLATE: &str = "{spinner:.cyan} {wide_msg} {elapsed}";
+const ITEM_TEMPLATE: &str =
+    "{spinner:.cyan} {msg:32!} [{wide_bar:.cyan/dim}] {pos}/{len} ETA {eta}";
+const TRANSFER_TEMPLATE: &str = "{spinner:.cyan} {msg:32!} [{wide_bar:.cyan/dim}] \
+     {binary_bytes}/{binary_total_bytes} {percent:>3}% {binary_bytes_per_sec} ETA {eta}";
+const STREAM_TEMPLATE: &str =
+    "{spinner:.cyan} {msg:48!} {binary_bytes} {binary_bytes_per_sec} {elapsed}";
 
 /// Determines how the CLI renders output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +153,7 @@ impl Printer {
     pub fn info(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("{}", self.style_info.apply_to(msg)),
+            _ => self.write_human(self.style_info.apply_to(msg)),
         }
     }
 
@@ -152,7 +163,7 @@ impl Printer {
     pub fn success(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("{}", self.style_success.apply_to(msg)),
+            _ => self.write_human(self.style_success.apply_to(msg)),
         }
     }
 
@@ -162,7 +173,7 @@ impl Printer {
     pub fn warning(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("{}", self.style_warning.apply_to(format!("warning: {msg}"))),
+            _ => self.write_human(self.style_warning.apply_to(format!("warning: {msg}"))),
         }
     }
 
@@ -176,7 +187,7 @@ impl Printer {
             let obj = serde_json::json!({ "error": msg });
             println!("{}", serde_json::to_string(&obj).unwrap_or_default());
         } else {
-            eprintln!("{}", self.style_error.apply_to(format!("error: {msg}")));
+            self.write_human(self.style_error.apply_to(format!("error: {msg}")));
         }
     }
 
@@ -187,11 +198,11 @@ impl Printer {
     pub fn step(&self, current: usize, total: usize, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!(
+            _ => self.write_human(format!(
                 "{} {}",
                 self.style_step.apply_to(format!("[{current}/{total}]")),
                 msg,
-            ),
+            )),
         }
     }
 
@@ -201,7 +212,7 @@ impl Printer {
     pub fn header(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("{}", self.style_bold.apply_to(msg)),
+            _ => self.write_human(self.style_bold.apply_to(msg)),
         }
     }
 
@@ -211,7 +222,7 @@ impl Printer {
     pub fn plain(&self, msg: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("{msg}"),
+            _ => self.write_human(msg),
         }
     }
 
@@ -221,7 +232,7 @@ impl Printer {
     pub fn kv(&self, key: &str, value: &str) {
         match self.mode {
             OutputMode::Quiet | OutputMode::Json => {}
-            _ => eprintln!("  {}: {}", self.style_bold.apply_to(key), value),
+            _ => self.write_human(format!("  {}: {}", self.style_bold.apply_to(key), value)),
         }
     }
 
@@ -249,6 +260,12 @@ impl Printer {
             false
         }
     }
+
+    /// Writes one stable human-readable line without corrupting active bars.
+    fn write_human(&self, line: impl Display) {
+        let line = line.to_string();
+        self.progress.suspend(|| eprintln!("{line}"));
+    }
 }
 
 /// Reports an operation whose total work is not measurable in advance.
@@ -264,12 +281,9 @@ impl ActivityProgress {
         let progress = printer.progress.add(ProgressBar::new_spinner());
         match renderer {
             ProgressRenderer::Tty => {
-                let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                    .unwrap_or_else(|_| ProgressStyle::default_spinner())
-                    .tick_chars("-\\|/ ");
-                progress.set_style(style);
+                progress.set_style(activity_style());
                 progress.set_message(action.to_string());
-                progress.enable_steady_tick(Duration::from_millis(120));
+                progress.enable_steady_tick(PROGRESS_TICK_INTERVAL);
             }
             ProgressRenderer::Plain => {
                 progress.set_draw_target(ProgressDrawTarget::hidden());
@@ -297,9 +311,17 @@ impl ActivityProgress {
         self.finish();
     }
 
+    /// Changes the activity label without starting a second indicator.
+    pub fn phase(&self, action: &str) {
+        self.progress.set_message(action.to_string());
+        if matches!(progress_renderer(&self.printer), ProgressRenderer::Plain) {
+            self.printer.info(action);
+        }
+    }
+
     /// Emits a warning without corrupting an active terminal spinner.
     pub fn warning(&self, message: &str) {
-        self.progress.suspend(|| self.printer.warning(message));
+        self.printer.warning(message);
     }
 
     /// Returns the wall-clock duration since reporting began.
@@ -329,11 +351,9 @@ impl ItemProgress {
         let progress = printer.progress.add(ProgressBar::new(total_items));
         let plain = match renderer {
             ProgressRenderer::Tty => {
-                let style = ProgressStyle::with_template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-                    .unwrap_or_else(|_| ProgressStyle::default_bar())
-                    .progress_chars("=> ");
-                progress.set_style(style);
+                progress.set_style(item_style());
                 progress.set_message(action.to_string());
+                progress.enable_steady_tick(PROGRESS_TICK_INTERVAL);
                 None
             }
             ProgressRenderer::Plain => {
@@ -410,32 +430,39 @@ struct PlainProgressState {
 /// Reports the lifecycle of one byte-oriented transfer.
 ///
 /// A reporter may render as an updating terminal line, stable log lines, or
-/// no output according to its parent [`Printer`]. Dropping it always clears an
-/// active terminal line; callers should still use [`finish`](Self::finish) or
-/// [`abandon`](Self::abandon) to communicate the terminal state explicitly.
+/// no output according to its parent [`Printer`]. Clones share one counter and
+/// terminal line so concurrent workers can report an aggregate transfer.
+/// Dropping the final handle clears the line; callers should still use
+/// [`finish`](Self::finish) or [`abandon`](Self::abandon) after every worker
+/// has stopped to communicate the terminal state explicitly.
+#[derive(Clone)]
 pub struct TransferProgress {
+    inner: Arc<TransferProgressInner>,
+}
+
+struct TransferProgressInner {
     printer: Printer,
-    action: String,
-    total_bytes: u64,
+    action: Mutex<String>,
+    total_bytes: AtomicU64,
     progress: ProgressBar,
     plain: Option<Mutex<PlainProgressState>>,
     started: Instant,
+    renderer: ProgressRenderer,
 }
 
 impl TransferProgress {
     fn new(printer: Printer, action: &str, total_bytes: u64) -> Self {
         let renderer = progress_renderer(&printer);
-        let progress = printer.progress.add(ProgressBar::new(total_bytes));
+        let progress = if total_bytes == 0 {
+            printer.progress.add(ProgressBar::new_spinner())
+        } else {
+            printer.progress.add(ProgressBar::new(total_bytes))
+        };
         let plain = match renderer {
             ProgressRenderer::Tty => {
-                let style = ProgressStyle::with_template(
-                    "{spinner:.cyan} {msg}  {bytes}/{total_bytes}  {percent:>3}%  {binary_bytes_per_sec}  ETA {eta}",
-                )
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("=> ");
-                progress.set_style(style);
+                progress.set_style(transfer_style(total_bytes));
                 progress.set_message(action.to_string());
-                progress.enable_steady_tick(Duration::from_millis(120));
+                progress.enable_steady_tick(PROGRESS_TICK_INTERVAL);
                 None
             }
             ProgressRenderer::Plain => {
@@ -456,85 +483,115 @@ impl TransferProgress {
             }
         };
         Self {
-            printer,
-            action: action.to_string(),
-            total_bytes,
-            progress,
-            plain,
-            started: Instant::now(),
+            inner: Arc::new(TransferProgressInner {
+                printer,
+                action: Mutex::new(action.to_string()),
+                total_bytes: AtomicU64::new(total_bytes),
+                progress,
+                plain,
+                started: Instant::now(),
+                renderer,
+            }),
         }
     }
 
     /// Changes the phase label without resetting byte progress.
-    pub fn phase(&mut self, action: &str) {
-        self.action.clear();
-        self.action.push_str(action);
-        self.progress.set_message(action.to_string());
-        if self.plain.is_some() {
-            self.printer.info(action);
+    pub fn phase(&self, action: &str) {
+        if let Ok(mut current) = self.inner.action.lock() {
+            current.clear();
+            current.push_str(action);
+        }
+        self.inner.progress.set_message(action.to_string());
+        if self.inner.plain.is_some() {
+            self.inner.printer.info(action);
         }
     }
 
     /// Changes the expected byte total, including from initially unknown.
-    pub fn set_total(&mut self, total_bytes: u64) {
-        self.total_bytes = total_bytes;
-        self.progress.set_length(total_bytes);
-        if let Some(plain) = &self.plain {
+    pub fn set_total(&self, total_bytes: u64) {
+        self.inner.total_bytes.store(total_bytes, Ordering::Relaxed);
+        if total_bytes == 0 {
+            self.inner.progress.unset_length();
+        } else {
+            self.inner.progress.set_length(total_bytes);
+            if self.inner.progress.position() > total_bytes {
+                self.inner.progress.set_position(total_bytes);
+            }
+        }
+        if matches!(self.inner.renderer, ProgressRenderer::Tty) {
+            self.inner.progress.set_style(transfer_style(total_bytes));
+        }
+        if let Some(plain) = &self.inner.plain {
             if let Ok(mut state) = plain.lock() {
                 state.last_percent_bucket = 0;
                 state.last_emit = Instant::now();
             }
             if total_bytes > 0 {
-                self.printer
-                    .info(&format!("{} ({})", self.action, format_bytes(total_bytes)));
+                self.inner.printer.info(&format!(
+                    "{} ({})",
+                    self.action(),
+                    format_bytes(total_bytes)
+                ));
             }
         }
     }
 
     /// Sets the number of bytes already completed.
     pub fn set_position(&self, bytes: u64) {
-        self.progress.set_position(bytes.min(self.total_bytes));
+        let total_bytes = self.inner.total_bytes.load(Ordering::Relaxed);
+        let position = if total_bytes == 0 {
+            bytes
+        } else {
+            bytes.min(total_bytes)
+        };
+        self.inner.progress.set_position(position);
         self.maybe_emit_plain(bytes);
     }
 
     /// Advances the operation by `bytes` bytes.
     pub fn inc(&self, bytes: u64) {
-        self.progress.inc(bytes);
-        self.maybe_emit_plain(self.progress.position());
+        self.inner.progress.inc(bytes);
+        self.maybe_emit_plain(self.inner.progress.position());
     }
 
     /// Emits a warning without corrupting an active terminal progress line.
     pub fn warning(&self, message: &str) {
-        self.progress.suspend(|| self.printer.warning(message));
+        self.inner.printer.warning(message);
     }
 
     /// Clears dynamic output after a successful operation.
-    pub fn finish(self) {
-        self.progress.finish_and_clear();
+    pub fn finish(&self) {
+        self.inner.progress.finish_and_clear();
     }
 
     /// Clears dynamic output and emits a stable interruption or failure note.
-    pub fn abandon(self, message: &str) {
-        self.progress.finish_and_clear();
-        self.printer.warning(message);
+    pub fn abandon(&self, message: &str) {
+        self.inner.progress.finish_and_clear();
+        self.inner.printer.warning(message);
     }
 
     /// Returns the wall-clock duration since reporting began.
     pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
+        self.inner.started.elapsed()
+    }
+
+    /// Returns the number of bytes reported so far.
+    pub fn position(&self) -> u64 {
+        self.inner.progress.position()
     }
 
     fn maybe_emit_plain(&self, bytes: u64) {
-        let Some(plain) = &self.plain else {
+        let Some(plain) = &self.inner.plain else {
             return;
         };
         let Ok(mut state) = plain.lock() else {
             return;
         };
-        let percent = if self.total_bytes == 0 {
+        let total_bytes = self.inner.total_bytes.load(Ordering::Relaxed);
+        let percent = if total_bytes == 0 {
             0
         } else {
-            bytes.saturating_mul(100) / self.total_bytes
+            bytes.saturating_mul(100) / total_bytes
         };
         let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
         let now = Instant::now();
@@ -545,17 +602,33 @@ impl TransferProgress {
         }
         state.last_percent_bucket = bucket;
         state.last_emit = now;
-        self.printer.info(&format!(
-            "{}: {}/{} ({}%)",
-            self.action,
-            format_bytes(bytes.min(self.total_bytes)),
-            format_bytes(self.total_bytes),
-            percent.min(100),
-        ));
+        if total_bytes == 0 {
+            self.inner.printer.info(&format!(
+                "{}: {} transferred",
+                self.action(),
+                format_bytes(bytes)
+            ));
+        } else {
+            self.inner.printer.info(&format!(
+                "{}: {}/{} ({}%)",
+                self.action(),
+                format_bytes(bytes.min(total_bytes)),
+                format_bytes(total_bytes),
+                percent.min(100),
+            ));
+        }
+    }
+
+    fn action(&self) -> String {
+        self.inner
+            .action
+            .lock()
+            .map(|action| action.clone())
+            .unwrap_or_else(|_| "Transfer".to_string())
     }
 }
 
-impl Drop for TransferProgress {
+impl Drop for TransferProgressInner {
     fn drop(&mut self) {
         self.progress.finish_and_clear();
     }
@@ -580,6 +653,31 @@ fn progress_renderer(printer: &Printer) -> ProgressRenderer {
     }
 }
 
+fn activity_style() -> ProgressStyle {
+    ProgressStyle::with_template(ACTIVITY_TEMPLATE)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(SPINNER_TICKS)
+}
+
+fn item_style() -> ProgressStyle {
+    ProgressStyle::with_template(ITEM_TEMPLATE)
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .tick_strings(SPINNER_TICKS)
+        .progress_chars("━━ ")
+}
+
+fn transfer_style(total_bytes: u64) -> ProgressStyle {
+    let template = if total_bytes == 0 {
+        STREAM_TEMPLATE
+    } else {
+        TRANSFER_TEMPLATE
+    };
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .tick_strings(SPINNER_TICKS)
+        .progress_chars("━━ ")
+}
+
 fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -592,5 +690,50 @@ fn format_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_progress_kind_uses_the_shared_spinner() {
+        for style in [
+            activity_style(),
+            item_style(),
+            transfer_style(0),
+            transfer_style(1),
+        ] {
+            assert_eq!(style.get_tick_str(0), SPINNER_TICKS[0]);
+            assert_eq!(style.get_final_tick_str(), "✓");
+        }
+    }
+
+    #[test]
+    fn byte_format_uses_binary_units() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+    }
+
+    #[test]
+    fn unknown_transfer_counts_bytes_across_clones() {
+        let progress = Printer::new(0, true, false).transfer("test", 0);
+        let worker = progress.clone();
+
+        progress.inc(512);
+        worker.inc(1024);
+
+        assert_eq!(progress.position(), 1536);
+    }
+
+    #[test]
+    fn adding_a_total_clamps_an_unknown_transfer() {
+        let progress = Printer::new(0, true, false).transfer("test", 0);
+        progress.set_position(2048);
+
+        progress.set_total(1024);
+
+        assert_eq!(progress.position(), 1024);
     }
 }

@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  perl,
   openssl,
 }: let
   version = "1.22.1";
@@ -19,7 +20,7 @@ in
       hash = "sha256-GogyuMrZI+u/E5T2fi789B46SfRgKFpm41reyPoAU68=";
     };
 
-    buildDeps = [gnumake pkg-config];
+    buildDeps = [gnumake pkg-config perl];
     runtimeDeps = [openssl];
     propagatedDeps = [];
 

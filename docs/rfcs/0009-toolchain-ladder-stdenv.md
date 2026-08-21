@@ -418,7 +418,14 @@ check rejects a normal GNU/Linux libc without NPTL, so the producer must pass
 `INSTALL_INFO` to the preceding AOS tier because glibc 2.17's generated
 configure script appends `/usr/bin` to both searches even when the hermetic
 `PATH` excludes it; never let a worker image's host tools influence the libc
-derivation.
+derivation. Replace that configure script's wildcard search for sysdeps
+preconfigure fragments with the explicit x86_64 fragment before running it.
+The preceding bootstrap shell does not expand the wildcard reliably; skipping
+the fragment leaves the machine at bare `x86_64`, omits
+`sysdeps/x86_64/64/Implies-after`, and selects glibc's deliberately failing
+generic `intmax_t` conversion sources instead of the `wordsize-64`
+implementations. Assert the replacement so an upstream configure change fails
+at source preparation rather than much later in `stdlib`.
 
 Before configuring GCC 4.4, patch its language-fragment loop to enumerate the
 unpacked `gcc/cp/config-lang.in` directly and assert that file exists. GCC 4.4
