@@ -675,6 +675,7 @@
     [registry]
     name = "example"
     url = "https://registry.example/aos"
+    channel = "stable"
     priority = 50
     enabled = true
 
