@@ -108,6 +108,18 @@ pub enum QemuLiveNetworkIoGateError {
         /// The deterministic boot-time frame key.
         frame: crucible_shmem::FrameDeliveryKey,
     },
+    /// The first retained retry was not observed at its canonical deadline.
+    #[error(
+        "live network retained frame {frame:?} did not retry exactly at {expected_retry_icount}: {evidence}"
+    )]
+    BackpressureRetryCoordinate {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+        /// The retry coordinate derived from the persisted last attempt.
+        expected_retry_icount: u64,
+        /// Node and transport evidence observed around the retry boundary.
+        evidence: String,
+    },
     /// Guest userspace did not acknowledge the exact retained frame.
     #[error(
         "live network retained frame {frame:?} left shared memory without a guest acknowledgement: {evidence}"
