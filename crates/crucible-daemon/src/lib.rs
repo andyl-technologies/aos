@@ -12,6 +12,8 @@
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
+//! [`campaign_retention`] composes snapshot-bound semantic pins with durable
+//! executor publication roots for local garbage-collection inventory;
 //! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
@@ -40,6 +42,7 @@
 pub mod assignment_ledger;
 pub mod campaign_loopback;
 pub mod campaign_policy;
+pub mod campaign_retention;
 pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
@@ -75,6 +78,10 @@ pub use campaign_policy::{
     CampaignAccessGrant, CampaignAccessScope, MAX_CAMPAIGN_ACCESS_GRANTS,
     MAX_CAMPAIGN_PEER_BINDINGS, UnixPeerCampaignBinding, UnixPeerCampaignIdentity,
     UnixPeerCampaignPolicy, UnixPeerCampaignPolicyError,
+};
+pub use campaign_retention::{
+    LocalCampaignRetentionError, LocalCampaignRetentionRoot, LocalCampaignRetentionSummary,
+    visit_local_campaign_retention_roots,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
