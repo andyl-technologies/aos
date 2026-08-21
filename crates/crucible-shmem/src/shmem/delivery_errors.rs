@@ -329,6 +329,12 @@ pub enum SpscRingError {
         /// The rejected encoded frame count.
         count: u64,
     },
+    /// The decoded snapshot frame vector could not reserve its bounded storage.
+    #[error("SPSC snapshot cannot reserve storage for {count} decoded frames")]
+    SnapshotAllocationFailed {
+        /// Canonical frame count that could not be admitted.
+        count: usize,
+    },
     /// The canonical snapshot byte stream ended before the declared field.
     #[error(
         "SPSC snapshot decode truncated at byte {offset}: needed {needed} bytes, available {available}"
