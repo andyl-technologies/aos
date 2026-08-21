@@ -166,13 +166,6 @@ pub async fn run(
             _ => {}
         }
 
-        if !json_mode {
-            printer.header(&format!(
-                "Fetching registry '{}' ({})...",
-                reg_config.name, tracking_mode,
-            ));
-        }
-
         let result = match reg_config.transport() {
             Transport::Http | Transport::Git => git::sync_git(
                 reg_config,

@@ -25,6 +25,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_core::output::TransferProgress;
 
 use crate::registry::dumb_http;
 
@@ -672,8 +673,28 @@ fn commit_tree<'a>(repo: &'a git2::Repository, commit: &str) -> Result<git2::Tre
 ///
 /// Returns an error if the transport fails or a requested ref is unavailable.
 pub(crate) async fn fetch(repo_dir: &Path, url: &str, refspecs: &[String]) -> Result<()> {
+    fetch_with_progress(repo_dir, url, refspecs, None).await
+}
+
+/// Fetches refs while reporting aggregate network bytes to the caller.
+///
+/// # Errors
+///
+/// Returns an error under the same transport and ref-resolution conditions as
+/// [`fetch`].
+pub(crate) async fn fetch_with_progress(
+    repo_dir: &Path,
+    url: &str,
+    refspecs: &[String],
+    progress: Option<TransferProgress>,
+) -> Result<()> {
     if url.starts_with("http://") || url.starts_with("https://") {
-        return dumb_http::fetch(repo_dir, url, refspecs).await;
+        return match progress.as_ref() {
+            Some(progress) => {
+                dumb_http::fetch_with_progress(repo_dir, url, refspecs, Some(progress)).await
+            }
+            None => dumb_http::fetch(repo_dir, url, refspecs).await,
+        };
     }
     let url = url.to_string();
     let refspecs = refspecs.to_vec();
@@ -684,6 +705,15 @@ pub(crate) async fn fetch(repo_dir: &Path, url: &str, refspecs: &[String]) -> Re
             .with_context(|| format!("creating remote for {url}"))?;
         let mut callbacks = git2::RemoteCallbacks::new();
         callbacks.credentials(credentials);
+        if let Some(progress) = progress {
+            let previous = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            callbacks.transfer_progress(move |stats| {
+                let received = stats.received_bytes() as u64;
+                let previous = previous.swap(received, std::sync::atomic::Ordering::Relaxed);
+                progress.inc(received.saturating_sub(previous));
+                true
+            });
+        }
         let mut options = git2::FetchOptions::new();
         options.remote_callbacks(callbacks);
         options.download_tags(git2::AutotagOption::None);

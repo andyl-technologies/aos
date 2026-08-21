@@ -25,7 +25,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::download::join_cache_url;
 use crate::registry::pack;
-use aos_core::output::Printer;
+use aos_core::output::{Printer, TransferProgress};
 
 /// The ordered fetch steps chosen to materialize a target release.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,11 +223,29 @@ pub async fn resolve_objects(
     retained: &[semver::Version],
     printer: &Printer,
 ) -> Result<FetchPlan> {
+    resolve_objects_with_progress(repo_dir, origin, target, retained, printer, None).await
+}
+
+/// Resolves release objects while reporting into a caller-owned transfer.
+///
+/// # Errors
+///
+/// Returns an error under the same download, indexing, and fallback conditions
+/// as [`resolve_objects`].
+pub(crate) async fn resolve_objects_with_progress(
+    repo_dir: &Path,
+    origin: &str,
+    target: &semver::Version,
+    retained: &[semver::Version],
+    printer: &Printer,
+    progress: Option<&TransferProgress>,
+) -> Result<FetchPlan> {
     for base in deltas_at(target) {
         if !retained.contains(&base) {
             continue;
         }
-        match fetch_delta(repo_dir, origin, target, &base).await {
+        set_phase(progress, "Downloading registry delta");
+        match fetch_delta(repo_dir, origin, target, &base, progress).await {
             Ok(Some(step)) => {
                 printer.info(&format!(
                     "Fetched registry delta {base} -> {target} via AOS pack"
@@ -247,21 +265,25 @@ pub async fn resolve_objects(
     }
 
     let anchor = anchor_for(target);
-    match fetch_full_pack(repo_dir, origin, &anchor).await {
+    set_phase(progress, "Downloading registry release pack");
+    match fetch_full_pack(repo_dir, origin, &anchor, progress).await {
         Ok(Some(full_step)) => {
             let mut steps = vec![full_step];
             if anchor != *target {
-                match fetch_delta(repo_dir, origin, target, &anchor).await {
+                set_phase(progress, "Downloading registry delta");
+                match fetch_delta(repo_dir, origin, target, &anchor, progress).await {
                     Ok(Some(delta_step)) => steps.push(delta_step),
                     Ok(None) => {
-                        let fallback = git_fetch_release(repo_dir, origin, target).await?;
+                        let fallback =
+                            git_fetch_release(repo_dir, origin, target, progress).await?;
                         steps.push(fallback);
                     }
                     Err(err) => {
                         printer.warning(&format!(
                             "Skipping unusable registry delta {anchor} -> {target}: {err:#}"
                         ));
-                        let fallback = git_fetch_release(repo_dir, origin, target).await?;
+                        let fallback =
+                            git_fetch_release(repo_dir, origin, target, progress).await?;
                         steps.push(fallback);
                     }
                 }
@@ -280,7 +302,7 @@ pub async fn resolve_objects(
         }
     }
 
-    let fallback = git_fetch_release(repo_dir, origin, target).await?;
+    let fallback = git_fetch_release(repo_dir, origin, target, progress).await?;
     Ok(FetchPlan {
         target: target.clone(),
         steps: vec![fallback],
@@ -296,6 +318,7 @@ async fn fetch_delta(
     origin: &str,
     target: &semver::Version,
     base: &semver::Version,
+    progress: Option<&TransferProgress>,
 ) -> Result<Option<FetchStep>> {
     let release = release_path(target);
     for compressed in [true, false] {
@@ -307,7 +330,7 @@ async fn fetch_delta(
         } else {
             pack_path.clone()
         };
-        if !download_optional_to_file(origin, &relative, &download_path).await? {
+        if !download_optional_to_file(origin, &relative, &download_path, progress).await? {
             continue;
         }
         if compressed {
@@ -334,10 +357,11 @@ async fn fetch_full_pack(
     repo_dir: &Path,
     origin: &str,
     version: &semver::Version,
+    progress: Option<&TransferProgress>,
 ) -> Result<Option<FetchStep>> {
     let release = release_path(version);
     let info_path = format!("releases/{release}/objects/info/packs");
-    let Some(info) = get_optional(origin, &info_path).await? else {
+    let Some(info) = get_optional(origin, &info_path, progress).await? else {
         return Ok(None);
     };
     let info = String::from_utf8(info).context("release objects/info/packs is not UTF-8")?;
@@ -347,7 +371,7 @@ async fn fetch_full_pack(
 
     let pack_relative = format!("releases/{release}/objects/pack/{pack_name}");
     let pack_path = local_pack_path(repo_dir, &pack_name)?;
-    if !download_optional_to_file(origin, &pack_relative, &pack_path).await? {
+    if !download_optional_to_file(origin, &pack_relative, &pack_path, progress).await? {
         return Ok(None);
     }
 
@@ -366,19 +390,30 @@ async fn git_fetch_release(
     repo_dir: &Path,
     origin: &str,
     target: &semver::Version,
+    progress: Option<&TransferProgress>,
 ) -> Result<FetchStep> {
+    set_phase(progress, "Fetching registry release objects");
     let refspec = release_refspec(target);
     // Leading `+` forces the ref update (the historical `git fetch --force`);
     // the stored FetchStep keeps the logical, unforced refspec.
     let forced = format!("+{refspec}");
-    crate::registry::repo::fetch(repo_dir, origin, std::slice::from_ref(&forced))
-        .await
-        .with_context(|| format!("git fetch {refspec}"))?;
+    crate::registry::repo::fetch_with_progress(
+        repo_dir,
+        origin,
+        std::slice::from_ref(&forced),
+        progress.cloned(),
+    )
+    .await
+    .with_context(|| format!("git fetch {refspec}"))?;
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 
 /// GET a static origin file, mapping HTTP 404 to `Ok(None)`.
-async fn get_optional(origin: &str, relative: &str) -> Result<Option<Vec<u8>>> {
+async fn get_optional(
+    origin: &str,
+    relative: &str,
+    progress: Option<&TransferProgress>,
+) -> Result<Option<Vec<u8>>> {
     let url = join_cache_url(origin, relative);
     let response = reqwest::get(&url)
         .await
@@ -389,17 +424,23 @@ async fn get_optional(origin: &str, relative: &str) -> Result<Option<Vec<u8>>> {
     if !response.status().is_success() {
         bail!("GET {url} failed with {}", response.status());
     }
-    Ok(Some(
-        response
-            .bytes()
-            .await
-            .with_context(|| format!("reading {url}"))?
-            .to_vec(),
-    ))
+    let body = response
+        .bytes()
+        .await
+        .with_context(|| format!("reading {url}"))?;
+    if let Some(progress) = progress {
+        progress.inc(body.len() as u64);
+    }
+    Ok(Some(body.to_vec()))
 }
 
 /// GET a static origin file directly to `dest`, mapping HTTP 404 to `Ok(false)`.
-async fn download_optional_to_file(origin: &str, relative: &str, dest: &Path) -> Result<bool> {
+async fn download_optional_to_file(
+    origin: &str,
+    relative: &str,
+    dest: &Path,
+    progress: Option<&TransferProgress>,
+) -> Result<bool> {
     let url = join_cache_url(origin, relative);
     let mut response = reqwest::get(&url)
         .await
@@ -430,6 +471,9 @@ async fn download_optional_to_file(origin: &str, relative: &str, dest: &Path) ->
         .await
         .with_context(|| format!("reading {url}"))?
     {
+        if let Some(progress) = progress {
+            progress.inc(chunk.len() as u64);
+        }
         file.write_all(&chunk)
             .await
             .with_context(|| format!("writing {}", tmp.display()))?;
@@ -444,6 +488,12 @@ async fn download_optional_to_file(origin: &str, relative: &str, dest: &Path) ->
     tmp.persist(dest)
         .map_err(|err| anyhow::anyhow!("persisting {}: {err}", dest.display()))?;
     Ok(true)
+}
+
+fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
+    if let Some(progress) = progress {
+        progress.phase(phase);
+    }
 }
 
 /// Parse pack names from a git `objects/info/packs` listing (`P <name>` lines).

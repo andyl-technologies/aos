@@ -135,7 +135,7 @@ impl PrefetchProgress {
 
 impl TransferObserver for PrefetchProgress {
     fn observe(&self, event: TransferEvent<'_>) {
-        let Ok(mut progress) = self.progress.lock() else {
+        let Ok(progress) = self.progress.lock() else {
             return;
         };
         match event {

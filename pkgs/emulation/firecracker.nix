@@ -24,6 +24,12 @@
       url = "https://github.com/firecracker-microvm/micro-http";
       rev = "5c2254d6cf4f32a668d0d8e57ba20bebad9d4fba";
       crate = "micro_http";
+      sourceArchive = fetchurl {
+        urls = [
+          "https://github.com/firecracker-microvm/micro-http/archive/5c2254d6cf4f32a668d0d8e57ba20bebad9d4fba.tar.gz"
+        ];
+        hash = "sha256-YD8yYrSgQ1/gnwFhw98+89aYgpOfltFMWQh2AeD1znA=";
+      };
     }
   ];
 in
@@ -33,8 +39,8 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      # Firecracker has a git dependency on micro_http — fetch via builtins.fetchGit
-      # and patch Cargo.toml to use a local path instead.
+      # Firecracker has a Git dependency on micro_http. Its fixed-output archive
+      # lets restricted evaluators create a normal fetch derivation.
       gitDeps = microHttpGitDeps;
       hash = "sha256-eGkw6H4DB42osPimndIch63k9vQyA4d5h8ylV1Ptau4=";
     };
