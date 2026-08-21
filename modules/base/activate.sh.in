@@ -363,6 +363,13 @@ if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
   fi
 fi
 
+# Publish the earliest point at which remote authentication may safely begin:
+# the candidate /etc is live and its resolved credentials have been installed,
+# but daemon reconciliation has not started yet. sshd's readiness gate waits
+# for this marker, which avoids both the unauthenticated first-boot window and
+# an ordering cycle when reconciliation itself starts or restarts sshd.
+@coreutils@/bin/touch /run/aos/host-policy-live
+
 # --- post-swap reconcile ---
 # The /etc swap is now the commit point. Any post-swap reconcile problem is
 # reported as degraded, never as a rollback/cleanup of the new live /etc.
