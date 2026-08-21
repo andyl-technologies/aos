@@ -411,6 +411,16 @@ pub struct ChoiceOpportunity {
 }
 
 impl ChoiceOpportunity {
+    /// Decodes one canonical runtime opportunity body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the bytes are noncanonical, exceed
+    /// a field bound, or carry an unsupported schema version.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        codec::decode(bytes)
+    }
+
     /// Builds a validated stable runtime opportunity and optional narrowed offer.
     ///
     /// # Errors

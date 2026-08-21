@@ -316,10 +316,16 @@ enum CampaignCommand {
     Watch(CampaignWatchArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
+    /// Inspect one exact object named by the authenticated graph.
+    GraphObject(CampaignGraphObjectArgs),
     /// Read one authenticated page of discovered choice opportunities.
     Choices(CampaignPageArgs),
+    /// Inspect one declaration or domain named by an authenticated choice.
+    ChoiceObject(CampaignChoiceObjectArgs),
     /// Read one authenticated page of continuation states.
     Frontier(CampaignPageArgs),
+    /// Inspect one exact branch request and its current continuation state.
+    FrontierObject(CampaignFrontierObjectArgs),
     /// Begin or resume issuing campaign work.
     Resume(CampaignMutationBasisArgs),
     /// Pause new work under an explicit active-attempt policy.
@@ -436,6 +442,56 @@ struct CampaignPageArgs {
     /// Maximum entries returned in this page.
     #[arg(long, value_name = "COUNT", default_value_t = 8)]
     limit: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignGraphObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the graph object.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact graph key returned by `campaign graph`.
+    #[arg(long, value_name = "KEY", required = true)]
+    key: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum CampaignChoiceObjectKindArg {
+    /// Inspect the reusable selectable declaration.
+    Declaration,
+    /// Inspect the exact effective choice domain.
+    Domain,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the opportunity.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice-opportunity ID returned by `campaign choices`.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Selects the referenced object body to inspect.
+    #[arg(long, value_enum, value_name = "declaration|domain", required = true)]
+    kind: CampaignChoiceObjectKindArg,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFrontierObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the continuation.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact branch-request ID returned by `campaign frontier`.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

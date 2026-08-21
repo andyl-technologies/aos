@@ -606,9 +606,13 @@ the complete anchoring snapshot body and therefore grants the same full
 snapshot-metadata visibility as the other proof-bearing graph operations, but
 it grants no arbitrary content-store read.
 
-The remaining non-graph object reads, paged finding inspection, rich frontier
-details, and explanation messages are still open. The strict local
-transport frames exactly one canonical request or response as:
+The checked local porcelain exposes these proof-bearing reads through
+`campaign graph-object`, `campaign choice-object`, and
+`campaign frontier-object` as exact graph configuration/opportunity, choice
+declaration/domain, and frontier-request views in table, Markdown, JSON, and
+JSONL. Arbitrary non-graph object reads, paged finding inspection, and
+explanation messages are still open. The strict local transport frames exactly
+one canonical request or response as:
 
 ```text
 CampaignLoopbackFrameV12 = "CRUCCS12" | kind:u8 | reserved[3] |
