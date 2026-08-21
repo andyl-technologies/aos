@@ -96,6 +96,38 @@ in
               -- --test-threads=1
           done
 
+          printf '%s\n' '${taskList}' \
+            | tr ',' '\n' \
+            | sed '/^$/d' \
+            | sort -u \
+            > "$TMPDIR/declared-signal-fault-tasks"
+          if grep -Eq '^- \[ \] \*\*T-[A-Z0-9-]+\*\*' \
+            docs/rfcs/0014-signal-driven-fault-model/07-implementation-plan.md
+          then
+            echo 'FAIL: RFC-0014 retains an open executable task' >&2
+            exit 1
+          fi
+          grep -E '^- \[x\] \*\*T-[A-Z0-9-]+\*\*' \
+            docs/rfcs/0014-signal-driven-fault-model/07-implementation-plan.md \
+            | sed -E 's/^- \[x\] \*\*([^*]+)\*\*.*/\1/' \
+            | sort -u \
+            > "$TMPDIR/rfc-signal-fault-tasks"
+          if ! cmp -s \
+            "$TMPDIR/rfc-signal-fault-tasks" \
+            "$TMPDIR/declared-signal-fault-tasks"
+          then
+            echo 'FAIL: final gate task metadata differs from RFC-0014' >&2
+            echo 'RFC tasks absent from the gate:' >&2
+            comm -23 \
+              "$TMPDIR/rfc-signal-fault-tasks" \
+              "$TMPDIR/declared-signal-fault-tasks" >&2
+            echo 'gate tasks absent from the RFC:' >&2
+            comm -13 \
+              "$TMPDIR/rfc-signal-fault-tasks" \
+              "$TMPDIR/declared-signal-fault-tasks" >&2
+            exit 1
+          fi
+
           cargo test \
             --frozen \
             --offline \
@@ -213,7 +245,10 @@ in
           grep -Fxq 'backend=production-qemu-lifecycle' "$network_world_result"
           grep -Fxq 'search_branch=loss-fire' "$network_world_result"
           grep -Fxq 'branch_decisions_match=true' "$network_world_result"
+          grep -Fxq 'guest_acknowledgements=1' "$network_world_result"
           grep -Fxq 'exact_restore_next_quantum_match=true' "$network_world_result"
+          grep -Fxq 'checkpoint_packet_continuation=1' "$network_world_result"
+          grep -Fxq 'checkpoint_fault_decision_continuation=40' "$network_world_result"
 
           block_result=${liveBlock}/result
           grep -Fxq PASS "$block_result"
