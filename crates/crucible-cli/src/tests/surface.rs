@@ -1622,8 +1622,12 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "client_ca",
                 "trusted_unauthenticated_bind",
                 "debug_role",
+                "campaign_socket",
+                "campaign_state",
+                "campaign_policy",
+                "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2012,6 +2016,203 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     assert!(matches!(error, CliError::Serve(_)));
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("serve bind error"));
+}
+
+#[test]
+pub(super) fn cli_serve_campaign_profile_is_exact_and_restart_safe() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::net::UnixStream;
+
+    use crucible_campaign::{
+        CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal,
+        CampaignServiceFailure, GetCampaignRequest,
+    };
+    use crucible_daemon::{LoopbackCampaignService, LoopbackCampaignTimeouts};
+
+    let directory = tempfile::tempdir().expect("campaign serve directory");
+    fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign serve directory");
+    let metadata = fs::metadata(directory.path()).expect("campaign serve metadata");
+    let socket = directory.path().join("campaign.sock");
+    let state = directory.path().join("state");
+    fs::create_dir(&state).expect("campaign state directory");
+    fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign state");
+    let policy = directory.path().join("policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+"#,
+            metadata.uid(),
+            metadata.gid()
+        ),
+    )
+    .expect("campaign policy");
+    fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
+        .expect("secure campaign policy");
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        socket.to_str().expect("socket path"),
+        "--campaign-state",
+        state.to_str().expect("state path"),
+        "--campaign-policy",
+        policy.to_str().expect("policy path"),
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    assert_eq!(args.campaign_socket_mode, 0o600);
+    validate_serve_invocation(args).expect("valid campaign serve profile");
+    let request = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        CampaignName::new("absent").expect("campaign name"),
+    )
+    .expect("campaign get request");
+    let campaign_socket = socket.clone();
+    let shutdown = async move {
+        let mut attempts = 0_u16;
+        let stream = loop {
+            match UnixStream::connect(&campaign_socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    attempts = attempts.saturating_add(1);
+                    if attempts == 1_000 {
+                        return Err(serve_error("campaign test connection timed out"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Err(error) => {
+                    return Err(serve_error(format!(
+                        "campaign test connection error: {error}"
+                    )));
+                }
+            }
+        };
+        let service =
+            LoopbackCampaignService::with_timeouts(stream, LoopbackCampaignTimeouts::default())
+                .map_err(|error| serve_error(format!("campaign test client error: {error}")))?;
+        let client = CampaignClient::new(service);
+        assert!(matches!(
+            client.get_campaign(&request),
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::NotFound
+            ))
+        ));
+        Ok(())
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("campaign serve runtime");
+    runtime
+        .block_on(run_serve_invocation_until_shutdown(&cli, args, shutdown))
+        .expect("campaign and lifecycle services stop together");
+    assert!(!socket.exists());
+    assert!(state.join("objects").is_dir());
+    assert!(state.join("refs").is_dir());
+
+    runtime
+        .block_on(run_serve_invocation_until_shutdown(&cli, args, async {
+            Ok(())
+        }))
+        .expect("campaign service restarts over durable state");
+    assert!(!socket.exists());
+}
+
+#[test]
+pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
+    for argv in [
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+        ],
+    ] {
+        let cli = Cli::parse_from(argv);
+        let Commands::Serve(args) = &cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(matches!(
+            validate_serve_invocation(args),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    let invalid_mode = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-socket-mode",
+        "000",
+    ]);
+    let Commands::Serve(args) = &invalid_mode.command else {
+        panic!("expected serve command");
+    };
+    assert!(matches!(
+        validate_serve_invocation(args),
+        Err(CliError::Usage(_))
+    ));
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-socket-mode",
+            "888",
+        ])
+        .is_err()
+    );
 }
 
 #[test]

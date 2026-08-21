@@ -8,8 +8,10 @@
 //! deterministic decision stream.
 //!
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
-//! runtime-state records; [`campaign_endpoint`] owns the exact local Unix
-//! socket namespace; [`campaign_loopback`] provides the strict local
+//! runtime-state records; [`campaign_bootstrap`] composes durable directory
+//! storage, strict policy, managed endpoint, and listener ownership;
+//! [`campaign_endpoint`] owns the exact local Unix socket namespace;
+//! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
 //! [`campaign_policy`] owns its immutable Unix identity and operation grants;
@@ -43,6 +45,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod campaign_bootstrap;
 pub mod campaign_endpoint;
 pub mod campaign_gc;
 pub mod campaign_loopback;
@@ -70,6 +73,10 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
     DirectoryAssignmentLedger, MemoryAssignmentLedger,
+};
+pub use campaign_bootstrap::{
+    CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
+    CampaignLocalServiceMode,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ManagedCampaignLoopbackListener,

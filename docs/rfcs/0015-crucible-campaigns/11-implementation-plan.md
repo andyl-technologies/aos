@@ -492,8 +492,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   pathname, exact-owner non-group/other-writable parent, owner-only lifetime
   namespace lock, same-owner stale socket, configured socket mode, and
   exact-inode conditional teardown. The parent tree remains operator-owned
-  deployment state. Diagnostic routing and remaining CLI wiring remain open;
-  message framing or listener construction alone is not authentication.
+  deployment state. A durable bootstrap now opens the strict policy before
+  mutation, holds one exact-owner state-root lock across private directory blob
+  and ref backends, excludes a second socket incarnation, and reopens that state
+  after restart. The existing `crucible serve` process exposes the socket,
+  state, policy, and octal-mode profile as all-or-none flags and couples
+  CampaignService failure and SIGINT/SIGTERM to lifecycle-server shutdown and
+  worker join. Process read-only mode also denies every campaign mutation after
+  policy resolution. Structured diagnostic routing and richer
+  creation/import/attach porcelain remain open; message framing or listener
+  construction alone is not authentication.
   Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529

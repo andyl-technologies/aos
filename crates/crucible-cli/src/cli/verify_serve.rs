@@ -949,6 +949,7 @@ where
         ),
         _ => None,
     };
+    let campaign_service = open_local_campaign_service(args)?;
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -967,6 +968,12 @@ where
             "http"
         };
         println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
+        if let Some(service) = campaign_service.as_ref() {
+            println!(
+                "crucible: serving local campaign service at {}",
+                service.socket_path().display()
+            );
+        }
     }
     let mode = if args.read_only {
         LifecycleServerMode::read_only()
@@ -1005,13 +1012,14 @@ where
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
-        return run_bound_lifecycle_server(
+        return run_bound_daemon_services(
             listener,
             control_plane,
             mode,
             tls_acceptor,
             debug_authorization,
             shutdown,
+            campaign_service,
         )
         .await;
     }
@@ -1023,15 +1031,162 @@ where
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
-    run_bound_lifecycle_server(
+    run_bound_daemon_services(
         listener,
         control_plane,
         mode,
         tls_acceptor,
         debug_authorization,
         shutdown,
+        campaign_service,
     )
     .await
+}
+
+struct PreparedLocalCampaignService {
+    service: crucible_daemon::CampaignLocalService,
+    socket_path: PathBuf,
+}
+
+impl PreparedLocalCampaignService {
+    fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+}
+
+fn open_local_campaign_service(
+    args: &ServeArgs,
+) -> Result<Option<PreparedLocalCampaignService>, CliError> {
+    let (Some(socket), Some(state), Some(policy)) = (
+        args.campaign_socket.as_ref(),
+        args.campaign_state.as_ref(),
+        args.campaign_policy.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    let endpoint = crucible_daemon::CampaignLoopbackEndpointConfig::new(
+        socket,
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+        args.campaign_socket_mode,
+    )
+    .map_err(|error| serve_error(format!("campaign endpoint configuration error: {error}")))?;
+    let config = crucible_daemon::CampaignLocalServiceConfig::new(
+        endpoint,
+        state,
+        policy,
+        if args.read_only {
+            crucible_daemon::CampaignLocalServiceMode::ReadOnly
+        } else {
+            crucible_daemon::CampaignLocalServiceMode::ReadWrite
+        },
+        crucible_daemon::CampaignLoopbackServerConfig::default(),
+    )
+    .map_err(|error| serve_error(format!("campaign service configuration error: {error}")))?;
+    let service = config
+        .open()
+        .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    Ok(Some(PreparedLocalCampaignService {
+        service,
+        socket_path: socket.clone(),
+    }))
+}
+
+struct RunningLocalCampaignService {
+    shutdown: crucible_daemon::CampaignLoopbackServerShutdown,
+    thread: std::thread::JoinHandle<
+        Result<
+            crucible_daemon::CampaignLoopbackServerReport,
+            crucible_daemon::CampaignLocalServiceError,
+        >,
+    >,
+    done: tokio::sync::oneshot::Receiver<()>,
+}
+
+fn start_local_campaign_service(
+    prepared: PreparedLocalCampaignService,
+) -> Result<RunningLocalCampaignService, CliError> {
+    let shutdown = prepared.service.shutdown_handle();
+    let (done_sender, done) = tokio::sync::oneshot::channel();
+    let thread = std::thread::Builder::new()
+        .name(String::from("crucible-campaign-service"))
+        .spawn(move || {
+            let result = prepared.service.serve();
+            let _ = done_sender.send(());
+            result
+        })
+        .map_err(|error| serve_error(format!("campaign service thread error: {error}")))?;
+    Ok(RunningLocalCampaignService {
+        shutdown,
+        thread,
+        done,
+    })
+}
+
+async fn run_bound_daemon_services<L, F, S>(
+    listener: tokio::net::TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+    campaign: Option<PreparedLocalCampaignService>,
+) -> Result<(), CliError>
+where
+    L: crucible::QuantumLoop + Send + 'static,
+    F: Fn(
+            &crucible::ScenarioDef,
+            Option<&crucible::ScenarioDefForm>,
+            crucible::Seed,
+        ) -> Result<L, crucible_api::LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
+    let Some(campaign) = campaign else {
+        return run_bound_lifecycle_server(
+            listener,
+            control_plane,
+            mode,
+            tls_acceptor,
+            debug_authorization,
+            shutdown,
+        )
+        .await;
+    };
+    let RunningLocalCampaignService {
+        shutdown: campaign_shutdown,
+        thread: campaign_thread,
+        mut done,
+    } = start_local_campaign_service(campaign)?;
+    let wait_shutdown = campaign_shutdown.clone();
+    let combined_shutdown = async move {
+        // crucible-lint: allow unordered-select -- either daemon service ending stops the process.
+        tokio::select! {
+            result = shutdown => {
+                wait_shutdown.shutdown();
+                result
+            }
+            _ = &mut done => Err(serve_error("campaign service stopped unexpectedly")),
+        }
+    };
+    let lifecycle_result = run_bound_lifecycle_server(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        combined_shutdown,
+    )
+    .await;
+    campaign_shutdown.shutdown();
+    let campaign_result = tokio::task::spawn_blocking(move || campaign_thread.join())
+        .await
+        .map_err(|error| serve_error(format!("campaign service join error: {error}")))?
+        .map_err(|_| serve_error("campaign service thread panicked"))?
+        .map_err(|error| serve_error(format!("campaign service error: {error}")));
+    lifecycle_result.and(campaign_result.map(|_| ()))
 }
 
 async fn run_bound_lifecycle_server<L, F, S>(
@@ -1131,6 +1286,29 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
         return Err(usage_error(
             "--qemu-rendezvous-icount requires --production-qemu",
+        ));
+    }
+    let campaign_fields = [
+        args.campaign_socket.is_some(),
+        args.campaign_state.is_some(),
+        args.campaign_policy.is_some(),
+    ];
+    let campaign_field_count = campaign_fields
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if campaign_field_count != 0 && campaign_field_count != campaign_fields.len() {
+        return Err(usage_error(
+            "--campaign-socket, --campaign-state, and --campaign-policy must be provided together",
+        ));
+    }
+    if args.campaign_socket.is_some()
+        && (args.campaign_socket_mode == 0
+            || args.campaign_socket_mode & !0o777 != 0
+            || args.campaign_socket_mode & 0o222 == 0)
+    {
+        return Err(usage_error(
+            "--campaign-socket-mode must grant write access and contain only permission bits",
         ));
     }
     let tls_file_count = [
