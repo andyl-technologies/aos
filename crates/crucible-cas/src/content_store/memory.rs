@@ -4,10 +4,13 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use super::admin::{InventoryCounter, persistent_inventory_generation};
+use super::admin::{
+    InventoryCounter, persistent_inventory_generation, persistent_ref_inventory_generation,
+};
 use super::*;
 
 static MEMORY_INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MEMORY_REF_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Bounded process-local logical-object store used by tests and hot caches.
 #[derive(Debug)]
@@ -221,7 +224,14 @@ fn new_memory_inventory_instance(name: &str) -> [u8; 32] {
 /// Process-local authoritative ref backend used by model tests.
 #[derive(Debug)]
 pub struct MemoryRefBackend {
-    refs: Mutex<BTreeMap<RefName, ContentId>>,
+    inventory_instance: [u8; 32],
+    state: Mutex<MemoryRefState>,
+}
+
+#[derive(Debug)]
+struct MemoryRefState {
+    refs: BTreeMap<RefName, ContentId>,
+    generation: u64,
 }
 
 impl MemoryRefBackend {
@@ -229,7 +239,11 @@ impl MemoryRefBackend {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            refs: Mutex::new(BTreeMap::new()),
+            inventory_instance: new_memory_ref_instance(),
+            state: Mutex::new(MemoryRefState {
+                refs: BTreeMap::new(),
+                generation: 1,
+            }),
         }
     }
 }
@@ -242,10 +256,10 @@ impl Default for MemoryRefBackend {
 
 impl MutableRefBackend for MemoryRefBackend {
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
-        let refs = self.refs.lock().map_err(|_| StoreError::Poisoned {
+        let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-read-ref",
         })?;
-        Ok(refs.get(name).copied())
+        Ok(state.refs.get(name).copied())
     }
 
     fn compare_exchange(
@@ -254,14 +268,56 @@ impl MutableRefBackend for MemoryRefBackend {
         expected: Option<ContentId>,
         next: ContentId,
     ) -> Result<RefCasOutcome, StoreError> {
-        let mut refs = self.refs.lock().map_err(|_| StoreError::Poisoned {
+        let mut state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-cas-ref",
         })?;
-        let current = refs.get(name).copied();
+        let current = state.refs.get(name).copied();
         if current != expected {
             return Ok(RefCasOutcome::Conflict { expected, current });
         }
-        refs.insert(name.clone(), next);
+        state.generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
+        state.refs.insert(name.clone(), next);
         Ok(RefCasOutcome::Advanced { next })
     }
+}
+
+impl RefStoreAdmin for MemoryRefBackend {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Poisoned {
+            operation: "memory-ref-inventory-fence",
+        })?;
+        Ok(Box::new(MemoryRefInventoryFence {
+            instance: self.inventory_instance,
+            state,
+        }))
+    }
+}
+
+struct MemoryRefInventoryFence<'a> {
+    instance: [u8; 32],
+    state: MutexGuard<'a, MemoryRefState>,
+}
+
+impl RefInventoryFence for MemoryRefInventoryFence<'_> {
+    fn visit_refs(
+        &mut self,
+        visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<RefInventorySummary, StoreError> {
+        let generation = persistent_ref_inventory_generation(self.instance, self.state.generation);
+        let mut refs = 0_u64;
+        for (name, target) in &self.state.refs {
+            refs = refs.checked_add(1).ok_or(StoreError::Quota)?;
+            visitor(RefInventoryRecord::new(name.clone(), *target))?;
+        }
+        Ok(RefInventorySummary::new(generation, refs))
+    }
+}
+
+fn new_memory_ref_instance() -> [u8; 32] {
+    let ordinal = MEMORY_REF_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.content-store.memory-ref-inventory-instance.v1");
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&ordinal.to_le_bytes());
+    *hasher.finalize().as_bytes()
 }

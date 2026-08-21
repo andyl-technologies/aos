@@ -141,11 +141,20 @@ when its own work bound is exhausted. Prefix output is tentative until terminal
 enumeration succeeds, and the visitor cannot reenter the exclusively fenced
 backend.
 
+The same capability separation applies to authoritative names. `RefStoreAdmin`
+is not part of `MutableRefBackend`; its `RefInventoryFence` excludes every
+cooperating read and compare-and-swap in that namespace, streams exact
+`(RefName, ContentId)` bindings, and returns a persistent
+`RefInventoryGeneration`. Memory and directory implementations advance their
+monotonic generation on every accepted replacement. A failed expected-value
+comparison does not advance it. Delete-and-restore or change-and-restore ABA
+therefore cannot recreate an earlier generation.
+
 This primitive does not compute reachability or confer deletion authority on
 `ImmutableBlobBackend`. It is not yet the complete `plan_gc`/`apply_gc`
-contract: store-graph inventory composition, ref and assignment-ledger root
-fences, canonical root-set and graph generations, and an interruption-safe
-application journal remain mandatory before destructive campaign GC is wired.
+contract: store-graph inventory composition, the assignment-ledger root fence,
+canonical root-set and graph generations, and an interruption-safe application
+journal remain mandatory before destructive campaign GC is wired.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
@@ -271,9 +280,36 @@ bytes and rejects the record when it exceeds the 256-byte schema limit.
 mutation; conservative advancement without a resulting object change is valid,
 but a physical change under an old generation is not. The persistent state
 makes delete-and-reinsert ABA distinct across restart. The configured directory
-root is operator-owned: an
-uncooperating writer that bypasses this lock invalidates the backend admission
-contract and MUST be excluded before administrative deletion is enabled.
+root is operator-owned: an uncooperating writer that bypasses this lock
+invalidates the backend admission contract and MUST be excluded before
+administrative deletion is enabled.
+
+The directory ref backend uses the identical 256-byte field grammar at
+`<ref-root>/.ref-admin/state-v1`, registered as
+`crucible.content-store.directory-ref-inventory-state` v1. Its checksum domain
+is `crucible.content-store.directory-ref-inventory-state.v1`. Every cooperating
+read takes the namespace lock shared; every compare-and-swap takes it exclusive
+and durably advances the state before publishing an accepted replacement. The
+fenced inventory recursively validates every authoritative path as an exact
+`RefName`, bounds each value record to 256 bytes, rejects symlinks and malformed
+records, and treats a complete staging-named record conservatively as a root
+rather than silently omitting a valid name with the same spelling.
+
+Generation digests are language-neutral:
+
+```text
+InventoryGeneration = BLAKE3(
+    "crucible.content-store.persistent-inventory-generation.v1" ||
+    LE64(byte_length(backend_name_utf8)) || backend_name_utf8 ||
+    instance_32 || LE64(counter)
+)
+RefInventoryGeneration = BLAKE3(
+    "crucible.content-store.ref-inventory-generation.v1" ||
+    instance_32 || LE64(counter)
+)
+```
+
+The domain strings are the exact ASCII bytes shown and `||` is concatenation.
 
 Directory read handles pin an already-opened inode rather than reopening its
 path. Unlink or atomic path replacement therefore cannot retarget an in-flight
@@ -572,15 +608,15 @@ and indexes, atomically switches the index generation, waits for existing
 readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
 
-The implemented memory and directory loose leaves now provide the exclusive
-physical inventory generation and idempotent exact-candidate deletion primitive
-needed by that apply step. The directory generation survives restart and is
-advanced before puts and deletes; the memory generation is process-local and
-monotonic for that ephemeral backend instance. These primitives remain held by
-the daemon maintenance owner. No campaign repository, planner, executor, or
-ordinary store-graph handle receives them, and no deletion is safe until the
-full plan and every root/ref/ledger fence above have been implemented and
-revalidated.
+The implemented memory and directory leaves now provide both the exclusive
+physical inventory generation/idempotent exact-candidate deletion primitive and
+the exclusive authoritative-ref inventory generation needed by that apply
+step. Directory generations survive restart; memory generations are
+process-local and monotonic for their ephemeral backend instance. These
+primitives remain held by the daemon maintenance owner. No campaign repository,
+planner, executor, or ordinary store-graph handle receives them, and no
+deletion is safe until the full plan and the remaining ledger/graph fences
+above have been implemented and revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

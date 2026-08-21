@@ -1,10 +1,11 @@
 //! Exclusive physical-inventory fences for generation-bound administration.
 //!
-//! Inventory and deletion are deliberately absent from
-//! [`ImmutableBlobBackend`]. Campaign repositories receive only immutable read
-//! and conditional-create authority; a daemon maintenance owner must be given a
-//! separate [`BlobStoreAdmin`] capability before it can inspect placement or
-//! remove a planned candidate.
+//! Blob inventory/deletion and ref-namespace inventory are deliberately absent
+//! from [`ImmutableBlobBackend`] and [`MutableRefBackend`]. Campaign
+//! repositories receive only normal object/ref authority; a daemon maintenance
+//! owner must be given separate [`BlobStoreAdmin`] and [`RefStoreAdmin`]
+//! capabilities before it can inspect placement, enumerate every authoritative
+//! name, or remove a planned candidate.
 
 use super::*;
 
@@ -150,6 +151,103 @@ pub trait BlobStoreAdmin: Send + Sync {
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError>;
 }
 
+/// Exact digest of one stable authoritative-reference inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefInventoryGeneration([u8; 32]);
+
+impl RefInventoryGeneration {
+    /// Returns the raw generation digest.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Renders the generation as canonical lowercase hexadecimal text.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        encode_hex(&self.0)
+    }
+}
+
+/// One exact authoritative name binding observed while fenced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefInventoryRecord {
+    name: RefName,
+    target: ContentId,
+}
+
+impl RefInventoryRecord {
+    pub(crate) const fn new(name: RefName, target: ContentId) -> Self {
+        Self { name, target }
+    }
+
+    /// Returns the canonical authoritative name.
+    #[must_use]
+    pub const fn name(&self) -> &RefName {
+        &self.name
+    }
+
+    /// Returns the exact content identity named by the ref.
+    #[must_use]
+    pub const fn target(&self) -> ContentId {
+        self.target
+    }
+}
+
+/// Terminal evidence that one fenced ref inventory completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefInventorySummary {
+    generation: RefInventoryGeneration,
+    refs: u64,
+}
+
+impl RefInventorySummary {
+    pub(crate) const fn new(generation: RefInventoryGeneration, refs: u64) -> Self {
+        Self { generation, refs }
+    }
+
+    /// Returns the exact authoritative-namespace generation.
+    #[must_use]
+    pub const fn generation(self) -> RefInventoryGeneration {
+        self.generation
+    }
+
+    /// Returns the number of authoritative bindings visited.
+    #[must_use]
+    pub const fn refs(self) -> u64 {
+        self.refs
+    }
+}
+
+/// Exclusive authority over one cooperating mutable-ref namespace.
+///
+/// Normal reads and conditional replacements in the same backend block while
+/// this fence exists. Visitor output is tentative until terminal success. The
+/// visitor must not reenter the fenced backend.
+pub trait RefInventoryFence {
+    /// Streams every exact authoritative name binding while fenced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when enumeration is incomplete, a ref name or
+    /// value is malformed, the visitor fails, or terminal counters overflow.
+    fn visit_refs(
+        &mut self,
+        visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<RefInventorySummary, StoreError>;
+}
+
+/// Separate administrative capability for an authoritative ref backend.
+pub trait RefStoreAdmin: Send + Sync {
+    /// Acquires exclusive inventory authority for the complete namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the backend cannot exclude cooperating ref
+    /// reads and conditional replacements or load its persistent generation.
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError>;
+}
+
 pub(crate) struct InventoryCounter {
     generation: InventoryGeneration,
     objects: u64,
@@ -192,4 +290,15 @@ pub(crate) fn persistent_inventory_generation(
     hasher.update(&instance);
     hasher.update(&generation.to_le_bytes());
     Ok(InventoryGeneration(*hasher.finalize().as_bytes()))
+}
+
+pub(crate) fn persistent_ref_inventory_generation(
+    instance: [u8; 32],
+    generation: u64,
+) -> RefInventoryGeneration {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.content-store.ref-inventory-generation.v1");
+    hasher.update(&instance);
+    hasher.update(&generation.to_le_bytes());
+    RefInventoryGeneration(*hasher.finalize().as_bytes())
 }
