@@ -799,7 +799,6 @@
               --arg sha256 "$disk_sha256" \
               --arg logicalDiskSha256 "$logical_disk_sha256" \
               --arg rootfsSha256 "$rootfs_sha256" \
-              --arg objectKey "images/sha256/$disk_sha256/$IMAGE_FILENAME" \
               --arg ukiFilename "$IMAGE_UKI_FILENAME" \
               --arg ukiEspPath "$IMAGE_UKI_PATH" \
               --arg ukiSha256 "$uki_sha256" \
@@ -846,14 +845,13 @@
                             --argjson hashBOffsetBytes "$hash_b_offset_bytes" \
                             --argjson hashBPartitionSizeBytes "$hash_b_partition_size_bytes" \
             ''}'{
-                schemaVersion: 1,
+                schemaVersion: 2,
                 name: $name,
                 version: $version,
                 architecture: $architecture,
                 platform: $platform,
                 format: "raw",
                 filename: $filename,
-                objectKey: $objectKey,
                 mediaType: $mediaType,
                 compression: "zstd",
                 byteSize: $byteSize,

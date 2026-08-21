@@ -304,6 +304,42 @@
   color: var(--dim);
 }
 
+.choice-field {
+  max-width: 42rem;
+  margin: 0.4rem 0;
+  padding: 0.8rem 1rem 1rem;
+  border: 1px solid var(--rule);
+}
+
+.choice-field legend {
+  padding: 0 0.35rem;
+  font-weight: 700;
+}
+
+.editor-form .choice-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  max-width: none;
+  margin: 0.45rem 0;
+}
+
+.choice-row input { flex: none; }
+
+.editor-form .llms-custom {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.25rem;
+  max-width: none;
+  margin-top: 0.8rem;
+}
+
+.field-note {
+  margin: 0.6rem 0 0;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
 .editor-form input[readonly],
 .stacked-form input[readonly],
 .compact-form input[readonly] {

@@ -84,7 +84,6 @@
             --arg format raw \
             --arg filename "$filename" \
             --arg sha256 "$image_sha256" \
-            --arg objectKey "images/sha256/$image_sha256/$filename" \
             --arg mediaType application/vnd.aos.disk-image.raw+zstd \
             --arg logicalDiskSha256 "$logical_sha256" \
             --arg rootfsSha256 "$rootfs_sha256" \
@@ -92,9 +91,9 @@
             --argjson byteSize "$image_size" \
             --argjson ukiSize "$uki_size" \
             --argjson targets '["bare-metal"]' \
-            '{schemaVersion: 1, name: "aos-system", version: "2026.3.0",
+            '{schemaVersion: 2, name: "aos-system", version: "2026.3.0",
               architecture: "x86_64", platform: "x86_64-linux",
-              format: $format, filename: $filename, objectKey: $objectKey,
+              format: $format, filename: $filename,
               mediaType: $mediaType, compression: "zstd", byteSize: $byteSize,
               virtualSizeBytes: 67108864, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256,
@@ -139,14 +138,13 @@
           uki_size=$(stat -c %s "$uki")
           ${jq}/bin/jq -S -n \
             --arg filename "$filename" --arg sha256 "$image_sha256" \
-            --arg objectKey "images/sha256/$image_sha256/$filename" \
             --arg logicalDiskSha256 "$logical_sha256" \
             --arg rootfsSha256 "$rootfs_sha256" \
             --arg ukiSha256 "$uki_sha256" --argjson byteSize "$image_size" \
             --argjson ukiSize "$uki_size" \
-            '{schemaVersion: 1, name: "aos-system", version: "2026.3.0",
+            '{schemaVersion: 2, name: "aos-system", version: "2026.3.0",
               architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
-              filename: $filename, objectKey: $objectKey,
+              filename: $filename,
               mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
               byteSize: $byteSize, virtualSizeBytes: 67108864, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
@@ -165,6 +163,46 @@
         '';
       }
     ];
+  };
+  projectImageFile = {
+    image,
+    filename,
+    pname,
+  }:
+    mkDerivation {
+      inherit pname;
+      version = "2026.3.0";
+      src = null;
+      buildDeps = [coreutils image];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            rmdir "$out"
+            cp '${image}/${filename}' "$out"
+          '';
+        }
+      ];
+    };
+  rawImageDisk = projectImageFile {
+    image = rawImage;
+    filename = "aos-e2e.img.zst";
+    pname = "aos-hub-e2e-image-raw-disk";
+  };
+  rawImageInfo = projectImageFile {
+    image = rawImage;
+    filename = "image-info.json";
+    pname = "aos-hub-e2e-image-raw-info";
+  };
+  qcow2ImageDisk = projectImageFile {
+    image = qcow2Image;
+    filename = "aos-e2e.qcow2";
+    pname = "aos-hub-e2e-image-qcow2-disk";
+  };
+  qcow2ImageInfo = projectImageFile {
+    image = qcow2Image;
+    filename = "image-info.json";
+    pname = "aos-hub-e2e-image-qcow2-info";
   };
   sysroot = mkDerivation {
     pname = "aos-hub-e2e-sysroot";
@@ -228,10 +266,14 @@ in
             --license MIT \
             --maintainer image-e2e@aos.invalid \
             --sysroot \
-            --image '${rawImage}' \
+            --image-payload '${rawImage}' \
+            --image-disk '${rawImageDisk}' \
+            --image-info '${rawImageInfo}' \
             --image-format raw \
             --image-uki '${ukiImage}/systemd-bootx64.efi' \
-            --image '${qcow2Image}' \
+            --image-payload '${qcow2Image}' \
+            --image-disk '${qcow2ImageDisk}' \
+            --image-info '${qcow2ImageInfo}' \
             --image-format qcow2 \
             --image-uki '${ukiImage}/systemd-bootx64.efi' \
             --channel stable \

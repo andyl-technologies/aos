@@ -76,7 +76,7 @@ use crate::registry::objectstore;
 use crate::registry::pack;
 use crate::registry::parse::{
     ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-    ImageVerificationState, immutable_image_info_object_key, immutable_image_object_key,
+    ImageVerificationState,
 };
 use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
@@ -1630,9 +1630,10 @@ description = ""
 /// given) and the dumb-HTTP object store is refreshed.
 ///
 /// Package name, version, and platform are parsed from the store path
-/// basename and can each be overridden. `--image`/`--image-format`/
-/// `--image-uki` triples attach disk bytes and their exact canonical UKI to
-/// the platform entry, `--sysroot` marks
+/// basename and can each be overridden. `--image-payload`, `--image-disk`,
+/// `--image-info`, `--image-format`, and `--image-uki` groups attach explicit
+/// cache artifacts and their exact canonical UKI to the platform entry;
+/// `--sysroot` marks
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
@@ -1676,7 +1677,9 @@ pub async fn publish(
     sysroot: bool,
     previous: Option<&str>,
     source_drv: Option<&str>,
-    image_paths: &[String],
+    image_payload_paths: &[String],
+    image_disk_paths: &[String],
+    image_info_paths: &[String],
     image_formats: &[String],
     image_uki_paths: &[String],
     expose_manifest_path: Option<&str>,
@@ -1710,11 +1713,17 @@ pub async fn publish(
         None
     };
 
-    // Validate image pairs.
-    if image_paths.len() != image_formats.len() || image_paths.len() != image_uki_paths.len() {
+    // Validate explicit image artifact groups.
+    if image_payload_paths.len() != image_disk_paths.len()
+        || image_payload_paths.len() != image_info_paths.len()
+        || image_payload_paths.len() != image_formats.len()
+        || image_payload_paths.len() != image_uki_paths.len()
+    {
         bail!(
-            "--image, --image-format, and --image-uki must be specified in triples ({} images, {} formats, {} UKIs)",
-            image_paths.len(),
+            "--image-payload, --image-disk, --image-info, --image-format, and --image-uki must be specified in groups ({} payloads, {} disks, {} metadata files, {} formats, {} UKIs)",
+            image_payload_paths.len(),
+            image_disk_paths.len(),
+            image_info_paths.len(),
             image_formats.len(),
             image_uki_paths.len()
         );
@@ -1725,8 +1734,8 @@ pub async fn publish(
     if config_module_path.is_none() && !config_dependencies.is_empty() {
         bail!("--config-dependency requires --config-module");
     }
-    if !image_paths.is_empty() && !sysroot {
-        bail!("--image, --image-format, and --image-uki are valid only with --sysroot");
+    if !image_payload_paths.is_empty() && !sysroot {
+        bail!("image artifact options are valid only with --sysroot");
     }
 
     printer.step(1, 4, "Introspecting store path...");
@@ -1774,15 +1783,21 @@ pub async fn publish(
     // below.
     let sb_db_cert = sb_db_cert_path(config, &name);
     let mut image_infos: Vec<PublishedImage> = Vec::new();
-    for ((img_path, img_fmt), uki_path) in image_paths
+    for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
         .iter()
+        .zip(image_disk_paths.iter())
+        .zip(image_info_paths.iter())
         .zip(image_formats.iter())
         .zip(image_uki_paths.iter())
     {
-        let img_info = introspect_store_path(img_path)?;
+        let payload_info = introspect_store_path(payload_path)?;
+        let disk_info = introspect_store_path(disk_path)?;
+        let metadata_info = introspect_store_path(info_path)?;
         image_infos.push(inspect_published_image(
             img_fmt,
-            img_info,
+            payload_info,
+            disk_info,
+            metadata_info,
             Path::new(uki_path),
             pkg_name,
             pkg_version,
@@ -1813,7 +1828,6 @@ pub async fn publish(
     };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
-    let direct_image_paths = persist_direct_image_objects(&dir, &image_infos)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1917,6 +1931,17 @@ pub async fn publish(
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
     let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
         .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
+    let mut image_store_reports = Vec::with_capacity(image_infos.len() * 2);
+    for image in &image_infos {
+        for artifact in [&image.store, &image.info_store] {
+            image_store_reports.push(
+                write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
+                    .with_context(|| {
+                        format!("writing store/ realisation graph for {}", artifact.path)
+                    })?,
+            );
+        }
+    }
     let expose_store_report = if let Some(artifact) = &expose_artifact_info {
         Some(
             write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
@@ -1971,6 +1996,12 @@ pub async fn publish(
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
     printer.kv("Store graph", &store_report.summary());
+    for (index, report) in image_store_reports.iter().enumerate() {
+        printer.kv(
+            &format!("Image artifact graph {}", index + 1),
+            &report.summary(),
+        );
+    }
     if let Some(artifact) = &expose_artifact_info {
         printer.kv("Expose artifact", &artifact.path);
     }
@@ -2020,7 +2051,6 @@ pub async fn publish(
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
         let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
-        staged_paths.extend(direct_image_paths.iter().cloned());
         if let Some(path) = &provenance_path {
             staged_paths.push(path.clone());
         }
@@ -3397,14 +3427,17 @@ struct SbFacts {
 /// producer metadata that direct-download consumers receive.
 struct PublishedImage {
     format: String,
+    /// Canonical regular-file store output containing the disk encoding.
     store: StorePathInfo,
+    /// Canonical regular-file store output containing `image-info.json`.
+    info_store: StorePathInfo,
     sb: SbFacts,
     delivery: ImageDelivery,
     /// Pinned image-output directory that owns the disk and metadata names.
     directory: ValidatedImageDirectory,
-    /// Exact validated disk source retained for the upload transaction.
+    /// Exact validated disk store output retained through commit.
     disk: ValidatedImageFile,
-    /// Exact validated metadata source retained for the upload transaction.
+    /// Exact validated metadata store output retained through commit.
     image_info: ValidatedImageFile,
     /// Original producer metadata retained to detect replacement before commit.
     producer_image_info: ValidatedImageFile,
@@ -3459,7 +3492,6 @@ struct ProducerImageInfo {
     platform: String,
     format: String,
     filename: String,
-    object_key: String,
     media_type: String,
     compression: ImageCompression,
     byte_size: u64,
@@ -3648,27 +3680,27 @@ fn validate_logical_disk_geometry(
 
 /// Validates one image store output and constructs its signed delivery entry.
 ///
-/// The output must be a real directory containing exactly two direct regular
-/// files: `image-info.json` and the declared disk filename. The exact UKI is a
-/// separate paired publisher input, keeping its internal store path out of the
-/// public metadata and image NAR. No symlink, directory, device, or additional
-/// file is accepted, so a publisher can never guess which bytes an entry names.
+/// The payload directory supplies authenticated layout, update, and recovery
+/// facts. The downloadable disk and metadata are separate regular-file store
+/// outputs, so cache publication never discovers an artifact by enumeration.
 fn inspect_published_image(
     format: &str,
-    store: StorePathInfo,
+    payload: StorePathInfo,
+    disk_store: StorePathInfo,
+    info_store: StorePathInfo,
     uki_path: &Path,
     name: &str,
     release: &str,
     platform: &str,
     db_cert: Option<&Path>,
 ) -> Result<PublishedImage> {
-    if store_dir_from_store_path(&store.path).is_none() {
-        bail!("published image output must be a canonical Nix store path");
+    if store_dir_from_store_path(&payload.path).is_none() {
+        bail!("published image payload must be a canonical Nix store path");
     }
-    let canonical_store = fs::canonicalize(&store.path)
-        .with_context(|| format!("canonicalizing image output {}", store.path))?;
-    if canonical_store != Path::new(&store.path) {
-        bail!("published image output must not traverse aliases or symlinks");
+    let canonical_payload = fs::canonicalize(&payload.path)
+        .with_context(|| format!("canonicalizing image payload {}", payload.path))?;
+    if canonical_payload != Path::new(&payload.path) {
+        bail!("published image payload must not traverse aliases or symlinks");
     }
     let Some(uki_store) = uki_path.parent() else {
         bail!("published UKI must live directly in a Nix store output");
@@ -3683,7 +3715,9 @@ fn inspect_published_image(
     }
     let image = inspect_published_image_with(
         format,
-        store,
+        payload,
+        disk_store,
+        info_store,
         uki_path,
         name,
         release,
@@ -3697,7 +3731,9 @@ fn inspect_published_image(
 
 fn inspect_published_image_with<F>(
     format: &str,
-    store: StorePathInfo,
+    payload: StorePathInfo,
+    disk_store: StorePathInfo,
+    info_store: StorePathInfo,
     uki_path: &Path,
     name: &str,
     release: &str,
@@ -3708,9 +3744,9 @@ fn inspect_published_image_with<F>(
 where
     F: FnOnce(&Path, Option<&Path>) -> Result<SbFacts>,
 {
-    let root_path = PathBuf::from(&store.path);
+    let root_path = PathBuf::from(&payload.path);
     let root = root_path.as_path();
-    let immutable_store_output = store_dir_from_store_path(&store.path).is_some();
+    let immutable_store_output = store_dir_from_store_path(&payload.path).is_some();
     let root_meta = fs::symlink_metadata(root)
         .with_context(|| format!("inspecting image output {}", root.display()))?;
     if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
@@ -3755,8 +3791,8 @@ where
     verify_stable_regular_file(&info_path, &info_file, &info_identity)?;
     let producer: ProducerImageInfo = serde_json::from_slice(&info_bytes)
         .with_context(|| format!("parsing {}", info_path.display()))?;
-    if producer.schema_version != 1 {
-        bail!("image-info schemaVersion must be 1");
+    if producer.schema_version != 2 {
+        bail!("image-info schemaVersion must be 2");
     }
     let public_text = std::str::from_utf8(&info_bytes).context("image-info.json is not UTF-8")?;
     if public_text.contains("/nix/store/")
@@ -3951,16 +3987,28 @@ where
         bail!("runtime-update image output must carry root.img");
     }
 
-    let image_path = root.join(&producer.filename);
-    let (mut image_file, image_identity) = open_stable_regular_file_at_with_links(
+    let payload_image_path = root.join(&producer.filename);
+    let (mut payload_image_file, payload_image_identity) = open_stable_regular_file_at_with_links(
         &root_file,
         &producer.filename,
-        &image_path,
+        &payload_image_path,
         immutable_store_output,
     )?;
+    let payload_sha256 = sha256_open_file(&mut payload_image_file, &payload_image_path)?;
+    verify_stable_regular_file(
+        &payload_image_path,
+        &payload_image_file,
+        &payload_image_identity,
+    )?;
+
+    let (mut image_file, image_identity, image_path) =
+        open_canonical_store_regular_file(&disk_store, "image disk")?;
     let actual_sha256 = sha256_open_file(&mut image_file, &image_path)?;
     verify_stable_regular_file(&image_path, &image_file, &image_identity)?;
     let actual_size = image_identity.len;
+    if payload_image_identity.len != actual_size || payload_sha256 != actual_sha256 {
+        bail!("image payload disk does not match the explicit disk store output");
+    }
     if producer.format != format {
         bail!(
             "--image-format '{format}' does not match image-info format '{}'",
@@ -3979,11 +4027,6 @@ where
     if producer.sha256 != actual_sha256 {
         bail!("image-info sha256 does not match the disk file");
     }
-    let expected_key = immutable_image_object_key(&actual_sha256, &producer.filename);
-    if producer.object_key != expected_key {
-        bail!("image-info objectKey is not the canonical immutable key");
-    }
-
     if !producer.uki.filename.ends_with(".efi") {
         bail!("image-info UKI filename must end in .efi");
     }
@@ -4041,10 +4084,6 @@ where
         bail!("slot-A UKI facts disagree with the UKI embedded in the published disk");
     }
 
-    let mut canonical_info_bytes =
-        serde_json::to_vec(&producer).context("serializing canonical public image-info.json")?;
-    canonical_info_bytes.push(b'\n');
-    let info_sha256 = sha256_hex(&canonical_info_bytes);
     sb.recovery_bundle = derive_recovery_bundle_manifest(
         root,
         producer.recovery.as_ref(),
@@ -4077,13 +4116,23 @@ where
             db_cert.context("publishing a recovery bundle requires the registry db certificate")?;
         verify_detached_db_signature(&bundle_path, &signature_path, db_cert)?;
     }
-    let mut canonical_info_file =
-        tempfile::tempfile().context("creating pinned canonical image-info.json")?;
-    canonical_info_file
-        .write_all(&canonical_info_bytes)
-        .context("writing pinned canonical image-info.json")?;
+    let (mut canonical_info_file, canonical_info_identity, canonical_info_path) =
+        open_canonical_store_regular_file(&info_store, "image metadata")?;
+    let mut published_info_bytes = Vec::with_capacity(canonical_info_identity.len as usize);
+    (&mut canonical_info_file)
+        .take(MAX_IMAGE_INFO_BYTES + 1)
+        .read_to_end(&mut published_info_bytes)
+        .with_context(|| format!("reading image metadata {}", canonical_info_path.display()))?;
+    verify_stable_regular_file(
+        &canonical_info_path,
+        &canonical_info_file,
+        &canonical_info_identity,
+    )?;
+    if published_info_bytes != info_bytes {
+        bail!("explicit image metadata output does not match the payload image-info.json");
+    }
+    let info_sha256 = sha256_hex(&published_info_bytes);
     canonical_info_file.seek(SeekFrom::Start(0))?;
-    let canonical_info_identity = file_identity(&canonical_info_file.metadata()?);
     let delivery = ImageDelivery {
         schema_version: producer.schema_version,
         release: release.to_string(),
@@ -4093,7 +4142,7 @@ where
         logical_disk_sha256: producer.logical_disk_sha256,
         rootfs_sha256: producer.rootfs_sha256,
         filename: producer.filename,
-        object_key: producer.object_key,
+        object_key: String::new(),
         media_type: producer.media_type,
         compression: producer.compression,
         byte_size: producer.byte_size,
@@ -4116,9 +4165,12 @@ where
         },
         image_info: ImageInfoReference {
             filename: "image-info.json".to_string(),
-            object_key: immutable_image_info_object_key(&actual_sha256, &info_sha256),
+            object_key: String::new(),
+            store_path: info_store.path.clone(),
+            nar_hash: info_store.nar_hash.clone(),
+            nar_size: info_store.nar_size,
             media_type: "application/vnd.aos.image-info+json".to_string(),
-            byte_size: canonical_info_bytes.len() as u64,
+            byte_size: published_info_bytes.len() as u64,
             sha256: info_sha256.clone(),
         },
     };
@@ -4127,7 +4179,8 @@ where
         .with_context(|| format!("validating direct delivery contract for {format}"))?;
     Ok(PublishedImage {
         format: format.to_string(),
-        store,
+        store: disk_store,
+        info_store,
         sb,
         delivery,
         directory: ValidatedImageDirectory {
@@ -4142,10 +4195,10 @@ where
             path_bound: true,
         },
         image_info: ValidatedImageFile {
-            path: PathBuf::from("<canonical image-info.json>"),
+            path: canonical_info_path,
             file: canonical_info_file,
             identity: canonical_info_identity,
-            path_bound: false,
+            path_bound: true,
         },
         producer_image_info: ValidatedImageFile {
             path: info_path,
@@ -4174,6 +4227,24 @@ fn validate_lower_sha256(value: &str, label: &str) -> Result<()> {
         bail!("{label} SHA-256 must be 64 lowercase hexadecimal characters");
     }
     Ok(())
+}
+
+fn open_canonical_store_regular_file(
+    store: &StorePathInfo,
+    label: &str,
+) -> Result<(fs::File, FileIdentity, PathBuf)> {
+    if store_dir_from_store_path(&store.path).is_none() {
+        bail!("published {label} must be a canonical Nix store path");
+    }
+    let path = PathBuf::from(&store.path);
+    let canonical = fs::canonicalize(&path)
+        .with_context(|| format!("canonicalizing {label} {}", path.display()))?;
+    if canonical != path {
+        bail!("published {label} must not traverse aliases or symlinks");
+    }
+    let (file, identity) = open_stable_regular_file_with_links(&path, true)
+        .with_context(|| format!("opening {label} {}", path.display()))?;
+    Ok((file, identity, path))
 }
 
 /// Persists the deterministic transaction marker uploaded after image/catalog
@@ -4329,6 +4400,9 @@ fn committed_image_receipt_objects(
                 for (platform, artifact) in version.platforms {
                     for image in artifact.images {
                         image.validate_delivery(&version.version, &platform)?;
+                        if image.delivery.is_store_backed() {
+                            continue;
+                        }
                         insert_image_receipt_object(
                             &mut objects,
                             ImagePublicationReceiptObject {
@@ -4372,105 +4446,6 @@ fn insert_image_receipt_object(
         }
     }
     Ok(())
-}
-
-/// Materializes content-addressed disk and metadata bytes in the registry's
-/// static origin before the signed catalog entry can become visible.
-fn persist_direct_image_objects(
-    registry_dir: &Path,
-    images: &[PublishedImage],
-) -> Result<Vec<PathBuf>> {
-    let git_dir = objectstore::repo_git_dir(registry_dir)?;
-    let staging_dir = git_dir.join("aos-image-staging");
-    let mut committed_paths = Vec::with_capacity(images.len());
-    for image in images {
-        image.recheck_for_commit()?;
-        let info_path = registry_dir.join(&image.delivery.image_info.object_key);
-
-        // Disk images are deliberately never added to the Git tree or object
-        // packs. The persistent, content-addressed staging area is consumed by
-        // static publication before refs/channels move; retries revalidate and
-        // reuse exact bytes at the same key.
-        persist_pinned_object(
-            &staging_dir,
-            &image.delivery.object_key,
-            &image.disk.file,
-            image.delivery.byte_size,
-            &image.delivery.sha256,
-        )?;
-
-        // The canonical per-format metadata is small and belongs in the signed
-        // release tree, while also being staged at its direct HTTP object key.
-        persist_pinned_object(
-            registry_dir,
-            &image.delivery.image_info.object_key,
-            &image.image_info.file,
-            image.delivery.image_info.byte_size,
-            &image.delivery.image_info.sha256,
-        )?;
-        persist_pinned_object(
-            &staging_dir,
-            &image.delivery.image_info.object_key,
-            &image.image_info.file,
-            image.delivery.image_info.byte_size,
-            &image.delivery.image_info.sha256,
-        )?;
-        committed_paths.push(info_path);
-    }
-    Ok(committed_paths)
-}
-
-fn persist_pinned_object(
-    git_dir: &Path,
-    object_key: &str,
-    source: &fs::File,
-    expected_size: u64,
-    expected_sha256: &str,
-) -> Result<()> {
-    validate_portable_relative_path(object_key, "image object key")?;
-    let destination = git_dir.join(object_key);
-    if destination.exists() {
-        let (mut existing, identity) = open_stable_regular_file(&destination)?;
-        let digest = sha256_open_file(&mut existing, &destination)?;
-        if identity.len != expected_size || digest != expected_sha256 {
-            bail!("immutable image object already exists with different bytes: {object_key}");
-        }
-        return Ok(());
-    }
-    let parent = destination
-        .parent()
-        .context("canonical image object key has no parent")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating image object directory {}", parent.display()))?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".aos-image-")
-        .tempfile_in(parent)
-        .with_context(|| format!("creating image object beside {}", destination.display()))?;
-    let mut input = source
-        .try_clone()
-        .context("duplicating pinned image object")?;
-    input.seek(SeekFrom::Start(0))?;
-    std::io::copy(&mut input, temporary.as_file_mut())?;
-    temporary.as_file_mut().sync_all()?;
-    let identity = file_identity(&temporary.as_file().metadata()?);
-    let mut verification = temporary.as_file().try_clone()?;
-    let digest = sha256_open_file(&mut verification, Path::new("<staged image object>"))?;
-    if identity.len != expected_size || digest != expected_sha256 {
-        bail!("staged image object does not match its signed size and SHA-256");
-    }
-    match temporary.persist_noclobber(&destination) {
-        Ok(_) => Ok(()),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let (mut existing, identity) = open_stable_regular_file(&destination)?;
-            let digest = sha256_open_file(&mut existing, &destination)?;
-            if identity.len != expected_size || digest != expected_sha256 {
-                bail!("immutable image object raced with different bytes: {object_key}");
-            }
-            Ok(())
-        }
-        Err(error) => Err(error.error)
-            .with_context(|| format!("persisting immutable image object {object_key}")),
-    }
 }
 
 /// Duplicates a pinned descriptor and exposes only that descriptor to a child.
@@ -4546,6 +4521,11 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
         path
     } else {
         let (input_file, input_path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        // qemu-img must write through the already-open descriptor so path
+        // replacement cannot redirect verification. Pre-size the bounded raw
+        // target and use -n to suppress target creation and overwrite prompts.
+        raw.set_len(image.virtual_size_bytes)
+            .context("sizing pinned raw-image verification file")?;
         let (output_file, output_path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
         let qemu_img = std::env::var_os("AOS_QEMU_IMG")
             .map(PathBuf::from)
@@ -4556,7 +4536,7 @@ fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
             image.format.as_str()
         };
         let status = Command::new(qemu_img)
-            .args(["convert", "-f", input_format, "-O", "raw"])
+            .args(["convert", "-n", "-f", input_format, "-O", "raw"])
             .arg(&input_path)
             .arg(&output_path)
             .status()
@@ -4643,7 +4623,7 @@ fn sha256_file_range(file: &mut fs::File, offset: u64, length: u64, label: &str)
 
 #[cfg(not(target_os = "linux"))]
 fn verify_embedded_uki(_image: &PublishedImage) -> Result<()> {
-    bail!("direct image publication requires Linux descriptor-backed verification")
+    bail!("image publication requires Linux descriptor-backed verification")
 }
 
 fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
@@ -4660,10 +4640,6 @@ fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
         #[cfg(unix)]
         links: metadata.nlink(),
     }
-}
-
-fn open_stable_regular_file(path: &Path) -> Result<(fs::File, FileIdentity)> {
-    open_stable_regular_file_with_links(path, false)
 }
 
 /// Opens a regular file while allowing store-optimizer links only for an
@@ -8062,14 +8038,15 @@ fn package_platform_table(
                 let root_verity = image.directory.path.join("root.verity");
                 let root_hash = image.directory.path.join("root.roothash");
                 let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
-                    .iter()
-                    .filter(|path| path.is_file())
-                    .count();
-                if verity_count != 0 && verity_count != 4 {
-                    bail!("published image has an incomplete dm-verity artifact set");
-                }
-                if verity_count == 4 {
+                if matches!(image.format.as_str(), "ext4-verity" | "erofs-verity") {
+                    let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
+                        .iter()
+                        .filter(|path| path.is_file())
+                        .count();
+                    if verity_count != 4 {
+                        bail!("published image has an incomplete dm-verity artifact set");
+                    }
+
                     let hash = fs::read_to_string(&root_hash)?;
                     let hash = hash.trim();
                     if hash.len() != 64
@@ -10904,6 +10881,7 @@ fn store_verify(dir: &Path, registry_name: &str, deep: bool, printer: &Printer) 
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,
+    dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     match command {
@@ -10925,6 +10903,28 @@ pub async fn run_cache(
             let output = output
                 .clone()
                 .unwrap_or_else(|| config.registry_cache_path(&registry_name));
+            if dry_run {
+                if printer.mode() == OutputMode::Json {
+                    printer.json(&serde_json::json!({
+                        "action": "cache_generate",
+                        "dry_run": true,
+                        "registry": registry_name,
+                        "output_dir": output.to_string_lossy().to_string(),
+                        "cache_url": cache_url.as_deref(),
+                        "priority": priority,
+                        "upload_urls": upload_urls,
+                        "uploaded": false,
+                        "cache_pointer_updated": false,
+                        "committed": false,
+                    }));
+                } else {
+                    printer.info(&format!(
+                        "Would generate the static cache for {registry_name} in {}",
+                        output.display(),
+                    ));
+                }
+                return Ok(());
+            }
             let upload_auth =
                 auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
             let membership = if upload_urls.is_empty() || *no_skip {
@@ -13672,7 +13672,9 @@ pub struct ReleaseStorePublish {
     pub sysroot: bool,
     pub previous: Option<String>,
     pub source_drv: Option<String>,
-    pub image_paths: Vec<String>,
+    pub image_payload_paths: Vec<String>,
+    pub image_disk_paths: Vec<String>,
+    pub image_info_paths: Vec<String>,
     pub image_formats: Vec<String>,
     pub image_uki_paths: Vec<String>,
     pub bless: bool,
@@ -13775,7 +13777,9 @@ pub async fn release(
     sysroot: bool,
     previous: Option<&str>,
     source_drv: Option<&str>,
-    image_paths: &[String],
+    image_payload_paths: &[String],
+    image_disk_paths: &[String],
+    image_info_paths: &[String],
     image_formats: &[String],
     image_uki_paths: &[String],
     bless: bool,
@@ -13836,7 +13840,9 @@ pub async fn release(
         sysroot,
         previous: previous.map(ToString::to_string),
         source_drv: source_drv.map(ToString::to_string),
-        image_paths: image_paths.to_vec(),
+        image_payload_paths: image_payload_paths.to_vec(),
+        image_disk_paths: image_disk_paths.to_vec(),
+        image_info_paths: image_info_paths.to_vec(),
         image_formats: image_formats.to_vec(),
         image_uki_paths: image_uki_paths.to_vec(),
         bless,
@@ -13896,7 +13902,9 @@ async fn publish_release_store_path(
         publish_opts.sysroot,
         publish_opts.previous.as_deref(),
         publish_opts.source_drv.as_deref(),
-        &publish_opts.image_paths,
+        &publish_opts.image_payload_paths,
+        &publish_opts.image_disk_paths,
+        &publish_opts.image_info_paths,
         &publish_opts.image_formats,
         &publish_opts.image_uki_paths,
         None,
@@ -15332,7 +15340,7 @@ mod tests {
         format: &str,
         targets: serde_json::Value,
     ) -> StorePathInfo {
-        let root = container.join("image-output");
+        let root = container.join("00000000000000000000000000000000-image-output");
         let uki_root = container.join("uki-output");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&uki_root).unwrap();
@@ -15348,7 +15356,8 @@ mod tests {
             .set_len(36 * 1024 * 1024)
             .unwrap();
         let logical_size = fs::metadata(&logical_path).unwrap().len();
-        let (mut logical_file, logical_identity) = open_stable_regular_file(&logical_path).unwrap();
+        let (mut logical_file, logical_identity) =
+            open_stable_regular_file_with_links(&logical_path, false).unwrap();
         let logical_sha256 = sha256_open_file(&mut logical_file, &logical_path).unwrap();
         verify_stable_regular_file(&logical_path, &logical_file, &logical_identity).unwrap();
         if format == "raw" {
@@ -15358,13 +15367,15 @@ mod tests {
         } else {
             fs::copy(&logical_path, &image_path).unwrap();
         }
-        let (mut image_file, image_identity) = open_stable_regular_file(&image_path).unwrap();
+        let (mut image_file, image_identity) =
+            open_stable_regular_file_with_links(&image_path, false).unwrap();
         let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
         verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
         let uki_filename = "aos-test.efi";
         let uki_path = uki_root.join(uki_filename);
         fs::write(&uki_path, b"unsigned fake UKI bytes").unwrap();
-        let (mut uki_file, uki_identity) = open_stable_regular_file(&uki_path).unwrap();
+        let (mut uki_file, uki_identity) =
+            open_stable_regular_file_with_links(&uki_path, false).unwrap();
         let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
         verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
         let media_type = match format {
@@ -15375,14 +15386,13 @@ mod tests {
             other => panic!("unsupported fixture format {other}"),
         };
         let info = serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "name": "test",
             "version": "2026.08",
             "architecture": "x86_64",
             "platform": "x86_64-linux",
             "format": format,
             "filename": filename,
-            "objectKey": immutable_image_object_key(&sha256, &filename),
             "mediaType": media_type,
             "compression": if format == "raw" { "zstd" } else { "none" },
             "byteSize": fs::metadata(&image_path).unwrap().len(),
@@ -15436,26 +15446,54 @@ mod tests {
         .unwrap();
         StorePathInfo {
             path: root.display().to_string(),
-            nar_hash: "sha256:nar".to_string(),
+            nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
             nar_size: 128,
             references: Vec::new(),
             closure_size: 128,
         }
     }
 
+    fn write_test_image_projections(
+        payload: &StorePathInfo,
+    ) -> Result<(StorePathInfo, StorePathInfo)> {
+        let payload_path = Path::new(&payload.path);
+        let container = payload_path.parent().unwrap();
+        let producer: serde_json::Value =
+            serde_json::from_slice(&fs::read(payload_path.join("image-info.json"))?)?;
+        let filename = producer["filename"].as_str().unwrap();
+        let disk_path = container.join("11111111111111111111111111111111-image-disk");
+        let info_path = container.join("22222222222222222222222222222222-image-info");
+        fs::copy(payload_path.join(filename), &disk_path)?;
+        fs::copy(payload_path.join("image-info.json"), &info_path)?;
+        let artifact = |path: &Path, marker: char| StorePathInfo {
+            path: path.display().to_string(),
+            nar_hash: format!("sha256:{}", marker.to_string().repeat(52)),
+            nar_size: 256,
+            references: Vec::new(),
+            closure_size: 256,
+        };
+        let disk_store = artifact(&disk_path, '1');
+        let info_store = artifact(&info_path, '2');
+        Ok((disk_store, info_store))
+    }
+
     fn inspect_test_image(
         format: &str,
-        store: StorePathInfo,
+        payload: StorePathInfo,
         release: &str,
         platform: &str,
     ) -> Result<PublishedImage> {
-        let uki_path = Path::new(&store.path)
+        let (disk_store, info_store) = write_test_image_projections(&payload)?;
+        let payload_path = Path::new(&payload.path);
+        let uki_path = payload_path
             .parent()
             .unwrap()
             .join("uki-output/aos-test.efi");
         inspect_published_image_with(
             format,
-            store,
+            payload,
+            disk_store,
+            info_store,
             &uki_path,
             "test",
             release,
@@ -15487,7 +15525,9 @@ mod tests {
         assert_eq!(image.delivery.byte_size, 36 * 1024 * 1024);
         assert_eq!(image.delivery.filename, "aos-test.qcow2");
         assert_eq!(image.delivery.image_info.filename, "image-info.json");
-        assert!(image.delivery.object_key.contains(&image.delivery.sha256));
+        assert_eq!(image.delivery.schema_version, 2);
+        assert!(image.delivery.object_key.is_empty());
+        assert_eq!(image.delivery.image_info.store_path, image.info_store.path);
         assert_eq!(image.disk.identity.len, image.delivery.byte_size);
         assert_eq!(
             image.uki.path.extension().and_then(|value| value.to_str()),
@@ -15501,169 +15541,6 @@ mod tests {
         public_info_file.read_to_string(&mut public_info).unwrap();
         assert!(!public_info.contains("ukiStorePath"));
         assert_eq!(image.image_info.identity.len, public_info.len() as u64);
-    }
-
-    #[test]
-    fn disk_bytes_stay_out_of_git_while_signed_image_info_is_committed() {
-        let temp = TempDir::new().unwrap();
-        let repo_dir = temp.path().join("registry");
-        let repo = git2::Repository::init(&repo_dir).unwrap();
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "AOS Test").unwrap();
-        config.set_str("user.email", "aos@example.invalid").unwrap();
-        drop(config);
-        let fixture = TempDir::new().unwrap();
-        let store =
-            write_direct_image_output(fixture.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-        let mut paths =
-            persist_direct_image_objects(&repo_dir, std::slice::from_ref(&image)).unwrap();
-        assert_eq!(paths.len(), 1);
-        assert!(paths.iter().all(|path| path.starts_with(&repo_dir)));
-        let package_path = repo_dir.join("packages/t/test.toml");
-        fs::create_dir_all(package_path.parent().unwrap()).unwrap();
-        fs::write(
-            &package_path,
-            build_package_toml(
-                "",
-                "test",
-                "2026.08",
-                "x86_64-linux",
-                &image.store,
-                Some("test system image"),
-                None,
-                Some("MIT"),
-                Some("aos-test"),
-                true,
-                None,
-                std::slice::from_ref(&image),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        paths.push(package_path);
-        let registry_path = repo_dir.join("registry.toml");
-        fs::write(
-            &registry_path,
-            "[registry]\nname = \"test-registry\"\ncontent_addressed = true\n",
-        )
-        .unwrap();
-        paths.push(registry_path);
-        commit_registry_paths(&repo_dir, "publish image objects", &paths, None).unwrap();
-        persist_image_publication_receipt(&repo_dir).unwrap();
-
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        let tree = head.tree().unwrap();
-        assert!(
-            tree.get_path(Path::new(&image.delivery.object_key))
-                .is_err()
-        );
-        assert!(
-            tree.get_path(Path::new(&image.delivery.image_info.object_key))
-                .is_ok()
-        );
-        let git_dir = objectstore::repo_git_dir(&repo_dir).unwrap();
-        let staging = git_dir.join("aos-image-staging");
-        assert!(staging.join(&image.delivery.object_key).is_file());
-        assert!(
-            staging
-                .join(&image.delivery.image_info.object_key)
-                .is_file()
-        );
-        let disk_bytes = fs::read(&image.disk.path).unwrap();
-        let disk_blob = git2::Oid::hash_object(git2::ObjectType::Blob, &disk_bytes).unwrap();
-        assert!(
-            !repo.odb().unwrap().exists(disk_blob),
-            "downloadable disk bytes must not enter loose Git objects or packs"
-        );
-        let receipt_path = git_dir
-            .join("aos-static-origin/publication-receipts")
-            .join(format!("{}.json", head.id()));
-        let receipt_bytes = fs::read(&receipt_path).unwrap();
-        let receipt: serde_json::Value = serde_json::from_slice(&receipt_bytes).unwrap();
-        assert_eq!(receipt["commit"], head.id().to_string());
-        assert_eq!(receipt["registry"], "test-registry");
-        assert_eq!(receipt["catalogDigest"].as_str().unwrap().len(), 64);
-        assert_eq!(receipt["objects"].as_array().unwrap().len(), 2);
-        assert_eq!(receipt["objects"][0]["role"], "disk");
-        assert_eq!(receipt["objects"][1]["role"], "image-info");
-        persist_image_publication_receipt(&repo_dir).unwrap();
-        assert_eq!(
-            fs::read(&receipt_path).unwrap(),
-            receipt_bytes,
-            "same-commit retry must be byte-idempotent"
-        );
-
-        fs::write(
-            repo_dir.join("registry.toml"),
-            "[registry]\nname = \"test-registry\"\ndescription = \"metadata-only change\"\ncontent_addressed = true\n",
-        )
-        .unwrap();
-        commit_registry_paths(
-            &repo_dir,
-            "metadata-only change",
-            &[repo_dir.join("registry.toml")],
-            None,
-        )
-        .unwrap();
-        persist_image_publication_receipt(&repo_dir).unwrap();
-        let metadata_head = repo.head().unwrap().peel_to_commit().unwrap();
-        assert!(
-            git_dir
-                .join("aos-static-origin/publication-receipts")
-                .join(format!("{}.json", metadata_head.id()))
-                .is_file(),
-            "every new commit containing the catalog needs its own receipt"
-        );
-
-        fs::remove_dir_all(&staging).unwrap();
-        fs::write(
-            repo_dir.join("registry.toml"),
-            "[registry]\nname = \"test-registry\"\ndescription = \"unpublishable\"\ncontent_addressed = true\n",
-        )
-        .unwrap();
-        commit_registry_paths(
-            &repo_dir,
-            "metadata with unavailable image",
-            &[repo_dir.join("registry.toml")],
-            None,
-        )
-        .unwrap();
-        let unavailable_head = repo.head().unwrap().peel_to_commit().unwrap();
-        persist_image_publication_receipt(&repo_dir).unwrap();
-        assert!(
-            git_dir
-                .join("aos-static-origin/publication-receipts")
-                .join(format!("{}.json", unavailable_head.id()))
-                .is_file(),
-            "the receipt is a deterministic catalog manifest, not local placement proof"
-        );
-    }
-
-    #[test]
-    fn failed_image_materialization_cannot_publish_catalog_visibility() {
-        let temp = TempDir::new().unwrap();
-        let repo_dir = temp.path().join("registry");
-        let repo = git2::Repository::init(&repo_dir).unwrap();
-        let fixture = TempDir::new().unwrap();
-        let store =
-            write_direct_image_output(fixture.path(), "raw", serde_json::json!(["bare-metal"]));
-        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-        let git_dir = objectstore::repo_git_dir(&repo_dir).unwrap();
-        let conflicting = git_dir
-            .join("aos-image-staging")
-            .join(&image.delivery.object_key);
-        fs::create_dir_all(conflicting.parent().unwrap()).unwrap();
-        fs::write(&conflicting, b"wrong immutable bytes").unwrap();
-
-        assert!(persist_direct_image_objects(&repo_dir, &[image]).is_err());
-        assert!(repo.head().is_err(), "no catalog commit may become visible");
     }
 
     #[test]
@@ -15710,8 +15587,12 @@ mod tests {
             write_direct_image_output(drift.path(), "raw", serde_json::json!(["bare-metal"]));
         assert!(inspect_test_image("raw", store, "2026.09", "x86_64-linux").is_err());
         let store = StorePathInfo {
-            path: drift.path().join("image-output").display().to_string(),
-            nar_hash: "sha256:nar".to_string(),
+            path: drift
+                .path()
+                .join("00000000000000000000000000000000-image-output")
+                .display()
+                .to_string(),
+            nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
             nar_size: 128,
             references: Vec::new(),
             closure_size: 128,
@@ -15739,8 +15620,11 @@ mod tests {
     #[test]
     fn image_publisher_rejects_hardlinked_artifacts() {
         let temp = TempDir::new().unwrap();
-        let store =
+        let mut store =
             write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let ordinary_output = temp.path().join("image-output");
+        fs::rename(&store.path, &ordinary_output).unwrap();
+        store.path = ordinary_output.display().to_string();
         fs::hard_link(
             Path::new(&store.path).join("aos-test.img.zst"),
             temp.path().join("disk-alias.img"),
@@ -15757,7 +15641,7 @@ mod tests {
         fs::write(&artifact, b"immutable store bytes").unwrap();
         fs::hard_link(&artifact, temp.path().join("store-optimizer-link")).unwrap();
 
-        assert!(open_stable_regular_file(&artifact).is_err());
+        assert!(open_stable_regular_file_with_links(&artifact, false).is_err());
         assert!(open_stable_regular_file_with_links(&artifact, true).is_ok());
     }
 
@@ -15899,9 +15783,12 @@ mod tests {
             write_direct_image_output(input_drift.path(), "raw", serde_json::json!(["bare-metal"]));
         let wrong_uki = input_drift.path().join("uki-output/other.efi");
         fs::write(&wrong_uki, b"other").unwrap();
+        let (disk_store, info_store) = write_test_image_projections(&store).unwrap();
         let result = inspect_published_image_with(
             "raw",
             store,
+            disk_store,
+            info_store,
             &wrong_uki,
             "test",
             "2026.08",
@@ -15918,9 +15805,12 @@ mod tests {
             serde_json::json!(["bare-metal"]),
         );
         let uki_path = signature_drift.path().join("uki-output/aos-test.efi");
+        let (disk_store, info_store) = write_test_image_projections(&store).unwrap();
         let result = inspect_published_image_with(
             "raw",
             store,
+            disk_store,
+            info_store,
             &uki_path,
             "test",
             "2026.08",
@@ -20552,10 +20442,66 @@ references = []
         assert!(content.contains("sysroot = true"));
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
-        assert!(content.contains("sha256:nar"));
+        assert!(content.contains("sha256:1111111111111111111111111111111111111111111111111111"));
+        assert!(content.contains("sha256:2222222222222222222222222222222222222222222222222222"));
         let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
         let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
-        assert_eq!(image.delivery.schema_version, 1);
+        assert_eq!(image.delivery.schema_version, 2);
+        assert!(image.delivery.object_key.is_empty());
+    }
+
+    #[test]
+    fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
+        let image_fixture = TempDir::new().unwrap();
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-server-2026.04".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 12345678,
+            references: vec!["ref1".into()],
+            closure_size: 52428800,
+        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        let image_root = Path::new(&img_info.path);
+        fs::write(image_root.join("root.img"), b"root").unwrap();
+        fs::write(image_root.join("root.verity"), b"verity").unwrap();
+        fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
+        fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
+        rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
+        let image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
+
+        let content = build_package_toml(
+            "",
+            "server",
+            "2026.04",
+            "x86_64-linux",
+            &info,
+            Some("AOS server"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            true,
+            None,
+            &[image],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
+        let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
+        assert_eq!(image.format, "raw");
+        assert!(image.root_image.is_none());
+        assert!(image.root_verity.is_none());
+        assert!(image.root_hash.is_none());
+        assert!(image.root_hash_sig.is_none());
     }
 
     #[test]

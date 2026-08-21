@@ -140,6 +140,18 @@ fn narinfo_link(slug: &str, hash: &str) -> String {
     )
 }
 
+fn store_path_link(slug: &str, path: &str) -> String {
+    match store_hash(path) {
+        Some(hash) => format!(
+            "<a href=\"/{}/{}.narinfo\"><code>{}</code></a>",
+            escape(slug),
+            escape(hash),
+            escape(path),
+        ),
+        None => format!("<code>{}</code>", escape(path)),
+    }
+}
+
 /// The status / coverage / checked / probed cells for one cache row.
 fn validation_cells(run: Option<&ValidationRunRow>) -> [String; 4] {
     let Some(run) = run else {
@@ -215,14 +227,21 @@ pub fn instance_home(
         .slice(&matches)
         .iter()
         .map(|(reg, status)| {
-            let (state, class) = match status.as_ref().map(|s| s.state.as_str()) {
-                Some("fresh") => ("fresh", "ok"),
-                Some("failed") => ("failed", "bad"),
-                // A successfully-indexed empty registry: nothing published yet,
-                // not a problem — neutral, not a warning.
-                Some("empty") => ("empty", "dim"),
-                Some(other) => (other, "warn"),
-                None => ("unregistered", "dim"),
+            let (state, class, detail) = match status.as_ref().map(|s| s.state.as_str()) {
+                Some("fresh" | "empty") => ("live", "ok", "Index is current".to_string()),
+                Some("failed") => ("outdated", "bad", "Index refresh failed".to_string()),
+                Some("indexing") => (
+                    "outdated",
+                    "warn",
+                    "Index refresh is in progress".to_string(),
+                ),
+                Some("stale") => (
+                    "outdated",
+                    "warn",
+                    "Index is behind the registry surface".to_string(),
+                ),
+                Some(other) => ("outdated", "warn", format!("Index state: {other}")),
+                None => ("outdated", "warn", "Index is not registered".to_string()),
             };
             vec![
                 format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
@@ -232,7 +251,11 @@ pub fn instance_home(
                         .and_then(|s| s.name.as_deref())
                         .unwrap_or("—"),
                 ),
-                format!("<span class=\"{class}\">{}</span>", escape(state)),
+                format!(
+                    "<span class=\"{class}\" title=\"{}\">{}</span>",
+                    escape(&detail),
+                    escape(state)
+                ),
             ]
         })
         .collect();
@@ -789,7 +812,8 @@ pub fn package_index(
                 "—".to_string()
             } else {
                 format!(
-                    "<a href=\"/{}/-/packages?filter={}\">{}</a>",
+                    "<a class=\"license-pill\" title=\"Filter by license: {}\" href=\"/{}/-/packages?filter={}\">{}</a>",
+                    escape(&p.license),
                     escape(slug),
                     urlencode(&format!("license == \"{}\"", p.license)),
                     escape(&p.license),
@@ -1142,74 +1166,65 @@ pub fn package_page(
     }
 
     body.push_str("<h2>Versions</h2>\n");
+    body.push_str(
+        "<div class=\"table-scroll\" role=\"region\" aria-label=\"Package artifacts\" tabindex=\"0\">\n\
+         <table class=\"artifact-table\"><thead><tr><th>version</th><th>platform</th><th>NAR</th><th>closure</th></tr></thead>\n",
+    );
     for version in &detail.versions {
-        let _ = write!(body, "<h3>{}", escape(&version.version));
-        if let Some(previous) = &version.previous {
-            let _ = write!(
-                body,
-                " <span class=\"dim\">(upgrades {})</span>",
-                escape(previous)
-            );
-        }
-        body.push_str("</h3>\n");
-        let rows: Vec<Vec<String>> = version
-            .platforms
-            .iter()
-            .map(|p| {
-                // The narinfo permalink is the canonical download entry point:
-                // the actual NAR URL lives inside the narinfo body and is not
-                // derivable from the store hash alone, so we link the narinfo.
-                let download = match store_hash(&p.store_path) {
-                    Some(hash) => narinfo_link(slug, hash),
-                    None => "—".to_string(),
-                };
-                let source = if p.source_drv.is_empty() {
-                    "—".to_string()
-                } else {
-                    format!("<code>{}</code>", escape(&p.source_drv))
-                };
-                vec![
-                    escape(&p.platform),
-                    format!("<code>{}</code>", escape(&p.store_path)),
-                    human_size(p.nar_size),
-                    human_size(p.closure_size),
-                    format!("<code>{}</code>", escape(&p.nar_hash)),
-                    download,
-                    source,
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &[
-                "platform",
-                "store path",
-                "nar",
-                "closure",
-                "nar hash",
-                "download",
-                "source drv",
-            ],
-            &rows,
-        ));
-
         for platform in &version.platforms {
-            if platform.refs.is_empty() {
-                continue;
+            body.push_str("<tbody class=\"artifact\">\n<tr class=\"artifact-summary\">");
+            let _ = write!(body, "<td>{}", escape(&version.version));
+            if let Some(previous) = &version.previous {
+                let _ = write!(
+                    body,
+                    "<div class=\"subline\">upgrades {}</div>",
+                    escape(previous)
+                );
             }
-            let _ = write!(
+            let _ = writeln!(
                 body,
-                "<p class=\"dim\">references ({}):</p>\n<p>",
+                "</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 escape(&platform.platform),
+                human_size(platform.nar_size),
+                human_size(platform.closure_size),
             );
-            for (i, reference) in platform.refs.iter().enumerate() {
-                if i > 0 {
-                    body.push(' ');
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">store path</th><td colspan=\"3\">{}</td></tr>",
+                store_path_link(slug, &platform.store_path),
+            );
+            let source = if platform.source_drv.is_empty() {
+                "—".to_string()
+            } else {
+                store_path_link(slug, &platform.source_drv)
+            };
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">source drv</th><td colspan=\"3\">{source}</td></tr>"
+            );
+            let _ = writeln!(
+                body,
+                "<tr class=\"artifact-detail\"><th scope=\"row\">NAR hash</th><td colspan=\"3\"><code>{}</code></td></tr>",
+                escape(&platform.nar_hash),
+            );
+            if !platform.refs.is_empty() {
+                body.push_str(
+                    "<tr class=\"artifact-detail\"><th scope=\"row\">references</th><td colspan=\"3\" class=\"artifact-references\">",
+                );
+                for (index, reference) in platform.refs.iter().enumerate() {
+                    if index > 0 {
+                        body.push(' ');
+                    }
+                    body.push_str(&narinfo_link(slug, reference));
                 }
-                body.push_str(&narinfo_link(slug, reference));
+                body.push_str("</td></tr>\n");
             }
-            body.push_str("</p>\n");
+            body.push_str("</tbody>\n");
         }
+    }
+    body.push_str("</table></div>\n");
 
+    for version in &detail.versions {
         let image_rows: Vec<Vec<String>> = version
             .platforms
             .iter()
@@ -2013,24 +2028,13 @@ pub fn images_page(
         }
         let (boot_verification, boot_class) =
             image_verification_label(image.delivery.uki.verification);
-        rows.push(vec![
-            format!(
-                "{} <span class=\"dim\">{}</span>",
-                escape(&image.release),
-                escape(&image.package)
-            ),
-            if channel_names.is_empty() {
-                "—".to_string()
-            } else {
-                escape(&channel_names.join(", "))
-            },
-            escape(&image.delivery.architecture),
-            escape(&image.format),
-            escape(&targets),
-            human_size(image.delivery.byte_size),
-            "<span class=\"ok\">verified</span>".to_string(),
-            format!("<span class=\"{boot_class}\">{boot_verification}</span>"),
-            format!("<code>{}</code>", escape(&image.delivery.sha256)),
+        let checksum_id = format!("image-sha-{}", rows.len());
+        let channel_cell = if channel_names.is_empty() {
+            "—".to_string()
+        } else {
+            escape(&channel_names.join(", "))
+        };
+        let download = if image.store_path.is_empty() {
             download_base.map_or_else(
                 || "<span class=\"dim\">route unavailable</span>".to_string(),
                 |base| {
@@ -2041,8 +2045,47 @@ pub fn images_page(
                         escape(&image.delivery.filename),
                     )
                 },
-            ),
-        ]);
+            )
+        } else {
+            "<span class=\"ok\" title=\"Delivered from the registry cache with aos image download\">CDN / CLI</span>".to_string()
+        };
+        let store_identity = if image.store_path.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<span class=\"image-detail-item\"><span class=\"dim\">store</span> <code title=\"{}\">{}</code></span>\
+                 <span class=\"image-detail-item\"><span class=\"dim\">NAR</span> <code title=\"{}\">{}</code> ({})</span>",
+                escape(&image.store_path),
+                escape(image.store_path.rsplit('/').next().unwrap_or(&image.store_path)),
+                escape(&image.nar_hash),
+                escape(image.nar_hash.get(..20).unwrap_or(&image.nar_hash)),
+                human_size(image.nar_size),
+            )
+        };
+        rows.push(format!(
+            "<tbody class=\"image-artifact\">\
+             <tr class=\"image-summary\"><td>{release}<div class=\"subline\">{package}</div></td>\
+             <td>{channel}</td><td>{architecture}</td><td>{format}</td><td>{size}</td><td>{download}</td></tr>\
+             <tr class=\"image-detail\"><th scope=\"row\">details</th><td colspan=\"5\">\
+             <span class=\"image-detail-item\"><span class=\"dim\">targets</span> {targets}</span>\
+             <span class=\"image-detail-item\"><span class=\"dim\">release</span> <span class=\"ok\">verified</span></span>\
+             <span class=\"image-detail-item\"><span class=\"dim\">boot</span> <span class=\"{boot_class}\">{boot_verification}</span></span>\
+             <span class=\"image-detail-item\"><span class=\"dim\">file</span> {filename}</span>\
+             {store_identity}\
+             <span class=\"image-detail-item checksum-item\"><span class=\"dim\">SHA-256</span> \
+             <code id=\"{checksum_id}\" class=\"image-checksum\" title=\"{checksum}\">{checksum}</code>\
+             <button type=\"button\" class=\"image-copy\" data-copy-target=\"{checksum_id}\" \
+             aria-label=\"Copy full SHA-256 checksum\" hidden>copy</button></span></td></tr></tbody>\n",
+            release = escape(&image.release),
+            package = escape(&image.package),
+            channel = channel_cell,
+            architecture = escape(&image.delivery.architecture),
+            format = escape(&image.format),
+            size = human_size(image.delivery.byte_size),
+            targets = escape(&targets),
+            checksum = escape(&image.delivery.sha256),
+            filename = escape(&image.delivery.filename),
+        ));
     }
 
     let mut body = registry_nav(slug, "images");
@@ -2072,10 +2115,11 @@ pub fn images_page(
     ];
     let _ = write!(
         body,
-        "<form method=\"get\" data-live class=\"image-filters\">{}{}{}{}{}\
+        "<form method=\"get\" data-live class=\"image-filters\"><div class=\"image-filter-fields\">{}{}{}{}{}\
          <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
-         placeholder=\"package, checksum, or filename\"></label> <button>filter</button>\
-         <a href=\"/{}/-/images\">clear</a></form>",
+         placeholder=\"package, checksum, or filename\"></label></div>\
+         <div class=\"image-filter-actions\"><button>filter</button>\
+         <a href=\"/{}/-/images\">clear</a></div></form>",
         image_select("release", "all releases", &release_options, release),
         image_select("channel", "all channels", &channel_options, channel),
         image_select(
@@ -2092,21 +2136,15 @@ pub fn images_page(
     if rows.is_empty() {
         body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
     } else {
-        body.push_str(&table(
-            &[
-                "release",
-                "channel",
-                "architecture",
-                "format",
-                "target",
-                "size",
-                "release signature",
-                "boot payload",
-                "SHA-256",
-                "download",
-            ],
-            &rows,
-        ));
+        body.push_str(
+            "<div class=\"table-scroll\" role=\"region\" aria-label=\"System images\" tabindex=\"0\">\n\
+             <table class=\"images-table\"><thead><tr><th>release</th><th>channel</th>\
+             <th>architecture</th><th>format</th><th>size</th><th>download</th></tr></thead>\n",
+        );
+        for row in rows {
+            body.push_str(&row);
+        }
+        body.push_str("</table></div>\n");
     }
     page_with_session(
         &format!("{slug} images"),
@@ -2529,6 +2567,9 @@ mod tests {
             release: release.into(),
             platform: "x86_64-linux".into(),
             format: format.into(),
+            store_path: format!("/nix/store/{}-aos-image", "0".repeat(32)),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 8192,
             delivery: ImageDelivery {
                 schema_version: 1,
                 release: release.into(),
@@ -2565,6 +2606,9 @@ mod tests {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".into(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".into(),
                     byte_size: 512,
                     sha256: info_sha256,
@@ -2611,6 +2655,11 @@ mod tests {
         assert!(default.contains("name=\"architecture\""));
         assert!(default.contains("name=\"format\""));
         assert!(default.contains("name=\"target\""));
+        assert!(default.contains("class=\"image-filter-fields\""));
+        assert!(default.contains("class=\"image-filter-actions\""));
+        assert!(default.contains("class=\"image-summary\""));
+        assert!(default.contains("class=\"image-checksum\""));
+        assert!(default.contains("data-copy-target=\"image-sha-0\""));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
 
@@ -2666,7 +2715,8 @@ mod tests {
             Instant::now(),
             &anon(),
         );
-        assert!(html.contains("href=\"https://download.example/demo/images/sha256/"));
+        assert!(html.contains("CDN / CLI"));
+        assert!(!html.contains("href=\"https://download.example/demo/images/sha256/"));
         assert!(!html.contains("access_token="));
         assert!(!html.contains("Authorization="));
     }
@@ -2896,10 +2946,14 @@ mod tests {
         // Reverse dependency.
         assert!(html.contains("Required by (1)"));
         assert!(html.contains("<a href=\"/demo/-/packages/git\">git</a>"));
-        // Download (narinfo) + source-drv columns in the artifact table.
-        assert!(html.contains("<th>download</th>"));
-        assert!(html.contains("<th>source drv</th>"));
+        // Bounded summary columns sit above full-width download rows for the
+        // output and source derivation.
+        assert!(html.contains("class=\"artifact-summary\""));
+        assert!(html.contains("<th scope=\"row\">store path</th>"));
+        assert!(html.contains("<th scope=\"row\">source drv</th>"));
+        assert!(html.contains("<th scope=\"row\">NAR hash</th>"));
         assert!(html.contains("href=\"/demo/aaaa.narinfo\""));
+        assert!(html.contains("colspan=\"3\""));
         // Raw-metadata disclosure block.
         assert!(html.contains("<details class=\"raw-metadata\">"));
         assert!(html.contains("<summary>Raw metadata</summary>"));
@@ -2989,6 +3043,7 @@ mod tests {
         )];
         let html = instance_home(&rows, None, 1, Instant::now(), &anon());
         assert!(html.contains("&lt;bad&amp;state&gt;"));
+        assert!(html.contains(">outdated</span>"));
         assert!(!html.contains("<bad&state>"));
 
         let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon());
@@ -3081,6 +3136,8 @@ mod tests {
         assert!(html.contains("<p class=\"dim\">3 packages</p>"));
         // The license cell links to a license-filter expression.
         assert!(html.contains("filter=license+%3D%3D+%22MIT%22"));
+        assert!(html.contains("class=\"license-pill\""));
+        assert!(html.contains("title=\"Filter by license: MIT\""));
 
         // An active filter is named in the result line and is clearable; a
         // parse error is surfaced and does not name a count.

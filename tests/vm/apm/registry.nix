@@ -52,14 +52,13 @@
             --arg sha256 "$image_sha256" \
             --arg logicalDiskSha256 "$logical_disk_sha256" \
             --arg rootfsSha256 "$logical_disk_sha256" \
-            --arg objectKey "images/sha256/$image_sha256/$filename" \
             --arg ukiFilename "$UKI_FILENAME" \
             --arg ukiSha256 "$uki_sha256" \
             --argjson byteSize "$image_size" \
             --argjson ukiSize "$uki_size" \
-            '{schemaVersion: 1, name: "server", version: "1.0.0",
+            '{schemaVersion: 2, name: "server", version: "1.0.0",
               architecture: "x86_64", platform: "x86_64-linux", format: "raw",
-              filename: $filename, objectKey: $objectKey,
+              filename: $filename,
               mediaType: "application/vnd.aos.disk-image.raw+zstd", compression: "zstd",
               byteSize: $byteSize, virtualSizeBytes: 1048576, sha256: $sha256,
               logicalDiskSha256: $logicalDiskSha256, rootfsSha256: $rootfsSha256,
@@ -74,6 +73,33 @@
         '';
       }
     ];
+  };
+  publishSysrootArtifact = {
+    pname,
+    filename,
+  }:
+    pkgs.mkDerivation {
+      inherit pname;
+      version = "1.0.0";
+      src = null;
+      buildDeps = [pkgs.coreutils publishSysrootImage];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            rmdir "$out"
+            cp '${publishSysrootImage}/${filename}' "$out"
+          '';
+        }
+      ];
+    };
+  publishSysrootDisk = publishSysrootArtifact {
+    pname = "apm-registry-publish-sysroot-disk";
+    filename = "aos-server.img.zst";
+  };
+  publishSysrootInfo = publishSysrootArtifact {
+    pname = "apm-registry-publish-sysroot-info";
+    filename = "image-info.json";
   };
   maintainerWorkflowDeps =
     publishDeps
@@ -966,7 +992,7 @@ in {
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
-    rootfsDeps = publishDeps ++ [publishSysrootImage];
+    rootfsDeps = publishDeps ++ [publishSysrootImage publishSysrootDisk publishSysrootInfo];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -985,7 +1011,9 @@ in {
         --license MIT \
         --maintainer test \
         --sysroot \
-        --image ${publishSysrootImage} \
+        --image-payload ${publishSysrootImage} \
+        --image-disk ${publishSysrootDisk} \
+        --image-info ${publishSysrootInfo} \
         --image-format raw \
         --image-uki ${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi \
         --registry test-reg

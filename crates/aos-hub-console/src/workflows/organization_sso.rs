@@ -473,7 +473,5 @@ fn existing_client_secret(provider: Option<&aos_proto_types::IdentityProvider>) 
 }
 
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }

@@ -35,6 +35,8 @@
       sysNames = builtins.attrNames aos.systems;
       forSystem = name: let
         formats = builtins.attrNames aos.systems.${name}.build.image;
+        artifacts = aos.systems.${name}.config.system.build.imageArtifacts;
+        artifactFormats = builtins.attrNames artifacts;
       in
         builtins.listToAttrs (
           map (fmt: {
@@ -42,6 +44,16 @@
             value = aos.systems.${name}.build.image.${fmt};
           })
           formats
+        )
+        // builtins.listToAttrs (
+          builtins.concatMap (
+            fmt:
+              map (kind: {
+                name = "${name}-image-${fmt}-${kind}";
+                value = artifacts.${fmt}.${kind};
+              }) ["disk" "info"]
+          )
+          artifactFormats
         );
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;

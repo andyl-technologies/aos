@@ -49,6 +49,8 @@
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
   sbImage = systems.server-secureboot.config.system.build.image.raw;
+  sbImageDisk = systems.server-secureboot.config.system.build.imageArtifacts.raw.disk;
+  sbImageInfo = systems.server-secureboot.config.system.build.imageArtifacts.raw.info;
 
   # server-test bundles the guest agent and the CLI tools the producer needs
   # (it hand-seeds + pushes the registry with git) that image slimming dropped
@@ -192,7 +194,9 @@ in {
             --license MIT \\
             --maintainer test \\
             --sysroot \\
-            --image '${sbImage}' --image-format raw \\
+            --image-payload '${sbImage}' \\
+            --image-disk '${sbImageDisk}' \\
+            --image-info '${sbImageInfo}' --image-format raw \\
             --image-uki "$SB_UKI" \\
             --no-ca \\
             --registry sysreg \\
