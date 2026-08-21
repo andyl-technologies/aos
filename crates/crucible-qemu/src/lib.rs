@@ -228,10 +228,10 @@ pub use qmp::{
     QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
-    QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,
-    QemuOutboundFrame, QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation,
-    QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath,
-    QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
+    QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,
+    QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumOperationPlane,
+    QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath, QemuQuantumShmemView,
+    assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
     MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuBackendRealizationExecutor,

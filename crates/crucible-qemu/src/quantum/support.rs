@@ -197,16 +197,6 @@ pub enum QemuQuantumError {
         /// Underlying lookahead error.
         source: LookaheadGateError,
     },
-    /// The caller supplied an impossible delivery window.
-    #[error(
-        "QEMU quantum inbound delivery floor {passed_delivery_floor_icount} is after current icount {current_icount}"
-    )]
-    InvalidDeliveryWindow {
-        /// The earliest delivery icount still valid for this scheduler pass.
-        passed_delivery_floor_icount: u64,
-        /// Current consumer icount observed in the node slot.
-        current_icount: u64,
-    },
     /// An inbound frame should already have been visible to the guest.
     #[error(
         "QEMU quantum inbound frame {frame:?} is behind delivery floor {passed_delivery_floor_icount} at current icount {current_icount}"
@@ -219,13 +209,70 @@ pub enum QemuQuantumError {
         /// The late frame's deterministic delivery key.
         frame: FrameDeliveryKey,
     },
-    /// A post-preview dequeue did not consume the frame that was validated.
-    #[error("QEMU quantum inbound commit dequeued frame {actual:?} after previewing {expected:?}")]
-    DequeuedUnexpectedDelivery {
-        /// The expected deterministic delivery key.
-        expected: FrameDeliveryKey,
-        /// The actual deterministic delivery key.
-        actual: FrameDeliveryKey,
+    /// The plugin advanced the consumer index beyond the host-published batch.
+    #[error(
+        "QEMU quantum inbound consumer advanced from {initial_read_idx} past published write index {initial_write_idx} to {final_read_idx}"
+    )]
+    InboundConsumerAdvancedBeyondPublished {
+        /// Consumer index observed before the scheduler wake.
+        initial_read_idx: u64,
+        /// Producer index observed before the scheduler wake.
+        initial_write_idx: u64,
+        /// Consumer index observed after the plugin completion report.
+        final_read_idx: u64,
+    },
+    /// The producer index regressed relative to the active quantum's ledger.
+    #[error(
+        "QEMU quantum inbound producer index regressed from {initial_write_idx} to {final_write_idx}"
+    )]
+    InboundDeliveryLedgerIndexRegressed {
+        /// Producer index captured before the scheduler wake.
+        initial_write_idx: u64,
+        /// Producer index captured after the plugin completion report.
+        final_write_idx: u64,
+    },
+    /// Delivery-key ledger length arithmetic overflowed.
+    #[error("QEMU quantum inbound delivery-key ledger length overflowed")]
+    InboundDeliveryLedgerLengthOverflow,
+    /// An untracked producer wrapped the ring before its keys could be observed.
+    #[error(
+        "QEMU quantum inbound producer published {produced} frames across capacity {capacity} without a complete delivery-key ledger"
+    )]
+    InboundDeliveryHistoryOverwritten {
+        /// Number of entries published during the active quantum.
+        produced: u64,
+        /// Physical ring capacity available for retrospective key reads.
+        capacity: u64,
+    },
+    /// The host delivery-key ledger disagreed with the shared ring.
+    #[error(
+        "QEMU quantum inbound delivery-key ledger has {ledger_live} live keys for {ring_live} live ring entries"
+    )]
+    InboundDeliveryLedgerMismatch {
+        /// Number of live entries derived from the SPSC indices.
+        ring_live: u64,
+        /// Number of delivery keys retained by the host ledger.
+        ledger_live: usize,
+    },
+    /// The plugin consumed a frame before its scheduler-authorized coordinate.
+    #[error(
+        "QEMU quantum inbound frame {frame:?} was consumed before delivery at current icount {current_icount}"
+    )]
+    InboundFrameConsumedBeforeDelivery {
+        /// Current plugin coordinate at completion.
+        current_icount: u64,
+        /// Prematurely consumed deterministic delivery key.
+        frame: FrameDeliveryKey,
+    },
+    /// The plugin published completion without consuming a due inbound frame.
+    #[error(
+        "QEMU quantum inbound frame {frame:?} remained queued at delivery coordinate {current_icount}"
+    )]
+    InboundFrameNotConsumedAtDelivery {
+        /// Current plugin coordinate at completion.
+        current_icount: u64,
+        /// Due deterministic delivery key still owned by the plugin.
+        frame: FrameDeliveryKey,
     },
     /// The node-slot handoff rejected a state transition.
     #[error("QEMU quantum node-slot operation {operation} failed: {source}")]

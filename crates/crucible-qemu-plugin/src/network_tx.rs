@@ -22,7 +22,7 @@ pub const QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL: &str = "qemu_plugin_register_ne
 const QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_net_tx_cb\0";
 
 /// Network TX callback body passed to QEMU's transmit path.
-pub type QemuNetTxCbFn = extern "C" fn(*const u8, usize, *mut c_void) -> c_int;
+pub type QemuNetTxCbFn = extern "C" fn(*const u8, usize, u64, *mut c_void) -> c_int;
 /// QEMU network TX callback registration exported by `crucible-net-tx-callback`.
 pub type QemuRegisterNetTxCbFn = extern "C" fn(Option<QemuNetTxCbFn>, *mut c_void);
 

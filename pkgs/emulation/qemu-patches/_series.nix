@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f032ffdf46d2c9d33d366ce486bc55f21de5267e3677a47615202b4c818846c9";
+  patchBranchBundleSha256 = "1ffc00beadbd07162cddcd9febcd65632251ac763a610a8ac6c53fa87df12b2f";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "4dfd46c2f210788e4477f09d4cdf8e77615e6bfd";
+  patchBranchHeadCommit = "51e99862db3d19451032cdd2ef7ceaa440e44d4b";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1005,6 +1005,16 @@ let
       class = "D";
       enforces = "DET-1,QFP-STATE-2,QEMU-43";
       capability = "fresh sim-mode execution establishes vCPU 0 position 0 before the first budget, and the serialized owner remains authoritative across partial turns and VMState restore";
+    }
+    {
+      file = "0108-crucible-deterministic-network-kick.patch";
+      branchSubject = "crucible: preserve deterministic network continuation";
+      branchCommit = "51e99862db3d19451032cdd2ef7ceaa440e44d4b";
+      branchTree = "8c79ff5d07b2009e71166ab1bd6854df23705fd5";
+      catalogName = "crucible-deterministic-network-kick";
+      class = "D";
+      enforces = "DET-1,PLUG-23,PLUG-24,QEMU-43";
+      capability = "sim-mode virtio-net queue kicks and serialized tx_waiting resumes drain every deferred TX bottom half synchronously, supply one committed raw transmit icount, preserve the virtqueue notification cursor in an optional sim VMState subsection, symmetrically flush pre-checkpoint translation history, and use bounded cache-independent TB shapes without direct chains on both continuations so VMState restore preserves packet and fault-decision continuation";
     }
   ];
   catalogOnlyCapabilities = [
