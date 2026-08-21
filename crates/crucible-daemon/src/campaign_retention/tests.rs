@@ -16,7 +16,9 @@ use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend
 
 use super::*;
 use crate::{
-    AssignmentPublish, AssignmentRecord, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
+    AssignmentPublish, AssignmentRecord, AssignmentRetentionFence,
+    AssignmentRetentionInventoryError, AssignmentRetentionSummary, AssignmentRetentionVisitorError,
+    AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
 };
 
 struct RootLedger {
@@ -75,6 +77,52 @@ impl AssignmentLedger for RootLedger {
             visitor(root);
         }
         Ok(())
+    }
+}
+
+impl AssignmentRetentionAdmin for RootLedger {
+    type Error = Infallible;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        Ok(Box::new(RootLedgerFence { ledger: self }))
+    }
+}
+
+struct RootLedgerFence<'a> {
+    ledger: &'a RootLedger,
+}
+
+impl AssignmentRetentionFence for RootLedgerFence<'_> {
+    type BackendError = Infallible;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        for root in self.ledger.observations.iter().copied() {
+            visitor(AssignmentRetentionRoot::Observation(root))?;
+        }
+        for root in self.ledger.checkpoints.iter().copied() {
+            visitor(AssignmentRetentionRoot::ExactCheckpoint(root))?;
+        }
+        Ok(AssignmentRetentionSummary::new(
+            AssignmentRetentionGeneration::from_bytes([0x5a; 32]),
+            u64::try_from(
+                self.ledger
+                    .observations
+                    .len()
+                    .saturating_add(self.ledger.checkpoints.len()),
+            )
+            .expect("root count fits u64"),
+            u64::try_from(self.ledger.observations.len()).expect("observation count fits u64"),
+            u64::try_from(self.ledger.checkpoints.len()).expect("checkpoint count fits u64"),
+        ))
     }
 }
 
@@ -176,20 +224,21 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
         "crucible.executor.exact-checkpoint-root@{checkpoint_content}"
     ))
     .expect("checkpoint root");
-    let ledger = RootLedger {
+    let mut ledger = RootLedger {
         observations: vec![observation, observation],
         checkpoints: vec![checkpoint],
     };
 
     let mut roots = Vec::new();
     let summary =
-        visit_local_campaign_retention_roots(&repository, &campaign, &ledger, &mut |root| {
+        visit_local_campaign_retention_roots(&repository, &campaign, &mut ledger, &mut |root| {
             roots.push(root)
         })
         .expect("complete retention inventory");
 
     assert_eq!(summary.semantic_pins().snapshot(), pinned.new_snapshot);
     assert_eq!(summary.semantic_pins().thin_pins(), 1);
+    assert_eq!(summary.ledger_generation().as_bytes(), [0x5a; 32]);
     assert_eq!(summary.observation_roots(), 2);
     assert_eq!(summary.checkpoint_roots(), 1);
     assert!(matches!(

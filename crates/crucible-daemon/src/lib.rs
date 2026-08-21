@@ -60,8 +60,10 @@ pub mod repository_admission;
 
 pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
-    AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger,
-    MemoryAssignmentLedger,
+    AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
+    AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
+    AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
+    DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,

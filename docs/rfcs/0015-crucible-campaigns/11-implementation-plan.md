@@ -363,9 +363,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   versioned loopback, and exact-precondition `pin`/`unpin` CLI binding are now
   implemented. A bounded, snapshot-bound repository visitor now authenticates
   the current projection and its exact thin configuration/scenario artifacts;
-  the daemon composes those records with streamed assignment-ledger observation
-  and checkpoint roots. Exact-pin materialization selection and generation-bound
-  physical plan/apply remain part of T-CAM-8.3.
+  the daemon composes those records with a separately held, exclusive
+  assignment-ledger fence that streams observation and checkpoint roots under
+  one restart-stable generation. Exact-pin materialization selection and
+  generation-bound physical plan/apply remain part of T-CAM-8.3.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -632,10 +633,10 @@ is distinct across restart. Directory generations use registered checksummed v1
 state records and advance durably before cooperating mutation. Tests cover
 restart, object and ref ABA, early visitor failure, malformed/oversized input,
 valid staging-prefix names, and mutation exclusion while fenced. Store-graph
-administrative composition, a fenced operational-ledger root snapshot, complete
-reachability planning, an immutable plan identity, interruption-safe
-apply/recovery, and production maintenance ownership remain open, so no Phase 5
-task is checked by this checkpoint.
+administrative composition, the now-implemented fenced operational-ledger root
+snapshot, complete reachability planning, an immutable plan identity,
+interruption-safe apply/recovery, and production maintenance ownership remain
+open, so no Phase 5 task is checked by this checkpoint.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's overlay and
@@ -741,10 +742,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory and
-  directory loose-leaf inventory/delete and authoritative-ref inventory
-  primitives are implemented; exact-pin materialization selection,
-  composed-store/ledger fencing, and destructive physical plan/apply remain
-  open. Implement
+  directory loose-leaf inventory/delete, authoritative-ref inventory, and
+  operational-ledger inventory primitives are implemented; exact-pin
+  materialization selection, composed-store fencing, and destructive physical
+  plan/apply remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

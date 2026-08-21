@@ -77,6 +77,7 @@ crucible.campaign.submit-campaign-branch-response	1	crucible-campaign::campaign_
 crucible.campaign.service-error-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	3	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
+crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.qemu.vm-snapshot	2	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.exact-checkpoint-root	2	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming

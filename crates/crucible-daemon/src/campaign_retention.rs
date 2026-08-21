@@ -13,7 +13,10 @@ use crucible_campaign::{
 };
 use thiserror::Error;
 
-use crate::{AssignmentLedger, ExactCheckpointId};
+use crate::{
+    AssignmentLedger, AssignmentRetentionAdmin, AssignmentRetentionGeneration,
+    AssignmentRetentionInventoryError, AssignmentRetentionRoot, ExactCheckpointId,
+};
 
 /// One authenticated retention root discovered for the local campaign subsystem.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +33,7 @@ pub enum LocalCampaignRetentionRoot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalCampaignRetentionSummary {
     semantic_pins: CampaignPinRetentionSummary,
+    ledger_generation: AssignmentRetentionGeneration,
     observation_roots: u64,
     checkpoint_roots: u64,
 }
@@ -39,6 +43,12 @@ impl LocalCampaignRetentionSummary {
     #[must_use]
     pub const fn semantic_pins(self) -> CampaignPinRetentionSummary {
         self.semantic_pins
+    }
+
+    /// Returns the exact fenced operational-ledger generation.
+    #[must_use]
+    pub const fn ledger_generation(self) -> AssignmentRetentionGeneration {
+        self.ledger_generation
     }
 
     /// Returns the number of operational observation-root records visited.
@@ -96,56 +106,53 @@ pub enum LocalCampaignRetentionError<E> {
 /// [`LocalCampaignRetentionError::Ledger`] if operational enumeration fails,
 /// or [`LocalCampaignRetentionError::CountOverflow`] if a terminal count cannot
 /// be represented. The visitor may already have observed a prefix on error.
-pub fn visit_local_campaign_retention_roots<L: AssignmentLedger>(
+pub fn visit_local_campaign_retention_roots<L>(
     repository: &CampaignRepository,
     campaign: &CampaignName,
-    ledger: &L,
+    ledger: &mut L,
     visitor: &mut dyn FnMut(LocalCampaignRetentionRoot),
-) -> Result<LocalCampaignRetentionSummary, LocalCampaignRetentionError<L::Error>> {
+) -> Result<
+    LocalCampaignRetentionSummary,
+    LocalCampaignRetentionError<<L as AssignmentLedger>::Error>,
+>
+where
+    L: AssignmentLedger + AssignmentRetentionAdmin<Error = <L as AssignmentLedger>::Error>,
+{
     let semantic_pins = repository.visit_pin_retention_roots(campaign.as_str(), &mut |record| {
         visitor(LocalCampaignRetentionRoot::SemanticPin(Box::new(record)))
     })?;
 
-    let mut observation_roots = 0_u64;
-    let mut observation_overflow = false;
-    ledger
-        .visit_observation_roots(&mut |observation| {
-            let Some(next) = observation_roots.checked_add(1) else {
-                observation_overflow = true;
-                return;
-            };
-            observation_roots = next;
-            visitor(LocalCampaignRetentionRoot::Observation(observation));
-        })
+    let mut fence = ledger
+        .acquire_retention_fence()
         .map_err(LocalCampaignRetentionError::Ledger)?;
-    if observation_overflow {
-        return Err(LocalCampaignRetentionError::CountOverflow {
-            category: "observation-root",
-        });
-    }
-
-    let mut checkpoint_roots = 0_u64;
-    let mut checkpoint_overflow = false;
-    ledger
-        .visit_checkpoint_roots(&mut |checkpoint| {
-            let Some(next) = checkpoint_roots.checked_add(1) else {
-                checkpoint_overflow = true;
-                return;
-            };
-            checkpoint_roots = next;
-            visitor(LocalCampaignRetentionRoot::ExactCheckpoint(checkpoint));
+    let operational = fence
+        .visit_roots(&mut |root| {
+            match root {
+                AssignmentRetentionRoot::Observation(observation) => {
+                    visitor(LocalCampaignRetentionRoot::Observation(observation));
+                }
+                AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => {
+                    visitor(LocalCampaignRetentionRoot::ExactCheckpoint(checkpoint));
+                }
+            }
+            Ok(())
         })
-        .map_err(LocalCampaignRetentionError::Ledger)?;
-    if checkpoint_overflow {
-        return Err(LocalCampaignRetentionError::CountOverflow {
-            category: "checkpoint-root",
-        });
-    }
+        .map_err(|source| match source {
+            AssignmentRetentionInventoryError::Backend(source) => {
+                LocalCampaignRetentionError::Ledger(source)
+            }
+            AssignmentRetentionInventoryError::Visitor(_) => {
+                LocalCampaignRetentionError::CountOverflow {
+                    category: "operational-root",
+                }
+            }
+        })?;
 
     Ok(LocalCampaignRetentionSummary {
         semantic_pins,
-        observation_roots,
-        checkpoint_roots,
+        ledger_generation: operational.generation(),
+        observation_roots: operational.observation_roots(),
+        checkpoint_roots: operational.checkpoint_roots(),
     })
 }
 
