@@ -1,16 +1,16 @@
 //! Inbound frame polling and deterministic injection ordering.
 //!
-//! The plugin consumes shared-memory SPSC rings owned by executor subnodes. This
-//! module keeps the inbound contract explicit: peek ring heads without consuming
-//! them, dequeue only frames whose delivery icount has been reached by the
-//! current plugin icount, sort all due frames by their in-band delivery key, and
-//! fail loudly if a ring head is behind the idle-pass delivery floor.
+//! The plugin consumes shared-memory SPSC rings owned by executor subnodes. It
+//! peeks without consuming, dequeues only due frames, sorts them by their in-band
+//! delivery key, and fails loudly behind the idle-pass delivery floor.
 
 use thiserror::Error;
 
 use crucible_shmem::{FrameDeliveryKey, FrameEntry, RingHeader, SpscRingError};
 
 use crate::shmem_ordering::PluginShmemOrdering;
+
+mod commit;
 
 /// A plugin-owned view of one inbound SPSC ring.
 #[derive(Clone, Copy)]

@@ -1,13 +1,11 @@
 //! Production local-VM lifecycle loop construction.
 //!
-//! This module owns the process-local composition from a submitted
-//! [`ScenarioDefForm`] to the authoritative [`SingleScheduler`], one live
-//! scheduler-facing QEMU node per World VM, and the node-addressed backend loop
-//! consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
+//! This module composes a submitted [`ScenarioDefForm`] into the authoritative
+//! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
+//! backend loop consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -46,8 +44,7 @@ use crucible_qemu::{
     linux_process_identity, quarantine_orphaned_qemu_process,
 };
 
-use crate::LifecycleApiError;
-use crate::debug_gateway::DebugGatewayProcess;
+use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 
 mod assets;
 use assets::*;

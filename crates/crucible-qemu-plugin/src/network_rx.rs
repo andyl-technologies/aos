@@ -1,134 +1,23 @@
-//! Network receive injection through QEMU's lossless RX queue.
+//! Network receive injection with canonical shared-memory ownership.
 //!
 //! The idle callback hands due inbound frames to this module after QEMU virtual
 //! time has advanced to the deterministic wake icount. The module enforces that
-//! delivery gate and queues frame payloads through a lossless backend. A ready
-//! guest NIC is flushed immediately; under backpressure QEMU retains the batch
-//! until the NIC resumes receiving.
+//! delivery gate and attempts each frame in deterministic order. A delivered
+//! prefix transfers to the guest; on backpressure the first undelivered frame
+//! and every successor remain in the canonical shared-memory ring so exact
+//! checkpoint/restore never depends on QEMU-private packet heap state.
 
-use std::{
-    fmt,
-    os::raw::{c_int, c_void},
-};
+mod qemu_symbols;
+
+use std::{fmt, os::raw::c_int};
 
 use thiserror::Error;
 
 use crucible_shmem::{FrameDeliveryKey, FrameEntry, FrameEntryError};
 
-/// QEMU patch export used to queue one RX frame losslessly.
-pub const QEMU_PLUGIN_NET_SEND_SYMBOL: &str = "qemu_plugin_net_send";
-/// QEMU patch export used to flush queued RX frames into the guest NIC.
-pub const QEMU_PLUGIN_NET_FLUSH_SYMBOL: &str = "qemu_plugin_net_flush";
-/// QEMU patch export used to distinguish immediate delivery from retention.
-pub const QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL: &str = "qemu_plugin_net_can_receive";
-const QEMU_PLUGIN_NET_SEND_SYMBOL_C: &[u8] = b"qemu_plugin_net_send\0";
-const QEMU_PLUGIN_NET_FLUSH_SYMBOL_C: &[u8] = b"qemu_plugin_net_flush\0";
-const QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL_C: &[u8] = b"qemu_plugin_net_can_receive\0";
-
-/// QEMU's lossless network RX queue function.
-///
-/// The patched QEMU API exports `qemu_plugin_net_send` as a payload pointer,
-/// payload length pair returning zero on success and nonzero on loud failure.
-pub type QemuPluginNetSendFn = extern "C" fn(*const u8, usize) -> c_int;
-
-/// QEMU's network RX queue flush function.
-///
-/// The patched QEMU API exports `qemu_plugin_net_flush` as a no-argument function
-/// returning zero on success and nonzero on loud failure.
-pub type QemuPluginNetFlushFn = extern "C" fn() -> c_int;
-/// QEMU's network RX readiness function.
-pub type QemuPluginNetCanReceiveFn = extern "C" fn() -> c_int;
-
-/// Resolves QEMU's lossless network RX queue export from the loaded process.
-#[cfg(unix)]
-#[must_use]
-pub fn resolve_qemu_net_send_symbol() -> Option<QemuPluginNetSendFn> {
-    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
-    // either null or a process symbol address. The QEMU patch defines this
-    // symbol with the exact `QemuPluginNetSendFn` ABI; callers fail closed when
-    // it is absent.
-    let symbol = unsafe {
-        libc::dlsym(
-            libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_NET_SEND_SYMBOL_C.as_ptr().cast(),
-        )
-    };
-    if symbol.is_null() {
-        None
-    } else {
-        // SAFETY: Non-null `symbol` was resolved for `qemu_plugin_net_send`,
-        // whose patched QEMU declaration matches `QemuPluginNetSendFn`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetSendFn>(symbol) })
-    }
-}
-
-/// Resolves QEMU's lossless network RX queue export from the loaded process.
-#[cfg(not(unix))]
-#[must_use]
-pub const fn resolve_qemu_net_send_symbol() -> Option<QemuPluginNetSendFn> {
-    None
-}
-
-/// Resolves QEMU's lossless network RX flush export from the loaded process.
-#[cfg(unix)]
-#[must_use]
-pub fn resolve_qemu_net_flush_symbol() -> Option<QemuPluginNetFlushFn> {
-    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
-    // either null or a process symbol address. The QEMU patch defines this
-    // symbol with the exact `QemuPluginNetFlushFn` ABI; callers fail closed when
-    // it is absent.
-    let symbol = unsafe {
-        libc::dlsym(
-            libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_NET_FLUSH_SYMBOL_C.as_ptr().cast(),
-        )
-    };
-    if symbol.is_null() {
-        None
-    } else {
-        // SAFETY: Non-null `symbol` was resolved for `qemu_plugin_net_flush`,
-        // whose patched QEMU declaration matches `QemuPluginNetFlushFn`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetFlushFn>(symbol) })
-    }
-}
-
-/// Resolves QEMU's lossless network RX flush export from the loaded process.
-#[cfg(not(unix))]
-#[must_use]
-pub const fn resolve_qemu_net_flush_symbol() -> Option<QemuPluginNetFlushFn> {
-    None
-}
-
-/// Resolves QEMU's network RX readiness export from the loaded process.
-#[cfg(unix)]
-#[must_use]
-pub fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
-    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
-    // either null or a process symbol address. The QEMU patch defines this
-    // symbol with the exact `QemuPluginNetCanReceiveFn` ABI; callers fail closed
-    // when it is absent.
-    let symbol = unsafe {
-        libc::dlsym(
-            libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL_C.as_ptr().cast(),
-        )
-    };
-    if symbol.is_null() {
-        None
-    } else {
-        // SAFETY: Non-null `symbol` was resolved for
-        // `qemu_plugin_net_can_receive`, whose patched QEMU declaration matches
-        // `QemuPluginNetCanReceiveFn`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuPluginNetCanReceiveFn>(symbol) })
-    }
-}
-
-/// Resolves QEMU's network RX readiness export from the loaded process.
-#[cfg(not(unix))]
-#[must_use]
-pub const fn resolve_qemu_net_can_receive_symbol() -> Option<QemuPluginNetCanReceiveFn> {
-    None
-}
+pub use qemu_symbols::{
+    QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuPluginNetInjectFn, resolve_qemu_net_inject_symbol,
+};
 
 /// Registration-time-fixed network RX injection state.
 #[derive(Debug, Default)]
@@ -141,7 +30,7 @@ impl PluginNetworkRx {
         Self
     }
 
-    /// Queues every due frame into QEMU's lossless RX path and flushes it once.
+    /// Delivers the longest guest-accepted prefix of the due frame batch.
     ///
     /// `passed_delivery_floor_icount` is the icount at which this idle pass began,
     /// and `current_icount` must be the plugin clock after the idle jump. Frames
@@ -150,9 +39,9 @@ impl PluginNetworkRx {
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkRxError`] when a frame is late, not yet due, advertises an
-    /// invalid payload length, or when the lossless queue/flush backend reports a
-    /// loud failure.
+    /// Returns [`NetworkRxError`] when a frame is not yet due, advertises an
+    /// invalid payload length, or when the canonical delivery backend reports a
+    /// permanent failure. Guest backpressure is a successful retained outcome.
     pub fn inject_due_frames_from_idle_context<Q>(
         &self,
         rx_queue: &mut Q,
@@ -161,7 +50,7 @@ impl PluginNetworkRx {
         frames: &[FrameEntry],
     ) -> Result<NetworkRxInjection, NetworkRxError>
     where
-        Q: LosslessNetworkRxQueue + ?Sized,
+        Q: CanonicalNetworkRx + ?Sized,
     {
         if passed_delivery_floor_icount > current_icount {
             return Err(NetworkRxError::InvalidDeliveryWindow {
@@ -174,37 +63,39 @@ impl PluginNetworkRx {
         ordered_frames.sort_by_key(|frame| frame.delivery_key());
 
         for frame in &ordered_frames {
-            validate_delivery_gate(frame, passed_delivery_floor_icount, current_icount)?;
+            validate_delivery_gate(frame, current_icount)?;
             frame.payload().map_err(|source| NetworkRxError::Payload {
                 frame: frame.delivery_key(),
                 source,
             })?;
         }
 
-        let mut frame_keys = Vec::with_capacity(ordered_frames.len());
+        let mut delivered_frame_keys = Vec::with_capacity(ordered_frames.len());
+        let mut retained_frame_key = None;
         for frame in ordered_frames {
             let frame_key = frame.delivery_key();
             let payload = frame.payload().map_err(|source| NetworkRxError::Payload {
                 frame: frame_key,
                 source,
             })?;
-            rx_queue
-                .queue_lossless_rx(payload)
-                .map_err(|source| NetworkRxError::Queue {
+            match rx_queue
+                .try_deliver_rx(payload)
+                .map_err(|source| NetworkRxError::Delivery {
                     frame: frame_key,
                     source,
-                })?;
-            frame_keys.push(frame_key);
+                })? {
+                NetworkRxDeliveryOutcome::Delivered => delivered_frame_keys.push(frame_key),
+                NetworkRxDeliveryOutcome::Retained => {
+                    retained_frame_key = Some(frame_key);
+                    break;
+                }
+            }
         }
-
-        let flush_outcome = rx_queue
-            .flush_lossless_rx()
-            .map_err(|source| NetworkRxError::Flush { source })?;
 
         Ok(NetworkRxInjection {
             current_icount,
-            frame_keys,
-            flushed: flush_outcome == NetworkRxFlushOutcome::Delivered,
+            delivered_frame_keys,
+            retained_frame_key,
         })
     }
 }
@@ -212,13 +103,13 @@ impl PluginNetworkRx {
 /// Handles one idle-context network RX injection pass.
 ///
 /// This is the safe body for the QEMU-facing RX injection path. With
-/// [`QemuLosslessNetworkRxQueue`] as the backend, it calls the concrete
-/// `qemu_plugin_net_send` and `qemu_plugin_net_flush` patch exports.
+/// [`QemuCanonicalNetworkRx`] as the backend, it calls the concrete
+/// `qemu_plugin_net_inject` patch export without a QEMU-private queue.
 ///
 /// # Errors
 ///
 /// Returns [`NetworkRxError`] when the delivery gate, frame payload validation,
-/// queue step, or flush step fails.
+/// delivery step fails permanently.
 pub fn handle_network_rx_idle_callback<Q>(
     network_rx: &PluginNetworkRx,
     rx_queue: &mut Q,
@@ -227,7 +118,7 @@ pub fn handle_network_rx_idle_callback<Q>(
     frames: &[FrameEntry],
 ) -> Result<NetworkRxInjection, NetworkRxError>
 where
-    Q: LosslessNetworkRxQueue + ?Sized,
+    Q: CanonicalNetworkRx + ?Sized,
 {
     network_rx.inject_due_frames_from_idle_context(
         rx_queue,
@@ -237,164 +128,104 @@ where
     )
 }
 
-/// A QEMU RX backend that queues frames losslessly before flushing.
-pub trait LosslessNetworkRxQueue {
-    /// Queues one RX payload without dropping it when the guest RX queue is not ready.
+/// A guest RX backend that retains canonical ownership under backpressure.
+pub trait CanonicalNetworkRx {
+    /// Attempts one RX payload without consuming it on guest backpressure.
     ///
     /// # Errors
     ///
-    /// Returns [`NetworkRxQueueError`] when the backend cannot queue the payload
-    /// and must fail loudly instead of dropping it.
-    fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError>;
-
-    /// Flushes queued RX payloads or confirms QEMU retained them under backpressure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NetworkRxQueueError`] when the backend can neither deliver nor
-    /// retain the queued payloads and must fail loudly.
-    fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError>;
+    /// Returns [`NetworkRxDeliveryError`] when the backend reports a permanent
+    /// capability or link failure. Backpressure returns
+    /// [`NetworkRxDeliveryOutcome::Retained`].
+    fn try_deliver_rx(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<NetworkRxDeliveryOutcome, NetworkRxDeliveryError>;
 }
 
-/// Result of handing a queued RX batch to the guest device.
+/// Result of attempting one canonical RX frame at the guest device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NetworkRxFlushOutcome {
-    /// The guest device accepted every queued frame immediately.
+pub enum NetworkRxDeliveryOutcome {
+    /// The guest device accepted the frame completely.
     Delivered,
-    /// QEMU retained every queued frame until the guest device becomes ready.
+    /// The guest device is backpressured; shared memory retains the frame.
     Retained,
 }
 
-/// Lossless network RX backend backed by QEMU's patch exports.
+/// Canonical network RX backend backed by QEMU's direct injection export.
 #[derive(Clone, Copy, Debug)]
-pub struct QemuLosslessNetworkRxQueue {
-    net_send: QemuPluginNetSendFn,
-    net_flush: QemuPluginNetFlushFn,
-    net_can_receive: QemuPluginNetCanReceiveFn,
+pub struct QemuCanonicalNetworkRx {
+    net_inject: QemuPluginNetInjectFn,
 }
 
-impl QemuLosslessNetworkRxQueue {
-    /// Requires QEMU's lossless network RX patch exports.
+impl QemuCanonicalNetworkRx {
+    /// Requires QEMU's canonical network RX injection export.
     ///
     /// # Errors
     ///
     /// Returns [`NetworkRxError::CapabilityUnavailable`] when a required
-    /// network queue, flush, or readiness export was not resolved.
-    pub fn require(
-        net_send: Option<QemuPluginNetSendFn>,
-        net_flush: Option<QemuPluginNetFlushFn>,
-        net_can_receive: Option<QemuPluginNetCanReceiveFn>,
-    ) -> Result<Self, NetworkRxError> {
-        let Some(net_send) = net_send else {
+    /// network injection export was not resolved.
+    pub fn require(net_inject: Option<QemuPluginNetInjectFn>) -> Result<Self, NetworkRxError> {
+        let Some(net_inject) = net_inject else {
             return Err(NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_SEND_SYMBOL,
+                symbol: QEMU_PLUGIN_NET_INJECT_SYMBOL,
             });
         };
-        let Some(net_flush) = net_flush else {
-            return Err(NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_FLUSH_SYMBOL,
-            });
-        };
-        let Some(net_can_receive) = net_can_receive else {
-            return Err(NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
-            });
-        };
-
-        Ok(Self {
-            net_send,
-            net_flush,
-            net_can_receive,
-        })
+        Ok(Self { net_inject })
     }
 }
 
-impl LosslessNetworkRxQueue for QemuLosslessNetworkRxQueue {
-    fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError> {
-        let status = (self.net_send)(payload.as_ptr(), payload.len());
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(NetworkRxQueueError::qemu_patch(
-                NetworkRxQueueOperation::Queue,
-                QEMU_PLUGIN_NET_SEND_SYMBOL,
+impl CanonicalNetworkRx for QemuCanonicalNetworkRx {
+    fn try_deliver_rx(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<NetworkRxDeliveryOutcome, NetworkRxDeliveryError> {
+        match (self.net_inject)(payload.as_ptr(), payload.len()) {
+            0 => Ok(NetworkRxDeliveryOutcome::Delivered),
+            1 => Ok(NetworkRxDeliveryOutcome::Retained),
+            status => Err(NetworkRxDeliveryError::qemu_patch(
+                NetworkRxDeliveryOperation::Delivery,
+                QEMU_PLUGIN_NET_INJECT_SYMBOL,
                 status,
-            ))
-        }
-    }
-
-    fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError> {
-        let readiness = (self.net_can_receive)();
-        if readiness == 0 {
-            return Ok(NetworkRxFlushOutcome::Retained);
-        }
-        if readiness != 1 {
-            return Err(NetworkRxQueueError::qemu_patch(
-                NetworkRxQueueOperation::Readiness,
-                QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
-                readiness,
-            ));
-        }
-
-        let status = (self.net_flush)();
-        if status == 0 {
-            Ok(NetworkRxFlushOutcome::Delivered)
-        } else {
-            Err(NetworkRxQueueError::qemu_patch(
-                NetworkRxQueueOperation::Flush,
-                QEMU_PLUGIN_NET_FLUSH_SYMBOL,
-                status,
-            ))
+            )),
         }
     }
 }
 
 /// The backend operation that produced a network RX queue error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NetworkRxQueueOperation {
-    /// Lossless queueing failed.
-    Queue,
-    /// Lossless queue flushing failed.
-    Flush,
-    /// Checking whether the guest device can currently receive.
-    Readiness,
+pub enum NetworkRxDeliveryOperation {
+    /// Direct guest delivery failed permanently.
+    Delivery,
 }
 
-impl fmt::Display for NetworkRxQueueOperation {
+impl fmt::Display for NetworkRxDeliveryOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Queue => formatter.write_str("queue"),
-            Self::Flush => formatter.write_str("flush"),
-            Self::Readiness => formatter.write_str("readiness check"),
+            Self::Delivery => formatter.write_str("delivery"),
         }
     }
 }
 
-/// A loud backend error from the lossless network RX queue.
+/// A loud permanent error from canonical network RX delivery.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("network RX {operation} failed: {message}")]
-pub struct NetworkRxQueueError {
-    operation: NetworkRxQueueOperation,
+pub struct NetworkRxDeliveryError {
+    operation: NetworkRxDeliveryOperation,
     message: String,
 }
 
-impl NetworkRxQueueError {
-    /// Builds a queueing error.
+impl NetworkRxDeliveryError {
+    /// Builds a delivery error.
     #[must_use]
-    pub fn queue(message: impl Into<String>) -> Self {
-        Self::new(NetworkRxQueueOperation::Queue, message)
-    }
-
-    /// Builds a flush error.
-    #[must_use]
-    pub fn flush(message: impl Into<String>) -> Self {
-        Self::new(NetworkRxQueueOperation::Flush, message)
+    pub fn delivery(message: impl Into<String>) -> Self {
+        Self::new(NetworkRxDeliveryOperation::Delivery, message)
     }
 
     /// Builds an error returned by a concrete QEMU patch export.
     #[must_use]
     pub fn qemu_patch(
-        operation: NetworkRxQueueOperation,
+        operation: NetworkRxDeliveryOperation,
         symbol: &'static str,
         status: c_int,
     ) -> Self {
@@ -406,7 +237,7 @@ impl NetworkRxQueueError {
 
     /// Returns the backend operation that failed.
     #[must_use]
-    pub const fn operation(&self) -> NetworkRxQueueOperation {
+    pub const fn operation(&self) -> NetworkRxDeliveryOperation {
         self.operation
     }
 
@@ -416,7 +247,7 @@ impl NetworkRxQueueError {
         &self.message
     }
 
-    fn new(operation: NetworkRxQueueOperation, message: impl Into<String>) -> Self {
+    fn new(operation: NetworkRxDeliveryOperation, message: impl Into<String>) -> Self {
         Self {
             operation,
             message: message.into(),
@@ -428,8 +259,8 @@ impl NetworkRxQueueError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkRxInjection {
     current_icount: u64,
-    frame_keys: Vec<FrameDeliveryKey>,
-    flushed: bool,
+    delivered_frame_keys: Vec<FrameDeliveryKey>,
+    retained_frame_key: Option<FrameDeliveryKey>,
 }
 
 impl NetworkRxInjection {
@@ -439,16 +270,16 @@ impl NetworkRxInjection {
         self.current_icount
     }
 
-    /// Returns the injected frame keys in queue order.
+    /// Returns frame keys accepted completely by the guest, in delivery order.
     #[must_use]
-    pub fn frame_keys(&self) -> &[FrameDeliveryKey] {
-        &self.frame_keys
+    pub fn delivered_frame_keys(&self) -> &[FrameDeliveryKey] {
+        &self.delivered_frame_keys
     }
 
-    /// Returns whether the queue was flushed after the batch was queued.
+    /// Returns the first frame retained canonically because of guest backpressure.
     #[must_use]
-    pub const fn flushed(&self) -> bool {
-        self.flushed
+    pub const fn retained_frame_key(&self) -> Option<FrameDeliveryKey> {
+        self.retained_frame_key
     }
 }
 
@@ -471,18 +302,6 @@ pub enum NetworkRxError {
         /// The post-jump consumer icount.
         current_icount: u64,
     },
-    /// A frame was already behind the idle-pass delivery floor.
-    #[error(
-        "network RX frame {frame:?} is behind delivery floor {passed_delivery_floor_icount} at current icount {current_icount}"
-    )]
-    DeliveryAlreadyPassed {
-        /// The earliest delivery icount still valid for this idle pass.
-        passed_delivery_floor_icount: u64,
-        /// The post-jump consumer icount.
-        current_icount: u64,
-        /// The late frame's deterministic delivery key.
-        frame: FrameDeliveryKey,
-    },
     /// A frame is not yet visible at the post-jump icount.
     #[error("network RX frame {frame:?} is not due at current icount {current_icount}")]
     DeliveryNotReached {
@@ -499,34 +318,18 @@ pub enum NetworkRxError {
         /// The shared-memory frame validation error.
         source: FrameEntryError,
     },
-    /// Queueing a frame through the lossless backend failed loudly.
-    #[error("network RX frame {frame:?} queue failed: {source}")]
-    Queue {
-        /// The frame that could not be queued.
+    /// Delivering a frame through the canonical backend failed loudly.
+    #[error("network RX frame {frame:?} delivery failed: {source}")]
+    Delivery {
+        /// The frame that could not be delivered or retained canonically.
         frame: FrameDeliveryKey,
-        /// The backend queueing error.
-        source: NetworkRxQueueError,
-    },
-    /// Flushing the lossless RX queue failed loudly.
-    #[error("network RX flush failed: {source}")]
-    Flush {
-        /// The backend flush error.
-        source: NetworkRxQueueError,
+        /// The backend delivery error.
+        source: NetworkRxDeliveryError,
     },
 }
 
-fn validate_delivery_gate(
-    frame: &FrameEntry,
-    passed_delivery_floor_icount: u64,
-    current_icount: u64,
-) -> Result<(), NetworkRxError> {
-    if frame.delivery_icount < passed_delivery_floor_icount {
-        Err(NetworkRxError::DeliveryAlreadyPassed {
-            passed_delivery_floor_icount,
-            current_icount,
-            frame: frame.delivery_key(),
-        })
-    } else if frame.delivery_icount > current_icount {
+fn validate_delivery_gate(frame: &FrameEntry, current_icount: u64) -> Result<(), NetworkRxError> {
+    if frame.delivery_icount > current_icount {
         Err(NetworkRxError::DeliveryNotReached {
             current_icount,
             frame: frame.delivery_key(),
@@ -539,8 +342,6 @@ fn validate_delivery_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible::{
         AdvanceOutcome, ExecutionHorizon, Icount, SchedulerError, SchedulerNodeId,
@@ -559,9 +360,6 @@ mod tests {
         network_tx::{NetworkTxRing, PluginNetworkTx, handle_network_tx_callback},
     };
 
-    static QEMU_NET_SEND_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static QEMU_NET_SEND_LAST_LEN: AtomicUsize = AtomicUsize::new(0);
-    static QEMU_NET_FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
     static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
 
     struct AllowAllSchedulerSendAuthorizer;
@@ -660,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn network_rx_idle_injection_queues_due_frames_then_flushes() {
+    fn network_rx_idle_injection_delivers_due_frames_in_order() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
         let frames = [
@@ -677,19 +475,18 @@ mod tests {
 
         assert_eq!(injection.current_icount(), 20);
         assert_eq!(
-            injection.frame_keys(),
+            injection.delivered_frame_keys(),
             &[
                 frame(20, 1, 7, b"first").delivery_key(),
                 frame(20, 9, 4, b"second").delivery_key(),
                 frame(20, 9, 5, b"third").delivery_key(),
             ]
         );
-        assert!(injection.flushed());
+        assert_eq!(injection.retained_frame_key(), None);
         assert_eq!(
             queue.queued_payloads,
             vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
         );
-        assert_eq!(queue.flush_count, 1);
     }
 
     #[test]
@@ -710,23 +507,22 @@ mod tests {
 
         assert_eq!(injection.current_icount(), 20);
         assert_eq!(
-            injection.frame_keys(),
+            injection.delivered_frame_keys(),
             &[
                 frame(12, 1, 7, b"first").delivery_key(),
                 frame(15, 9, 5, b"middle").delivery_key(),
                 frame(20, 9, 4, b"second").delivery_key(),
             ]
         );
-        assert!(injection.flushed());
+        assert_eq!(injection.retained_frame_key(), None);
         assert_eq!(
             queue.queued_payloads,
             vec![b"first".to_vec(), b"middle".to_vec(), b"second".to_vec()]
         );
-        assert_eq!(queue.flush_count, 1);
     }
 
     #[test]
-    fn network_rx_lossless_queue_holds_not_ready_frame_until_flush() {
+    fn network_rx_retains_canonical_frame_under_guest_backpressure() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::not_ready();
         let frames = [frame(20, 1, 0, b"queued")];
@@ -734,21 +530,20 @@ mod tests {
         let injection =
             match network_rx.inject_due_frames_from_idle_context(&mut queue, 20, 20, &frames) {
                 Ok(injection) => injection,
-                Err(error) => panic!("lossless queue should accept not-ready frame: {error}"),
+                Err(error) => panic!("backpressure should retain the canonical frame: {error}"),
             };
 
+        assert_eq!(injection.delivered_frame_keys(), &[]);
         assert_eq!(
-            injection.frame_keys(),
-            &[frame(20, 1, 0, b"queued").delivery_key()]
+            injection.retained_frame_key(),
+            Some(frame(20, 1, 0, b"queued").delivery_key())
         );
-        assert!(!injection.flushed());
         assert_eq!(queue.pending_payloads, vec![b"queued".to_vec()]);
         assert_eq!(queue.queued_payloads, Vec::<Vec<u8>>::new());
-        assert_eq!(queue.flush_count, 1);
     }
 
     #[test]
-    fn network_rx_rejects_future_frame_before_queue_or_flush() {
+    fn network_rx_rejects_future_frame_before_delivery() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
         let future = frame(21, 1, 0, b"future");
@@ -766,34 +561,23 @@ mod tests {
             })
         );
         assert!(queue.queued_payloads.is_empty());
-        assert_eq!(queue.flush_count, 0);
     }
 
     #[test]
-    fn network_rx_rejects_late_frame_before_queue_or_flush() {
+    fn network_rx_retries_canonically_retained_past_frame() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
         let late = frame(19, 1, 0, b"late");
 
-        assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
-                &mut queue,
-                20,
-                20,
-                std::slice::from_ref(&late),
-            ),
-            Err(NetworkRxError::DeliveryAlreadyPassed {
-                passed_delivery_floor_icount: 20,
-                current_icount: 20,
-                frame: late.delivery_key(),
-            })
-        );
-        assert!(queue.queued_payloads.is_empty());
-        assert_eq!(queue.flush_count, 0);
+        let injection = network_rx
+            .inject_due_frames_from_idle_context(&mut queue, 20, 20, std::slice::from_ref(&late))
+            .unwrap_or_else(|error| panic!("retained frame should retry: {error}"));
+        assert_eq!(injection.delivered_frame_keys(), &[late.delivery_key()]);
+        assert_eq!(queue.queued_payloads, vec![b"late".to_vec()]);
     }
 
     #[test]
-    fn network_rx_rejects_invalid_payload_before_queue_or_flush() {
+    fn network_rx_rejects_invalid_payload_before_delivery() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
         let mut invalid = frame(20, 1, 0, b"invalid");
@@ -815,14 +599,13 @@ mod tests {
             })
         );
         assert!(queue.queued_payloads.is_empty());
-        assert_eq!(queue.flush_count, 0);
     }
 
     #[test]
-    fn network_rx_queue_failure_is_loud_without_flush() {
+    fn network_rx_delivery_failure_is_loud() {
         let network_rx = PluginNetworkRx::new();
         let mut queue = RecordingRxQueue::ready();
-        queue.queue_error_at = Some(0);
+        queue.delivery_error_at = Some(0);
         let frame = frame(20, 1, 0, b"fail");
 
         assert_eq!(
@@ -832,82 +615,28 @@ mod tests {
                 20,
                 std::slice::from_ref(&frame),
             ),
-            Err(NetworkRxError::Queue {
+            Err(NetworkRxError::Delivery {
                 frame: frame.delivery_key(),
-                source: NetworkRxQueueError::queue("test queue failure"),
+                source: NetworkRxDeliveryError::delivery("test delivery failure"),
             })
         );
         assert!(queue.queued_payloads.is_empty());
-        assert_eq!(queue.flush_count, 0);
     }
 
     #[test]
-    fn network_rx_flush_failure_is_loud_after_queueing() {
+    fn network_rx_requires_qemu_direct_injection_symbol() {
+        assert_eq!(
+            require_qemu_injection_error(None),
+            NetworkRxError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_NET_INJECT_SYMBOL,
+            }
+        );
+    }
+
+    #[test]
+    fn network_rx_qemu_direct_injection_transfers_delivered_frame() {
         let network_rx = PluginNetworkRx::new();
-        let mut queue = RecordingRxQueue::ready();
-        queue.fail_flush = true;
-        let frame = frame(20, 1, 0, b"flush");
-
-        assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
-                &mut queue,
-                20,
-                20,
-                std::slice::from_ref(&frame),
-            ),
-            Err(NetworkRxError::Flush {
-                source: NetworkRxQueueError::flush("test flush failure"),
-            })
-        );
-        assert_eq!(queue.queued_payloads, vec![b"flush".to_vec()]);
-        assert_eq!(queue.flush_count, 0);
-    }
-
-    #[test]
-    fn network_rx_requires_qemu_queue_flush_and_readiness_symbols() {
-        assert_eq!(
-            require_qemu_queue_error(
-                None,
-                Some(qemu_plugin_net_flush_ok),
-                Some(qemu_plugin_net_can_receive_ready),
-            ),
-            NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_SEND_SYMBOL,
-            }
-        );
-        assert_eq!(
-            require_qemu_queue_error(
-                Some(qemu_plugin_net_send_ok),
-                None,
-                Some(qemu_plugin_net_can_receive_ready),
-            ),
-            NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_FLUSH_SYMBOL,
-            }
-        );
-        assert_eq!(
-            require_qemu_queue_error(
-                Some(qemu_plugin_net_send_ok),
-                Some(qemu_plugin_net_flush_ok),
-                None,
-            ),
-            NetworkRxError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
-            }
-        );
-    }
-
-    #[test]
-    fn network_rx_qemu_lossless_queue_calls_patch_send_and_flush() {
-        QEMU_NET_SEND_COUNT.store(0, Ordering::SeqCst);
-        QEMU_NET_SEND_LAST_LEN.store(0, Ordering::SeqCst);
-        QEMU_NET_FLUSH_COUNT.store(0, Ordering::SeqCst);
-        let network_rx = PluginNetworkRx::new();
-        let mut queue = match QemuLosslessNetworkRxQueue::require(
-            Some(qemu_plugin_net_send_ok),
-            Some(qemu_plugin_net_flush_ok),
-            Some(qemu_plugin_net_can_receive_ready),
-        ) {
+        let mut queue = match QemuCanonicalNetworkRx::require(Some(qemu_plugin_net_inject_ok)) {
             Ok(queue) => queue,
             Err(error) => panic!("QEMU network RX symbols should bind: {error}"),
         };
@@ -920,25 +649,16 @@ mod tests {
             };
 
         assert_eq!(
-            injection.frame_keys(),
+            injection.delivered_frame_keys(),
             &[frame(20, 1, 0, b"qemu").delivery_key()]
         );
-        assert_eq!(QEMU_NET_SEND_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(QEMU_NET_SEND_LAST_LEN.load(Ordering::SeqCst), 4);
-        assert_eq!(QEMU_NET_FLUSH_COUNT.load(Ordering::SeqCst), 1);
-        assert!(injection.flushed());
+        assert_eq!(injection.retained_frame_key(), None);
     }
 
     #[test]
-    fn network_rx_qemu_lossless_queue_retains_backpressured_frame() {
-        QEMU_NET_SEND_COUNT.store(0, Ordering::SeqCst);
-        QEMU_NET_FLUSH_COUNT.store(0, Ordering::SeqCst);
+    fn network_rx_qemu_direct_injection_retains_backpressured_frame() {
         let network_rx = PluginNetworkRx::new();
-        let mut queue = match QemuLosslessNetworkRxQueue::require(
-            Some(qemu_plugin_net_send_ok),
-            Some(qemu_plugin_net_flush_ok),
-            Some(qemu_plugin_net_can_receive_backpressured),
-        ) {
+        let mut queue = match QemuCanonicalNetworkRx::require(Some(qemu_plugin_net_inject_retry)) {
             Ok(queue) => queue,
             Err(error) => panic!("QEMU network RX symbols should bind: {error}"),
         };
@@ -952,39 +672,27 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("backpressured frame should remain queued: {error}"));
 
-        assert!(!injection.flushed());
-        assert_eq!(QEMU_NET_SEND_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(QEMU_NET_FLUSH_COUNT.load(Ordering::SeqCst), 0);
+        assert!(injection.delivered_frame_keys().is_empty());
+        assert_eq!(
+            injection.retained_frame_key(),
+            Some(frame(20, 1, 0, b"retained").delivery_key())
+        );
     }
 
-    extern "C" fn qemu_plugin_net_send_ok(payload: *const u8, len: usize) -> c_int {
+    extern "C" fn qemu_plugin_net_inject_ok(payload: *const u8, len: usize) -> c_int {
         if payload.is_null() {
-            return 1;
+            return -1;
         }
-        QEMU_NET_SEND_COUNT.fetch_add(1, Ordering::SeqCst);
-        QEMU_NET_SEND_LAST_LEN.store(len, Ordering::SeqCst);
+        let _ = len;
         0
     }
 
-    extern "C" fn qemu_plugin_net_flush_ok() -> c_int {
-        QEMU_NET_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
-        0
-    }
-
-    extern "C" fn qemu_plugin_net_can_receive_ready() -> c_int {
+    extern "C" fn qemu_plugin_net_inject_retry(_payload: *const u8, _len: usize) -> c_int {
         1
     }
 
-    extern "C" fn qemu_plugin_net_can_receive_backpressured() -> c_int {
-        0
-    }
-
-    fn require_qemu_queue_error(
-        net_send: Option<QemuPluginNetSendFn>,
-        net_flush: Option<QemuPluginNetFlushFn>,
-        net_can_receive: Option<QemuPluginNetCanReceiveFn>,
-    ) -> NetworkRxError {
-        match QemuLosslessNetworkRxQueue::require(net_send, net_flush, net_can_receive) {
+    fn require_qemu_injection_error(net_inject: Option<QemuPluginNetInjectFn>) -> NetworkRxError {
+        match QemuCanonicalNetworkRx::require(net_inject) {
             Ok(_) => panic!("QEMU queue binding should fail"),
             Err(error) => error,
         }
@@ -1186,7 +894,10 @@ mod tests {
             Some(injection) => injection.clone(),
             None => panic!("plugin projection idle completion should report RX injection"),
         };
-        assert_eq!(result.injected_frames().len(), injection.frame_keys().len());
+        assert_eq!(
+            result.injected_frames().len(),
+            injection.delivered_frame_keys().len()
+        );
         append_plugin_projection_rx_delivery(schedule, (injection, rx_queue.queued_payloads));
     }
 
@@ -1224,8 +935,11 @@ mod tests {
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         (injection, queued_payloads): (NetworkRxInjection, Vec<Vec<u8>>),
     ) {
-        assert_eq!(injection.frame_keys().len(), queued_payloads.len());
-        for (key, payload) in injection.frame_keys().iter().zip(queued_payloads) {
+        assert_eq!(
+            injection.delivered_frame_keys().len(),
+            queued_payloads.len()
+        );
+        for (key, payload) in injection.delivered_frame_keys().iter().zip(queued_payloads) {
             schedule.push(SimDoubleHostScheduleEvent::FrameDelivery {
                 src_slot: key.src_node,
                 sequence: key.seq,
@@ -1374,9 +1088,7 @@ mod tests {
         ready: bool,
         queued_payloads: Vec<Vec<u8>>,
         pending_payloads: Vec<Vec<u8>>,
-        flush_count: usize,
-        queue_error_at: Option<usize>,
-        fail_flush: bool,
+        delivery_error_at: Option<usize>,
     }
 
     impl RecordingRxQueue {
@@ -1385,9 +1097,7 @@ mod tests {
                 ready: true,
                 queued_payloads: Vec::new(),
                 pending_payloads: Vec::new(),
-                flush_count: 0,
-                queue_error_at: None,
-                fail_flush: false,
+                delivery_error_at: None,
             }
         }
 
@@ -1399,32 +1109,22 @@ mod tests {
         }
     }
 
-    impl LosslessNetworkRxQueue for RecordingRxQueue {
-        fn queue_lossless_rx(&mut self, payload: &[u8]) -> Result<(), NetworkRxQueueError> {
+    impl CanonicalNetworkRx for RecordingRxQueue {
+        fn try_deliver_rx(
+            &mut self,
+            payload: &[u8],
+        ) -> Result<NetworkRxDeliveryOutcome, NetworkRxDeliveryError> {
             let queued_count = self.queued_payloads.len() + self.pending_payloads.len();
-            if self.queue_error_at == Some(queued_count) {
-                return Err(NetworkRxQueueError::queue("test queue failure"));
+            if self.delivery_error_at == Some(queued_count) {
+                return Err(NetworkRxDeliveryError::delivery("test delivery failure"));
             }
 
             if self.ready {
                 self.queued_payloads.push(payload.to_vec());
+                Ok(NetworkRxDeliveryOutcome::Delivered)
             } else {
                 self.pending_payloads.push(payload.to_vec());
-            }
-            Ok(())
-        }
-
-        fn flush_lossless_rx(&mut self) -> Result<NetworkRxFlushOutcome, NetworkRxQueueError> {
-            if self.fail_flush {
-                return Err(NetworkRxQueueError::flush("test flush failure"));
-            }
-
-            self.flush_count += 1;
-            if self.ready {
-                self.queued_payloads.append(&mut self.pending_payloads);
-                Ok(NetworkRxFlushOutcome::Delivered)
-            } else {
-                Ok(NetworkRxFlushOutcome::Retained)
+                Ok(NetworkRxDeliveryOutcome::Retained)
             }
         }
     }

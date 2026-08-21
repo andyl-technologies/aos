@@ -3,6 +3,76 @@
 use super::*;
 
 #[test]
+fn qemu_network_checkpoint_restores_backpressured_inbound_for_retry() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let checkpoint = {
+        let mut hot_path = hot_path(
+            &slot,
+            &inbound_ring,
+            &mut inbound_entries,
+            &outbound_ring,
+            &mut outbound_entries,
+        );
+        hot_path
+            .enqueue_inbound_frame(QemuInboundFrame {
+                delivery_icount: icount(5),
+                src_node: 31,
+                sequence: 7,
+                payload: b"retained-across-restore".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("test inbound should enqueue: {error}"));
+        let pending = hot_path
+            .start_quantum(horizon(5))
+            .unwrap_or_else(|error| panic!("delivery boundary should start: {error}"));
+        slot.publish_reached_icount(5, 0)
+            .unwrap_or_else(|error| panic!("delivery boundary should publish: {error}"));
+        let report = hot_path
+            .finish_quantum(pending)
+            .unwrap_or_else(|error| panic!("backpressured boundary should finish: {error}"));
+        assert_eq!(report.inbound_frames_consumed, 0);
+
+        QemuShmemHotPathChannel::checkpoint_network_transport(&mut hot_path)
+            .unwrap_or_else(|error| panic!("retained transport should checkpoint: {error}"))
+    };
+
+    let restored_inbound_ring = RingHeader::new();
+    let restored_outbound_ring = RingHeader::new();
+    let mut restored_inbound_entries = frame_entries(8);
+    let mut restored_outbound_entries = frame_entries(8);
+    let mut restored = hot_path(
+        &slot,
+        &restored_inbound_ring,
+        &mut restored_inbound_entries,
+        &restored_outbound_ring,
+        &mut restored_outbound_entries,
+    );
+    QemuShmemHotPathChannel::restore_network_transport(&mut restored, &checkpoint)
+        .unwrap_or_else(|error| panic!("retained transport should restore: {error}"));
+
+    let pending = restored
+        .start_quantum(horizon(6))
+        .unwrap_or_else(|error| panic!("restored retry quantum should start: {error}"));
+    assert_eq!(pending.ceiling, icount(6));
+    let consumed = plugin_consume_inbound(&mut restored, 1);
+    slot.publish_reached_icount(6, 0)
+        .unwrap_or_else(|error| panic!("restored retry should publish: {error}"));
+    let report = restored
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("restored retry should finish: {error}"));
+
+    assert_eq!(report.inbound_frames_consumed, 1);
+    assert_eq!(
+        consumed[0].payload(),
+        Ok(b"retained-across-restore".as_slice())
+    );
+    assert_eq!(restored_inbound_ring.read_index(), 1);
+}
+
+#[test]
 fn qemu_quantum_reports_device_io_freeze_across_burst_release() {
     let slot = NodeSlot::default();
     slot.mark_device_io_active();

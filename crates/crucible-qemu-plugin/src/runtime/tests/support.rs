@@ -238,9 +238,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         register_control_boundary: Some(test_register_control_boundary),
         register_sim_shmem_dispatch: Some(test_register_sim_shmem_dispatch),
         register_net_tx: Some(test_register_net_tx),
-        net_send: Some(test_net_send),
-        net_flush: Some(test_net_flush),
-        net_can_receive: Some(test_net_can_receive),
+        net_inject: Some(test_net_inject),
         register_block: Some(test_register_block),
         register_block_event: Some(test_register_block_event),
         register_block_wait: Some(test_register_block_wait),
@@ -409,16 +407,8 @@ extern "C" fn test_register_net_tx(
 ) {
 }
 
-extern "C" fn test_net_send(_payload: *const u8, _payload_len: usize) -> std::os::raw::c_int {
+extern "C" fn test_net_inject(_payload: *const u8, _payload_len: usize) -> std::os::raw::c_int {
     0
-}
-
-extern "C" fn test_net_flush() -> std::os::raw::c_int {
-    0
-}
-
-extern "C" fn test_net_can_receive() -> std::os::raw::c_int {
-    1
 }
 
 extern "C" fn test_register_block(

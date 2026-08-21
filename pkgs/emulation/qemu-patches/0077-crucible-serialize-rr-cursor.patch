@@ -201,10 +201,10 @@ index a47e73e93..acd85e050 100644
              cpu_work_list_empty(cpu) && !cpu->stop && !cpu->unplug &&
              cpu_can_run(cpu) &&
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 55bf38fd1..1ed0485a6 100644
+index e904e6d70..13569f0ce 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -2155,9 +2155,10 @@ struct qemu_plugin_rr_cursor {
+@@ -2124,9 +2124,10 @@ struct qemu_plugin_rr_cursor {
   * qemu_plugin_rr_cursor() - read the current round-robin cursor
   * @out: plugin-owned cursor output
   *
@@ -218,7 +218,7 @@ index 55bf38fd1..1ed0485a6 100644
   */
  QEMU_PLUGIN_API
  int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
-@@ -2165,7 +2166,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
+@@ -2134,7 +2135,9 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
  /**
   * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
   *
@@ -229,7 +229,7 @@ index 55bf38fd1..1ed0485a6 100644
   *
   * This AOS Crucible extension is available only in system emulation.
   */
-@@ -2176,7 +2179,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+@@ -2145,7 +2148,10 @@ uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
   * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
   *
   * Returns the retired-instruction offset within the current pinned

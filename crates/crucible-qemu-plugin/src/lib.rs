@@ -26,7 +26,7 @@
 //! the virtual-time hold for in-flight device I/O; `idle_loop` owns the idle
 //! callback hot-loop state machine; `inbound` owns inbound frame polling and
 //! deterministic injection ordering; `network_rx` owns idle-context guest network
-//! receive injection through QEMU's lossless queue; `network_tx` owns guest
+//! receive injection with canonical shared-memory retention; `network_tx` owns guest
 //! network transmit interception and outbound ring enqueueing; `registration` owns
 //! the fail-stop registration sequencer; `setup` owns descriptor mapping and setup
 //! acknowledgement; `shmem_ordering` owns the plugin-side shared-memory access
@@ -219,12 +219,10 @@ pub use io_wire_fuzz::{
     run_io_wire_fuzz_target,
 };
 pub use network_rx::{
-    LosslessNetworkRxQueue, NetworkRxError, NetworkRxFlushOutcome, NetworkRxInjection,
-    NetworkRxQueueError, NetworkRxQueueOperation, PluginNetworkRx,
-    QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL, QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL,
-    QemuLosslessNetworkRxQueue, QemuPluginNetCanReceiveFn, QemuPluginNetFlushFn,
-    QemuPluginNetSendFn, handle_network_rx_idle_callback, resolve_qemu_net_can_receive_symbol,
-    resolve_qemu_net_flush_symbol, resolve_qemu_net_send_symbol,
+    CanonicalNetworkRx, NetworkRxDeliveryError, NetworkRxDeliveryOperation,
+    NetworkRxDeliveryOutcome, NetworkRxError, NetworkRxInjection, PluginNetworkRx,
+    QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuCanonicalNetworkRx, QemuPluginNetInjectFn,
+    handle_network_rx_idle_callback, resolve_qemu_net_inject_symbol,
 };
 pub use network_tx::{
     NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx,

@@ -547,9 +547,12 @@ applies the link model.
 
 - **[PLUG-26]** The plugin MUST inject inbound frames into the guest's NIC via the
   RX-injection capability of the patch series
-  ([`11-qemu-patches.md`](11-qemu-patches.md)), using a lossless queueing path so
+  ([`11-qemu-patches.md`](11-qemu-patches.md)), using a canonical retry path so
   a frame is never silently dropped when the guest's RX queue is momentarily not
-  ready (the frame is queued in QEMU and flushed when the device can accept it).
+  ready. QEMU reports backpressure without taking ownership; the plugin leaves
+  the frame in the bounded shared-memory ring until complete guest acceptance.
+  QEMU-private packet queues MUST NOT own a retained frame because they are not
+  part of the canonical exact-checkpoint transport state.
   Injection MUST occur from the idle callback context (where QEMU's big lock is
   held) and MUST be gated by the delivery-icount rule of [PLUG-18]. *Gate:*
   `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.5.2; routes
@@ -572,10 +575,11 @@ fn inject_due_frames(state: &PluginState, now: Icount) -> Result<(), Divergence>
         if frame.delivery_icount < now_floor_of_passed(state) {
             return Err(Divergence::passed_delivery(frame));         // [PLUG-20] fail loud
         }
-        state.region.consume(frame.handle);
-        net_inject_queued(&frame.data[..frame.len as usize])?;      // [PLUG-26] lossless
+        if net_inject_direct(&frame.data[..frame.len as usize])? == RETAINED {
+            break;                                                  // [PLUG-26] canonical retry
+        }
+        state.region.consume(frame.handle);                         // accepted prefix only
     }
-    net_flush()?; // deliver everything the guest RX queue can now accept
     Ok(())
 }
 ```
@@ -1047,12 +1051,13 @@ component that makes that purity true *inside* the QEMU process.
   loaded QEMU callback forward the guest's exact Ethernet probe to
   `SLOT_NET_ROUTER` with its emission icount and sequence. The packaged plugin's
   unit gate covers re-entry, oversize, and full-ring fail-loud behavior.
-- [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+- [x] **T-PLUG-11** Implement RX injection via the canonical retry path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
   Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: the router's
-  delivery-stamped reply traverses the inbound ring and QEMU's lossless send
-  and flush path, and the real guest proves receipt by emitting the exact ACK.
+  delivery-stamped reply remains in the inbound ring across backpressure, then
+  transfers through QEMU's direct injection path only after complete guest
+  acceptance; the real guest proves receipt by emitting the exact ACK.
 - [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];

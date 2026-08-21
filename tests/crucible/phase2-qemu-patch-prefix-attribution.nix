@@ -94,9 +94,6 @@
       kind = "interface";
       symbols = [
         "qemu_plugin_net_inject"
-        "qemu_plugin_net_send"
-        "qemu_plugin_net_flush"
-        "qemu_plugin_net_can_receive"
       ];
     };
     "0010-crucible-plugin-time-advance.patch" = {

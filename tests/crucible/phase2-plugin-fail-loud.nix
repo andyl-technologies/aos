@@ -30,7 +30,10 @@
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
   ];
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  pluginNetworkRx = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs)
+  ];
   pluginBlockIo = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
@@ -366,7 +369,7 @@
       }
       {
         label = "idle queue failure no commit test";
-        needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
+        needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
       }
       {
         label = "idle passed delivery tests";
@@ -379,28 +382,28 @@
         needle = "NetworkRxError::CapabilityUnavailable";
       }
       {
-        label = "network RX late delivery";
-        needle = "DeliveryAlreadyPassed";
+        label = "network RX permanent delivery failure";
+        needle = "NetworkRxError::Delivery";
       }
       {
-        label = "network RX queue failure";
-        needle = "NetworkRxError::Queue";
+        label = "network RX canonical backpressure retention";
+        needle = "NetworkRxDeliveryOutcome::Retained";
       }
       {
-        label = "network RX flush failure";
-        needle = "NetworkRxError::Flush";
+        label = "network RX direct-injection capability test";
+        needle = "network_rx_requires_qemu_direct_injection_symbol";
       }
       {
-        label = "network RX capability test";
-        needle = "network_rx_requires_qemu_net_send_and_flush_symbols";
+        label = "network RX permanent failure test";
+        needle = "network_rx_delivery_failure_is_loud";
       }
       {
-        label = "network RX queue failure test";
-        needle = "network_rx_queue_failure_is_loud_without_flush";
+        label = "network RX backpressure retention test";
+        needle = "network_rx_qemu_direct_injection_retains_backpressured_frame";
       }
       {
-        label = "network RX flush failure test";
-        needle = "network_rx_flush_failure_is_loud_after_queueing";
+        label = "network RX direct-injection symbol";
+        needle = "qemu_plugin_net_inject";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
@@ -566,7 +569,7 @@ in
               inbound_frame_drain_rejects_late_head_without_consuming \
               inbound_frame_select_rejects_late_candidate_frame \
               idle_loop_rejects_late_inbound_ring_before_direct_advance \
-              idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads \
+              idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads \
               network_rx_requires_qemu_net_send_and_flush_symbols \
               network_rx_rejects_late_frame_before_queue_or_flush \
               network_rx_queue_failure_is_loud_without_flush \

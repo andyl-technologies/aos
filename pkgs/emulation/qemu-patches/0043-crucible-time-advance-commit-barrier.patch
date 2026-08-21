@@ -24,7 +24,7 @@ index e48fb4015..3f0e8ba6e 100644
              (crucible_sim_shmem_dispatch_registered() ||
               crucible_sim_observer_registered())) {
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index ba9919fc0..eef77f622 100644
+index a2a83d786..cce78bf25 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -212,10 +212,14 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)

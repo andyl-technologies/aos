@@ -351,24 +351,6 @@ in
             QEMU_PLUGIN_API
             int qemu_plugin_net_inject(const uint8_t *data, size_t len);
 
-            /**
-             * qemu_plugin_net_send() - queue an inbound frame for the default NIC
-             */
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_send(const uint8_t *data, size_t len);
-
-            /**
-             * qemu_plugin_net_flush() - flush queued inbound frames for the default NIC
-             */
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_flush(void);
-
-            /**
-             * qemu_plugin_net_can_receive() - report whether the default NIC can receive
-             */
-            QEMU_PLUGIN_API
-            int qemu_plugin_net_can_receive(void);
-
             typedef void
             (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                              int64_t num, uint64_t a1, uint64_t a2,
@@ -472,12 +454,6 @@ in
                 return data != NULL && len > 0 && len <= INT_MAX;
             }
 
-            static void qemu_plugin_net_sent_cb(NetClientState *sender, ssize_t ret)
-            {
-                (void)sender;
-                (void)ret;
-            }
-
             int qemu_plugin_net_inject(const uint8_t *data, size_t len)
             {
                 NetClientState *nc;
@@ -493,72 +469,10 @@ in
                 }
 
                 delivered = qemu_receive_packet(nc, data, (int)len);
-                return delivered == (ssize_t)len ? 0 : -1;
-            }
-
-            int qemu_plugin_net_send(const uint8_t *data, size_t len)
-            {
-                NetClientState *nc;
-                NetClientState *sender;
-
-                if (!qemu_plugin_valid_net_payload(data, len)) {
-                    return -1;
-                }
-
-                nc = qemu_plugin_default_nic_queue();
-                if (nc == NULL || nc->peer == NULL || nc->incoming_queue == NULL) {
-                    return -1;
-                }
-
-                sender = nc->peer;
-                if (nc->link_down || sender->link_down) {
-                    return -1;
-                }
-
-                return qemu_net_queue_append_lossless(nc->incoming_queue, sender,
-                                                      QEMU_NET_PACKET_FLAG_NONE,
-                                                      data, len,
-                                                      qemu_plugin_net_sent_cb) ? 0 : -1;
-            }
-
-            int qemu_plugin_net_flush(void)
-            {
-                NetClientState *nc = qemu_plugin_default_nic_queue();
-                NetClientState *sender;
-
-                if (nc == NULL || nc->peer == NULL || nc->incoming_queue == NULL) {
-                    return -1;
-                }
-
-                sender = nc->peer;
-                if (nc->link_down || sender->link_down) {
-                    return -1;
-                }
-
-                nc->receive_disabled = 0;
-                if (!qemu_can_receive_packet(nc)) {
-                    return -1;
-                }
-
-                if (!qemu_net_queue_flush(nc->incoming_queue)) {
-                    return -1;
-                }
-
-                qemu_notify_event();
-                return 0;
-            }
-
-            int qemu_plugin_net_can_receive(void)
-            {
-                NetClientState *nc = qemu_plugin_default_nic_queue();
-
-                if (nc == NULL) {
-                    return -1;
-                }
-                if (nc->link_down) {
+                if (delivered == (ssize_t)len) {
                     return 0;
                 }
-                return qemu_can_receive_packet(nc);
+                return delivered == 0 ? 1 : -1;
             }
 
             int64_t qemu_plugin_clock_deadline_ns(void)

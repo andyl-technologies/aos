@@ -152,7 +152,7 @@ confinement	crates/crucible-qemu/src/live_coverage_gate.rs	public export from no
 confinement	crates/crucible-qemu/src/live_coverage_gate.rs	public export from nondeterministic boundary source	struct		2
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
-confinement	crates/crucible-qemu/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	4
+confinement	crates/crucible-qemu/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	5
 confinement	crates/crucible-qemu/src/live_plugin_quantum_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/live_plugin_quantum_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/live_plugin_quantum_gate/scheduler.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	7
@@ -183,10 +183,14 @@ confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic 
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	struct		7
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	trait		1
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	use		3
-confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	BackendInput		2
-confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	ExecutionHorizon		4
-confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	BackendInput		2
-confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	ExecutionHorizon		4
+confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	BackendInput		1
+confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	ExecutionHorizon		3
+confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	BackendInput		1
+confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	ExecutionHorizon		3
+confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaches API/session route	BackendInput		1
+confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaching State	BackendInput		1
+confinement	crates/crucible-qemu/src/quantum/channel.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	Configuration		28
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	Decision		5
 confinement	crates/crucible-qemu/src/realization.rs	host nondeterminism reaches API/session route	RuntimeState		12

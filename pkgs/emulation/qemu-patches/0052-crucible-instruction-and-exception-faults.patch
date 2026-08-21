@@ -414,7 +414,7 @@ index 1622d08db..4ff51630a 100644
  #define QEMU_CRUCIBLE_FAULT_MEMORY_RULES_ACTIVE_DECLARED
  bool qemu_crucible_fault_memory_rules_active(void);
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 5b5103605..f8c286b3b 100644
+index 4cf2a588a..d7668180a 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -966,9 +966,9 @@ int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
@@ -430,7 +430,7 @@ index 5b5103605..f8c286b3b 100644
   */
  QEMU_PLUGIN_API
  void qemu_plugin_force_vcpu_exit(void);
-@@ -1738,6 +1738,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+@@ -1707,6 +1707,22 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
                                               size_t out_value_capacity,
                                               size_t *out_value_len);
  

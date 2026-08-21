@@ -31,6 +31,12 @@
       url = "https://github.com/mygnu/rust-psutil";
       rev = "c065bcc2a604d8ca0cd7ec481f2fc66cbdf819d0";
       crate = "psutil";
+      sourceArchive = fetchurl {
+        urls = [
+          "https://github.com/mygnu/rust-psutil/archive/c065bcc2a604d8ca0cd7ec481f2fc66cbdf819d0.tar.gz"
+        ];
+        hash = "sha256-gEfJ7GrfCLtcD/LprF4HOolsaBAhpRoRNEqEMjWJ0iM=";
+      };
     }
   ];
 in

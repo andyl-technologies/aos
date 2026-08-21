@@ -1,5 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 78d058f06..67e055254 100644
+index a63c6d1a4..59c620d11 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -798,6 +798,43 @@ uint64_t qemu_plugin_icount_raw(void);
@@ -72,7 +72,7 @@ index 000000000..806cc49f7
 +
 +#endif
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index c2861bfbf..6bda43116 100644
+index f8a57a500..115558b28 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,11 @@

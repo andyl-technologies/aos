@@ -2600,10 +2600,10 @@ index bbe9daa2b..a9b6bb375 100644
 +
  #endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a837a4e85..4f866e5aa 100644
+index 0b30e2f01..8e3a5634e 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1847,6 +1847,30 @@ struct qemu_plugin_crucible_fault_result {
+@@ -1816,6 +1816,30 @@ struct qemu_plugin_crucible_fault_result {
      uint8_t evidence_hash[32];
  };
  
@@ -2634,7 +2634,7 @@ index a837a4e85..4f866e5aa 100644
  enum qemu_plugin_crucible_fault_scope {
      QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL = 1,
      QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
-@@ -1935,6 +1959,33 @@ int qemu_plugin_crucible_fault_poll(
+@@ -1904,6 +1928,33 @@ int qemu_plugin_crucible_fault_poll(
      struct qemu_plugin_crucible_fault_result *result,
      uint8_t *payload, size_t payload_capacity, size_t *payload_length);
  
@@ -2787,7 +2787,7 @@ index e142f7efa..64ca04103 100644
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index df9ebabf8..39e92ceab 100644
+index d3c305392..2014d9585 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@

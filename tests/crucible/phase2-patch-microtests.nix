@@ -1190,9 +1190,6 @@ in
             for symbol in \
               qemu_plugin_clock_deadline_ns \
               qemu_plugin_net_inject \
-              qemu_plugin_net_send \
-              qemu_plugin_net_flush \
-              qemu_plugin_net_can_receive \
               qemu_plugin_register_net_tx_cb \
               qemu_plugin_has_time_control \
               qemu_plugin_register_time_advance_cb \
