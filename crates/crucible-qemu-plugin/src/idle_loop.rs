@@ -638,6 +638,14 @@ impl PluginIdleHotLoop {
                 },
             });
         }
+        if let Some(retained) = network_rx_injection.retained_frame_key() {
+            PluginInboundFrames::mark_retained_head(
+                inbound_rings.iter().copied(),
+                retained,
+                clock.current_icount(),
+            )
+            .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        }
         Self::publish_completed_idle(
             slot,
             clock,
@@ -716,6 +724,14 @@ impl PluginIdleHotLoop {
                         .collect(),
                 },
             });
+        }
+        if let Some(retained) = network_rx_injection.retained_frame_key() {
+            PluginInboundFrames::mark_retained_head(
+                inbound_rings.iter().copied(),
+                retained,
+                clock.current_icount(),
+            )
+            .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         }
         Self::publish_completed_idle(
             slot,
