@@ -776,11 +776,17 @@ fn node_factory_runtime() -> QemuNodeFactoryRuntime<AllowAllSends, ImmediateRunt
 fn node_factory_runtime_for_slot(
     vm_slot: u32,
 ) -> QemuNodeFactoryRuntime<AllowAllSends, ImmediateRuntime> {
+    let async_policy = QemuAsyncDriverPolicy::new(
+        Duration::from_millis(50),
+        Duration::from_millis(500),
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+    );
     QemuNodeFactoryRuntime::new(
         qemu_config_for_slot(vm_slot),
         AllowAllSends,
         node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
+        async_policy,
         QemuCrashDetector::new("vm-a"),
         ImmediateRuntime,
     )

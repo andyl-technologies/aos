@@ -1,0 +1,22 @@
+# AOS runs each Rust test in its own process and lets nextest schedule those
+# processes across all available builder cores. Doctests remain a separate
+# Cargo gate because nextest intentionally does not execute them.
+[profile.default]
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "slow"
+final-status-level = "fail"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# This integration test launches a matrix of nested offline Cargo checks. Its
+# bounded work is materially slower than an ordinary unit test when the full
+# workspace suite is running concurrently.
+[[profile.default.overrides]]
+filter = 'test(crucible_features_resolve_for_declared_powersets)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci]
+inherits = "default"
+fail-fast = false
+junit = { path = "target/nextest/ci/junit.xml" }

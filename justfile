@@ -56,13 +56,17 @@ system-eval variant="server":
 # Testing
 # ===========================================================================
 
-# Run all test layers (eval → build → vm → fleet)
+# Run all test layers (eval → rust → build → vm → fleet)
 test:
     {{AOS}} test
 
 # Run eval checks only
 test-eval:
     {{AOS}} test eval
+
+# Run parallel Rust tests (all suites or a specific one)
+test-rust suite="":
+    {{AOS}} test rust {{suite}}
 
 # Run build checks only
 test-build:

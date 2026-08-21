@@ -7,75 +7,194 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource (
-      if lib.hasPrefix "0067-" patchName
-      then [
-        {label = "aggregate VMState envelope"; needle = "CRUCFVM1";}
-        {label = "transactional staged restore"; needle = "CrucibleFaultVmstateStaged";}
-        {label = "closed core registry"; needle = "crucible_fault_vmstate_required";}
-      ]
-      else if lib.hasPrefix "0068-" patchName
-      then [
-        {label = "clock VMState section"; needle = "crucible_clock_vmstate_section";}
-        {label = "device-local timer arm sequence"; needle = "crucible_timer_arm_sequence";}
-        {label = "realized clock manifest"; needle = "qemu_plugin_crucible_fault_clock_manifest";}
-      ]
-      else if lib.hasPrefix "0069-" patchName
-      then [
-        {label = "real accelerator device"; needle = "virtio-crucible-accelerator-device";}
-        {label = "vendor-specific virtio name API"; needle = "void virtio_init_named";}
-        {label = "explicit accelerator diagnostic name"; needle = "virtio_init_named(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR";}
-        {label = "standard virtio ID validation retained"; needle = "virtio_id_to_name(device_id)";}
-        {label = "mandatory virtio feature negotiation"; needle = "vdc->get_features = accelerator_get_features;";}
-        {label = "accelerator VMState section"; needle = "accelerator_vmstate_section";}
-        {label = "realized accelerator manifest"; needle = "qemu_plugin_crucible_fault_accelerator_manifest";}
-        {label = "fault-free access never releases a null event reservation"; needle = "if (reservation) {\n+        qemu_crucible_fault_event_reservation_release(reservation);\n+    }";}
-        {label = "accelerator result installation and execution phases"; needle = "CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,";}
-      ]
-      else if lib.hasPrefix "0071-" patchName
-      then [
-        {label = "lifecycle VM-state precondition"; needle = "qemu_crucible_fault_lifecycle_precondition";}
-        {label = "lifecycle command specialization"; needle = "CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE";}
-        {label = "fail-closed snapshot error"; needle = "CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR";}
-      ]
-      else if lib.hasPrefix "0072-" patchName
-      then [
-        {label = "prepare-only result preserves frozen state"; needle = "+        memcpy(staging->after_hash, staging->before_hash, 32);";}
-        {label = "canonical typed result encoding"; needle = "+        node_encode_evidence(staging, result_payload);";}
-        {label = "command-specific result replacement removed"; needle = "-        g_byte_array_append(result_payload, staging->impulse_evidence->data,";}
-        {label = "result evidence digest retained"; needle = "result->evidence_hash";}
-      ]
-      else if lib.hasPrefix "0074-" patchName
-      then [
-        {label = "armed one-shot status"; needle = "QEMU_CRUCIBLE_FAULT_IMPULSE_ARMED";}
-        {label = "result opportunity APPLY operation"; needle = "+        case CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM:";}
-        {label = "durable accelerator opportunity queue"; needle = "result_impulses";}
-        {label = "restored event reservation"; needle = "qemu_crucible_fault_event_reservation_restore";}
-        {label = "canonical deferred result payload"; needle = "qemu_crucible_fault_node_result_payload";}
-        {label = "accelerator VMState version increment"; needle = "+    .version = 4,";}
-      ]
-      else if lib.hasPrefix "0075-" patchName
-      then [
-        {label = "mandatory event envelope version"; needle = "qemu_plugin_crucible_fault_event_envelope_version";}
-        {label = "authenticated request digest"; needle = "node_sha256(rule->payload, rule->payload_len, envelope_header + 24)";}
-        {label = "checkpointed original request"; needle = "g_byte_array_append(envelope, rule->payload, rule->payload_len)";}
-        {label = "exact accelerator sequence"; needle = "sequence != expected_sequence";}
-        {label = "original opportunity identity"; needle = "qemu_crucible_fault_rule_opportunity_hash";}
-        {label = "clock arithmetic evidence"; needle = "stq_le_p(record + 276, old_additive)";}
-      ]
-      else if lib.hasPrefix "0080-" patchName
-      then [
-        {label = "zero-initialized retention boundary count"; needle = "+    CrucibleRetentionBoundaryCount count = { 0 };";}
-        {label = "active-rule guard precedes clock sample"; needle = "!qemu_crucible_fault_memory_rules_active()) {\n         return;\n     }\n+    count.now = node_virtual_now();";}
-        {label = "eager inactive clock sample removed"; needle = "-    CrucibleRetentionBoundaryCount count = { .now = node_virtual_now() };";}
-      ]
-      else [
-        {label = "final fault-system manifest"; needle = "qemu_plugin_crucible_fault_system_manifest";}
-        {label = "complete fault-system capability"; needle = "qemu.fault-system.complete.v1";}
-        {label = "VMState registry digest"; needle = "vmstate_sections_sha256";}
-      ]
-    );
+  failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource (
+    if lib.hasPrefix "0067-" patchName
+    then [
+      {
+        label = "aggregate VMState envelope";
+        needle = "CRUCFVM1";
+      }
+      {
+        label = "transactional staged restore";
+        needle = "CrucibleFaultVmstateStaged";
+      }
+      {
+        label = "closed core registry";
+        needle = "crucible_fault_vmstate_required";
+      }
+    ]
+    else if lib.hasPrefix "0068-" patchName
+    then [
+      {
+        label = "clock VMState section";
+        needle = "crucible_clock_vmstate_section";
+      }
+      {
+        label = "device-local timer arm sequence";
+        needle = "crucible_timer_arm_sequence";
+      }
+      {
+        label = "realized clock manifest";
+        needle = "qemu_plugin_crucible_fault_clock_manifest";
+      }
+    ]
+    else if lib.hasPrefix "0069-" patchName
+    then [
+      {
+        label = "real accelerator device";
+        needle = "virtio-crucible-accelerator-device";
+      }
+      {
+        label = "vendor-specific virtio name API";
+        needle = "void virtio_init_named";
+      }
+      {
+        label = "explicit accelerator diagnostic name";
+        needle = "virtio_init_named(vdev, VIRTIO_ID_CRUCIBLE_ACCELERATOR";
+      }
+      {
+        label = "standard virtio ID validation retained";
+        needle = "virtio_id_to_name(device_id)";
+      }
+      {
+        label = "mandatory virtio feature negotiation";
+        needle = "vdc->get_features = accelerator_get_features;";
+      }
+      {
+        label = "accelerator VMState section";
+        needle = "accelerator_vmstate_section";
+      }
+      {
+        label = "realized accelerator manifest";
+        needle = "qemu_plugin_crucible_fault_accelerator_manifest";
+      }
+      {
+        label = "fault-free access never releases a null event reservation";
+        needle = "if (reservation) {\n+        qemu_crucible_fault_event_reservation_release(reservation);\n+    }";
+      }
+      {
+        label = "accelerator result installation and execution phases";
+        needle = "CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,";
+      }
+    ]
+    else if lib.hasPrefix "0071-" patchName
+    then [
+      {
+        label = "lifecycle VM-state precondition";
+        needle = "qemu_crucible_fault_lifecycle_precondition";
+      }
+      {
+        label = "lifecycle command specialization";
+        needle = "CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE";
+      }
+      {
+        label = "fail-closed snapshot error";
+        needle = "CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR";
+      }
+    ]
+    else if lib.hasPrefix "0072-" patchName
+    then [
+      {
+        label = "prepare-only result preserves frozen state";
+        needle = "+        memcpy(staging->after_hash, staging->before_hash, 32);";
+      }
+      {
+        label = "canonical typed result encoding";
+        needle = "+        node_encode_evidence(staging, result_payload);";
+      }
+      {
+        label = "command-specific result replacement removed";
+        needle = "-        g_byte_array_append(result_payload, staging->impulse_evidence->data,";
+      }
+      {
+        label = "result evidence digest retained";
+        needle = "result->evidence_hash";
+      }
+    ]
+    else if lib.hasPrefix "0074-" patchName
+    then [
+      {
+        label = "armed one-shot status";
+        needle = "QEMU_CRUCIBLE_FAULT_IMPULSE_ARMED";
+      }
+      {
+        label = "result opportunity APPLY operation";
+        needle = "+        case CRUCIBLE_FAULT_COMMAND_ACCELERATOR_RESULT_TRANSFORM:";
+      }
+      {
+        label = "durable accelerator opportunity queue";
+        needle = "result_impulses";
+      }
+      {
+        label = "restored event reservation";
+        needle = "qemu_crucible_fault_event_reservation_restore";
+      }
+      {
+        label = "canonical deferred result payload";
+        needle = "qemu_crucible_fault_node_result_payload";
+      }
+      {
+        label = "accelerator VMState version increment";
+        needle = "+    .version = 4,";
+      }
+    ]
+    else if lib.hasPrefix "0075-" patchName
+    then [
+      {
+        label = "mandatory event envelope version";
+        needle = "qemu_plugin_crucible_fault_event_envelope_version";
+      }
+      {
+        label = "authenticated request digest";
+        needle = "node_sha256(rule->payload, rule->payload_len, envelope_header + 24)";
+      }
+      {
+        label = "checkpointed original request";
+        needle = "g_byte_array_append(envelope, rule->payload, rule->payload_len)";
+      }
+      {
+        label = "exact accelerator sequence";
+        needle = "sequence != expected_sequence";
+      }
+      {
+        label = "original opportunity identity";
+        needle = "qemu_crucible_fault_rule_opportunity_hash";
+      }
+      {
+        label = "clock arithmetic evidence";
+        needle = "stq_le_p(record + 276, old_additive)";
+      }
+    ]
+    else if lib.hasPrefix "0080-" patchName
+    then [
+      {
+        label = "zero-initialized retention boundary count";
+        needle = "+    CrucibleRetentionBoundaryCount count = { 0 };";
+      }
+      {
+        label = "active-rule guard precedes clock sample";
+        needle = "!qemu_crucible_fault_memory_rules_active()) {\n         return;\n     }\n+    count.now = node_virtual_now();";
+      }
+      {
+        label = "eager inactive clock sample removed";
+        needle = "-    CrucibleRetentionBoundaryCount count = { .now = node_virtual_now() };";
+      }
+    ]
+    else [
+      {
+        label = "final fault-system manifest";
+        needle = "qemu_plugin_crucible_fault_system_manifest";
+      }
+      {
+        label = "complete fault-system capability";
+        needle = "qemu.fault-system.complete.v1";
+      }
+      {
+        label = "VMState registry digest";
+        needle = "vmstate_sections_sha256";
+      }
+    ]
+  );
 in
   if failures != []
   then throw "Crucible fault-VMState microtest failed:\n${builtins.concatStringsSep "\n" failures}"

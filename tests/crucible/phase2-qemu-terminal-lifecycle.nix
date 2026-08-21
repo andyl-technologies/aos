@@ -7,23 +7,40 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource (
-      if lib.hasPrefix "0064-" patchName
-      then [
-        {label = "terminal pre-exit evidence"; needle = "CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID";}
-        {label = "deferred terminal exit"; needle = "crucible_lifecycle_terminal_exit_requested";}
-      ]
-      else if lib.hasPrefix "0065-" patchName
-      then [
-        {label = "authenticated completion command"; needle = "crucible-complete-terminal-lifecycle";}
-        {label = "action digest comparison"; needle = "crucible_lifecycle_terminal_action_sha256";}
-      ]
-      else [
-        {label = "immutable generation setter"; needle = "qemu_plugin_crucible_lifecycle_set_process_generation";}
-        {label = "second-set rejection"; needle = "crucible_lifecycle_process_generation != 0";}
-      ]
-    );
+  failures = failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource (
+    if lib.hasPrefix "0064-" patchName
+    then [
+      {
+        label = "terminal pre-exit evidence";
+        needle = "CRUCIBLE_LIFECYCLE_TERMINAL_PREEXIT_VALID";
+      }
+      {
+        label = "deferred terminal exit";
+        needle = "crucible_lifecycle_terminal_exit_requested";
+      }
+    ]
+    else if lib.hasPrefix "0065-" patchName
+    then [
+      {
+        label = "authenticated completion command";
+        needle = "crucible-complete-terminal-lifecycle";
+      }
+      {
+        label = "action digest comparison";
+        needle = "crucible_lifecycle_terminal_action_sha256";
+      }
+    ]
+    else [
+      {
+        label = "immutable generation setter";
+        needle = "qemu_plugin_crucible_lifecycle_set_process_generation";
+      }
+      {
+        label = "second-set rejection";
+        needle = "crucible_lifecycle_process_generation != 0";
+      }
+    ]
+  );
 in
   if failures != []
   then throw "Crucible terminal-lifecycle microtest failed:\n${builtins.concatStringsSep "\n" failures}"

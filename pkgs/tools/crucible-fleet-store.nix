@@ -4,31 +4,29 @@
   mkCargoPackage,
   fetchCargoVendor,
   grep,
+  crucible-controller,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
+  cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
   src = import ./crucible/_source.nix {inherit lib;};
+  cargoArtifacts = crucible-controller.passthru.cargoArtifacts;
 in
   mkCargoPackage {
     pname = "crucible-fleet-store";
     inherit version src;
 
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      name = "crucible-vendor-${version}";
-      sourceRoot = "source/crates";
-      hash = cargoDepsHash;
-    };
+    cargoDeps = crucible-controller.passthru.cargoDeps;
+    inherit cargoArtifacts;
+    cargoArtifactContract = cargoArtifacts.passthru.cargoArtifactContract;
+    cargoEnv = cargoArtifacts.passthru.cargoArtifactContract.cargoEnv;
+    cargoRoot = "crates";
+    cargoNextest = true;
 
     cargoFlags = "-p crucible-cas --bin crucible-fleet-store";
     cargoTestFlags = "-p crucible-cas";
     doCheck = true;
     buildDeps = [grep];
     runtimeDeps = [];
-
-    preBuild = ''
-      cd crates
-    '';
 
     postInstall = ''
       test -x "$out/bin/crucible-fleet-store"
