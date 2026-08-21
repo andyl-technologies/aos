@@ -25,8 +25,7 @@ use aos_package::download::{
     DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
     fetch_narinfos,
 };
-use aos_package::store::import_authenticated_nar;
-use aos_package::verify::{verify_download_hash, verify_nar_hash};
+use aos_package::verify::{extract_regular_file_nar, verify_download_hash, verify_nar_hash};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
 use serde::{Deserialize, Serialize};
@@ -342,46 +341,20 @@ async fn download_store_backed_image(
     verify_download_hash(&result.local_path, &result.download_hash)?;
     verify_nar_hash(&result.local_path, &image.nar_hash)
         .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
-    import_authenticated_nar(
-        &result.local_path,
-        &result.store_path,
-        &result.references,
-        result.deriver.as_deref(),
-    )
-    .await?;
-
-    let store_path = Path::new(&image.store_path);
-    let source = if store_path.is_file() {
-        store_path.to_path_buf()
-    } else if store_path.is_dir() {
-        store_path.join(&image.filename)
-    } else {
-        bail!(
-            "imported image artifact is absent from its signed store path {}",
-            store_path.display()
-        );
-    };
-    let metadata = fs::symlink_metadata(&source)
-        .with_context(|| format!("inspecting imported image {}", source.display()))?;
-    if !metadata.file_type().is_file() || metadata.len() != image.byte_size {
-        bail!("imported image is not the signed regular file size");
-    }
-
     let started = Instant::now();
     let transfer = printer.transfer("Extracting verified image NAR", image.byte_size);
     let mut destination = SecureDestination::open(output, true, Some(&transfer))?;
     let sink = destination.take_sink(image.byte_size)?;
-    let mut source_file = fs::File::open(&source)?;
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let count = source_file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        sink.write(&buffer[..count])?;
-        transfer.inc(count as u64);
-    }
-    sink.flush()?;
+    let mut writer = ImageExtractionWriter {
+        sink: sink.as_ref(),
+        transfer: &transfer,
+    };
+    extract_regular_file_nar(
+        &result.local_path,
+        &mut writer,
+        image.byte_size,
+        image.nar_size,
+    )?;
     destination.restore_sink(sink)?;
     destination.sync_all()?;
     let actual = destination.final_sha256()?;
@@ -396,6 +369,23 @@ async fn download_store_backed_image(
     fs::remove_dir_all(&nar_cache)
         .with_context(|| format!("removing completed NAR cache {}", nar_cache.display()))?;
     print_download_result(output, image, 0, started.elapsed(), false, printer)
+}
+
+struct ImageExtractionWriter<'a> {
+    sink: &'a SecureImageSink,
+    transfer: &'a TransferProgress,
+}
+
+impl std::io::Write for ImageExtractionWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        TransferSink::write(self.sink, bytes).map_err(std::io::Error::other)?;
+        self.transfer.inc(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        TransferSink::flush(self.sink).map_err(std::io::Error::other)
+    }
 }
 
 fn nar_cache_path(output: &Path) -> Result<PathBuf> {
