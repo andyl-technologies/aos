@@ -9,17 +9,24 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
   pluginIdleLoopTests = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs)
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
   ];
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  shmemFrameNode =
-    builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
-  shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
+  shmemFrameNode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  };
+  shmemRegion = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/region.rs;
+  };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -46,7 +53,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginIdleLoop) [
-          "crates/crucible-qemu-plugin/src/idle_loop.rs: forbidden wall-clock, timeout, or entropy API in idle path: `${api}`"
+          "crates/crucible-qemu-plugin/src/idle_loop module: forbidden wall-clock, timeout, or entropy API in idle path: `${api}`"
         ]
     )
     forbiddenIdlePathApis;
@@ -88,7 +95,7 @@
         needle = "IdleWaitOutcome";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
       {
         label = "idle loop type";
         needle = "pub struct PluginIdleHotLoop";
@@ -204,7 +211,7 @@
         needle = "pub enum ExactDeadlineReport";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node module" shmemFrameNode [
       {
         label = "idle publish returns futex wait";
         needle = "pub fn publish_idle";
@@ -222,7 +229,7 @@
         needle = "pub fn mark_done";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/region.rs" shmemRegion [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/region module" shmemRegion [
       {
         label = "region control action";
         needle = "pub fn control_action";

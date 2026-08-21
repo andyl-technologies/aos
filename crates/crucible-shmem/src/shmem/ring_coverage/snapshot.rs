@@ -186,6 +186,8 @@ pub struct SpscRingSnapshot {
 }
 
 impl SpscRingSnapshot {
+    const CANONICAL_FRAME_METADATA_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
+
     /// Builds a compact snapshot from live shared-memory frames.
     ///
     /// # Errors
@@ -221,23 +223,33 @@ impl SpscRingSnapshot {
     /// [`SpscRingError::SnapshotByteAllocationFailed`] when the exact bounded
     /// canonical representation cannot be reserved.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, SpscRingError> {
+        let encoded_len = self.canonical_len()?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(encoded_len)
+            .map_err(|_| SpscRingError::SnapshotByteAllocationFailed { len: encoded_len })?;
+        self.append_canonical_bytes(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Appends the canonical representation to an enclosing byte buffer.
+    ///
+    /// The method reserves only the exact additional length. An enclosing codec
+    /// that has already reserved its complete representation therefore streams
+    /// the ring directly into that allocation without a temporary ring-sized
+    /// byte vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when a frame is noncanonical, its encoded
+    /// length overflows, or the additional byte capacity cannot be reserved.
+    pub fn append_canonical_bytes(&self, bytes: &mut Vec<u8>) -> Result<(), SpscRingError> {
+        let encoded_len = self.canonical_len()?;
         let frame_count = u64::try_from(self.frames.len()).map_err(|_| {
             SpscRingError::SnapshotLengthOverflow {
                 len: self.frames.len(),
             }
         })?;
-        const CANONICAL_FRAME_METADATA_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
-        let mut encoded_len = core::mem::size_of::<u64>();
-        for frame in &self.frames {
-            frame.validate()?;
-            encoded_len = encoded_len
-                .checked_add(CANONICAL_FRAME_METADATA_BYTES)
-                .and_then(|len| len.checked_add(frame.data.len()))
-                .ok_or(SpscRingError::SnapshotLengthOverflow {
-                    len: self.frames.len(),
-                })?;
-        }
-        let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(encoded_len)
             .map_err(|_| SpscRingError::SnapshotByteAllocationFailed { len: encoded_len })?;
@@ -254,7 +266,31 @@ impl SpscRingSnapshot {
             bytes.extend_from_slice(&canonical.last_delivery_attempt_icount.to_le_bytes());
             bytes.extend_from_slice(&canonical.data[..payload_len]);
         }
-        Ok(bytes)
+        Ok(())
+    }
+
+    /// Returns the exact length of the canonical byte representation.
+    ///
+    /// This validates every compact frame without allocating the encoded byte
+    /// stream, allowing an enclosing checkpoint codec to enforce its own
+    /// aggregate limit before reserving memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when a frame is noncanonical or when the
+    /// encoded length cannot fit in `usize`.
+    pub fn canonical_len(&self) -> Result<usize, SpscRingError> {
+        let mut encoded_len = core::mem::size_of::<u64>();
+        for frame in &self.frames {
+            frame.validate()?;
+            encoded_len = encoded_len
+                .checked_add(Self::CANONICAL_FRAME_METADATA_BYTES)
+                .and_then(|len| len.checked_add(frame.data.len()))
+                .ok_or(SpscRingError::SnapshotLengthOverflow {
+                    len: self.frames.len(),
+                })?;
+        }
+        Ok(encoded_len)
     }
 
     /// Decodes a snapshot from [`SpscRingSnapshot::canonical_bytes`].
@@ -289,12 +325,11 @@ impl SpscRingSnapshot {
                 capacity: max_frames as u64,
             });
         }
-        const MIN_CANONICAL_FRAME_BYTES: usize = 8 + 4 + 4 + 2 + 1 + 4 + 8;
-        let minimum_body_bytes = frame_count.checked_mul(MIN_CANONICAL_FRAME_BYTES).ok_or(
-            SpscRingError::SnapshotFrameCountOverflow {
+        let minimum_body_bytes = frame_count
+            .checked_mul(Self::CANONICAL_FRAME_METADATA_BYTES)
+            .ok_or(SpscRingError::SnapshotFrameCountOverflow {
                 count: frame_count as u64,
-            },
-        )?;
+            })?;
         let available_body_bytes = bytes.len().saturating_sub(core::mem::size_of::<u64>());
         if minimum_body_bytes > available_body_bytes {
             return Err(SpscRingError::SnapshotDecodeTruncated {

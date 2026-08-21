@@ -25,13 +25,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
   };
-  pluginIdleLoop = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/support.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
-  ];
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs)
