@@ -616,9 +616,18 @@ source-authoritative read-through caching, write-through mirroring, and
 path-free saturating synchronous operation/byte/error counters over memory and
 durable directory leaves. Read-through falls through only on exact absence,
 treats promotion as non-semantic, and never reports cache durability as
-authoritative source durability. Write-back with its durable GC root/journal,
-packing, compression/encryption below plaintext identity, restart-safe aggregate
-quota,
+authoritative source durability. Durable write-back now requires durable
+streaming staging/destination children, acknowledges only after staging plus a
+checksummed bounded journal append, survives restart, flushes idempotently in
+canonical order, and exposes the exact pending set behind a shared/exclusive
+lifecycle fence. GC planning includes those IDs in the canonical root manifest;
+apply reacquires and holds the fence, rejects a changed set before deletion, and
+therefore cannot collect a children-before-journal publication. Tests cover
+restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
+durable-child and non-overlapping-path admission, lifecycle exclusion,
+single-pass staging authentication, transfer completion, and stale GC plans.
+Destination-specific durability policy plumbing, packing,
+compression/encryption below plaintext identity, restart-safe aggregate quota,
 namespaced authorization, S3, composed administrative inventory/GC, and host-side
 latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
 by this checkpoint.

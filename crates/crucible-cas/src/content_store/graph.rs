@@ -10,6 +10,9 @@ use super::composition::{
 };
 use super::directory::DirectoryBlobBackend;
 use super::memory::MemoryBlobBackend;
+use super::write_back::{
+    StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
+};
 use super::*;
 
 const MAX_GRAPH_NODES: usize = 256;
@@ -91,6 +94,19 @@ pub enum StoreNodeSpec {
         /// Mirrored children.
         children: Vec<StoreNodeId>,
     },
+    /// Durably stages writes and journals deferred transfer to one destination.
+    WriteBack {
+        /// Durable child receiving acknowledged writes immediately.
+        staging: StoreNodeId,
+        /// Durable child receiving journaled transfers.
+        destination: StoreNodeId,
+        /// Trusted operator-owned journal directory.
+        journal_root: PathBuf,
+        /// Hard count bound for pending transfer roots.
+        maximum_pending_objects: u64,
+        /// Hard aggregate logical-byte bound for pending transfer roots.
+        maximum_pending_bytes: u64,
+    },
     /// Emits bounded operational counters around one child.
     Metrics {
         /// Child node whose synchronous operations are observed.
@@ -107,6 +123,11 @@ impl StoreNodeSpec {
             Self::Tiered { tiers, .. } => tiers.iter().collect(),
             Self::ReadThrough { cache, source } => vec![cache, source],
             Self::WriteThrough { children } => children.iter().collect(),
+            Self::WriteBack {
+                staging,
+                destination,
+                ..
+            } => vec![staging, destination],
             Self::Metrics { child } => vec![child],
         }
     }
@@ -120,6 +141,7 @@ impl StoreNodeSpec {
             Self::Tiered { .. } => StoreNodeKind::Tiered,
             Self::ReadThrough { .. } => StoreNodeKind::ReadThrough,
             Self::WriteThrough { .. } => StoreNodeKind::WriteThrough,
+            Self::WriteBack { .. } => StoreNodeKind::WriteBack,
             Self::Metrics { .. } => StoreNodeKind::Metrics,
         }
     }
@@ -153,6 +175,8 @@ pub enum StoreNodeKind {
     ReadThrough,
     /// Write-through mirror.
     WriteThrough,
+    /// Durable deferred write-back transfer.
+    WriteBack,
     /// Operational metrics facade.
     Metrics,
 }
@@ -196,6 +220,27 @@ pub struct StoreNodeMetricsDescription {
     pub metrics: StoreNodeMetrics,
 }
 
+/// Terminal result of one bounded write-back flush pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreWriteBackFlushSummary {
+    completed: u32,
+    pending: u64,
+}
+
+impl StoreWriteBackFlushSummary {
+    /// Returns the number of transfers completed by this pass.
+    #[must_use]
+    pub const fn completed(self) -> u32 {
+        self.completed
+    }
+
+    /// Returns the pending roots observed after the pass.
+    #[must_use]
+    pub const fn pending(self) -> u64 {
+        self.pending
+    }
+}
+
 /// Admitted immutable-store graph with one root service.
 pub struct StoreGraph {
     root_id: StoreNodeId,
@@ -203,6 +248,7 @@ pub struct StoreGraph {
     root: Arc<dyn ImmutableBlobBackend>,
     description: Vec<StoreNodeDescription>,
     metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
+    write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
 }
 
 impl StoreGraph {
@@ -222,7 +268,14 @@ impl StoreGraph {
 
         let mut built = BTreeMap::new();
         let mut metrics = BTreeMap::new();
-        let root = instantiate(&config.root, &config.nodes, &mut built, &mut metrics)?;
+        let mut write_back = BTreeMap::new();
+        let root = instantiate(
+            &config.root,
+            &config.nodes,
+            &mut built,
+            &mut metrics,
+            &mut write_back,
+        )?;
         validate_capability_edges(&config.nodes, &built)?;
         let mut description = Vec::with_capacity(config.nodes.len());
         for (id, spec) in &config.nodes {
@@ -241,6 +294,7 @@ impl StoreGraph {
             root,
             description,
             metrics,
+            write_back,
         })
     }
 
@@ -287,6 +341,57 @@ impl StoreGraph {
                 }
             })
             .collect()
+    }
+
+    /// Flushes at most `maximum_transfers` pending write-back objects.
+    ///
+    /// Nodes and their pending IDs are visited in canonical order. A transfer
+    /// is complete only after the destination returns a durable placement and
+    /// the journal durably removes its retention root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidComposition`] for a zero limit or a child,
+    /// journal, authentication, or durability error during transfer.
+    pub fn flush_write_back(
+        &self,
+        maximum_transfers: u32,
+    ) -> Result<StoreWriteBackFlushSummary, StoreError> {
+        if maximum_transfers == 0 {
+            return Err(StoreError::InvalidComposition {
+                reason: "write-back flush limit is zero",
+            });
+        }
+        let mut completed = 0_u32;
+        'nodes: for store in self.write_back.values() {
+            while completed < maximum_transfers {
+                if !store.flush_one()? {
+                    continue 'nodes;
+                }
+                completed += 1;
+            }
+            break;
+        }
+
+        let mut fence = self.acquire_write_back_retention_fence()?;
+        let summary = fence.visit_roots(&mut |_root| Ok(()))?;
+        Ok(StoreWriteBackFlushSummary {
+            completed,
+            pending: summary.roots(),
+        })
+    }
+}
+
+impl WriteBackRetentionAdmin for StoreGraph {
+    fn acquire_write_back_retention_fence(
+        &self,
+    ) -> Result<Box<dyn WriteBackRetentionFence + '_>, StoreError> {
+        let journals = self
+            .write_back
+            .iter()
+            .map(|(id, store)| (id.as_str().to_owned(), store.journal()))
+            .collect();
+        Ok(Box::new(StoreGraphWriteBackFence::acquire(&journals)?))
     }
 }
 
@@ -344,6 +449,7 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
             GraphViolation::MissingNode,
         ));
     }
+    validate_administrative_paths(config)?;
 
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -355,6 +461,34 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
             .find(|id| !visited.contains(*id))
             .map_or("<graph>", StoreNodeId::as_str);
         return Err(invalid_graph(unreachable, GraphViolation::UnreachableNode));
+    }
+    Ok(())
+}
+
+fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreError> {
+    let persistent = config
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| match node {
+            StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::WriteBack { journal_root, .. } => Some((id, journal_root, true)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for left in 0..persistent.len() {
+        for right in left + 1..persistent.len() {
+            let (left_id, left_path, left_journal) = persistent[left];
+            let (right_id, right_path, right_journal) = persistent[right];
+            if (left_journal || right_journal)
+                && (left_path.starts_with(right_path) || right_path.starts_with(left_path))
+            {
+                let node = if left_journal { left_id } else { right_id };
+                return Err(invalid_graph(
+                    node.as_str(),
+                    GraphViolation::OverlappingAdministrativePath,
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -403,6 +537,14 @@ fn validate_local_shape(id: &StoreNodeId, node: &StoreNodeSpec) -> Result<(), St
         StoreNodeSpec::WriteThrough { children } if children.is_empty() => {
             Err(invalid_graph(id.as_str(), GraphViolation::EmptyChildren))
         }
+        StoreNodeSpec::WriteBack {
+            maximum_pending_objects,
+            maximum_pending_bytes,
+            ..
+        } if *maximum_pending_objects == 0 || *maximum_pending_bytes == 0 => Err(invalid_graph(
+            id.as_str(),
+            GraphViolation::InvalidWriteBackBounds,
+        )),
         _ => Ok(()),
     }
 }
@@ -447,6 +589,14 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
                     extend_demand(child, &kinds, &mut demands, &mut queue);
                 }
             }
+            StoreNodeSpec::WriteBack {
+                staging,
+                destination,
+                ..
+            } => {
+                extend_demand(staging, &kinds, &mut demands, &mut queue);
+                extend_demand(destination, &kinds, &mut demands, &mut queue);
+            }
             StoreNodeSpec::Metrics { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -482,6 +632,7 @@ fn instantiate(
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     built: &mut BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
     metrics: &mut BTreeMap<StoreNodeId, Arc<MetricsState>>,
+    write_back: &mut BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = built.get(id) {
         return Ok(backend.clone());
@@ -498,12 +649,17 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(child, nodes, built, metrics)?,
+            instantiate(child, nodes, built, metrics, write_back)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
                 .iter()
-                .map(|(kind, child)| Ok((*kind, instantiate(child, nodes, built, metrics)?)))
+                .map(|(kind, child)| {
+                    Ok((
+                        *kind,
+                        instantiate(child, nodes, built, metrics, write_back)?,
+                    ))
+                })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
             Arc::new(RoutedStore::new(id.as_str(), routes)?)
         }
@@ -514,7 +670,7 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(child, nodes, built, metrics))
+                .map(|child| instantiate(child, nodes, built, metrics, write_back))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -525,18 +681,36 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(cache, nodes, built, metrics)?,
-            instantiate(source, nodes, built, metrics)?,
+            instantiate(cache, nodes, built, metrics, write_back)?,
+            instantiate(source, nodes, built, metrics, write_back)?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(child, nodes, built, metrics))
+                .map(|child| instantiate(child, nodes, built, metrics, write_back))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
+        StoreNodeSpec::WriteBack {
+            staging,
+            destination,
+            journal_root,
+            maximum_pending_objects,
+            maximum_pending_bytes,
+        } => {
+            let store = Arc::new(WriteBackStore::new(
+                id.as_str(),
+                instantiate(staging, nodes, built, metrics, write_back)?,
+                instantiate(destination, nodes, built, metrics, write_back)?,
+                journal_root.clone(),
+                *maximum_pending_objects,
+                *maximum_pending_bytes,
+            )?);
+            write_back.insert(id.clone(), Arc::clone(&store));
+            store
+        }
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(child, nodes, built, metrics)?;
+            let child = instantiate(child, nodes, built, metrics, write_back)?;
             let (backend, state) = MetricsStore::new(id.as_str(), child);
             metrics.insert(id.clone(), state);
             Arc::new(backend)
@@ -551,14 +725,19 @@ fn validate_capability_edges(
     built: &BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
 ) -> Result<(), StoreError> {
     for (id, node) in nodes {
-        let children = match node {
+        let children: Vec<&StoreNodeId> = match node {
             StoreNodeSpec::Tiered {
                 tiers,
                 promote_reads: true,
                 ..
-            } => tiers.as_slice(),
-            StoreNodeSpec::ReadThrough { cache, .. } => std::slice::from_ref(cache),
-            StoreNodeSpec::WriteThrough { children } => children.as_slice(),
+            } => tiers.iter().collect(),
+            StoreNodeSpec::ReadThrough { cache, .. } => vec![cache],
+            StoreNodeSpec::WriteThrough { children } => children.iter().collect(),
+            StoreNodeSpec::WriteBack {
+                staging,
+                destination,
+                ..
+            } => vec![staging, destination],
             _ => continue,
         };
         for child in children {

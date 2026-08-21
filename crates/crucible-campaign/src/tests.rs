@@ -424,6 +424,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "crucible-cas::content_store",
             "administrative-record",
         ),
+        (
+            "crucible.content-store.write-back-transfer-journal",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
     ] {
         let row = rows
             .get(schema)

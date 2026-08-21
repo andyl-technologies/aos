@@ -78,6 +78,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             durable: false,
+            deferred_write: false,
             range_read: true,
             streaming_read: true,
             conditional_create: true,

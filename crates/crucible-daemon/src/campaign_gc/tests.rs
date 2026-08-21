@@ -2,7 +2,7 @@
 
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
     MemoryRefBackend, MutableRefBackend, ObjectKind, PlannedDeleteDisposition, RefCasOutcome,
-    RefName, StoreError,
+    RefName, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 
 use super::*;
@@ -343,6 +343,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         &repository,
         refs.as_ref(),
         &mut ledger,
+        None,
         hash("crucible.test.gc.store-graph.v1", 9),
         &[physical],
     )
@@ -363,6 +364,127 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         prepared.plan().candidates(),
         prepared.candidates().summary()
     );
+}
+
+#[test]
+fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
+    let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let archive_root = temp.path().join("archive");
+    let journal_root = temp.path().join("write-back-journal");
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let archive = StoreNodeId::new("archive").expect("archive node");
+    let graph = Arc::new(
+        StoreGraph::build(StoreGraphConfig {
+            root: write_back.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            nodes: BTreeMap::from([
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: archive.clone(),
+                        journal_root,
+                        maximum_pending_objects: 16,
+                        maximum_pending_bytes: 1024 * 1024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: staging_root.clone(),
+                    },
+                ),
+                (
+                    archive,
+                    StoreNodeSpec::Directory {
+                        root: archive_root.clone(),
+                    },
+                ),
+            ]),
+        })
+        .expect("write-back store graph"),
+    );
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let pending = ContentEnvelope::new(
+        "crucible.test.gc-write-back-pending",
+        1,
+        BTreeSet::new(),
+        b"pending".to_vec(),
+    )
+    .expect("pending envelope");
+    let pending_id = pending.content_id(ObjectKind::Finding);
+    graph
+        .put_if_absent(
+            pending_id,
+            &BlobHandle::from_bytes(pending.canonical_bytes()),
+        )
+        .expect("stage pending root");
+    let orphan = ContentEnvelope::new(
+        "crucible.test.gc-write-back-orphan",
+        1,
+        BTreeSet::new(),
+        b"orphan".to_vec(),
+    )
+    .expect("orphan envelope");
+    let orphan_id = orphan.content_id(ObjectKind::Finding);
+    let staging_leaf = DirectoryBlobBackend::new("staging", &staging_root);
+    staging_leaf
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
+        .expect("store unjournaled orphan");
+    let archive_leaf = DirectoryBlobBackend::new("archive", &archive_root);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let archive_physical =
+        CampaignGcPhysicalStore::new("archive", &archive_leaf).expect("archive physical");
+    let staging_physical =
+        CampaignGcPhysicalStore::new("staging", &staging_leaf).expect("staging physical");
+    let graph_id = hash("crucible.test.gc.write-back-store-graph.v1", 0x44);
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        graph_id,
+        &[archive_physical, staging_physical],
+    )
+    .expect("plan write-back-aware GC");
+    assert_eq!(
+        prepared.roots().iter().collect::<Vec<_>>(),
+        vec![pending_id]
+    );
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan_id
+    );
+
+    let (mut gc_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
+            .expect("create GC journal");
+    assert_eq!(
+        graph
+            .flush_write_back(1)
+            .expect("complete pending transfer")
+            .completed(),
+        1
+    );
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut gc_journal,
+            refs.as_ref(),
+            &mut ledger,
+            Some(graph.as_ref()),
+            graph_id,
+            &[archive_physical, staging_physical],
+        ),
+        Err(CampaignGcApplyError::RootSetChanged)
+    ));
+    assert!(staging_leaf.contains(orphan_id).expect("orphan retained"));
+    assert_eq!(gc_journal.phase(), CampaignGcJournalPhase::Planned);
 }
 
 #[test]
@@ -448,6 +570,7 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
         &mut journal,
         fixture.refs.as_ref(),
         &mut fixture.ledger,
+        None,
         fixture.graph,
         &[physical],
     )
@@ -465,6 +588,7 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
         &mut journal,
         fixture.refs.as_ref(),
         &mut fixture.ledger,
+        None,
         fixture.graph,
         &[physical],
     )
@@ -502,6 +626,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
             &mut ref_journal,
             ref_fixture.refs.as_ref(),
             &mut ref_fixture.ledger,
+            None,
             ref_fixture.graph,
             &[physical],
         ),
@@ -529,6 +654,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
             &mut blob_journal,
             blob_fixture.refs.as_ref(),
             &mut blob_fixture.ledger,
+            None,
             blob_fixture.graph,
             &[physical],
         ),
@@ -552,9 +678,15 @@ fn stale_ledger_generation_fails_before_deletion() {
     let graph = hash("crucible.test.gc.ledger-store-graph.v1", 0x65);
     let physical = CampaignGcPhysicalStore::new("ledger-primary", blobs.as_ref())
         .expect("ledger physical store");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
-            .expect("plan ledger stale GC");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan ledger stale GC");
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
     let (mut journal, _) =
         DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared)
@@ -562,7 +694,14 @@ fn stale_ledger_generation_fails_before_deletion() {
     ledger.generation = 2;
 
     assert!(matches!(
-        apply_single_host_campaign_gc(&mut journal, refs.as_ref(), &mut ledger, graph, &[physical],),
+        apply_single_host_campaign_gc(
+            &mut journal,
+            refs.as_ref(),
+            &mut ledger,
+            None,
+            graph,
+            &[physical],
+        ),
         Err(CampaignGcApplyError::LedgerBasisChanged)
     ));
     assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
@@ -586,6 +725,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
             &mut journal,
             fixture.refs.as_ref(),
             &mut fixture.ledger,
+            None,
             fixture.graph,
             &[physical],
         ),
@@ -598,6 +738,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
             &mut journal,
             fixture.refs.as_ref(),
             &mut fixture.ledger,
+            None,
             fixture.graph,
             &[physical],
         ),
@@ -643,9 +784,15 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open directory ledger");
     let physical = CampaignGcPhysicalStore::new("directory-primary", blobs.as_ref())
         .expect("directory physical store");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
-            .expect("plan directory GC");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan directory GC");
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
         .expect("create directory journal");
     drop(journal);
@@ -663,7 +810,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
     let physical =
         CampaignGcPhysicalStore::new("directory-primary", &blobs).expect("reopened physical store");
     let report =
-        apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, graph, &[physical])
+        apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, None, graph, &[physical])
             .expect("apply after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
     assert!(blobs.contains(live_id).expect("live placement"));
@@ -694,9 +841,15 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
     let graph = hash("crucible.test.gc.apply-store-graph.v1", 0x61);
     let physical = CampaignGcPhysicalStore::new("apply-primary", blobs.as_ref())
         .expect("apply fixture physical store");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, graph, &[physical])
-            .expect("prepare apply fixture");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("prepare apply fixture");
     ApplyFixture {
         blobs,
         refs,
@@ -798,6 +951,7 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
         &repository,
         refs.as_ref(),
         &mut ledger,
+        None,
         hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
         &[physical],
     )
