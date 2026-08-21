@@ -10,6 +10,7 @@ use super::composition::{
 };
 use super::directory::DirectoryBlobBackend;
 use super::memory::MemoryBlobBackend;
+use super::packed::PackedBlobBackend;
 use super::write_back::{
     StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
 };
@@ -62,6 +63,13 @@ pub enum StoreNodeSpec {
     Directory {
         /// Trusted operator-owned filesystem root.
         root: PathBuf,
+    },
+    /// Immutable physical packs with one crash-safe logical index.
+    Packed {
+        /// Trusted operator-owned pack and index root.
+        root: PathBuf,
+        /// Target physical bytes per deterministic replacement pack.
+        target_pack_bytes: u64,
     },
     /// Logical verification facade.
     Verified {
@@ -117,7 +125,7 @@ pub enum StoreNodeSpec {
 impl StoreNodeSpec {
     fn child_ids(&self) -> Vec<&StoreNodeId> {
         match self {
-            Self::Memory { .. } | Self::Directory { .. } => Vec::new(),
+            Self::Memory { .. } | Self::Directory { .. } | Self::Packed { .. } => Vec::new(),
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
             Self::Tiered { tiers, .. } => tiers.iter().collect(),
@@ -136,6 +144,7 @@ impl StoreNodeSpec {
         match self {
             Self::Memory { .. } => StoreNodeKind::Memory,
             Self::Directory { .. } => StoreNodeKind::Directory,
+            Self::Packed { .. } => StoreNodeKind::Packed,
             Self::Verified { .. } => StoreNodeKind::Verified,
             Self::Routed { .. } => StoreNodeKind::Routed,
             Self::Tiered { .. } => StoreNodeKind::Tiered,
@@ -165,6 +174,8 @@ pub enum StoreNodeKind {
     Memory,
     /// Durable directory leaf.
     Directory,
+    /// Durable immutable-pack leaf.
+    Packed,
     /// Verification facade.
     Verified,
     /// Kind router.
@@ -471,6 +482,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         .iter()
         .filter_map(|(id, node)| match node {
             StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::Packed { root, .. } => Some((id, root, true)),
             StoreNodeSpec::WriteBack { journal_root, .. } => Some((id, journal_root, true)),
             _ => None,
         })
@@ -563,7 +575,9 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
             .get(&id)
             .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
         match node {
-            StoreNodeSpec::Memory { .. } | StoreNodeSpec::Directory { .. } => {}
+            StoreNodeSpec::Memory { .. }
+            | StoreNodeSpec::Directory { .. }
+            | StoreNodeSpec::Packed { .. } => {}
             StoreNodeSpec::Verified { child } => {
                 extend_demand(child, &kinds, &mut demands, &mut queue);
             }
@@ -647,6 +661,14 @@ fn instantiate(
         StoreNodeSpec::Directory { root } => {
             Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()))
         }
+        StoreNodeSpec::Packed {
+            root,
+            target_pack_bytes,
+        } => Arc::new(PackedBlobBackend::open(
+            id.as_str(),
+            root.clone(),
+            *target_pack_bytes,
+        )?),
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
             instantiate(child, nodes, built, metrics, write_back)?,

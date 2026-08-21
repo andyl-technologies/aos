@@ -429,6 +429,21 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "crucible-cas::content_store",
             "administrative-record",
         ),
+        (
+            "crucible.content-store.pack",
+            "crucible-cas::content_store",
+            "physical-record",
+        ),
+        (
+            "crucible.content-store.pack-index",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
+            "crucible.content-store.pack-repack-plan",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
     ] {
         let row = rows
             .get(schema)

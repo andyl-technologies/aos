@@ -594,7 +594,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   with verified, routed, tiered, read-through, write-through, write-back,
   compressed, encrypted, quota, metrics, and namespaced layers, including a
   durable GC-protected transfer journal for write-back operation.
-- [ ] **T-CAM-5.6** Implement packed logical-object storage with crash-safe
+- [x] **T-CAM-5.6** Implement packed logical-object storage with crash-safe
   index generations, range authentication, concurrent-reader-safe repacking,
   logical/physical accounting, and page/extent IDs independent of pack layout.
 - [ ] **T-CAM-5.7** Implement directory and S3-compatible leaf backends through
@@ -613,8 +613,9 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 The admitted graph checkpoint currently provides bounded acyclic validation,
 exact kind routing, logical verification, ordered tiers and promotion,
 source-authoritative read-through caching, write-through mirroring, and
-path-free saturating synchronous operation/byte/error counters over memory and
-durable directory leaves. Read-through falls through only on exact absence,
+path-free saturating synchronous operation/byte/error counters over memory,
+durable directory, and packed leaves. Read-through falls through only on exact
+absence,
 treats promotion as non-semantic, and never reports cache durability as
 authoritative source durability. Durable write-back now requires durable
 streaming staging/destination children, acknowledges only after staging plus a
@@ -626,15 +627,34 @@ therefore cannot collect a children-before-journal publication. Tests cover
 restart, torn-tail recovery, corrupt-journal rejection, count/byte limits,
 durable-child and non-overlapping-path admission, lifecycle exclusion,
 single-pass staging authentication, transfer completion, and stale GC plans.
-Destination-specific durability policy plumbing, packing,
+Destination-specific durability policy plumbing,
 compression/encryption below plaintext identity, restart-safe aggregate quota,
 namespaced authorization, S3, composed administrative inventory/GC, and host-side
 latency/deferred-stream metrics remain open; therefore T-CAM-5.5 is not checked
 by this checkpoint.
 
-The memory and directory leaves now expose separately held, exclusive
-administrative fences for both physical objects and the complete authoritative
-ref namespace. Object inventory streams exact placements under a
+The packed leaf now provides immutable bounded multi-object pack files, a
+checksummed persistent logical index with monotonic generations, full logical
+authentication after range extraction, exact logical/physical accounting, and
+a separately held logical-inventory/deletion fence. Repack is an explicit
+canonical plan/apply operation bound to the backend configuration, persistent
+instance, exact index generation and digest, and pre-apply accounting. Apply
+publishes and verifies all replacement packs before the atomic index switch,
+records the applied plan for restart-safe indeterminate-commit replay, and only
+then removes superseded names. Open readers pin old inodes. Startup reclaims
+unindexed complete packs while missing or malformed referenced packs fail
+closed. Tests cover one-object-to-multi-object pack identity stability,
+authenticated range reads, concurrent old-generation readers, restart replay,
+stale and corrupt plans, sparse logical deletion, pack-before-index recovery,
+index corruption, referenced-pack loss, empty objects, accounting, graph
+admission, and physical configuration mismatch. Phase 5's composed-tier, S3,
+global-GC, archival, and realistic operator flights remain under T-CAM-5.7
+through T-CAM-5.9 rather than weakening this completed leaf contract.
+
+The memory, directory, and packed blob leaves now expose separately held,
+exclusive administrative fences for physical logical-object inventory. The
+memory and directory ref leaves separately fence the complete authoritative ref
+namespace. Object inventory streams exact placements under a
 backend-instance generation and supports idempotent deletion of an already
 planned candidate. Ref inventory streams exact name bindings under its own
 monotonic generation; every accepted replacement advances it, so same-value ABA
@@ -646,9 +666,9 @@ administrative composition, the now-implemented fenced operational-ledger root
 snapshot, and a strict registered v1 plan header now compose store-graph,
 root-manifest, candidate-manifest, blob, ref, and ledger hashes/generations into
 one immutable identity. Complete manifest/reachability planning,
-interruption-safe apply/recovery, store-graph administration, and production
-maintenance ownership remain open, so no Phase 5 task is checked by this
-checkpoint.
+interruption-safe global-GC apply/recovery, composed store-graph administration,
+and production maintenance ownership remain open. Those gaps do not weaken the
+separately completed packed-leaf T-CAM-5.6 contract.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's overlay and
