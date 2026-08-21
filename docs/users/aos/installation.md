@@ -9,7 +9,7 @@ it with the target platform's normal imaging tool.
 
 Open the registry's **Images** page at `https://HUB/REGISTRY/-/images`, or use
 the CLI. Select a target when possible; the Hub resolves it to a compatible
-disk encoding without exposing Nix store paths:
+disk encoding and an authenticated binary-cache identity:
 
 ```sh
 aos image list \
@@ -26,10 +26,12 @@ aos image download \
   --output aos-server.qcow2
 ```
 
-`download` resumes an interrupted partial transfer by default and verifies the
-signed byte size and SHA-256 before placing the final file. Omit `--output` to
-use the useful filename from signed release metadata. Use `--no-resume` to
-restart a partial transfer. Existing final files are never overwritten.
+`download` resumes the image NAR from the registry's CDN cache, verifies its
+signed NAR identity, extracts the single regular-file output, and verifies the
+signed disk byte size and SHA-256 before placing the final file. Omit
+`--output` to use the useful filename from signed release metadata. Use
+`--no-resume` to restart a partial transfer. Existing final files are never
+overwritten.
 
 Public registries need no credentials. For a private registry, set
 `AOS_TOKEN` or pass `--token`; use HTTPS whenever a bearer token is present:
@@ -60,9 +62,10 @@ KVM when accessible and warns before falling back to TCG emulation; use
 `--accel kvm` when the absence of hardware acceleration should be an error.
 
 Use `aos --json image list` or `aos --json image show` for automation. The
-record includes the immutable download URL, format, target compatibility,
-media type, compression, exact size, SHA-256, release-signature and boot
-verification states, the associated integrity-bound `image-info.json`, and,
+record includes the store and NAR identity, ordered cache URLs, format, target
+compatibility, media type, compression, exact size, SHA-256, release-signature
+and boot verification states, the associated integrity-bound
+`image-info.json`, and,
 for Secure Boot plus dm-verity images, paired recovery UKI and authenticated
 recovery-bundle metadata.
 
@@ -88,7 +91,7 @@ firmware is required; do not pass a separate kernel or initrd.
 ## Size the target
 
 Each golden image declares maximum sizes for its root, verity tree, initrd,
-UKI, ESP, runtime closure, and direct download through `aos.image.budgets`.
+UKI, ESP, runtime closure, and image transfer through `aos.image.budgets`.
 The root, verity, and ESP maxima are storage-format contracts: they determine
 the capacities of the A/B GPT partitions and encrypted ZFS zvols rather than
 following the size of one particular build. The per-image `image-budget` Nix

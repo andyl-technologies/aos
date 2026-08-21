@@ -110,12 +110,10 @@ impl SignedImageCatalog {
                     .collect();
                 for (platform, artifact) in &version.platforms {
                     for image in &artifact.images {
-                        // Older signed sysroot catalogs describe only a Nix
-                        // store path.  They remain valid for `apm install
-                        // --image`, but cannot safely produce a direct disk
-                        // download URL because they bind neither the served
-                        // bytes nor the accompanying image-info document.
-                        if image.delivery.is_store_only() {
+                        // This catalog owns only the bounded legacy direct
+                        // plane. Store-backed images resolve through the
+                        // indexed cache catalog and never acquire object URLs.
+                        if image.delivery.is_store_only() || image.delivery.is_store_backed() {
                             continue;
                         }
                         let delivery = &image.delivery;
@@ -306,8 +304,8 @@ source_nar_hash = ""
 
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
-store_path = "/aos/store/server-raw"
-nar_hash = "sha256:nar"
+store_path = "/aos/store/00000000000000000000000000000000-server-raw"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
 nar_size = 1
 sb_signer_cert_sha256 = "{signer}"
 sbat = [{{ component = "aos", generation = 1 }}]

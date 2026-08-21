@@ -456,7 +456,7 @@ async fn execute_verified_image_plan(
             Err(error) => return Err(error),
         };
         if read.total != expected_size
-            || read.strong_etag.as_deref() != Some(verified_etag.as_str())
+            || !strong_versions_match(read.strong_etag.as_deref(), &verified_etag)
         {
             saw_corrupt = true;
             tracing::warn!(
@@ -486,6 +486,24 @@ async fn execute_verified_image_plan(
     } else {
         Ok(PlacementReadOutcome::NotFound)
     }
+}
+
+/// Compares backend versions in their canonical strong HTTP entity-tag form.
+///
+/// Some object-store APIs expose the opaque token without quotes on a streamed
+/// read, while publication inventory persists the equivalent quoted
+/// `If-Match` form. Both representations name the same strong version.
+fn strong_versions_match(observed: Option<&str>, verified: &str) -> bool {
+    let Some(observed) = observed else {
+        return false;
+    };
+    let Ok(observed) = crate::surface_write::strong_if_match_etag(observed) else {
+        return false;
+    };
+    let Ok(verified) = crate::surface_write::strong_if_match_etag(verified) else {
+        return false;
+    };
+    observed == verified
 }
 
 /// Executes a full-object read against a preselected list.
@@ -606,6 +624,23 @@ mod tests {
 
     use super::*;
     use crate::db::{CacheObjectPresenceObservation, NewSurfacePlacementSpec, SetSurfaceObject};
+
+    #[test]
+    fn streamed_and_persisted_strong_versions_compare_canonically() {
+        assert!(strong_versions_match(
+            Some("provider-version"),
+            "\"provider-version\""
+        ));
+        assert!(strong_versions_match(
+            Some("\"provider-version\""),
+            "provider-version"
+        ));
+        assert!(!strong_versions_match(None, "\"provider-version\""));
+        assert!(!strong_versions_match(
+            Some("W/\"provider-version\""),
+            "\"provider-version\""
+        ));
+    }
 
     #[derive(Clone, Copy)]
     enum Behavior {

@@ -204,9 +204,10 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     // Move default-branch HEAD to a signed commit with no packages while the
     // immutable release tag remains pinned to the original image catalog.
     // Image discovery must continue to project the tag commit, never HEAD.
-    let registry_toml = public_fixture
-        .registry
-        .put_blob("[registry]\nname = \"demo\"\ndescription = \"HEAD without images\"\n");
+    let registry_toml = public_fixture.registry.put_blob(
+        "[registry]\nname = \"demo\"\ndescription = \"HEAD without images\"\n\n\
+         [caches]\nendpoint = \"https://cdn.example.invalid/demo/\"\n",
+    );
     let keys_toml = public_fixture.registry.put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
         public_fixture.registry.trust_key,
@@ -270,34 +271,44 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let app = router(state).await;
 
     // Publish the signed image-bearing surface through the typed producer API.
-    // The manifest declares disk bytes directly; no NAR/store indirection or
-    // Publication uses only the typed manifest and object-upload transaction.
+    // The publication contains both the compatibility direct objects and the
+    // canonical cache objects required by the signed image store identities.
     let refs = std::fs::read(public_surface.join("info/refs")).unwrap();
+    let refs_digest = hex::encode(Sha256::digest(&refs));
     let raw_info = std::fs::read(public_surface.join(&public_fixture.raw_info_key)).unwrap();
     let qcow2_info = std::fs::read(public_surface.join(&public_fixture.qcow2_info_key)).unwrap();
-    let publication_files = [
+    let mut publication_files = vec![
         (
-            public_fixture.raw_key.as_str(),
-            public_fixture.raw.as_slice(),
+            public_fixture.raw_key.clone(),
+            public_fixture.raw.clone(),
             "immutable",
         ),
         (
-            public_fixture.qcow2_key.as_str(),
-            public_fixture.qcow2.as_slice(),
+            public_fixture.qcow2_key.clone(),
+            public_fixture.qcow2.clone(),
             "immutable",
         ),
+        (public_fixture.raw_info_key.clone(), raw_info, "immutable"),
         (
-            public_fixture.raw_info_key.as_str(),
-            raw_info.as_slice(),
+            public_fixture.qcow2_info_key.clone(),
+            qcow2_info,
             "immutable",
         ),
-        (
-            public_fixture.qcow2_info_key.as_str(),
-            qcow2_info.as_slice(),
-            "immutable",
-        ),
-        ("info/refs", refs.as_slice(), "mutable_pointer"),
+        ("info/refs".to_string(), refs, "mutable_pointer"),
     ];
+    for store_hash in ["0".repeat(32), "1".repeat(32)] {
+        let narinfo_key = format!("{store_hash}.narinfo");
+        let narinfo = std::fs::read(public_surface.join(&narinfo_key)).unwrap();
+        let narinfo_text = std::str::from_utf8(&narinfo).unwrap();
+        let nar_key = narinfo_text
+            .lines()
+            .find_map(|line| line.strip_prefix("URL: "))
+            .unwrap()
+            .to_string();
+        let nar = std::fs::read(public_surface.join(&nar_key)).unwrap();
+        publication_files.push((narinfo_key, narinfo, "mutable_pointer"));
+        publication_files.push((nar_key, nar, "immutable"));
+    }
     let objects = publication_files
         .iter()
         .map(|(path, bytes, kind)| {
@@ -322,7 +333,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         serde_json::to_vec(&serde_json::json!({
             "registry": "images/public",
             "generation": "signed-images-e2e-v1",
-            "refsDigest": hex::encode(Sha256::digest(&refs)),
+            "refsDigest": refs_digest,
             "defaultCommit": divergent_head.to_hex(),
             "objects": objects,
         }))
@@ -336,7 +347,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         let object_path = object["path"].as_str().unwrap();
         let (_, bytes, _) = publication_files
             .iter()
-            .find(|(path, _, _)| *path == object_path)
+            .find(|(path, _, _)| path == object_path)
             .unwrap();
         let upload_path = url::Url::parse(object["uploadUrl"].as_str().unwrap())
             .unwrap()
@@ -396,6 +407,11 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(body_text.contains(&qcow2_sha256));
     assert!(body_text.contains("\"releaseVerification\":\"verified\""));
     assert!(body_text.contains("\"bootVerification\":\"unsigned\""));
+    assert!(body_text.contains("\"storePath\":\"/var/lib/store/"));
+    assert!(body_text.contains("\"narHash\":\"sha256:"));
+    assert!(body_text.contains("\"narSize\":"));
+    assert!(body_text.contains("\"cacheUrls\":[\"https://cdn.example.invalid/demo/\"]"));
+    assert!(!body_text.contains("\"downloadUrl\":"));
 
     let get_body = br#"{"slug":"images/public","release":"1.0.0","architecture":"x86_64","format":"raw","package":"aos-system"}"#.to_vec();
     let (status, _, body) = request(
@@ -499,7 +515,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(page.contains(&raw_sha256));
     assert!(page.contains("unsigned"));
     assert!(page.contains("verified"));
-    assert!(page.contains("Download"));
+    assert!(page.contains("CDN / CLI"));
 
     let private_uri = format!("/images/private/{}", private_fixture.qcow2_key);
     let (status, _, _) = request(&app, Method::GET, &private_uri, &[], Vec::new()).await;
@@ -548,6 +564,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     .await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let private_listing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(private_listing["images"][0].get("storePath").is_none());
+    assert!(private_listing["images"][0].get("cacheUrls").is_none());
     let private_download = private_listing["images"][0]["downloadUrl"]
         .as_str()
         .unwrap();
@@ -588,6 +606,45 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(bytes, private_fixture.qcow2[4..=12]);
     assert_eq!(headers[header::VARY], "Authorization, Cookie");
+
+    // Store-backed image catalog entries are published only when their
+    // canonical cache data plane is complete. A missing narinfo must withdraw
+    // the whole signed catalog rather than expose an image that cannot be
+    // fetched through the advertised cache route.
+    let raw_narinfo_path = private_fixture
+        .registry
+        .root
+        .join(format!("{}.narinfo", "0".repeat(32)));
+    let raw_narinfo = std::fs::read(&raw_narinfo_path).unwrap();
+    std::fs::remove_file(&raw_narinfo_path).unwrap();
+    let private_registry = db.registry_by_id(private_id).await.unwrap().unwrap();
+    assert!(index_and_record_from_placement(
+        &db,
+        &LocalFsFetch::new(&private_fixture.registry.root)
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
+        &private_registry,
+        private_placement_id,
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        db.index_status(private_id).await.unwrap().unwrap().state,
+        "failed"
+    );
+    assert!(db.list_system_images(private_id).await.unwrap().is_empty());
+    std::fs::write(&raw_narinfo_path, raw_narinfo).unwrap();
+    index_and_record_from_placement(
+        &db,
+        &LocalFsFetch::new(&private_fixture.registry.root)
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
+        &private_registry,
+        private_placement_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.list_system_images(private_id).await.unwrap().len(), 2);
 
     // A stale inventory row on an earlier placement must not authorize its
     // same-size corrupt bytes. Request-time verification skips it and serves

@@ -242,6 +242,32 @@
     then throw "aos.config.unitGraph.enable must not exist"
     else if !(builtins.hasAttr "aos-eval" system.config.systemd.services)
     then throw "the stock system must emit aos-eval.service"
+    else if !(builtins.hasAttr "aos-registry-sync" system.config.systemd.services)
+    then throw "the stock system must refresh signed registry metadata before host evaluation"
+    else if
+      !(builtins.elem
+        "aos-registry-sync.service"
+        system.config.systemd.services.aos-eval.requires)
+    then throw "host evaluation must require the signed registry snapshot refresh"
+    else if
+      !(builtins.elem
+        "aos-eval.service"
+        system.config.systemd.services.aos-registry-sync.before)
+    then throw "the signed registry snapshot refresh must precede host evaluation"
+    else if
+      !(containsStr
+        "${pkgs.aos}/bin/apm update --system"
+        system.config.systemd.services.aos-registry-sync.script)
+    then throw "the registry refresh must update the system-scope snapshot"
+    else if
+      !(containsStr
+        "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
+        system.config.systemd.services.aos-registry-sync.serviceConfig.ExecStartPre)
+    then throw "the registry refresh must wait for a routable managed interface"
+    else if
+      system.config.systemd.services.aos-registry-sync.unitConfig.ConditionPathExists
+      != system.config.aos.config.evalAtBoot.hostNix
+    then throw "registry refresh must run only when operator host policy is present"
     else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
@@ -675,6 +701,7 @@
     [registry]
     name = "example"
     url = "https://registry.example/aos"
+    channel = "stable"
     priority = 50
     enabled = true
 
