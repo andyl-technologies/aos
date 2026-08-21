@@ -6,6 +6,26 @@ use crate::{
     IntegerValue, PinChange, PinRetention,
 };
 
+#[test]
+fn authenticated_closure_inventory_includes_campaign_records_and_merkle_nodes() {
+    let (repository, lineage, policy) = fixture();
+    let created = repository
+        .create("closure-inventory", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let head = repository.head("closure-inventory").expect("load head");
+
+    let objects = repository
+        .authenticated_closure_ids([created.snapshot_id().content_id()])
+        .expect("authenticate complete closure");
+
+    assert!(objects.contains(&created.snapshot_id().content_id()));
+    assert!(objects.contains(&lineage.id().expect("lineage id").content_id()));
+    assert!(objects.contains(&policy.id().expect("policy id").content_id()));
+    for root in snapshot_roots(head.snapshot()) {
+        assert!(objects.contains(&root), "missing Merkle root {root}");
+    }
+}
+
 fn generated_integer_request(
     repository: &CampaignRepository,
     lineage: &CampaignLineage,

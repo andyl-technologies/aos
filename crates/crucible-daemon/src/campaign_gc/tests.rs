@@ -2,7 +2,19 @@
 
 #![allow(clippy::expect_used)]
 
+use std::collections::BTreeSet;
+use std::io::Cursor;
+use std::sync::Arc;
+
+use crucible_campaign::CampaignRepository;
+use crucible_cas::content_envelope::ContentEnvelope;
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
+    MutableRefBackend, ObjectKind, RefCasOutcome, RefName,
+};
+
 use super::*;
+use crate::MemoryAssignmentLedger;
 
 fn hash(domain: &str, byte: u8) -> CampaignHash {
     CampaignHash::derive(domain, &[byte])
@@ -203,4 +215,153 @@ fn decoder_rejects_truncation_trailing_bytes_and_wrong_schema() {
         CampaignGcPlan::from_canonical_bytes(&wrong_schema),
         Err(CampaignGcPlanError::UnsupportedSchema)
     );
+}
+
+#[test]
+fn root_and_candidate_manifests_round_trip_with_stable_identity() {
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
+    let second = ContentId::for_bytes(ObjectKind::Finding, 2, b"second");
+    let roots = CampaignGcRootManifest::new([second, first, first]).expect("root manifest");
+    let root_id = roots.id();
+    let mut root_bytes = Vec::new();
+    roots
+        .write_canonical(&mut root_bytes)
+        .expect("encode roots");
+    let decoded_roots = CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(root_bytes))
+        .expect("decode roots");
+    assert_eq!(decoded_roots, roots);
+    assert_eq!(decoded_roots.id(), root_id);
+    let mut expected_roots = vec![first, second];
+    expected_roots.sort_unstable_by(content_id_manifest_order);
+    assert_eq!(decoded_roots.iter().collect::<Vec<_>>(), expected_roots);
+
+    let candidates = CampaignGcCandidateManifest::new(vec![
+        CampaignGcCandidate::new("z-tier", second, 20).expect("candidate"),
+        CampaignGcCandidate::new("a-tier", first, 10).expect("candidate"),
+    ])
+    .expect("candidate manifest");
+    let summary = candidates.summary();
+    let mut candidate_bytes = Vec::new();
+    candidates
+        .write_canonical(&mut candidate_bytes)
+        .expect("encode candidates");
+    let decoded_candidates =
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes))
+            .expect("decode candidates");
+    assert_eq!(decoded_candidates, candidates);
+    assert_eq!(decoded_candidates.summary(), summary);
+    assert_eq!(summary.candidates(), 2);
+    assert_eq!(summary.logical_bytes(), 30);
+    assert_eq!(
+        decoded_candidates.iter().next().expect("first").backend(),
+        "a-tier"
+    );
+}
+
+#[test]
+fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
+    assert!(matches!(
+        CampaignGcCandidateManifest::new(vec![
+            CampaignGcCandidate::new("tier", first, 1).expect("candidate"),
+            CampaignGcCandidate::new("tier", first, 2).expect("candidate"),
+        ]),
+        Err(CampaignGcManifestError::DuplicateCandidate)
+    ));
+
+    let roots = CampaignGcRootManifest::new([first]).expect("root manifest");
+    let mut bytes = Vec::new();
+    roots.write_canonical(&mut bytes).expect("encode roots");
+    bytes.push(0);
+    assert!(matches!(
+        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(bytes)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, b"second");
+    let mut descending = [second, first];
+    descending.sort_unstable_by(|left, right| content_id_manifest_order(right, left));
+    let mut unordered = Vec::new();
+    unordered.extend_from_slice(b"crucible.campaign.gc-root-manifest.v1\0");
+    unordered.extend_from_slice(&2_u64.to_be_bytes());
+    for id in descending {
+        let encoded = id.encode();
+        unordered.extend_from_slice(&(encoded.len() as u16).to_be_bytes());
+        unordered.extend_from_slice(encoded.as_bytes());
+    }
+    assert!(matches!(
+        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(unordered)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+}
+
+#[test]
+fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
+    let blobs = Arc::new(MemoryBlobBackend::new("gc-primary", 8 * 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-live",
+        1,
+        BTreeSet::new(),
+        b"live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Finding);
+    blobs
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes))
+        .expect("store live object");
+    assert_eq!(
+        refs.compare_exchange(
+            &RefName::new("campaigns/gc-live").expect("ref name"),
+            None,
+            live_id,
+        )
+        .expect("publish ref"),
+        RefCasOutcome::Advanced { next: live_id }
+    );
+
+    let orphan_bytes = b"unreachable".to_vec();
+    let orphan_id = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let physical =
+        CampaignGcPhysicalStore::new("gc-primary", blobs.as_ref()).expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        hash("crucible.test.gc.store-graph.v1", 9),
+        &[physical],
+    )
+    .expect("plan GC");
+
+    assert_eq!(prepared.roots().iter().collect::<Vec<_>>(), vec![live_id]);
+    assert_eq!(prepared.reachable_objects(), 1);
+    assert_eq!(prepared.candidates().len(), 1);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("orphan candidate");
+    assert_eq!(candidate.backend(), "gc-primary");
+    assert_eq!(candidate.id(), orphan_id);
+    assert_eq!(prepared.plan().root_set(), prepared.roots().id());
+    assert_eq!(
+        prepared.plan().candidates(),
+        prepared.candidates().summary()
+    );
+}
+
+fn content_id_manifest_order(left: &ContentId, right: &ContentId) -> std::cmp::Ordering {
+    left.kind()
+        .as_str()
+        .cmp(right.kind().as_str())
+        .then_with(|| left.schema_version().cmp(&right.schema_version()))
+        .then_with(|| left.digest().cmp(&right.digest()))
 }

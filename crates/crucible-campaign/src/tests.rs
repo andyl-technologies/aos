@@ -376,13 +376,19 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
-    let gc_plan = rows
-        .get("crucible.campaign.gc-plan")
-        .unwrap_or_else(|| panic!("missing campaign GC plan schema"));
-    assert_eq!(gc_plan[1], "1");
-    assert_eq!(gc_plan[2], "crucible-daemon::campaign_gc");
-    assert_eq!(gc_plan[3], "administrative-record");
-    owned_campaign_schemas.insert("crucible.campaign.gc-plan");
+    for schema in [
+        "crucible.campaign.gc-plan",
+        "crucible.campaign.gc-root-manifest",
+        "crucible.campaign.gc-candidate-manifest",
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing campaign GC administrative schema {schema}"));
+        assert_eq!(record[1], "1");
+        assert_eq!(record[2], "crucible-daemon::campaign_gc");
+        assert_eq!(record[3], "administrative-record");
+        owned_campaign_schemas.insert(schema);
+    }
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(

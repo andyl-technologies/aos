@@ -92,7 +92,7 @@ impl CampaignRepository {
             .closure_objects
             .checked_add(closure_growth_upper)
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
-        if closure_objects <= MAX_CLOSURE_OBJECTS {
+        if closure_objects <= MAX_CAMPAIGN_CLOSURE_OBJECTS {
             return Ok(ValidationCheckpoint {
                 ancestry_depth,
                 closure_objects,
@@ -1326,11 +1326,48 @@ impl CampaignRepository {
         )
     }
 
+    /// Authenticates and returns every unique object in the supplied closures.
+    ///
+    /// The returned set includes Merkle nodes, Merkle leaf values, generic
+    /// content envelopes, campaign records, and opaque leaves. All roots are
+    /// verified as one bounded union, so shared subgraphs are charged once.
+    /// This operation performs no writes and does not trust child references
+    /// until the enclosing object has authenticated under its exact content ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when any root or descendant is
+    /// missing, corrupt, semantically invalid, or the complete union exceeds
+    /// the campaign closure bound.
+    pub fn authenticated_closure_ids(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+    ) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+        let mut objects = BTreeSet::new();
+        self.verify_campaign_closures_anchored_cached_collect(
+            roots,
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+            Some(&mut objects),
+        )?;
+        Ok(objects)
+    }
+
     pub(super) fn verify_campaign_closures_anchored_cached(
         &self,
         roots: impl IntoIterator<Item = ContentId>,
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<usize, CampaignRepositoryError> {
+        self.verify_campaign_closures_anchored_cached_collect(roots, anchors, choice_cache, None)
+    }
+
+    fn verify_campaign_closures_anchored_cached_collect(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        anchors: &BTreeSet<ContentId>,
+        choice_cache: &mut ChoiceValidationCache,
+        mut collected: Option<&mut BTreeSet<ContentId>>,
     ) -> Result<usize, CampaignRepositoryError> {
         let mut stack = roots.into_iter().collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
@@ -1343,10 +1380,13 @@ impl CampaignRepository {
             if !visited.insert(id) {
                 continue;
             }
+            if let Some(objects) = collected.as_deref_mut() {
+                objects.insert(id);
+            }
             if visited
                 .len()
                 .checked_add(verified_merkle_positions.len())
-                .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+                .is_none_or(|objects| objects > MAX_CAMPAIGN_CLOSURE_OBJECTS)
             {
                 return Err(integrity("campaign-closure-object-limit"));
             }
@@ -1355,10 +1395,17 @@ impl CampaignRepository {
                 let verified = self
                     .merkle
                     .verify_closure_objects_cached(id, &mut verified_merkle_positions)?;
+                if let Some(objects) = collected.as_deref_mut() {
+                    objects.extend(
+                        verified_merkle_positions
+                            .iter()
+                            .map(|(node, _prefix)| *node),
+                    );
+                }
                 if visited
                     .len()
                     .checked_add(verified_merkle_positions.len())
-                    .is_none_or(|objects| objects > MAX_CLOSURE_OBJECTS)
+                    .is_none_or(|objects| objects > MAX_CAMPAIGN_CLOSURE_OBJECTS)
                 {
                     return Err(integrity("campaign-closure-object-limit"));
                 }

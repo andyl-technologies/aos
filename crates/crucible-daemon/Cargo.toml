@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }

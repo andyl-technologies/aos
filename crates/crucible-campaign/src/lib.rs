@@ -145,10 +145,10 @@ pub use repository::{
     CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
     CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
     CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscoveryResult,
-    ClaimableAttemptPage, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObservationCandidate,
-    ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
-    ResolvedSelection, WorkerSlotId,
+    ClaimableAttemptPage, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
+    MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS, MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
+    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
+    ProposalResult, ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]
