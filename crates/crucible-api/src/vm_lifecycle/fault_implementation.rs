@@ -7,7 +7,7 @@
 
 use crucible::model::{
     EffectImplementationContract, EffectImplementationRegistry, EffectImplementationRegistryError,
-    EffectKind, FaultAdapter,
+    EffectKind, FaultAdapter, ProductionConformanceEvidence,
 };
 
 const NETWORK_EFFECTS: &[EffectKind] = &[
@@ -117,7 +117,7 @@ fn contract(
     executor: &'static str,
     mutation_evidence: &'static [&'static str],
     checkpoint_evidence: &'static str,
-    conformance_test: &'static str,
+    production_conformance: ProductionConformanceEvidence,
 ) -> EffectImplementationContract {
     EffectImplementationContract {
         effect,
@@ -128,7 +128,83 @@ fn contract(
         recomputed_replay_evidence: "ResolvedEffectRecord::matches_recomputed_action and backend evidence digest",
         locked_replay_evidence: "ResolvedBindingAction::expected_precondition and backend result digest",
         search_evidence: "canonical keyed choices recorded in SearchFrontierChoices",
-        conformance_test,
+        production_conformance,
+    }
+}
+
+fn network_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
+    let harness = match effect {
+        EffectKind::NetworkFlap
+        | EffectKind::NetworkNegotiatedMode
+        | EffectKind::NetworkForwarderLifecycle
+        | EffectKind::NetworkRouteTransition
+        | EffectKind::NetworkControlPlaneService
+        | EffectKind::NetworkAssociation
+        | EffectKind::NetworkContact => {
+            "crucible-api::vm_lifecycle::network_faults::boundary::tests"
+        }
+        EffectKind::NetworkAvailability => {
+            "crucible-api::vm_lifecycle::network_faults::tests::availability_transition"
+        }
+        EffectKind::NetworkPauseBackpressure => {
+            "crucible-api::vm_lifecycle::network_faults::route_tests::backpressure"
+        }
+        EffectKind::NetworkCustodyQueue => {
+            "crucible-api::vm_lifecycle::network_faults::route_tests::custody"
+        }
+        EffectKind::NetworkControlResultTransform => {
+            "crucible-api::vm_lifecycle::network_faults::tests::control_result_transform"
+        }
+        EffectKind::NetworkServiceCurve
+        | EffectKind::NetworkTokenBucket
+        | EffectKind::NetworkQueuePolicy
+        | EffectKind::NetworkBurstErrorState
+        | EffectKind::NetworkDetectedFrameError
+        | EffectKind::NetworkMtu
+        | EffectKind::NetworkForwardingMutation
+        | EffectKind::NetworkFirewallDisposition
+        | EffectKind::NetworkConnectionState
+        | EffectKind::NetworkSharedMedium
+        | EffectKind::NetworkRfChannel => "crucible-api::vm_lifecycle::network_faults::route_tests",
+        _ => {
+            "crucible-api::vm_lifecycle::network_faults::route_tests::frame_effects::frame_effect_variants_mutate_production_frame_outcomes"
+        }
+    };
+    ProductionConformanceEvidence {
+        case_id: effect.as_str(),
+        harness,
+        live_gate: "gate:live-network-io",
+        observed_state: NETWORK_MUTATION_EVIDENCE,
+    }
+}
+
+fn storage_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
+    let (harness, live_gate, observed_state) = match effect {
+        EffectKind::NinePResult | EffectKind::NinePVisibility => (
+            "crucible-api::vm_lifecycle::storage_faults and crucible-qemu::supervision::ninep_io_servicer_tests",
+            "gate:live-9p-io",
+            &["ResolvedNinepRequestDirective", "NinepFaultState"] as &'static [&'static str],
+        ),
+        EffectKind::StorageVolatileCacheLoss
+        | EffectKind::StorageControllerLifecycle
+        | EffectKind::StorageArrayState
+        | EffectKind::StorageFlashState
+        | EffectKind::StorageMediaRange => (
+            "crucible-qemu::storage_fault_resolver and crucible-device::block fault tests",
+            "gate:live-block-io",
+            &["BlockFaultState", "BlockDeviceCheckpoint"] as &'static [&'static str],
+        ),
+        _ => (
+            "crucible-qemu::storage_fault_resolver and crucible-qemu::supervision::block_io_servicer_tests",
+            "gate:live-block-io",
+            STORAGE_MUTATION_EVIDENCE,
+        ),
+    };
+    ProductionConformanceEvidence {
+        case_id: effect.as_str(),
+        harness,
+        live_gate,
+        observed_state,
     }
 }
 
@@ -138,7 +214,7 @@ fn contract(
 ///
 /// Returns [`EffectImplementationRegistryError`] if an entry is malformed,
 /// duplicated, or missing from the closed network vocabulary.
-pub(super) fn network_effect_implementation_registry()
+pub fn network_effect_implementation_registry()
 -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
     let registry = EffectImplementationRegistry::new(
         FaultAdapter::Network,
@@ -148,7 +224,7 @@ pub(super) fn network_effect_implementation_registry()
                 network_executor(effect),
                 NETWORK_MUTATION_EVIDENCE,
                 "ProductionNetworkStateCheckpoint",
-                "cargo test -p crucible-api --lib vm_lifecycle::network_faults",
+                network_conformance(effect),
             )
         }),
     )?;
@@ -162,7 +238,7 @@ pub(super) fn network_effect_implementation_registry()
 ///
 /// Returns [`EffectImplementationRegistryError`] if an entry is malformed,
 /// duplicated, or missing from the closed storage vocabulary.
-pub(super) fn storage_effect_implementation_registry()
+pub fn storage_effect_implementation_registry()
 -> Result<EffectImplementationRegistry, EffectImplementationRegistryError> {
     let registry = EffectImplementationRegistry::new(
         FaultAdapter::Storage,
@@ -172,7 +248,7 @@ pub(super) fn storage_effect_implementation_registry()
                 storage_executor(effect),
                 STORAGE_MUTATION_EVIDENCE,
                 "ProductionFaultRuntimeCheckpoint and live device state checkpoints",
-                "cargo test -p crucible-api --lib vm_lifecycle::storage_faults; cargo test -p crucible-qemu --lib storage_fault_resolver",
+                storage_conformance(effect),
             )
         }),
     )?;

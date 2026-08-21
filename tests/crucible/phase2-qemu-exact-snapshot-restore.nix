@@ -15,6 +15,7 @@
   blockInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
   qemuCheckpoint = builtins.readFile ../../crates/crucible-qemu/src/checkpoint.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNodeExactSnapshot = builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs;
   qemuNodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
   qemuExactRunner = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs;
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
@@ -28,12 +29,14 @@
       {label = "block continuation"; needle = "Option<QemuLiveBlockIoServicerCheckpoint>";}
       {label = "node continuation"; needle = "pub struct QemuNodeContinuationCheckpoint";}
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot.rs" qemuNodeExactSnapshot [
       {label = "coordinated capture API"; needle = "pub fn capture_exact_snapshot";}
       {label = "node-addressed icount validation"; needle = "checkpoint.node_icounts.get(node)";}
       {label = "live boundary icount validation"; needle = "let observed_icount = self.current_icount()?";}
       {label = "host capture before VMState"; needle = ".checkpoint_host_io(checkpoint.id)";}
       {label = "opaque aggregate snapshot"; needle = "QemuVmSnapshot::from_live_capture";}
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
       {label = "forced crash gate"; needle = "force_crash_and_reap_for_gate";}
     ]
     ++ failuresFor "crates/crucible-qemu/src/node_factory.rs" qemuNodeFactory [
