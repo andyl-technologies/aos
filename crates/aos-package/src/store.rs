@@ -3,9 +3,10 @@
 //! This module is apm's boundary with the Nix store, shelling out to
 //! `nix-store` (with [`aos_nix_env`] so `AOS_ROOT`-relative stores work):
 //!
-//! - [`import_nar`] turns a downloaded `.nar.zst` plus its narinfo metadata
-//!   into a valid store path via `nix-store --import`, synthesizing the
-//!   export-format trailer (path, references, deriver) the import expects.
+//! - [`import_nar`] and [`import_authenticated_nar`] turn a downloaded
+//!   `.nar.zst` plus its narinfo metadata into a valid store path via
+//!   `nix-store --import`, synthesizing the export-format trailer (path,
+//!   references, deriver) the import expects.
 //! - [`filter_missing`] checks which closure members still need downloading
 //!   (`nix-store --check-validity`).
 //! - [`create_gc_roots`] / [`remove_gc_roots`] maintain the per-generation
@@ -64,6 +65,37 @@ pub async fn import_nar(
     references: &[String],
     deriver: Option<&str>,
 ) -> Result<String> {
+    import_nar_with_signature_policy(nar_path, expected_store_path, references, deriver, true).await
+}
+
+/// Imports a NAR whose exact identity was authenticated by signed metadata.
+///
+/// This entry point disables Nix's independent global trusted-key check. Its
+/// caller must first authenticate the expected store path, NAR hash, NAR size,
+/// references, and deriver, then verify the downloaded NAR against that exact
+/// identity. Nix still validates the store-path content identity while
+/// importing the synthesized export stream.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`import_nar`].
+pub async fn import_authenticated_nar(
+    nar_path: &Path,
+    expected_store_path: &str,
+    references: &[String],
+    deriver: Option<&str>,
+) -> Result<String> {
+    import_nar_with_signature_policy(nar_path, expected_store_path, references, deriver, false)
+        .await
+}
+
+async fn import_nar_with_signature_policy(
+    nar_path: &Path,
+    expected_store_path: &str,
+    references: &[String],
+    deriver: Option<&str>,
+    require_nix_signature: bool,
+) -> Result<String> {
     // Decompress .nar.zst -> .nar alongside the original file.
     let decompressed = nar_path.with_extension("");
     let zstd_output = Command::new("zstd")
@@ -110,9 +142,10 @@ pub async fn import_nar(
     // Stream NAR + trailer into `nix-store --import`. aos_nix_env() routes
     // the import at AOS_ROOT's store when that env var is set.
     let import_output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
-        let mut child = std::process::Command::new("nix-store")
-            .envs(aos_nix_env())
-            .arg("--import")
+        let mut command = std::process::Command::new("nix-store");
+        command.envs(aos_nix_env());
+        command.args(nix_import_args(require_nix_signature));
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -152,6 +185,14 @@ pub async fn import_nar(
     verify_store_path(&imported_path, expected_store_path)?;
 
     Ok(imported_path)
+}
+
+fn nix_import_args(require_nix_signature: bool) -> &'static [&'static str] {
+    if require_nix_signature {
+        &["--import"]
+    } else {
+        &["--option", "require-sigs", "false", "--import"]
+    }
 }
 
 /// Derive the store directory from a full store path.
@@ -642,6 +683,15 @@ fn parse_path_lines(stdout: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn authenticated_import_disables_only_the_redundant_nix_signature_gate() {
+        assert_eq!(nix_import_args(true), ["--import"]);
+        assert_eq!(
+            nix_import_args(false),
+            ["--option", "require-sigs", "false", "--import"]
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Helper: build a PackageMeta for testing

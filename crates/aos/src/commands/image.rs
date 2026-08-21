@@ -25,7 +25,7 @@ use aos_package::download::{
     DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
     fetch_narinfos,
 };
-use aos_package::store::import_nar;
+use aos_package::store::import_authenticated_nar;
 use aos_package::verify::{verify_download_hash, verify_nar_hash};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
@@ -342,7 +342,7 @@ async fn download_store_backed_image(
     verify_download_hash(&result.local_path, &result.download_hash)?;
     verify_nar_hash(&result.local_path, &image.nar_hash)
         .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
-    import_nar(
+    import_authenticated_nar(
         &result.local_path,
         &result.store_path,
         &result.references,
