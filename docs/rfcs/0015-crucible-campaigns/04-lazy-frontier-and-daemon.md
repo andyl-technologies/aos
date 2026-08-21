@@ -268,6 +268,18 @@ the planner. `drain` polls only already-held reservations,
 while any reservation remains. Resume reconstructs the frontier from semantic
 roots, so canceled attempts become claimable without a modeled state change.
 
+The real-node realization boundary now has an executor-owned exact-capture
+primitive for that future checkpoint-required path. It seals the unified event
+log, exact-checks the installed configuration and current node instruction
+count against a materialized scheduler checkpoint, captures VMState plus the
+host-I/O continuation while leaving QEMU paused, and keeps the attempt resource
+guard charged until the lifecycle owner explicitly finishes the session.
+Modeled attempt drivers do not receive capture or guard-release authority.
+Durable snapshot publication, assignment-ledger recovery, and supervisor
+replacement of the active reservation with that retained snapshot remain open;
+until those land, `CampaignSupervisor` continues to return the explicit
+checkpoint-required outcome rather than releasing the reservation.
+
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or
   finding identity. Reservations MUST NOT be required to recover the frontier.

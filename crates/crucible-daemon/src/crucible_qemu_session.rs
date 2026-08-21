@@ -352,6 +352,22 @@ where
         request: QemuVmReplayRequest,
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError>;
 
+    /// Captures the installed backend at one exact paused boundary under `guard`.
+    ///
+    /// A successful return leaves the process paused and owned by the session.
+    /// An error must retain every process and resource authority required for
+    /// guarded cleanup or quarantine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] on cancellation, basis mismatch,
+    /// observation sealing failure, or VMState/host-I/O capture failure.
+    fn capture_live_exact_snapshot_guarded(
+        &mut self,
+        guard: &mut G,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError>;
+
     /// Drains, terminates, and reaps the active backend under `guard`.
     ///
     /// A successful return attests that no process generation remains. On
@@ -640,6 +656,18 @@ where
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
         result.map(QemuLiveAttemptResult::into_candidate)
+    }
+
+    fn capture_exact_checkpoint(
+        &mut self,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .capture_live_exact_snapshot_guarded(&mut self.guard, checkpoint);
+        self.guard.check_operational_boundary()?;
+        result
     }
 
     fn finish(mut self) -> Result<(), QemuVmRealizationError> {

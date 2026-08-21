@@ -312,8 +312,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   child/cgroup/watcher process quarantine, aggregate
   filesystem quota, execution-quantum counter composition, exclusive run-
   directory namespace ownership through artifact open, the modeled attempt
-  driver, concrete session wiring, and exact-checkpoint pause composition remain
-  open.
+  driver, and concrete session wiring remain open. Real-node exact-checkpoint
+  capture is now an executor-owned, guard-retaining operation: it seals and
+  exact-binds configuration, node icount, and event-log continuation before
+  paused VMState/host-I/O capture. Durable publication, assignment-ledger
+  recovery, and supervisor replacement of the active reservation remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -331,7 +334,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   single-writer directory records and preserves exact responses, completed
   observations, and cancellation races without loading history. Bounded
   campaign-supervisor scheduling plus drain and cancel-and-retry pause policies
-  are implemented; exact-checkpoint pause composition remains open. The fixed
+  are implemented. The guarded live session can now capture a basis-checked
+  exact snapshot while retaining the paused process and resource guard;
+  durable handoff and restart-resume composition remain open, so the supervisor
+  still reports checkpoint-required without releasing active work. The fixed
   worker pool and its linear publication/reconciliation path are implemented.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
