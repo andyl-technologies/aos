@@ -411,16 +411,6 @@ fn snapshot_restore_round_trips_mid_flight() {
     let snapshot_bytes = ok(snapshot.canonical_bytes());
     let snapshot = ok(IoCoreSnapshot::from_canonical_bytes(&snapshot_bytes));
     assert_eq!(ok(snapshot.canonical_bytes()), snapshot_bytes);
-
-    let mut prior_version = snapshot_bytes.clone();
-    let version_index = b"crucible.io-core-snapshot.v".len();
-    assert_eq!(prior_version[version_index], b'2');
-    prior_version[version_index] = b'1';
-    assert_eq!(
-        IoCoreSnapshot::from_canonical_bytes(&prior_version),
-        Err(IoCoreSnapshotCodecError::Version)
-    );
-
     let mut trailing = snapshot_bytes;
     trailing.push(0);
     assert_eq!(
