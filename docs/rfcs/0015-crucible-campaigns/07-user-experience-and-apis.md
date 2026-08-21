@@ -189,6 +189,16 @@ crucible campaign findings NAME
 crucible campaign explain NAME PROPOSAL|ATTEMPT|CONFIG|FINDING
 ```
 
+The first read-only porcelain checkpoint implements `status` and a one-shot
+resumable `watch` over the authenticated local campaign-service Unix socket.
+Both commands require the socket path and the principal expected from the
+daemon's peer policy, validate strict request-bound responses through the
+checked client, and render table, Markdown, pretty JSON, or JSONL through the
+common CLI output selector. `watch --after` returns the latest coalesced head
+and an `advanced` flag; callers repeat it with the returned snapshot cursor to
+follow a campaign without treating the transport as authoritative state.
+Lifecycle mutation and the richer paged inspection commands below remain open.
+
 A concise status view includes:
 
 ```text
@@ -373,14 +383,16 @@ scenario/configuration artifacts and generator closure named by the request;
 those immutable objects do not travel in the campaign control message.
 Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
-and exactly replays by target name after later target mutations or restart. It
-is not yet user porcelain: the nested CLI and remaining paged inspection remain required
-before the service is complete. Repeated bounded `WatchCampaign` calls provide
+and exactly replays by target name after later target mutations or restart. The
+initial nested CLI now exposes authenticated current status and one-shot
+resumable watch; lifecycle mutation and remaining paged inspection remain
+required before the service is complete. Repeated bounded `WatchCampaign`
+calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now
 implemented with a request-bound stable error envelope preserving authorization,
-conflict, transition, resource, availability, and integrity meaning. Nested CLI
-wiring remains open. The daemon's authenticated repository adapter now reads
+conflict, transition, resource, availability, and integrity meaning. The
+daemon's authenticated repository adapter now reads
 Linux `SO_PEERCRED`, resolves exact PID/UID/GID through a mandatory operational
 principal mapper, and rejects a different self-asserted request principal
 before repository access. A bounded daemon listener now owns an already-bound

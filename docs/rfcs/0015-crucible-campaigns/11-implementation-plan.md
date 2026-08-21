@@ -401,7 +401,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged finding queries,
-  rich frontier explanation, and CLI wiring remain open. A bounded
+  rich frontier explanation, mutation porcelain, and richer CLI wiring remain
+  open. The first read-only CLI wiring uses the checked local Unix-stream
+  client for authenticated `status` and one-shot resumable `watch`, with the
+  common table, Markdown, JSON, and JSONL renderers. A bounded
   coalesced `WatchCampaign`
   operation returns one exact current-head cursor and lifecycle projection,
   including stale/unknown-cursor recovery without ancestry work. A bounded

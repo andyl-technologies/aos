@@ -2,6 +2,7 @@
 
 use super::*;
 
+#[cfg(any(test, feature = "test-double"))]
 const REQUESTED_PROPERTY_VIOLATION_REASON: &str = "requested property was violated";
 
 #[cfg(any(test, feature = "test-double"))]
@@ -1363,6 +1364,7 @@ pub(super) async fn wait_resumed_actor_boundary(
     )))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
     RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(target_ticks.saturating_sub(start_ticks))
 }

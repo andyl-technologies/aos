@@ -25,6 +25,8 @@ workspace = true
 clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
+crucible-campaign = { path = "../crucible-campaign" }
+crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
 rustix = { workspace = true, features = ["termios"] }
 serde = { workspace = true }
@@ -35,5 +37,6 @@ toml = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+crucible-cas = { path = "../crucible-cas" }
 crucible-harness = { path = "../crucible-harness" }
 libc = { workspace = true }

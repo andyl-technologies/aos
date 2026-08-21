@@ -42,6 +42,9 @@ pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    if let Commands::Campaign(args) = &cli.command {
+        return run_campaign_invocation(cli, args);
+    }
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
@@ -439,7 +442,8 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Search(_)
         | Commands::Fuzz(_)
         | Commands::Debug(_)
-        | Commands::Serve(_) => Ok(()),
+        | Commands::Serve(_)
+        | Commands::Campaign(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
             Ok(())
