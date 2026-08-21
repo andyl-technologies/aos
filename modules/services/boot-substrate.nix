@@ -50,6 +50,12 @@
   # /etc lower; subsequent generations are rendered by the stage-2 config-eval
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
+  zfsState = config.aos.filesystems.zfs.enable;
+  zfsPackage = config.aos.filesystems.zfs.package;
+  recoveryEnabledJson =
+    if config.aos.boot.recovery.enable
+    then "true"
+    else "false";
 
   # The neutral boot-infrastructure units are always emitted and ordered
   # against `disksUnit` and `filesUnit`.
@@ -88,15 +94,23 @@
         "etc-overlay-setup.service"
         "initrd-fs.target"
       ];
-      requires = ["sysroot.mount"] ++ lib.optional (disksUnit != null) disksUnit;
+      requires =
+        ["sysroot.mount"]
+        ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
+        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service";
       after =
         ["sysroot.mount"]
-        ++ lib.optional (disksUnit != null) disksUnit
+        ++ lib.optional config.aos.security.verity.enable "aos-boot-identity-guard.service"
+        ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service"
+        ++ lib.optional (!zfsState && disksUnit != null) disksUnit
+        ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = {
+      unitConfig = lib.optionalAttrs (!zfsState) {
         ConditionPathExists = "/dev/disk/by-partlabel/var";
       };
-      environment.PATH = bootPath;
+      environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -111,7 +125,19 @@
           # aos-var-crypt service runs first and exposes the unlocked
           # LUKS volume as /dev/mapper/var; mount that. Otherwise the
           # raw partition is mounted directly (unchanged behaviour).
-          if [ -e /dev/mapper/var ]; then
+          if ${
+          if zfsState
+          then "true"
+          else "false"
+        }; then
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var"} /sysroot/var
+            mkdir -p /sysroot/var/log /sysroot/var/lib
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/log"} /sysroot/var/log
+            mount -t zfs -o zfsutil,nosuid,nodev \
+              ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/lib"} /sysroot/var/lib
+          elif [ -e /dev/mapper/var ]; then
             mount -o nosuid,nodev /dev/mapper/var /sysroot/var
           else
             mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
@@ -222,10 +248,10 @@
         ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
           "/sysroot$metadata" "$sys/metadata"
 
-        # /sysroot/var/etc keeps its /sysroot prefix because /var is
-        # mounted on /sysroot/var in stage-1; the overlay records
-        # vfsmount refs at mount time, so the literal source string
-        # in the option line never gets re-resolved post-pivot.
+        # /var is mounted on /sysroot/var in stage-1. Overlayfs keeps
+        # references to those mounts across switch_root. The initial mount
+        # can report /sysroot/var/etc; a stage-2 activation rebuild reports
+        # the same persistent lower layer as /var/etc.
         ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
           nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc
@@ -452,13 +478,19 @@
           || fail_image_identity "kernel command line has ambiguous verity data device"
         slot_device=$verity_data
         [ -n "$slot_device" ] || slot_device=$root_device
+        root_a_device=$(${pkgs.jq}/bin/jq -er '.devices.rootA' \
+          "/sysroot$toplevel/meta/boot-storage.json") \
+          || fail_image_identity "immutable image has no slot-A storage device"
+        root_b_device=$(${pkgs.jq}/bin/jq -er '.devices.rootB' \
+          "/sysroot$toplevel/meta/boot-storage.json") \
+          || fail_image_identity "immutable image has no slot-B storage device"
         case "$slot_device" in
-          /dev/disk/by-partlabel/root-a) boot_slot=A ;;
-          /dev/disk/by-partlabel/root-b) boot_slot=B ;;
+          "$root_a_device") boot_slot=A ;;
+          "$root_b_device") boot_slot=B ;;
           *)
             slot_real=$(readlink -f "$slot_device" 2>/dev/null || true)
-            root_a_real=$(readlink -f /dev/disk/by-partlabel/root-a 2>/dev/null || true)
-            root_b_real=$(readlink -f /dev/disk/by-partlabel/root-b 2>/dev/null || true)
+            root_a_real=$(readlink -f "$root_a_device" 2>/dev/null || true)
+            root_b_real=$(readlink -f "$root_b_device" 2>/dev/null || true)
             if [ -n "$slot_real" ] && [ "$slot_real" = "$root_a_real" ]; then
               boot_slot=A
             elif [ -n "$slot_real" ] && [ "$slot_real" = "$root_b_real" ]; then
@@ -468,6 +500,69 @@
             fi
             ;;
         esac
+        recovery_json=null
+        ${lib.optionalString config.aos.boot.recovery.enable ''
+          recovery_lower=$(printf '%s' "$boot_slot" | tr '[:upper:]' '[:lower:]')
+          recovery_mount=/run/aos-seed-recovery-esp
+          mkdir -p "$recovery_mount"
+          ${pkgs.util-linux}/bin/mount -t vfat -o ro,nosuid,nodev,noexec \
+            ${lib.escapeShellArg config.aos.filesystems.espDevice} "$recovery_mount" \
+            || fail_image_identity "cannot mount the recovery ESP read-only"
+          recovery_uki="EFI/AOS/recovery-$recovery_lower.efi"
+          recovery_entry="loader/entries/recovery-$recovery_lower.conf"
+          [ -f "$recovery_mount/$recovery_uki" ] \
+            || fail_image_identity "paired recovery UKI is missing"
+          ${pkgs.sbsigntools}/bin/sbverify --cert \
+            ${lib.escapeShellArg config.aos.boot.secureBoot.dbCert} \
+            "$recovery_mount/$recovery_uki" >/dev/null \
+            || fail_image_identity "paired recovery UKI is not authorized by Secure Boot db"
+          recovery_audit=/run/aos-seed-recovery-audit
+          rm -rf "$recovery_audit"
+          mkdir -p "$recovery_audit"
+          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.cmdline \
+            "$recovery_mount/$recovery_uki" "$recovery_audit/cmdline" \
+            || fail_image_identity "cannot inspect paired recovery command line"
+          recovery_cmdline=$(tr -d '\000' < "$recovery_audit/cmdline")
+          [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
+            || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
+          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.osrel \
+            "$recovery_mount/$recovery_uki" "$recovery_audit/os-release" \
+            || fail_image_identity "cannot inspect paired recovery identity"
+          tr -d '\000' < "$recovery_audit/os-release" > "$recovery_audit/os-release.clean"
+          recovery_release=$(read_os_release VERSION_ID "$recovery_audit/os-release.clean") \
+            || fail_image_identity "paired recovery UKI has no unique signed release"
+          recovery_copy=$(read_os_release AOS_RECOVERY_COPY "$recovery_audit/os-release.clean") \
+            || fail_image_identity "paired recovery UKI has no unique signed copy"
+          recovery_abi=$(read_os_release AOS_RECOVERY_ABI "$recovery_audit/os-release.clean") \
+            || fail_image_identity "paired recovery UKI has no unique signed ABI"
+          [ "$recovery_release" = "$os_version" ] \
+            || fail_image_identity "paired recovery UKI release disagrees with the running image"
+          [ "$recovery_copy" = "$boot_slot" ] \
+            || fail_image_identity "paired recovery UKI copy disagrees with the running slot"
+          [ "$recovery_abi" = "${toString config.aos.boot.recovery.abi}" ] \
+            || fail_image_identity "paired recovery UKI ABI is unsupported"
+          expected_entry=$(printf 'title AOS Recovery %s (%s)\nefi /EFI/AOS/recovery-%s.efi\n' \
+            "$boot_slot" "$os_version" "$recovery_lower")
+          installed_entry=$(cat "$recovery_mount/$recovery_entry") \
+            || fail_image_identity "paired recovery loader entry is missing"
+          [ "$installed_entry" = "$expected_entry" ] \
+            || fail_image_identity "paired recovery loader entry is not canonical"
+          recovery_size=$(stat -c %s "$recovery_mount/$recovery_uki")
+          recovery_digest=$(sha256sum "$recovery_mount/$recovery_uki" | cut -d ' ' -f1)
+          ${pkgs.util-linux}/bin/umount "$recovery_mount" \
+            || fail_image_identity "cannot unmount the recovery ESP"
+          rm -rf "$recovery_audit"
+          recovery_json=$(${pkgs.jq}/bin/jq -n \
+            --arg copy "$boot_slot" --arg uki "$recovery_uki" \
+            --arg entry "$recovery_entry" \
+            --arg source "recovery-$recovery_lower.efi" \
+            --arg digest "$recovery_digest" --arg release "$os_version" \
+            --argjson size "$recovery_size" \
+            --argjson abi ${toString config.aos.boot.recovery.abi} \
+            '{copy: $copy, uki_path: $uki, entry_path: $entry,
+              source_path: $source, sha256: $digest, byte_size: $size,
+              release: $release, recovery_abi: $abi}')
+        ''}
         # `/aos-toplevel` is baked into the booted immutable root. Reconcile
         # the userspace image index to that identity before stage 2; the
         # currently selected config generation is never used as authority.
@@ -534,14 +629,18 @@
             --arg root_hash "$root_hash" \
             --arg initrd_pcr11 "$initrd_pcr11" \
             --argjson abi "$abi" \
-            '{ running: 1, default: 1, pending: 1,
+            --argjson recovery "$recovery_json" \
+            --argjson recovery_enabled ${recoveryEnabledJson} \
+            '({ running: 1, default: 1, pending: 1,
                generations: [({ number: 1, slot: $slot, uki_path: $uki,
                  toplevel: $top, package_name: $pn, version: $ver,
                  registry: "seed", kernel_path: $kern,
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end))] }' \
+                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
+                 + (if $recovery_enabled then {recovery: $recovery} else {} end))] }
+              + (if $recovery_enabled then {recovery_known_good: $slot} else {} end))' \
             > "$image_dir/.state.json.new"
           publish_image_state "$image_dir/.state.json.new"
           existing=1
@@ -555,6 +654,8 @@
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" --argjson next "$next" \
+              --argjson recovery "$recovery_json" \
+              --argjson recovery_enabled ${recoveryEnabledJson} \
               '.generations += [({ number: $next,
                  slot: $slot,
                  uki_path: $uki, toplevel: $top, package_name: $pn,
@@ -562,7 +663,8 @@
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end))]
+                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
+                 + (if $recovery_enabled then {recovery: $recovery} else {} end))]
                | .running = $next' \
               "$image_dir/state.json" > "$image_dir/.state.json.new"
             publish_image_state "$image_dir/.state.json.new"
@@ -577,13 +679,16 @@
               --arg base "$base_lib" --arg digest "$baselib_digest" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
               --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
-              --argjson abi "$abi" \
+              --argjson abi "$abi" --argjson recovery "$recovery_json" \
+              --argjson recovery_enabled ${recoveryEnabledJson} \
               '[.generations[] | select(
                  .toplevel == $top and .package_name == $pn and .version == $ver
                  and .kernel_path == $kern and .evaluator_ref == $base
                  and .module_abi == $abi and .baselib_digest == $digest
                  and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
                  and ((.root_verity_roothash // "") == $root_hash)
+                 and (if $recovery_enabled then .recovery == $recovery
+                      else .recovery == null end)
                  and ((.initrd_pcr11 == null)
                       or (.initrd_pcr11 != null and $initrd_pcr11 != ""
                           and (.initrd_pcr11 | ascii_downcase) == $initrd_pcr11))

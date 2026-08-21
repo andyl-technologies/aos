@@ -556,7 +556,7 @@ pub enum SortColumn {
     Name,
     /// Latest version (semver-aware).
     Version,
-    /// SPDX license identifier.
+    /// Published license metadata.
     License,
     /// Latest version's closure size.
     Closure,
@@ -2510,8 +2510,8 @@ mod tests {
         let (sha256, extension, media_type, targets) = match format {
             "raw" => (
                 "a".repeat(64),
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 vec![ImageTarget::BareMetal],
             ),
             "qcow2" => (
@@ -2540,7 +2540,11 @@ mod tests {
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
-                compression: ImageCompression::None,
+                compression: if format == "raw" {
+                    ImageCompression::Zstd
+                } else {
+                    ImageCompression::None
+                },
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets: targets,
@@ -2607,7 +2611,7 @@ mod tests {
         assert!(default.contains("name=\"architecture\""));
         assert!(default.contains("name=\"format\""));
         assert!(default.contains("name=\"target\""));
-        assert!(default.contains("aos-2026.08.img"));
+        assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
 
         let filtered = images_page(
@@ -2627,7 +2631,7 @@ mod tests {
             Instant::now(),
             &anon(),
         );
-        assert!(filtered.contains("aos-2026.08.img"));
+        assert!(filtered.contains("aos-2026.08.img.zst"));
         assert!(!filtered.contains("aos-2026.09.qcow2"));
         assert!(filtered.contains("value=\"bare-metal\" selected"));
     }

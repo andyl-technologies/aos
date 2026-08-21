@@ -74,12 +74,15 @@ in
     #          analysis tools can run inside the Nix sandbox.
     #   0005 — Fail closed when RootHashSignature= is present but the kernel
     #          rejects the dm-verity signed-key activation.
+    #   0006 — Keep an embedded signed UKI command line authoritative over
+    #          addon and SMBIOS fragments that run before initrd validation.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0003-remove-install-emptydir-systemdstatedir.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
+      ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
     ];
 
     buildDeps = [

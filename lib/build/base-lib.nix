@@ -10,7 +10,8 @@
 ##!     for the handful of path literals modules reference — no package is
 ##!     built on-host),
 ##!   - `frozen-pkgs.json` — every package's already-built store path, captured
-##!     here at stage-1 (image build) via `freeze-pkgs.nix`,
+##!     here at stage-1 (image build) via `freeze-pkgs.nix` in a reversible
+##!     encoding that does not retain unselected packages in the image closure,
 ##!   - `frozen-artifacts.json` plus `artifact-roots/` symlinks — the stage-1
 ##!     store paths of image-fixed config artifacts, retained through ordinary
 ##!     Nix output references (`aos.config._artifactSources`),

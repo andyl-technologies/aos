@@ -15,6 +15,9 @@ use crate::transport::ApiClient;
 
 use super::networking::NetworkingWorkflow;
 use super::organization_scope::organization_authorization_scope;
+use super::storage_gateways::{
+    endpoint_option_label, gateway_option_label, storage_binding_option_label,
+};
 
 /// Renders infrastructure pages handled by this implementation boundary.
 #[component]
@@ -289,6 +292,11 @@ fn StorageBindingCard(
         .and_then(|spec| spec.provider.as_ref())
         .map(provider_label)
         .unwrap_or("unknown");
+    let provider_details = binding
+        .spec
+        .as_ref()
+        .and_then(storage_provider_details)
+        .unwrap_or_default();
 
     view! {
         <details class="binding-card">
@@ -300,6 +308,9 @@ fn StorageBindingCard(
                 <div class="resource-identity">
                     <div><span>"Owner"</span><code>{binding.owner_scope_key.clone()}</code></div>
                     <div><span>"Version"</span><code>{binding.resource_version.clone()}</code></div>
+                    {provider_details.into_iter().map(|(label, value)| view! {
+                        <div><span>{label}</span><code>{value}</code></div>
+                    }).collect_view()}
                     <div><span>"Presigned access"</span><strong>{yes_no(capabilities.presigns_supported)}</strong></div>
                     <div><span>"Conditional writes"</span><strong>{yes_no(capabilities.conditional_writes_supported)}</strong></div>
                 </div>
@@ -316,6 +327,50 @@ fn StorageBindingCard(
             </div>
         </details>
     }
+}
+
+fn storage_provider_details(
+    spec: &aos_proto_types::StorageBindingSpec,
+) -> Option<Vec<(&'static str, String)>> {
+    use aos_proto_types::storage_binding_spec::Provider;
+
+    let details = match spec.provider.as_ref()? {
+        Provider::LocalFilesystem(provider) => {
+            vec![("Root path", provider.root_path.clone())]
+        }
+        Provider::S3(provider) => object_storage_details(
+            provider.bucket.clone(),
+            provider.prefix.clone(),
+            provider.access_mode.clone(),
+        ),
+        Provider::R2(provider) => object_storage_details(
+            provider.bucket.clone(),
+            provider.prefix.clone(),
+            provider.access_mode.clone(),
+        ),
+        // The Worker runtime stores the physical R2 bucket name in this field.
+        // Calling it a deployment bucket prevents operators from mistaking it
+        // for the Worker's JavaScript binding identifier.
+        Provider::DeploymentR2(provider) => {
+            vec![("Deployment bucket", provider.bucket_binding.clone())]
+        }
+    };
+    Some(details)
+}
+
+fn object_storage_details(
+    bucket: String,
+    prefix: String,
+    access_mode: String,
+) -> Vec<(&'static str, String)> {
+    let mut details = vec![("Bucket", bucket)];
+    if !prefix.is_empty() {
+        details.push(("Object prefix", prefix));
+    }
+    if !access_mode.is_empty() {
+        details.push(("Access", access_mode));
+    }
+    details
 }
 
 #[component]
@@ -732,11 +787,119 @@ fn TopologyDefaultsEditor(client: ApiClient, organization: Option<String>) -> im
     let defaults = LocalResource::new(move || {
         let client = read_client.clone();
         let organization = read_org.clone();
-        async move {
-            match organization { Some(org_slug) => client.call::<_, aos_proto_types::TopologyDefaultsResponse>(aos_proto_types::STORAGE_BINDING_SERVICE_GET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH, &aos_proto_types::GetOrganizationTopologyDefaultsRequest { org_slug }).await, None => client.call::<_, aos_proto_types::TopologyDefaultsResponse>(aos_proto_types::STORAGE_BINDING_SERVICE_GET_INSTANCE_TOPOLOGY_DEFAULTS_PATH, &aos_proto_types::GetInstanceTopologyDefaultsRequest {}).await }
-        }
+        async move { load_topology_defaults(&client, organization).await }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading topology defaults…"</p> }>{move || { let client = client.clone(); let organization = organization.clone(); Suspend::new(async move { match defaults.await.as_ref() { Ok(response) => match response.defaults.clone() { Some(defaults) => view! { <TopologyDefaultsForm client=client defaults=defaults organization=organization/> }.into_any(), None => view! { <InlineError detail="The Hub omitted topology defaults.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading topology defaults and available resources…"</p> }>{move || { let client = client.clone(); let organization = organization.clone(); Suspend::new(async move { match defaults.await.as_ref() { Ok((response, choices)) => match response.defaults.clone() { Some(defaults) => view! { <TopologyDefaultsForm client=client defaults=defaults organization=organization choices=choices.clone()/> }.into_any(), None => view! { <InlineError detail="The Hub omitted topology defaults.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.clone()/> }.into_any() } }) }}</Suspense> }
+}
+
+#[derive(Clone, Debug)]
+struct TopologyDefaultChoices {
+    bindings: Vec<aos_proto_types::StorageBinding>,
+    domains: Vec<aos_proto_types::Domain>,
+    endpoints: Vec<aos_proto_types::DeliveryEndpoint>,
+    gateways: Vec<aos_proto_types::StorageGateway>,
+}
+
+async fn load_topology_defaults(
+    client: &ApiClient,
+    organization: Option<String>,
+) -> Result<
+    (
+        aos_proto_types::TopologyDefaultsResponse,
+        TopologyDefaultChoices,
+    ),
+    String,
+> {
+    let (defaults, owner_scope_key) = match organization.as_ref() {
+        Some(org_slug) => (
+            client
+                .call::<_, aos_proto_types::TopologyDefaultsResponse>(
+                    aos_proto_types::STORAGE_BINDING_SERVICE_GET_ORGANIZATION_TOPOLOGY_DEFAULTS_PATH,
+                    &aos_proto_types::GetOrganizationTopologyDefaultsRequest {
+                        org_slug: org_slug.clone(),
+                    },
+                )
+                .await
+                .map_err(|failure| failure.to_string())?,
+            organization_authorization_scope(client, org_slug.clone()).await?,
+        ),
+        None => (
+            client
+                .call::<_, aos_proto_types::TopologyDefaultsResponse>(
+                    aos_proto_types::STORAGE_BINDING_SERVICE_GET_INSTANCE_TOPOLOGY_DEFAULTS_PATH,
+                    &aos_proto_types::GetInstanceTopologyDefaultsRequest {},
+                )
+                .await
+                .map_err(|failure| failure.to_string())?,
+            "instance".to_string(),
+        ),
+    };
+    let binding_scope = owner_scope_key.clone();
+    let bindings = client
+        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
+            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+                owner_scope_key: binding_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.storage_bindings, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let domain_scope = owner_scope_key.clone();
+    let domains = client
+        .collect_pages::<_, aos_proto_types::ListDomainsResponse, _, _, _>(
+            aos_proto_types::DOMAIN_SERVICE_LIST_DOMAINS_PATH,
+            move |page_token| aos_proto_types::ListDomainsRequest {
+                owner_scope_key: domain_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.domains, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let endpoints = client
+        .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: owner_scope_key.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.delivery_endpoints, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let mut gateways = Vec::new();
+    for binding in &bindings {
+        let storage_binding = storage_binding_ref(binding, organization.as_deref())
+            .ok_or_else(|| "a storage binding has no canonical reference".to_string())?;
+        let mut binding_gateways = client
+            .collect_pages::<_, aos_proto_types::ListStorageGatewaysResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_STORAGE_GATEWAYS_PATH,
+                move |page_token| aos_proto_types::ListStorageGatewaysRequest {
+                    storage_binding: Some(storage_binding.clone()),
+                    page_size: 100,
+                    page_token,
+                },
+                |response| (response.storage_gateways, response.next_page_token),
+            )
+            .await
+            .map_err(|failure| failure.to_string())?;
+        gateways.append(&mut binding_gateways);
+    }
+
+    Ok((
+        defaults,
+        TopologyDefaultChoices {
+            bindings,
+            domains,
+            endpoints,
+            gateways,
+        },
+    ))
 }
 
 #[component]
@@ -744,6 +907,7 @@ fn TopologyDefaultsForm(
     client: ApiClient,
     defaults: aos_proto_types::TopologyDefaults,
     organization: Option<String>,
+    choices: TopologyDefaultChoices,
 ) -> impl IntoView {
     let storage_binding = RwSignal::new(defaults.storage_binding_id.clone());
     let domain = RwSignal::new(defaults.domain_id.clone());
@@ -751,6 +915,32 @@ fn TopologyDefaultsForm(
     let endpoint_generation = RwSignal::new(defaults.delivery_endpoint_generation.to_string());
     let gateway = RwSignal::new(defaults.storage_gateway_id.clone());
     let gateway_generation = RwSignal::new(defaults.storage_gateway_generation.to_string());
+    let endpoint_choices = choices.endpoints.clone();
+    let selected_endpoints = choices.endpoints;
+    let gateway_choices = choices.gateways.clone();
+    let selected_gateways = choices.gateways;
+    let on_endpoint_change = move |event| {
+        let value = event_target_value(&event);
+        endpoint.set(value.clone());
+        endpoint_generation.set(
+            selected_endpoints
+                .iter()
+                .find(|choice| choice.stable_id == value)
+                .map(|choice| choice.desired_generation.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+        );
+    };
+    let on_gateway_change = move |event| {
+        let value = event_target_value(&event);
+        gateway.set(value.clone());
+        gateway_generation.set(
+            selected_gateways
+                .iter()
+                .find(|choice| choice.stable_id == value)
+                .map(|choice| choice.desired_generation.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+        );
+    };
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -841,7 +1031,7 @@ fn TopologyDefaultsForm(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Defaults for new plans"</p><h2>"Topology defaults"</h2><p>"These values seed future editors. They never migrate live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Storage binding stable ID"</span><input prop:value=move || storage_binding.get() on:input=move |event| storage_binding.set(event_target_value(&event))/></label><label><span>"Domain stable ID"</span><input prop:value=move || domain.get() on:input=move |event| domain.set(event_target_value(&event))/></label><label><span>"Delivery endpoint stable ID"</span><input prop:value=move || endpoint.get() on:input=move |event| endpoint.set(event_target_value(&event))/></label><label><span>"Endpoint generation"</span><input type="number" min="0" prop:value=move || endpoint_generation.get() on:input=move |event| endpoint_generation.set(event_target_value(&event))/></label><label><span>"Storage gateway stable ID"</span><input prop:value=move || gateway.get() on:input=move |event| gateway.set(event_target_value(&event))/></label><label><span>"Gateway generation"</span><input type="number" min="0" prop:value=move || gateway_generation.get() on:input=move |event| gateway_generation.set(event_target_value(&event))/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Defaults for new plans"</p><h2>"Topology defaults"</h2><p>"These values seed future editors. They never migrate live placements or routes."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Storage binding"</span><select prop:value=move || storage_binding.get() on:change=move |event| storage_binding.set(event_target_value(&event))><option value="">"No default"</option>{choices.bindings.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{storage_binding_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Domain"</span><select prop:value=move || domain.get() on:change=move |event| domain.set(event_target_value(&event))><option value="">"No default"</option>{choices.domains.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{choice.hostname.clone()}</option> }).collect_view()}</select></label><label><span>"Delivery endpoint"</span><select prop:value=move || endpoint.get() on:change=on_endpoint_change><option value="">"No default"</option>{endpoint_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{endpoint_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || endpoint_generation.get()/></label><label><span>"Storage gateway"</span><select prop:value=move || gateway.get() on:change=on_gateway_change><option value="">"No default"</option>{gateway_choices.iter().map(|choice| view! { <option value=choice.stable_id.clone()>{gateway_option_label(choice)}</option> }).collect_view()}</select></label><label><span>"Gateway generation"</span><input readonly aria-readonly="true" prop:value=move || gateway_generation.get()/></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review defaults"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -948,5 +1138,31 @@ fn yes_no(value: bool) -> &'static str {
 fn reload() {
     if let Some(window) = leptos::web_sys::window() {
         let _ = window.location().reload();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_binding_displays_physical_bucket() {
+        let spec = aos_proto_types::StorageBindingSpec {
+            name: "default".to_string(),
+            provider: Some(
+                aos_proto_types::storage_binding_spec::Provider::DeploymentR2(
+                    aos_proto_types::DeploymentR2StorageProvider {
+                        bucket_binding: "aos-hub-staging-surfaces".to_string(),
+                    },
+                ),
+            ),
+        };
+        assert_eq!(
+            storage_provider_details(&spec),
+            Some(vec![(
+                "Deployment bucket",
+                "aos-hub-staging-surfaces".to_string()
+            )])
+        );
     }
 }

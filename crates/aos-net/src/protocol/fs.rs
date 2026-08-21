@@ -16,6 +16,72 @@ use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
+static TEMP_FILE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Atomically replaces `destination` through a uniquely created sibling.
+///
+/// The temporary name includes the complete destination filename. Files such
+/// as `pack-<hash>.pack`, `.idx`, and `.bitmap` can therefore be transferred
+/// concurrently without sharing the old `pack-<hash>.tmp` staging path.
+async fn atomic_write(destination: &std::path::Path, data: &[u8]) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("filesystem transfer destination has no parent directory")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("creating directory {}", parent.display()))?;
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("filesystem transfer destination filename is not UTF-8")?;
+
+    for _ in 0..16 {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{filename}.aos-transfer-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating temp file {}", temporary.display()));
+            }
+        };
+
+        let write_result = async {
+            file.write_all(data).await?;
+            file.flush().await?;
+            drop(file);
+            tokio::fs::rename(&temporary, destination)
+                .await
+                .with_context(|| {
+                    format!(
+                        "renaming {} to {}",
+                        temporary.display(),
+                        destination.display()
+                    )
+                })
+        }
+        .await;
+        if write_result.is_err() {
+            let _ = tokio::fs::remove_file(&temporary).await;
+        }
+        return write_result;
+    }
+
+    anyhow::bail!(
+        "could not reserve a temporary file beside {}",
+        destination.display()
+    )
+}
+
 /// Chunk size for streaming file reads.
 const FS_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 
@@ -77,19 +143,7 @@ impl Protocol for FsProtocol {
                         resumed: false,
                     }),
                     TransferOutput::File(dest) => {
-                        if let Some(parent) = dest.parent() {
-                            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                                format!("creating directory {}", parent.display())
-                            })?;
-                        }
-
-                        let temp_path = dest.with_extension("tmp");
-                        tokio::fs::write(&temp_path, &data).await.with_context(|| {
-                            format!("writing temp file {}", temp_path.display())
-                        })?;
-                        tokio::fs::rename(&temp_path, dest).await.with_context(|| {
-                            format!("renaming {} to {}", temp_path.display(), dest.display())
-                        })?;
+                        atomic_write(dest, &data).await?;
 
                         Ok(TransferResult {
                             status: 200,
@@ -116,6 +170,21 @@ impl Protocol for FsProtocol {
                             resumed: false,
                         })
                     }
+                    TransferOutput::Sink(sink) => {
+                        for chunk in data.chunks(FS_CHUNK_SIZE) {
+                            sink.write(chunk)?;
+                        }
+                        sink.flush()?;
+                        Ok(TransferResult {
+                            status: 200,
+                            headers: Vec::new(),
+                            bytes_transferred,
+                            content_length: Some(bytes_transferred),
+                            body: None,
+                            hash: None,
+                            resumed: false,
+                        })
+                    }
                 }
             }
             Method::Put => {
@@ -132,29 +201,7 @@ impl Protocol for FsProtocol {
 
                 let data_len = data.len() as u64;
 
-                if let Some(parent) = local_path.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .with_context(|| format!("creating directory {}", parent.display()))?;
-                }
-
-                let temp_path = local_path.with_extension("tmp");
-                let mut file = tokio::fs::File::create(&temp_path)
-                    .await
-                    .with_context(|| format!("creating temp file {}", temp_path.display()))?;
-                file.write_all(&data).await?;
-                file.flush().await?;
-                drop(file);
-
-                tokio::fs::rename(&temp_path, &local_path)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "renaming {} to {}",
-                            temp_path.display(),
-                            local_path.display()
-                        )
-                    })?;
+                atomic_write(&local_path, &data).await?;
 
                 Ok(TransferResult {
                     status: 200,
@@ -329,6 +376,8 @@ mod tests {
             headers: Vec::new(),
             body: None,
             hash: None,
+            maximum_bytes: None,
+            expected_size: None,
             resume: false,
             output: TransferOutput::Memory,
         };
@@ -339,6 +388,29 @@ mod tests {
         let head_req = TransferRequest::head(&url);
         let result = proto.execute(&head_req, None).await.unwrap();
         assert_eq!(result.status, 404);
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_stem_puts_keep_distinct_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pack_path = dir.path().join("pack-deadbeef.pack");
+        let bitmap_path = dir.path().join("pack-deadbeef.bitmap");
+        let pack_url = format!("file://{}", pack_path.display());
+        let bitmap_url = format!("file://{}", bitmap_path.display());
+        let pack_bytes = vec![b'P'; 4 * 1024 * 1024];
+        let bitmap_bytes = vec![b'B'; 4 * 1024 * 1024];
+        let pack_request = TransferRequest::put(&pack_url, pack_bytes.clone());
+        let bitmap_request = TransferRequest::put(&bitmap_url, bitmap_bytes.clone());
+        let proto = FsProtocol::new();
+
+        let (pack_result, bitmap_result) = tokio::join!(
+            proto.execute(&pack_request, None),
+            proto.execute(&bitmap_request, None),
+        );
+        assert_eq!(pack_result.unwrap().status, 200);
+        assert_eq!(bitmap_result.unwrap().status, 200);
+        assert_eq!(std::fs::read(pack_path).unwrap(), pack_bytes);
+        assert_eq!(std::fs::read(bitmap_path).unwrap(), bitmap_bytes);
     }
 
     #[tokio::test]

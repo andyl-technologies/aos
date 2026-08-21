@@ -337,9 +337,24 @@ pub async fn upload_web_surface(
     let mut files = Vec::new();
     collect_web_files(output_dir, output_dir, &mut files)?;
     files.sort();
+    let total_bytes = files.iter().try_fold(0_u64, |total, relative_path| {
+        let size = output_dir
+            .join(relative_path)
+            .metadata()
+            .with_context(|| format!("reading size of {relative_path}"))?
+            .len();
+        total
+            .checked_add(size)
+            .context("web upload byte total overflow")
+    })?;
+    let progress = printer.transfer("Uploading registry web surface", total_bytes);
 
     for relative_path in &files {
         let source = output_dir.join(relative_path);
+        let size = source
+            .metadata()
+            .with_context(|| format!("reading size of {relative_path}"))?
+            .len();
         backend
             .put_static_file(
                 relative_path,
@@ -351,7 +366,9 @@ pub async fn upload_web_surface(
             )
             .await
             .with_context(|| format!("uploading {relative_path}"))?;
+        progress.inc(size);
     }
+    progress.finish();
 
     printer.success(&format!("Uploaded web surface files to {upload_url}"));
     Ok(())

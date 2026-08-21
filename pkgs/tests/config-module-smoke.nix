@@ -1,5 +1,8 @@
 ##! Package config-output smoke fixture.
-{mkDerivation, bash}:
+{
+  mkDerivation,
+  bash,
+}:
 mkDerivation {
   pname = "config-module-smoke";
   version = "0";
@@ -38,5 +41,8 @@ mkDerivation {
     ];
   };
 
-  meta.description = "Package config-output smoke fixture";
+  meta = {
+    description = "Package config-output smoke fixture";
+    license = "Apache-2.0";
+  };
 }

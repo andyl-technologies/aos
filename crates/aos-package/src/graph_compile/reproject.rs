@@ -524,6 +524,17 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
     if kept == &manifest_packages(full) {
         return Ok(full.clone());
     }
+
+    if full
+        .get("removedEtc")
+        .and_then(Value::as_array)
+        .is_some_and(|paths| !paths.is_empty())
+    {
+        bail!(
+            "cannot degraded-project manifest with removedEtc: removal ownership is not available"
+        );
+    }
+
     let mut out = full.clone();
     let Some(obj) = out.as_object_mut() else {
         return Ok(out);

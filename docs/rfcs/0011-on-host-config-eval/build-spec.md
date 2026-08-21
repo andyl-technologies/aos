@@ -900,12 +900,19 @@ Each iteration runs a **cold stock-Nix subprocess** (`architecture.md`
 §"The evaluator"):
 
 ```text
-nix-instantiate --store dummy:// --eval --strict --json \
-  --option restrict-eval true \                  # read only /run/aos-eval + the store
+nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
+  --option restrict-eval true \                  # fixed fetchTree inputs only
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
-  -I /run/aos-eval \
-  -A manifest /run/aos-eval/entry.nix
+  --option allowed-uris '' \                     # no evaluator network capability
+  --expr '<generated expression using fixed-NAR-hash fetchTree inputs>'
 ```
+
+The driver sends the expression on standard input. Every base-library,
+host-module, facts, and package-config tree is referenced through
+`builtins.fetchTree { type = "path"; path = ...; narHash = ...; }`, so pure
+evaluation admits it only after its authenticated NAR identity matches. The
+driver does not admit a mutable evaluator source path, `/run`, a parent store
+directory, or any URI.
 
 `entry.nix` is regenerated each iteration from the current `working_set`
 (base-lib injected as module args — packages do not import it;
@@ -2004,11 +2011,12 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
   4. PCR7  in quote == catalog.expected_pcr7  (SB-state pin)     else FAIL(sb-state)
   5. PCR11 in quote == record.inputs.base_lib.pcr11_expected
         AND == catalog.expected_pcr11 for that UKI               else FAIL(pcr11)
-  6. F1 root binding:
+  6. PCR12 in quote == policy.expected_pcr12                     else FAIL(pcr12)
+  7. F1 root binding:
        extract roothash token from the UKI .cmdline the catalog published;
        record.inputs.base_lib.root_verity_roothash == that token
          == catalog.image.root.roothash (root.roothash file)     else FAIL(root-verity)
-  7. config_modules.release_tag is signed by a roster key in catalog,
+  8. config_modules.release_tag is signed by a roster key in catalog,
        not revoked: verify_tag_chain(release_tag) succeeds        else FAIL(tag)
        AND tag_signer_key ∈ catalog roster fingerprints
        AND strict receipt registry/tag/commit/signer fields equal the
@@ -2018,7 +2026,7 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
        AND every image-origin module exactly matches the verifier's immutable
            image package-seed catalog (path, NAR identity, ABI, and authorized
            option roots); no uncataloged image tuple is accepted
-  8. host_nix.trust_mode == "platform"
+  9. host_nix.trust_mode == "platform"
        AND host_nix.platform ∈ trusted_platforms
      OR host_nix.trust_mode == "signed"
        AND host_nix.signer_key ∈ trusted_config_keys fingerprints
@@ -2026,28 +2034,28 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
        AND host_nix.platform == "image"
        AND host_nix.signer_key is absent
                                                                   else FAIL(host-config-trust)
-  9. eval_mode == "pure-eval"                                    else FAIL(eval-mode)
- 10. (optional for platform/signed; REQUIRED for image, full re-derivation)
+ 10. eval_mode == "pure-eval"                                   else FAIL(eval-mode)
+ 11. (optional for platform/signed; REQUIRED for image, full re-derivation)
        given the authenticated inputs
        (base-lib@pcr11_expected, evaluator@store_path,
         config_modules@realization, host_nix@content_hash,
         instance_facts@facts_hash), re-run the pure eval and check
         sha256(canonical(manifest)) == record.manifest_hash      else FAIL(rederive)
- 11. before blessing a counted boot, the local boot-commit verifier validates
+ 12. before blessing a counted boot, the local boot-commit verifier validates
        the stored TPM quote signature and nonce, requires PCR 7 and ready-phase
-       PCR 11 in that quote to equal the live values, and requires PCR 11 to
-       equal the independently published image value. A missing or failed
+       PCR 11 and PCR 12 in that quote to equal the live values, and requires
+       PCR 11 to equal the independently published image value. A missing or failed
        systemd-pcrphase ready transition prevents evaluation and blessing.
   => PASS
 ```
 
-Steps 4–6 are the heart of the F1 closure: PCR 11 covers the `.cmdline`, the
+Steps 4–7 are the heart of the F1 closure: PCR 11 covers the `.cmdline`, the
 `.cmdline` carries `roothash=<hex>`, and `<hex>` is the Merkle root over every
-byte of the erofs root carrying base-lib + evaluator. Step 6 lets the verifier
+byte of the erofs root carrying base-lib + evaluator. Step 7 lets the verifier
 independently confirm the booted roothash equals the published image's root
-without trusting the box. Step 10 upgrades attestation to full re-derivation, the
+without trusting the box. Step 11 upgrades attestation to full re-derivation, the
 property the manifest's signature-free trust model rests on.
-For the no-input `image` arm, step 10 is also the authorization proof: the
+For the no-input `image` arm, step 11 is also the authorization proof: the
 PCR-bound evaluator must reproduce the manifest from its exact empty host
 module. A verifier that cannot re-derive MUST reject `trust_mode = "image"`.
 

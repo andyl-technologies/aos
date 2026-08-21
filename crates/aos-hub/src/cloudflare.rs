@@ -76,6 +76,10 @@ const KV_BINDING: &str = "SESSIONS";
 const COMPAT_DATE: &str = "2024-09-23";
 /// The Cron cadence that drives the indexer's `scheduled` handler.
 const INDEXER_CRON: &str = "*/15 * * * *";
+/// CPU budget for maintenance and Queue invocations that verify full surfaces.
+const WORKER_CPU_LIMIT_MS: u32 = 300_000;
+/// Subrequest budget for bounded walks of large published registry surfaces.
+const WORKER_SUBREQUEST_LIMIT: u32 = 100_000;
 
 /// The bundled deployment assets resolved from the wrapper environment.
 ///
@@ -200,6 +204,8 @@ pub struct DeployConfig {
     pub external_url: String,
     /// Immutable source/build identity exposed by the deployed Worker.
     pub deployment_id: Option<String>,
+    /// Stable named Durable Object instance containing the Hub database.
+    pub database_instance: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
     /// The verified sender address for Cloudflare Email Service. When `Some`, the
@@ -274,6 +280,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
             toml_string(deployment_id)
         ));
     }
+    vars.push_str(&format!(
+        "HUB_DATABASE_INSTANCE = {}\n",
+        toml_string(&cfg.database_instance)
+    ));
     // Surface the default R2 bucket name so the console's instance-settings page
     // can show where unbound registries/caches push (the R2 binding itself is
     // opaque to the Worker runtime).
@@ -353,6 +363,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          compatibility_flags = [\"nodejs_compat\"]\n\
          {logpush}\
          \n{vars}\n\
+         [limits]\n\
+         cpu_ms = {cpu_limit_ms}\n\
+         subrequests = {subrequest_limit}\n\
+         \n\
          {assets}\
          {routes}\
          {send_email}\
@@ -415,6 +429,8 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          {observability}",
         name = toml_string(&cfg.name),
         compat = COMPAT_DATE,
+        cpu_limit_ms = WORKER_CPU_LIMIT_MS,
+        subrequest_limit = WORKER_SUBREQUEST_LIMIT,
         logpush = logpush,
         assets = assets,
         routes = routes,
@@ -445,6 +461,61 @@ fn toml_string(s: &str) -> String {
 #[must_use]
 pub fn r2_create_args(bucket: &str) -> Vec<String> {
     vec!["r2".into(), "bucket".into(), "create".into(), bucket.into()]
+}
+
+/// `wrangler r2 bucket lifecycle list <bucket>`.
+#[must_use]
+pub fn r2_multipart_lifecycle_list_args(bucket: &str) -> Vec<String> {
+    vec![
+        "r2".into(),
+        "bucket".into(),
+        "lifecycle".into(),
+        "list".into(),
+        bucket.into(),
+    ]
+}
+
+/// `wrangler r2 bucket lifecycle add` for bounded abandoned multipart cleanup.
+#[must_use]
+pub fn r2_multipart_lifecycle_add_args(bucket: &str, rule: &str) -> Vec<String> {
+    vec![
+        "r2".into(),
+        "bucket".into(),
+        "lifecycle".into(),
+        "add".into(),
+        bucket.into(),
+        rule.into(),
+        String::new(),
+        "--abort-multipart-days".into(),
+        "7".into(),
+        "--force".into(),
+    ]
+}
+
+/// Reports whether Wrangler listed an enabled all-prefix multipart abort bound.
+#[must_use]
+pub fn r2_lifecycle_has_bounded_multipart_abort(output: &str, maximum_days: u64) -> bool {
+    output.split("\n\n").any(|rule| {
+        let field = |name: &str| {
+            rule.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                (key.trim() == name).then(|| value.trim())
+            })
+        };
+        let Some(action) = field("action") else {
+            return false;
+        };
+        let Some(age) = action.strip_prefix("Abort incomplete multipart uploads after ") else {
+            return false;
+        };
+        let days = age
+            .strip_suffix(" days")
+            .or_else(|| age.strip_suffix(" day"))
+            .and_then(|days| days.parse::<u64>().ok());
+        field("enabled") == Some("Yes")
+            && field("prefix") == Some("(all prefixes)")
+            && days.is_some_and(|days| days <= maximum_days)
+    })
 }
 
 /// `wrangler kv namespace create <title>` — provision a KV namespace.
@@ -888,6 +959,7 @@ pub async fn provision(
     egress_gateway_url: Option<&str>,
     external_url: &str,
     deployment_id: Option<&str>,
+    database_instance: &str,
     email_relay_url: Option<&str>,
     custom_domains: &[String],
     rate_limit_namespaces: RateLimitNamespaces,
@@ -924,10 +996,44 @@ pub async fn provision(
             "deployment ID must be 1-128 ASCII letters, digits, '.', '_', or '-'"
         );
     }
+    anyhow::ensure!(
+        !database_instance.is_empty()
+            && database_instance.len() <= 128
+            && database_instance
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        "database instance must be 1-128 ASCII letters, digits, '.', '_', or '-'"
+    );
     // The system of record is the `HubDb` Durable Object's colocated SQLite
     // (declared by the `wrangler.toml`
     // `new_sqlite_classes` migration, created on first deploy).
     run_wrangler_tolerant(assets, &r2_create_args(bucket), "r2 bucket create").await;
+    // Provider upload ids are opaque. Verify a bucket-level cleanup bound
+    // before deploying code that can create multipart uploads. An adequate
+    // existing rule is preserved; otherwise a new AOS-owned rule is installed
+    // without first removing any protection.
+    let lifecycle = run_wrangler(
+        assets,
+        &r2_multipart_lifecycle_list_args(bucket),
+        None,
+        None,
+    )
+    .await
+    .context("listing R2 multipart lifecycle rules")?;
+    if !r2_lifecycle_has_bounded_multipart_abort(&lifecycle, 7) {
+        // A prior AOS rule may itself be the drifted entry. A fresh identity
+        // repairs that state without colliding with or first removing any
+        // existing rule, preserving cleanup protection at every crash point.
+        let lifecycle_rule = format!("aos-abandoned-multipart-{}", uuid::Uuid::new_v4().simple());
+        run_wrangler(
+            assets,
+            &r2_multipart_lifecycle_add_args(bucket, &lifecycle_rule),
+            None,
+            None,
+        )
+        .await
+        .context("enforcing R2 abandoned multipart lifecycle")?;
+    }
     run_wrangler_tolerant(assets, &kv_create_args(kv_title), "kv namespace create").await;
     run_wrangler_tolerant(assets, &queue_create_args(queue), "queue create").await;
 
@@ -943,6 +1049,7 @@ pub async fn provision(
         egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
         deployment_id: deployment_id.map(str::to_string),
+        database_instance: database_instance.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
         // The `worker` CLI overrides this from its `--email-from` flag before
         // staging the config; Email Service is off until a sender is set.
@@ -1418,6 +1525,25 @@ mod tests {
     fn argv_builders_match_wrangler_grammar() {
         assert_eq!(r2_create_args("bkt"), ["r2", "bucket", "create", "bkt"]);
         assert_eq!(
+            r2_multipart_lifecycle_list_args("bkt"),
+            ["r2", "bucket", "lifecycle", "list", "bkt"]
+        );
+        assert_eq!(
+            r2_multipart_lifecycle_add_args("bkt", "aos-rule"),
+            [
+                "r2",
+                "bucket",
+                "lifecycle",
+                "add",
+                "bkt",
+                "aos-rule",
+                "",
+                "--abort-multipart-days",
+                "7",
+                "--force",
+            ]
+        );
+        assert_eq!(
             kv_create_args("SESSIONS"),
             ["kv", "namespace", "create", "SESSIONS"]
         );
@@ -1442,6 +1568,24 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_listing_requires_enabled_all_prefix_abort_bound() {
+        let default = "name: Default Multipart Abort Rule\n\
+                       enabled: Yes\n\
+                       prefix: (all prefixes)\n\
+                       action: Abort incomplete multipart uploads after 7 days";
+        assert!(r2_lifecycle_has_bounded_multipart_abort(default, 7));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(default, 6));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(
+            &default.replace("enabled: Yes", "enabled: No"),
+            7,
+        ));
+        assert!(!r2_lifecycle_has_bounded_multipart_abort(
+            &default.replace("(all prefixes)", "objects/"),
+            7,
+        ));
+    }
+
+    #[test]
     fn rendered_toml_has_bindings_vars_and_no_build() {
         let cfg = DeployConfig {
             name: "aos-hub".into(),
@@ -1452,6 +1596,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: Some("0123456789abcdef".into()),
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec!["aos.example.com".into()],
@@ -1485,6 +1630,14 @@ mod tests {
         // edge near each client, rather than being pinned to HubDb's region.
         // Emitting it every deploy reverts any dashboard toggle to smart.
         assert_eq!(parsed["placement"]["mode"].as_str(), Some("off"));
+        assert_eq!(
+            parsed["limits"]["cpu_ms"].as_integer(),
+            Some(i64::from(WORKER_CPU_LIMIT_MS))
+        );
+        assert_eq!(
+            parsed["limits"]["subrequests"].as_integer(),
+            Some(i64::from(WORKER_SUBREQUEST_LIMIT))
+        );
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));
         assert_eq!(
             parsed["queues"]["producers"][0]["binding"].as_str(),
@@ -1545,6 +1698,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1570,6 +1724,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1596,6 +1751,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: Some("noreply@example.com".into()),
             custom_domains: vec![],
@@ -1640,6 +1796,7 @@ mod tests {
             egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],
@@ -1742,6 +1899,7 @@ mod tests {
             egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
+            database_instance: "hub".into(),
             email_relay_url: None,
             email_from: None,
             custom_domains: vec![],

@@ -157,10 +157,12 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-net",
  "aos-package",
  "aos-profile",
  "aos-remote",
  "aos-server",
+ "async-trait",
  "atty",
  "axum",
  "base64 0.22.1",
@@ -170,6 +172,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "glob",
+ "hex",
  "humantime",
  "hyper-util",
  "ignore",
@@ -193,12 +196,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-boot-identity"
+version = "0.1.0"
+
+[[package]]
 name = "aos-cache"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
  "aos-net",
+ "aos-proto-types",
  "async-trait",
  "base64 0.22.1",
  "console",
@@ -357,6 +365,7 @@ dependencies = [
  "hmac 0.12.1",
  "js-sys",
  "jwt-rustcrypto",
+ "md-5 0.11.0",
  "p256",
  "password-hash",
  "rand 0.9.4",
@@ -430,6 +439,7 @@ dependencies = [
  "hex",
  "rand 0.9.4",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "ssh2",
@@ -445,6 +455,7 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-boot-identity",
  "aos-cache",
  "aos-core",
  "aos-net",
@@ -454,6 +465,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "console",
+ "crc32fast",
  "ed25519-dalek",
  "flate2",
  "futures-util",
@@ -522,6 +534,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-recovery"
+version = "0.1.0"
+dependencies = [
+ "aos-boot-identity",
+]
+
+[[package]]
 name = "aos-registry-spa"
 version = "0.1.0"
 dependencies = [
@@ -544,6 +563,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "crc32fast",
  "ed25519-dalek",
  "flate2",
  "hex",

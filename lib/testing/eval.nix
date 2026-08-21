@@ -33,6 +33,179 @@
     if system.options.aos.security.hardening ? kernelLockdown
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
+  verityDisablesGenericLuks = let
+    occurrences = builtins.length (builtins.filter (parameter: parameter == "rd.luks=0") system.config.aos.boot.kernelParams);
+  in
+    if occurrences != 1
+    then throw "the verity image must disable generic initrd LUKS discovery exactly once"
+    else "ok";
+
+  mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
+  activationImageOverride = let
+    hostnameUnit = "aos-hostname.service";
+    hostnamePath = "systemd/system/${hostnameUnit}";
+    hostnameScript = "${hostnameUnit}:ExecStart.0";
+    firewallUnit = "nftables.service";
+    firewallPath = "systemd/system/${firewallUnit}";
+    firewallWant = "systemd/system/multi-user.target.wants/${firewallUnit}";
+    emptyOwnership = {
+      etc = {};
+      units = {};
+      jobScripts = {};
+      users = {};
+      presets = {};
+      storePaths = {};
+    };
+    baseline = {
+      etc = {
+        ${hostnamePath} = {
+          kind = "text";
+          text = "candidate unit";
+          mode = "0644";
+        };
+        ${firewallPath} = {
+          kind = "text";
+          text = "firewall";
+          mode = "0644";
+        };
+        ${firewallWant} = {
+          kind = "symlink";
+          target = "../${firewallUnit}";
+        };
+      };
+      units = {
+        ${hostnameUnit} = {action = "restart";};
+        ${firewallUnit} = {action = "restart";};
+      };
+      jobScripts.${hostnameScript} = {
+        text = "hostname aos";
+        mode = "0755";
+        name = "hostname";
+      };
+      users = [];
+      presets = [];
+      storePaths = [];
+      ownership =
+        emptyOwnership
+        // {
+          etc = builtins.mapAttrs (_: _: "@base") baseline.etc;
+          units = builtins.mapAttrs (_: _: "@base") baseline.units;
+          jobScripts.${hostnameScript} = "@base";
+        };
+    };
+    imageManifest =
+      baseline
+      // {
+        etc =
+          baseline.etc
+          // {
+            ${hostnamePath} = {
+              kind = "text";
+              text = "image unit";
+              mode = "0644";
+            };
+          };
+        units =
+          baseline.units
+          // {
+            ${hostnameUnit} = {action = "image";};
+          };
+      };
+    candidate =
+      baseline
+      // {
+        etc = builtins.removeAttrs baseline.etc [firewallPath firewallWant];
+        units = builtins.removeAttrs baseline.units [firewallUnit];
+        jobScripts.${hostnameScript} = {
+          text = "hostname node-1";
+          mode = "0755";
+          name = "hostname";
+        };
+        ownership =
+          baseline.ownership
+          // {
+            etc = builtins.removeAttrs baseline.ownership.etc [firewallPath firewallWant];
+            units = builtins.removeAttrs baseline.ownership.units [firewallUnit];
+          };
+      };
+    merged = mergeImageManifest {inherit imageManifest baseline candidate;};
+  in
+    if merged.etc.${hostnamePath}.text != "candidate unit"
+    then throw "a changed generated job script must select its candidate unit body"
+    else if merged.units.${hostnameUnit}.action != "restart"
+    then throw "a changed generated job script must select its candidate unit action"
+    else if merged.ownership.etc.${hostnamePath} != "@host"
+    then throw "a changed generated job script must make its candidate unit host-owned"
+    else if merged.ownership.units.${hostnameUnit} != "@host"
+    then throw "a changed generated job script must make its unit action host-owned"
+    else if merged.removedEtc != [firewallWant firewallPath]
+    then throw "explicitly removed image artifacts must become deterministic overlay removals"
+    else if builtins.hasAttr firewallPath merged.etc || builtins.hasAttr firewallUnit merged.units
+    then throw "explicitly removed image units must not survive manifest merging"
+    else "ok";
+
+  activationStructuralReplacement = let
+    ownershipFor = etc: {
+      etc = builtins.mapAttrs (_: _: "@base") etc;
+      units = {};
+      jobScripts = {};
+      users = {};
+      presets = {};
+      storePaths = {};
+    };
+    manifestWithEtc = etc: {
+      inherit etc;
+      units = {};
+      jobScripts = {};
+      users = [];
+      presets = [];
+      storePaths = [];
+      ownership = ownershipFor etc;
+    };
+    oldFile = {
+      "service" = {
+        kind = "text";
+        text = "old";
+        mode = "0644";
+      };
+    };
+    newSubtree = {
+      "service/config" = {
+        kind = "text";
+        text = "new";
+        mode = "0644";
+      };
+    };
+    oldSubtree = {
+      "service/config" = {
+        kind = "text";
+        text = "old";
+        mode = "0644";
+      };
+    };
+    newFile = {
+      "service" = {
+        kind = "text";
+        text = "new";
+        mode = "0644";
+      };
+    };
+    fileToDirectory = mergeImageManifest {
+      imageManifest = manifestWithEtc oldFile;
+      baseline = manifestWithEtc oldFile;
+      candidate = manifestWithEtc newSubtree;
+    };
+    directoryToFile = mergeImageManifest {
+      imageManifest = manifestWithEtc oldSubtree;
+      baseline = manifestWithEtc oldSubtree;
+      candidate = manifestWithEtc newFile;
+    };
+  in
+    if fileToDirectory.removedEtc != [] || !(builtins.hasAttr "service/config" fileToDirectory.etc)
+    then throw "a candidate subtree must structurally hide the image file it replaces"
+    else if directoryToFile.removedEtc != [] || !(builtins.hasAttr "service" directoryToFile.etc)
+    then throw "a candidate file must structurally hide the image subtree it replaces"
+    else "ok";
 
   assertRecurringLifecycleUnit = name: unit:
     if unit.unitConfig ? ConditionFirstBoot
@@ -159,6 +332,11 @@
         "gen-$current/manifest.json"
         system.config.systemd.services.aos-image-boot-commit.script)
     then throw "image boot success must require a durable committed configuration manifest"
+    else if
+      !(containsStr
+        "${system.config.aos.config.artifacts.esp-sync}/bin/aos-sync-esps"
+        system.config.systemd.services.aos-image-boot-commit.script)
+    then throw "image boot success must invoke ESP synchronization by its immutable store path"
     else if
       !(builtins.elem
         (toString system.config.aos.config.evalAtBoot.baseLib)
@@ -479,6 +657,15 @@
       aos.apm.registries.example = {
         url = "https://registry.example/aos";
         trustKeys = [anchorKey anchorKeyRotated];
+        caches = [
+          {
+            url = "https://cache.example/aos";
+            priority = 75;
+          }
+          {
+            url = "file:///var/lib/aos-cache";
+          }
+        ];
       };
     }
   ];
@@ -490,6 +677,13 @@
     url = "https://registry.example/aos"
     priority = 50
     enabled = true
+
+    [[registry.caches]]
+    url = "https://cache.example/aos"
+    priority = 75
+    [[registry.caches]]
+    url = "file:///var/lib/aos-cache"
+    priority = 100
 
     [registry.signing]
     required = true
@@ -861,6 +1055,31 @@
     else if schedulingSystemOnly.success
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
+
+  bareMetalStorageSystem = mkSystem [
+    ../../systems/server-verity.nix
+    {
+      aos.profiles.bareMetalZfs = {
+        enable = true;
+        espDevices = [
+          "/dev/disk/by-partlabel/aos-esp-1"
+          "/dev/disk/by-partlabel/aos-esp-2"
+        ];
+      };
+    }
+  ];
+  bareMetalStorageProfile =
+    if bareMetalStorageSystem.config.aos.boot.storage.backend != "zfs-zvol"
+    then throw "bare-metal storage profile must select ZFS zvol image slots"
+    else if builtins.length bareMetalStorageSystem.config.aos.boot.initrd.modulePackages != 1
+    then throw "ZFS must be the only external early-boot module package"
+    else if builtins.length bareMetalStorageSystem.config.aos.kernel.modulePackages != 1
+    then throw "ZFS must be available in the runtime module tree"
+    else if !(builtins.elem "aos-mount-esp.service" bareMetalStorageSystem.config.systemd.services.aos-image-boot-commit.requires)
+    then throw "image blessing must require authoritative booted-ESP discovery"
+    else if bareMetalStorageSystem.config.system.build.installBundle == null
+    then throw "ZFS-backed bare-metal systems must expose an installer bundle"
+    else "ok";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -992,7 +1211,9 @@ in
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
         echo "kernelLockdown: removed (${noKernelLockdown})"
+        echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
+        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
@@ -1003,6 +1224,7 @@ in
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
+        echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"

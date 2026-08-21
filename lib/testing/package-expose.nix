@@ -16,14 +16,16 @@
     version = "0";
     src = null;
     runtimeDeps = [pkgs.bash];
-    phases = [{
-      name = "install";
-      script = ''
-        mkdir -p "$out"
-        printf payload > "$out/payload"
-        ln -s '${pkgs.bash}' "$out/bash"
-      '';
-    }];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          printf payload > "$out/payload"
+          ln -s '${pkgs.bash}' "$out/bash"
+        '';
+      }
+    ];
     configModule = {
       src = ../../pkgs/tests/_config-module-smoke;
       dependencies.bash = pkgs.bash;
@@ -56,19 +58,21 @@
     modules = [
       {config.configModuleSmoke.enable = true;}
     ];
-    packageModules = [{
-      name = "config-module-smoke";
-      authorization = {
-        owns = ["configModuleSmoke"];
-        contributes = {};
-      };
-      configRoot = ../../pkgs/tests/_config-module-smoke;
-      module = ../../pkgs/tests/_config-module-smoke/module.nix;
-      outputs = {
-        self = "${configModulePackage}";
-        dependencies.bash = configModulePackage.configModuleDependencies.bash;
-      };
-    }];
+    packageModules = [
+      {
+        name = "config-module-smoke";
+        authorization = {
+          owns = ["configModuleSmoke"];
+          contributes = {};
+        };
+        configRoot = ../../pkgs/tests/_config-module-smoke;
+        module = ../../pkgs/tests/_config-module-smoke/module.nix;
+        outputs = {
+          self = "${configModulePackage}";
+          dependencies.bash = configModulePackage.configModuleDependencies.bash;
+        };
+      }
+    ];
   };
   configModuleEvalContract =
     lib.throwIfNot
@@ -144,59 +148,75 @@
   };
   foreignDeclareRejected =
     !(builtins.tryEval ((pkgs.mkDerivation {
-      pname = "config-module-foreign-declare";
-      version = "0";
-      src = null;
-      phases = [];
-      configModule = {
-        src = ../../pkgs/tests/_config-module-smoke;
-        declares = ["foreign.enable"];
-        ownsRoots = [{root = "configModuleSmoke";}];
-      };
-    }).config.outPath)).success;
+        pname = "config-module-foreign-declare";
+        version = "0";
+        src = null;
+        phases = [];
+        configModule = {
+          src = ../../pkgs/tests/_config-module-smoke;
+          declares = ["foreign.enable"];
+          ownsRoots = [{root = "configModuleSmoke";}];
+        };
+      })
+      .config
+      .outPath))
+    .success;
   privateDeclareAccepted =
     (builtins.tryEval ((pkgs.mkDerivation {
-      pname = "private-root";
-      version = "0";
-      src = null;
-      phases = [];
-      configModule = {
-        src = ../../pkgs/tests/_config-module-smoke;
-        declares = ["private-root.enable"];
-      };
-    }).config.outPath)).success;
+        pname = "private-root";
+        version = "0";
+        src = null;
+        phases = [];
+        configModule = {
+          src = ../../pkgs/tests/_config-module-smoke;
+          declares = ["private-root.enable"];
+        };
+      })
+      .config
+      .outPath))
+    .success;
   contributionSiblingRejected =
     !(builtins.tryEval ((pkgs.mkDerivation {
-      pname = "contribution-sibling";
-      version = "0";
-      src = null;
-      phases = [];
-      configModule = {
-        src = ../../pkgs/tests/_config-module-smoke;
-        declares = ["nginx.enable"];
-        contributes = [{
-          root = "nginx";
-          interfaceAbi = 1;
-          paths = ["virtualHosts"];
-        }];
-      };
-    }).config.outPath)).success;
+        pname = "contribution-sibling";
+        version = "0";
+        src = null;
+        phases = [];
+        configModule = {
+          src = ../../pkgs/tests/_config-module-smoke;
+          declares = ["nginx.enable"];
+          contributes = [
+            {
+              root = "nginx";
+              interfaceAbi = 1;
+              paths = ["virtualHosts"];
+            }
+          ];
+        };
+      })
+      .config
+      .outPath))
+    .success;
   contributionDescendantAccepted =
     (builtins.tryEval ((pkgs.mkDerivation {
-      pname = "contribution-descendant";
-      version = "0";
-      src = null;
-      phases = [];
-      configModule = {
-        src = ../../pkgs/tests/_config-module-smoke;
-        declares = ["nginx.virtualHosts.demo.enable"];
-        contributes = [{
-          root = "nginx";
-          interfaceAbi = 1;
-          paths = ["virtualHosts"];
-        }];
-      };
-    }).config.outPath)).success;
+        pname = "contribution-descendant";
+        version = "0";
+        src = null;
+        phases = [];
+        configModule = {
+          src = ../../pkgs/tests/_config-module-smoke;
+          declares = ["nginx.virtualHosts.demo.enable"];
+          contributes = [
+            {
+              root = "nginx";
+              interfaceAbi = 1;
+              paths = ["virtualHosts"];
+            }
+          ];
+        };
+      })
+      .config
+      .outPath))
+    .success;
   typedExposeRejects = field: expose:
     lib.throwIfNot
     (!(builtins.tryEval (builtins.deepSeq (pkg.overrideAttrs (_: {inherit expose;})).expose true)).success)
@@ -212,20 +232,24 @@
     units."bad.service" = "not-an-attrset";
   };
   typedArtifactsRejected = typedExposeRejects "config.artifacts" {
-    config.artifacts = [{
-      name = "bad";
-      path = "/etc/aos/packages/expose-smoke/bad.env";
-      optional = "TOKEN";
-    }];
+    config.artifacts = [
+      {
+        name = "bad";
+        path = "/etc/aos/packages/expose-smoke/bad.env";
+        optional = "TOKEN";
+      }
+    ];
   };
   typedPermissionsRejected = typedExposeRejects "permissions" {
     permissions."tcp-bind" = "443";
   };
   typedCredentialsRejected = typedExposeRejects "credentials" {
-    config.credentials = [{
-      name = "bad";
-      encrypted = "yes";
-    }];
+    config.credentials = [
+      {
+        name = "bad";
+        encrypted = "yes";
+      }
+    ];
   };
   minimal = pkgs.mkDerivation {
     pname = "expose-minimal";

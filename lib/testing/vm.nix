@@ -38,7 +38,7 @@
   # ---------------------------------------------------------------------------
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
-  # Produces a single $out/disk.img with four partitions matching the
+  # Produces a single $out/disk.img with the partitions needed to match the
   # production layout closely enough for the production initrd and early-boot
   # provisioning services to run unchanged against it:
   #
@@ -50,14 +50,17 @@
   #              system /etc content lives in the composefs EROFS image
   #              shipped at ${toplevel}/etc-metadata.erofs, mounted by
   #              etc-overlay-setup.service in stage-1.
-  #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
+  #   3  root-b — an empty slot with the same capacity as root-a. Tests
+  #              initially boot only slot A, but stage-2 identity validation
+  #              requires the complete A/B device contract.
+  #   4  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
   #              cryptswap.service's `Requires=` on the auto-instantiated
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  provenance — 1 MiB reserved AOS marker on baked-var disks. It
+  #   5  provenance — 1 MiB reserved AOS marker on baked-var disks. It
   #              identifies this out-of-band layout as already committed.
-  #   5  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
+  #   6  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
   #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
@@ -84,7 +87,7 @@
     # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.
     extraClosures ? [],
-    # Size of the /var partition (partition 5 on baked disks) in MiB. Raise for tests
+    # Size of the /var partition (partition 6 on baked disks) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
     # Only consulted when `varProvisioning == "baked"`; under "repart"
@@ -94,9 +97,9 @@
     # /var/etc lower to keep SELinux disabled. SELinux-specific tests
     # opt out so the system-generated /etc/selinux/config is visible.
     seedSELinuxDisabledConfig ? true,
-    # How /var is provisioned. "baked" (default): /var is partition 4 of
+    # How /var is provisioned. "baked" (default): /var is partition 6 of
     # this image, formatted and seeded at build time. "repart": the
-    # image is boot+root-a+swap only — systemd-repart creates and formats /var
+    # image is boot+root-a+root-b+swap only — systemd-repart creates and formats /var
     # on first boot, so machines differing
     # only in /var size share one base image. The build-time `varSeed` is
     # skipped under "repart"; the guest agent arrives via the
@@ -418,7 +421,7 @@
             # but reserving it keeps root at /dev/vda2 matching production.
             #
             # Under varProvisioning="repart" the image stops at
-            # boot+root-a+swap: systemd-repart creates /var (partition 4) on
+            # boot+root-a+root-b+swap: systemd-repart creates /var in the
             # first boot, so machines differing only in /var size share
             # this one base image. The driver grows the per-run copy to
             # make room before boot (see lib/testing/fleet.nix).
@@ -429,7 +432,8 @@
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
-            SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
+            ROOT_B_START=$(( ROOT_START + ROOT_SECTORS ))
+            SWAP_START=$(( ROOT_B_START + ROOT_SECTORS ))
             ${
               if bakeVar
               then ''
@@ -458,6 +462,7 @@
               echo "label: gpt"
               echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
+              echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
@@ -636,136 +641,136 @@
     memory ? null,
     seedSELinuxDisabledConfig ? true,
   }:
-      if rootfsDeps != null
-      then
-        mkHeadlessTest {
-          inherit
-            name
-            testScript
-            rootfsDeps
-            ;
-          memory =
-            if memory != null
-            then memory
-            else 256;
-        }
-      else if system != null
-      then let
-        systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
-        systemKernel = system.config.system.build.kernel;
-        systemInitrd = system.config.system.build.initrd;
-
-        # Compose Python check fragments into the test source, then
-        # append the user's testScript if provided. Both halves are
-        # Python now; see lib/testing/checks.nix:composeChecks.
-        checksPy =
-          if checks != []
-          then checksLib.composeChecks {inherit groupName checks;}
-          else "";
-        composedTestPy =
-          if checksPy != "" && testScript != null
-          then checksPy + "\n" + testScript
-          else if checksPy != ""
-          then checksPy
-          else if testScript != null
-          then testScript
-          else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
-
-        effectiveMemory =
+    if rootfsDeps != null
+    then
+      mkHeadlessTest {
+        inherit
+          name
+          testScript
+          rootfsDeps
+          ;
+        memory =
           if memory != null
           then memory
-          else 2048;
+          else 256;
+      }
+    else if system != null
+    then let
+      systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
+      systemKernel = system.config.system.build.kernel;
+      systemInitrd = system.config.system.build.initrd;
 
-        # Driver manifest. The aos-test-driver consumes this JSON to
-        # build one FirecrackerMachine; the testScript runs as a
-        # Python module via runpy with `vm` exposed as a global. See
-        # the v1 spec ("Manifest schema") for the full field list.
-        manifest = {
-          inherit name timeout;
-          machines = [
-            {
-              name = "vm";
-              transport = "firecracker";
-              # The driver feeds this to Firecracker as the boot kernel, which
-              # must be the uncompressed vmlinux ELF — sourced from the kernel's
-              # separate `vmlinux` output (the system's `out` /boot has only the
-              # compressed vmlinuz). Matches the system's own kernel build.
-              kernel = builtins.toString systemKernel.vmlinux;
-              initrd = "${builtins.toString systemInitrd}/initrd.img";
-              disk = "${builtins.toString systemDisk}/disk.img";
-              # Single-VM tests bake all config into the system /etc; no metadata
-              # channel because machine identity is baked into the image.
-              metadata = null;
-              memory_mib = effectiveMemory;
-              vcpu_count = 2;
-            }
-          ];
-        };
-        manifestFile = pkgs.writeTextFile {
-          name = "aos-vm-test-${name}-manifest.json";
-          text = builtins.toJSON manifest;
-          destination = "/manifest.json";
-        };
-        testPyFile = pkgs.writeTextFile {
-          name = "aos-vm-test-${name}-test.py";
-          text = composedTestPy;
-          destination = "/test.py";
-        };
+      # Compose Python check fragments into the test source, then
+      # append the user's testScript if provided. Both halves are
+      # Python now; see lib/testing/checks.nix:composeChecks.
+      checksPy =
+        if checks != []
+        then checksLib.composeChecks {inherit groupName checks;}
+        else "";
+      composedTestPy =
+        if checksPy != "" && testScript != null
+        then checksPy + "\n" + testScript
+        else if checksPy != ""
+        then checksPy
+        else if testScript != null
+        then testScript
+        else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
 
-        driverBuildDeps = [
-          pkgs.coreutils
-          firecracker
-          pkgs.socat
-          pkgs.python3
-          pkgs.aos-test-driver
+      effectiveMemory =
+        if memory != null
+        then memory
+        else 2048;
+
+      # Driver manifest. The aos-test-driver consumes this JSON to
+      # build one FirecrackerMachine; the testScript runs as a
+      # Python module via runpy with `vm` exposed as a global. See
+      # the v1 spec ("Manifest schema") for the full field list.
+      manifest = {
+        inherit name timeout;
+        machines = [
+          {
+            name = "vm";
+            transport = "firecracker";
+            # The driver feeds this to Firecracker as the boot kernel, which
+            # must be the uncompressed vmlinux ELF — sourced from the kernel's
+            # separate `vmlinux` output (the system's `out` /boot has only the
+            # compressed vmlinuz). Matches the system's own kernel build.
+            kernel = builtins.toString systemKernel.vmlinux;
+            initrd = "${builtins.toString systemInitrd}/initrd.img";
+            disk = "${builtins.toString systemDisk}/disk.img";
+            # Single-VM tests bake all config into the system /etc; no metadata
+            # channel because machine identity is baked into the image.
+            metadata = null;
+            memory_mib = effectiveMemory;
+            vcpu_count = 2;
+          }
+        ];
+      };
+      manifestFile = pkgs.writeTextFile {
+        name = "aos-vm-test-${name}-manifest.json";
+        text = builtins.toJSON manifest;
+        destination = "/manifest.json";
+      };
+      testPyFile = pkgs.writeTextFile {
+        name = "aos-vm-test-${name}-test.py";
+        text = composedTestPy;
+        destination = "/test.py";
+      };
+
+      driverBuildDeps = [
+        pkgs.coreutils
+        firecracker
+        pkgs.socat
+        pkgs.python3
+        pkgs.aos-test-driver
+      ];
+
+      # -----------------------------------------------------------------------
+      # Firecracker driver script (system mode)
+      # -----------------------------------------------------------------------
+      # The host-side glue is now thin: write manifest + test.py into
+      # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
+      # plumbing (Firecracker JSON, vsock handshake, agent wait,
+      # shutdown) lives in aos_test_driver/firecracker.py.
+      firecrackerDriverScript = ''
+        set -eu
+
+        # AOS build libs can conflict with the driver's child processes
+        # (Firecracker, python's own runtime linker). Match what the
+        # bash driver did.
+        unset LD_LIBRARY_PATH
+
+        cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
+        cp ${testPyFile}/test.py         "$TMPDIR/test.py"
+
+        ${pkgs.aos-test-driver}/bin/aos-test-driver \
+          --manifest "$TMPDIR/manifest.json" \
+          --test     "$TMPDIR/test.py"
+
+        mkdir -p "$out"
+        for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
+          [ -f "$log" ] && cp "$log" "$out/"
+        done
+        echo PASS > "$out/result"
+      '';
+    in
+      pkgs.mkDerivation {
+        pname = "aos-vm-test-${name}";
+        version = "0";
+        src = null;
+
+        buildDeps = driverBuildDeps;
+
+        phases = [
+          {
+            name = "test";
+            script = firecrackerDriverScript;
+          }
         ];
 
-        # -----------------------------------------------------------------------
-        # Firecracker driver script (system mode)
-        # -----------------------------------------------------------------------
-        # The host-side glue is now thin: write manifest + test.py into
-        # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
-        # plumbing (Firecracker JSON, vsock handshake, agent wait,
-        # shutdown) lives in aos_test_driver/firecracker.py.
-        firecrackerDriverScript = ''
-          set -eu
-
-          # AOS build libs can conflict with the driver's child processes
-          # (Firecracker, python's own runtime linker). Match what the
-          # bash driver did.
-          unset LD_LIBRARY_PATH
-
-          cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
-          cp ${testPyFile}/test.py         "$TMPDIR/test.py"
-
-          ${pkgs.aos-test-driver}/bin/aos-test-driver \
-            --manifest "$TMPDIR/manifest.json" \
-            --test     "$TMPDIR/test.py"
-
-          mkdir -p "$out"
-          for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
-            [ -f "$log" ] && cp "$log" "$out/"
-          done
-          echo PASS > "$out/result"
-        '';
-      in
-        pkgs.mkDerivation {
-          pname = "aos-vm-test-${name}";
-          version = "0";
-          src = null;
-
-          buildDeps = driverBuildDeps;
-
-          phases = [
-            {
-              name = "test";
-              script = firecrackerDriverScript;
-            }
-          ];
-
-          requiredSystemFeatures = ["kvm"];
-        }
-      else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
+        requiredSystemFeatures = ["kvm"];
+      }
+    else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
 in {
   inherit mkVMTest mkTestDisk;
 }

@@ -43,5 +43,8 @@ in
       };
     };
 
-    meta.description = "AOS desired package prune sequencing test payload";
+    meta = {
+      description = "AOS desired package prune sequencing test payload";
+      license = "Apache-2.0";
+    };
   }

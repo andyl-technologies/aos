@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
@@ -11,20 +11,28 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use aos_core::output::Printer;
+use aos_core::error::AosError;
+use aos_core::output::{ActivityProgress, OutputMode, Printer, TransferProgress};
+use aos_net::{
+    TransferEvent, TransferManager, TransferManagerConfig, TransferObserver, TransferOutput,
+    TransferRequest, TransferSink,
+};
 use aos_remote::hub::{HubClient, hub_rpc};
 use aos_remote::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
-use futures_util::StreamExt as _;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::io::AsyncWriteExt as _;
 
 use crate::cli::{ImageCommand, ImageDownloadArgs, ImageSelectionArgs};
 
 const IMAGE_PAGE_SIZE: u32 = 1_000;
 const MAX_IMAGE_RESULTS: usize = 100_000;
 const MAX_IMAGE_PAGES: usize = 1_000;
+const DEFAULT_DISCOVERY_RETRIES: u32 = 2;
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// Runs an `aos image` command.
 ///
@@ -35,36 +43,26 @@ const MAX_IMAGE_PAGES: usize = 1_000;
 pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
     match command {
         ImageCommand::List(args) => {
-            let images = request_images(&args.selection, false).await?;
+            let activity =
+                printer.activity(&format!("Resolving images from {}", args.selection.hub));
+            let images =
+                request_images(&args.selection, false, DEFAULT_DISCOVERY_RETRIES, &activity)
+                    .await?;
+            activity.finish();
             if printer.json_if_active(&serde_json::to_value(&images)?) {
                 return Ok(());
             }
-            for image in images {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    image.package,
-                    image.release,
-                    if image.channel.is_empty() {
-                        "-"
-                    } else {
-                        &image.channel
-                    },
-                    image.architecture,
-                    image.format,
-                    image.compatible_targets.join(","),
-                    image.byte_size,
-                    image.release_verification,
-                    image.boot_verification,
-                    image.sha256,
-                    image.filename,
-                );
-            }
+            print_image_table(&images);
             Ok(())
         }
         ImageCommand::Show(args) => {
-            let image = resolve_image(&args.selection).await?;
+            let activity =
+                printer.activity(&format!("Resolving image from {}", args.selection.hub));
+            let image =
+                resolve_image(&args.selection, DEFAULT_DISCOVERY_RETRIES, &activity).await?;
+            activity.finish();
             if !printer.json_if_active(&serde_json::to_value(&image)?) {
-                println!("{}", serde_json::to_string_pretty(&image)?);
+                print_image_details(&image);
             }
             Ok(())
         }
@@ -72,7 +70,37 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
     }
 }
 
-async fn request_images(selection: &ImageSelectionArgs, resolve: bool) -> Result<Vec<SystemImage>> {
+async fn request_images(
+    selection: &ImageSelectionArgs,
+    resolve: bool,
+    retries: u32,
+    activity: &ActivityProgress,
+) -> Result<Vec<SystemImage>> {
+    let mut attempt = 0_u32;
+    loop {
+        match request_images_once(selection, resolve).await {
+            Ok(images) => return Ok(images),
+            Err(error) if attempt < retries => {
+                attempt += 1;
+                let exponent = attempt.saturating_sub(1).min(3);
+                let delay = RETRY_BASE_DELAY.saturating_mul(2_u32.pow(exponent));
+                activity.warning(&format!(
+                    "image catalog request failed ({error:#}); retrying in {}s (attempt {}/{})",
+                    delay.as_secs(),
+                    attempt + 1,
+                    retries + 1,
+                ));
+                tokio::time::sleep(delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn request_images_once(
+    selection: &ImageSelectionArgs,
+    resolve: bool,
+) -> Result<Vec<SystemImage>> {
     reject_insecure_bearer(&selection.hub, selection.token.as_deref())?;
     let client = match selection.token.as_deref() {
         Some(token) => HubClient::connect_with_token(&selection.hub, token)?,
@@ -166,124 +194,464 @@ impl ImagePagination {
     }
 }
 
-async fn resolve_image(selection: &ImageSelectionArgs) -> Result<SystemImage> {
-    let mut images = request_images(selection, true).await?;
+async fn resolve_image(
+    selection: &ImageSelectionArgs,
+    retries: u32,
+    activity: &ActivityProgress,
+) -> Result<SystemImage> {
+    let mut images = request_images(selection, true, retries, activity).await?;
     images.pop().context("Hub returned no resolved image")
 }
 
 async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
-    let image = resolve_image(&args.selection).await?;
+    let activity = printer.activity(&format!("Resolving image from {}", args.selection.hub));
+    let image = resolve_image(&args.selection, args.retries, &activity).await?;
+    activity.finish();
     validate_filename(&image.filename)?;
     validate_sha256(&image.sha256)?;
     let output = args
         .output
         .clone()
         .unwrap_or_else(|| PathBuf::from(&image.filename));
-    let mut destination = SecureDestination::open(&output, args.no_resume)?;
-    let existing = destination.existing_len();
-    if existing > image.byte_size {
-        bail!("existing output is larger than the signed image size");
+    print_download_summary(&image, &output, printer)?;
+
+    let existing_check_started = Instant::now();
+    if existing_final_matches(&output, &image, printer)? {
+        print_download_result(
+            &output,
+            &image,
+            0,
+            existing_check_started.elapsed(),
+            true,
+            printer,
+        )?;
+        return Ok(());
     }
-    if existing < image.byte_size {
-        let download_url = validate_download_url(&image.download_url)?;
-        let hub_url = reqwest::Url::parse(&args.selection.hub).context("invalid Hub URL")?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("building image download client")?;
-        let mut request = client.get(download_url.clone());
-        if same_origin(&hub_url, &download_url)
-            && let Some(token) = &args.selection.token
-        {
-            request = request.bearer_auth(token);
+
+    prepare_partial_identity(&output, &image, args.no_resume, printer)?;
+    let mut transfer = printer.transfer("Checking partial download", image.byte_size);
+    let mut destination = SecureDestination::open(&output, args.no_resume, Some(&transfer))?;
+    let mut resumed_from = destination.existing_len();
+    let mut may_retry_without_partial = resumed_from > 0 && !args.no_resume;
+    loop {
+        let existing = destination.existing_len();
+        if existing > image.byte_size {
+            bail!("existing output is larger than the signed image size");
         }
-        if existing > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        if existing < image.byte_size {
+            transfer.phase("Downloading image");
+            transfer.set_position(existing);
+            download_image_bytes(args, &image, &output, &mut destination, &transfer).await?;
+            destination.sync_all()?;
         }
-        let response = request.send().await.context("downloading image bytes")?;
-        let expected = if existing > 0 {
-            reqwest::StatusCode::PARTIAL_CONTENT
-        } else {
-            reqwest::StatusCode::OK
-        };
-        if response.status() != expected {
+        transfer.phase("Verifying SHA-256");
+        let size = destination.current_len()?;
+        if size != image.byte_size {
             bail!(
-                "image download returned {}, expected {expected}",
-                response.status()
-            );
-        }
-        if existing > 0 {
-            let content_range = response
-                .headers()
-                .get(reqwest::header::CONTENT_RANGE)
-                .and_then(|value| value.to_str().ok())
-                .context("resumed image response omitted Content-Range")?;
-            let expected_range = format!(
-                "bytes {existing}-{}/{}",
-                image.byte_size - 1,
+                "downloaded image size {size} does not match signed size {}",
                 image.byte_size
             );
-            if content_range != expected_range {
-                bail!("resumed image response has inconsistent Content-Range");
-            }
         }
-        let expected_body = image.byte_size - existing;
-        // Workers and intermediary proxies may legitimately stream a response
-        // with chunked framing. Validate Content-Length when it is present,
-        // then enforce the signed size while consuming the body in all cases.
-        if response
-            .content_length()
-            .is_some_and(|length| length != expected_body)
-        {
-            bail!("image response length does not match signed remaining byte count");
+        let actual = destination.final_sha256()?;
+        if actual == image.sha256 {
+            break;
         }
-        let mut file = destination.take_async_file()?;
-        let mut received = 0_u64;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("reading image response")?;
-            received = received
-                .checked_add(chunk.len() as u64)
-                .context("image response byte count overflow")?;
-            if received > expected_body {
-                bail!("image response exceeded the signed byte size");
-            }
-            destination.hash_bytes(&chunk);
-            file.write_all(&chunk).await?;
+
+        destination.restart()?;
+        if may_retry_without_partial {
+            printer.warning(
+                "resumed image failed SHA-256 verification; restarting the download from zero",
+            );
+            transfer.set_position(0);
+            resumed_from = 0;
+            may_retry_without_partial = false;
+            continue;
         }
-        if received != expected_body {
-            bail!("image response ended before the signed byte size");
-        }
-        file.sync_all().await?;
-        destination.restore_async_file(file).await?;
-    }
-    let size = destination.current_len()?;
-    if size != image.byte_size {
-        bail!(
-            "downloaded image size {size} does not match signed size {}",
-            image.byte_size
-        );
-    }
-    let actual = destination.final_sha256()?;
-    if actual != image.sha256 {
         bail!(
             "downloaded image SHA-256 mismatch: expected {}, got {actual}",
             image.sha256
         );
     }
     destination.commit()?;
+    let elapsed = transfer.elapsed();
+    transfer.finish();
+    print_download_result(&output, &image, resumed_from, elapsed, false, printer)
+}
+
+async fn download_image_bytes(
+    args: &ImageDownloadArgs,
+    image: &SystemImage,
+    output: &Path,
+    destination: &mut SecureDestination,
+    transfer: &TransferProgress,
+) -> Result<()> {
+    let download_url = validate_download_url(&image.download_url)?;
+    let hub_url = reqwest::Url::parse(&args.selection.hub).context("invalid Hub URL")?;
+    let mut config = TransferManagerConfig::default();
+    config.pool.connect_timeout = Duration::from_secs(15);
+    config.retry.max_attempts = args.retries.saturating_add(1).max(1);
+    config.retry.initial_delay = RETRY_BASE_DELAY;
+    config.retry.max_delay = Duration::from_secs(8);
+    config.retry.backoff_factor = 2.0;
+    config.retry.jitter = false;
+    config.follow_http_redirects = false;
+    let manager = TransferManager::new(config);
+
+    let sink = destination.take_sink(image.byte_size)?;
+    let output_sink: Arc<dyn TransferSink> = sink.clone();
+    let mut request = TransferRequest::get(download_url.as_str())
+        .with_resume()
+        .with_expected_size(image.byte_size)
+        .with_maximum_bytes(image.byte_size);
+    request.output = TransferOutput::Sink(output_sink);
+    if same_origin(&hub_url, &download_url)
+        && let Some(token) = &args.selection.token
+    {
+        request = request.with_header("Authorization", &format!("Bearer {token}"));
+    }
+
+    let observer = ImageTransferObserver { transfer };
+    let result = {
+        let execute = manager.execute_observed(request, &observer);
+        tokio::pin!(execute);
+        tokio::select! {
+            result = &mut execute => result,
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("installing image download interrupt handler")?;
+                let partial = partial_path(output)?;
+                Err(AosError::Interrupted {
+                    message: format!(
+                        "download paused at {}; partial saved at {}; run the same command to resume",
+                        human_bytes(sink.position()?),
+                        partial.display(),
+                    ),
+                }
+                .into())
+            }
+        }
+    };
+    if result.is_err() {
+        sink.sync_data()
+            .context("syncing incomplete image download")?;
+    }
+    destination.restore_sink(sink)?;
+    result.context("downloading image bytes")?;
+    Ok(())
+}
+
+struct ImageTransferObserver<'a> {
+    transfer: &'a TransferProgress,
+}
+
+impl TransferObserver for ImageTransferObserver<'_> {
+    fn observe(&self, event: TransferEvent<'_>) {
+        match event {
+            TransferEvent::Started { resumed_bytes, .. } => {
+                self.transfer.set_position(resumed_bytes);
+            }
+            TransferEvent::Progress {
+                transferred_bytes, ..
+            }
+            | TransferEvent::Completed {
+                transferred_bytes, ..
+            } => self.transfer.set_position(transferred_bytes),
+            TransferEvent::Retrying {
+                attempt,
+                delay,
+                error,
+                ..
+            } => self.transfer.warning(&format!(
+                "transfer interrupted ({error:#}); retrying in {}s (attempt {attempt})",
+                delay.as_secs()
+            )),
+            TransferEvent::Verifying { .. } | TransferEvent::Failed { .. } => {}
+        }
+    }
+}
+
+fn existing_final_matches(output: &Path, image: &SystemImage, printer: &Printer) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(output) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", output.display()));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        bail!("final image destination exists and is not a regular file");
+    }
+    if metadata.len() != image.byte_size {
+        bail!(
+            "final image destination already exists but has size {}, expected {}; choose another --output or remove it explicitly",
+            human_bytes(metadata.len()),
+            human_bytes(image.byte_size),
+        );
+    }
+
+    let progress = printer.transfer("Checking existing image", image.byte_size);
+    let mut file = fs::File::open(output)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        progress.inc(count as u64);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    progress.finish();
+    if actual != image.sha256 {
+        bail!(
+            "final image destination already exists but its SHA-256 does not match; choose another --output or remove it explicitly"
+        );
+    }
+    Ok(true)
+}
+
+fn print_download_summary(image: &SystemImage, output: &Path, printer: &Printer) -> Result<()> {
+    if matches!(printer.mode(), OutputMode::Quiet | OutputMode::Json) {
+        return Ok(());
+    }
+    printer.header(&format!("{} {}", image.package, image.release));
+    printer.plain(&format!(
+        "  {} · {} · {}",
+        image.architecture,
+        image.format,
+        human_bytes(image.byte_size),
+    ));
+    printer.plain(&format!("  -> {}", absolute_path(output)?.display()));
+    if image.boot_verification != "verified" {
+        printer.warning(&format!(
+            "boot payload is {}; review firmware trust policy before booting",
+            image.boot_verification,
+        ));
+    }
+    Ok(())
+}
+
+fn print_download_result(
+    output: &Path,
+    image: &SystemImage,
+    resumed_from: u64,
+    elapsed: Duration,
+    already_present: bool,
+    printer: &Printer,
+) -> Result<()> {
+    let path = absolute_path(output)?;
     if printer.json_if_active(&serde_json::json!({
-        "path": output,
+        "status": if already_present { "already_downloaded" } else { "downloaded" },
+        "path": path,
+        "release": image.release,
         "byteSize": image.byte_size,
         "sha256": image.sha256,
         "verified": true,
-        "resumedFrom": existing,
+        "resumedFrom": resumed_from,
+        "elapsedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
     })) {
         return Ok(());
     }
-    printer.success(&format!("Downloaded {}", output.display()));
-    println!("{}", output.display());
+    let verb = if already_present {
+        "Already downloaded"
+    } else {
+        "Downloaded"
+    };
+    printer.success(&format!(
+        "{verb} {} · {} in {}",
+        output.display(),
+        human_bytes(image.byte_size),
+        format_duration(elapsed),
+    ));
+    printer.plain(&format!(
+        "  Verified release · sha256:{}...",
+        &image.sha256[..12]
+    ));
+    println!("{}", path.display());
     Ok(())
+}
+
+fn print_image_table(images: &[SystemImage]) {
+    println!(
+        "{:<20} {:<8} {:<7} {:<24} {:>10}  {:<9} {:<10}",
+        "RELEASE", "ARCH", "FORMAT", "TARGETS", "SIZE", "RELEASE", "BOOT"
+    );
+    for image in images {
+        println!(
+            "{:<20} {:<8} {:<7} {:<24} {:>10}  {:<9} {:<10}",
+            image.release,
+            image.architecture,
+            image.format,
+            image.compatible_targets.join(","),
+            human_bytes(image.byte_size),
+            image.release_verification,
+            image.boot_verification,
+        );
+    }
+}
+
+fn print_image_details(image: &SystemImage) {
+    println!("{} {}", image.package, image.release);
+    println!("  Architecture       {}", image.architecture);
+    println!("  Format             {}", image.format);
+    println!(
+        "  Targets            {}",
+        image.compatible_targets.join(", ")
+    );
+    println!("  Download size      {}", human_bytes(image.byte_size));
+    println!("  Release signature  {}", image.release_verification);
+    println!("  Boot payload       {}", image.boot_verification);
+    println!("  SHA-256            {}", image.sha256);
+    println!("  Filename           {}", image.filename);
+}
+
+fn partial_path(output: &Path) -> Result<PathBuf> {
+    let filename = output
+        .file_name()
+        .context("image output must name a file")?;
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let mut partial = OsString::from(".");
+    partial.push(filename);
+    partial.push(".aos-part");
+    Ok(parent.join(partial))
+}
+
+fn partial_identity_path(output: &Path) -> Result<PathBuf> {
+    let partial = partial_path(output)?;
+    let filename = partial
+        .file_name()
+        .context("partial image output must name a file")?;
+    let mut identity = filename.to_os_string();
+    identity.push(".json");
+    Ok(partial.with_file_name(identity))
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialDownloadIdentity {
+    schema_version: u32,
+    package: String,
+    release: String,
+    architecture: String,
+    format: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+impl From<&SystemImage> for PartialDownloadIdentity {
+    fn from(image: &SystemImage) -> Self {
+        Self {
+            schema_version: 1,
+            package: image.package.clone(),
+            release: image.release.clone(),
+            architecture: image.architecture.clone(),
+            format: image.format.clone(),
+            byte_size: image.byte_size,
+            sha256: image.sha256.clone(),
+        }
+    }
+}
+
+fn prepare_partial_identity(
+    output: &Path,
+    image: &SystemImage,
+    restart: bool,
+    printer: &Printer,
+) -> Result<()> {
+    let expected = PartialDownloadIdentity::from(image);
+    let identity_path = partial_identity_path(output)?;
+    let partial_exists = partial_path(output)?.exists();
+    if let Some(found) = read_partial_identity(&identity_path)? {
+        if found == expected && !restart {
+            return Ok(());
+        }
+        if found != expected && !restart {
+            bail!(
+                "partial download belongs to {} {} ({}), but the selected image is {} {} ({}); choose another --output or restart with --no-resume",
+                found.package,
+                found.release,
+                found.sha256.get(..12).unwrap_or(&found.sha256),
+                expected.package,
+                expected.release,
+                expected.sha256.get(..12).unwrap_or(&expected.sha256),
+            );
+        }
+        fs::remove_file(&identity_path)
+            .with_context(|| format!("replacing {}", identity_path.display()))?;
+    } else if partial_exists && !restart {
+        printer.warning(
+            "resuming a partial created by an older CLI; final size and SHA-256 will still be verified",
+        );
+    }
+
+    let parent = identity_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating download identity in {}", parent.display()))?;
+    serde_json::to_writer(temporary.as_file_mut(), &expected)
+        .context("encoding partial download identity")?;
+    use std::io::Write as _;
+    temporary.as_file_mut().write_all(b"\n")?;
+    temporary.as_file_mut().sync_all()?;
+    temporary
+        .persist_noclobber(&identity_path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("installing {}", identity_path.display()))?;
+    Ok(())
+}
+
+fn read_partial_identity(path: &Path) -> Result<Option<PartialDownloadIdentity>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
+    };
+    if !metadata.file_type().is_file() {
+        bail!("partial download identity must be a regular non-symlink file");
+    }
+    #[cfg(unix)]
+    if metadata.nlink() != 1 {
+        bail!("partial download identity must not be hard-linked");
+    }
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding {}", path.display()))
+        .map(Some)
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()
+            .context("resolving current directory")?
+            .join(path))
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration < Duration::from_secs(1) {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{:.1}s", duration.as_secs_f64())
+    }
 }
 
 /// Descriptor-relative destination state for resumable, atomic downloads.
@@ -291,10 +659,77 @@ struct SecureDestination {
     directory: fs::File,
     final_name: OsString,
     partial_name: OsString,
+    identity_name: OsString,
     file: Option<fs::File>,
     hasher: Option<Sha256>,
     existing: u64,
     partial_identity: DestinationIdentity,
+}
+
+/// Replayable writer backed by an already-validated destination descriptor.
+struct SecureImageSink {
+    file: Mutex<fs::File>,
+    hasher: Mutex<Sha256>,
+    expected_size: u64,
+}
+
+impl SecureImageSink {
+    fn sync_data(&self) -> Result<()> {
+        self.file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .sync_data()?;
+        Ok(())
+    }
+}
+
+impl TransferSink for SecureImageSink {
+    fn position(&self) -> Result<u64> {
+        Ok(self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .metadata()?
+            .len())
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<()> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?;
+        let new_size = file
+            .metadata()?
+            .len()
+            .checked_add(bytes.len() as u64)
+            .context("image response byte count overflow")?;
+        anyhow::ensure!(
+            new_size <= self.expected_size,
+            "image response exceeded the signed byte size"
+        );
+        let mut hasher = self
+            .hasher
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image hash lock was poisoned"))?;
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let written = file.write(remaining)?;
+            if written == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            hasher.update(&remaining[..written]);
+            remaining = &remaining[written..];
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image destination lock was poisoned"))?
+            .flush()?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -309,7 +744,7 @@ struct DestinationIdentity {
 }
 
 impl SecureDestination {
-    fn open(output: &Path, restart: bool) -> Result<Self> {
+    fn open(output: &Path, restart: bool, progress: Option<&TransferProgress>) -> Result<Self> {
         let final_name = output
             .file_name()
             .filter(|name| *name != OsStr::new(".") && *name != OsStr::new(".."))
@@ -333,6 +768,8 @@ impl SecureDestination {
         let mut partial_name = OsString::from(".");
         partial_name.push(&final_name);
         partial_name.push(".aos-part");
+        let mut identity_name = partial_name.clone();
+        identity_name.push(".json");
 
         if open_regular_at(&directory, &final_name, false)?.is_some() {
             bail!(
@@ -361,6 +798,9 @@ impl SecureDestination {
                     break;
                 }
                 hasher.update(&buffer[..count]);
+                if let Some(progress) = progress {
+                    progress.inc(count as u64);
+                }
             }
         }
         file.seek(SeekFrom::End(0))?;
@@ -368,6 +808,7 @@ impl SecureDestination {
             directory,
             final_name,
             partial_name,
+            identity_name,
             file: Some(file),
             hasher: Some(hasher),
             existing: if restart { 0 } else { existing },
@@ -379,21 +820,40 @@ impl SecureDestination {
         self.existing
     }
 
-    fn hash_bytes(&mut self, bytes: &[u8]) {
-        if let Some(hasher) = &mut self.hasher {
-            hasher.update(bytes);
-        }
-    }
-
-    fn take_async_file(&mut self) -> Result<tokio::fs::File> {
-        self.file
+    fn take_sink(&mut self, expected_size: u64) -> Result<Arc<SecureImageSink>> {
+        let file = self
+            .file
+            .as_ref()
+            .context("image destination descriptor is unavailable")?
+            .try_clone()
+            .context("cloning image destination descriptor")?;
+        let hasher = self
+            .hasher
             .take()
-            .map(tokio::fs::File::from_std)
-            .context("image destination descriptor is unavailable")
+            .context("image destination hash state is unavailable")?;
+        Ok(Arc::new(SecureImageSink {
+            file: Mutex::new(file),
+            hasher: Mutex::new(hasher),
+            expected_size,
+        }))
     }
 
-    async fn restore_async_file(&mut self, file: tokio::fs::File) -> Result<()> {
-        self.file = Some(file.into_std().await);
+    fn restore_sink(&mut self, sink: Arc<SecureImageSink>) -> Result<()> {
+        let sink = Arc::try_unwrap(sink)
+            .map_err(|_| anyhow::anyhow!("image transfer retained its destination sink"))?;
+        self.hasher = Some(
+            sink.hasher
+                .into_inner()
+                .map_err(|_| anyhow::anyhow!("image hash lock was poisoned"))?,
+        );
+        Ok(())
+    }
+
+    fn sync_all(&self) -> Result<()> {
+        self.file
+            .as_ref()
+            .context("image destination descriptor is unavailable")?
+            .sync_all()?;
         Ok(())
     }
 
@@ -413,6 +873,27 @@ impl SecureDestination {
             .context("image destination has already been verified")?
             .finalize();
         Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    /// Clears invalid bytes through the retained descriptor for a clean retry.
+    fn restart(&mut self) -> Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .context("image destination descriptor is unavailable")?;
+        let retained = destination_identity(&file.metadata()?)?;
+        if retained.device_inode() != self.partial_identity.device_inode()
+            || !retained.single_link()
+        {
+            bail!("resumable image output identity changed before restart");
+        }
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.sync_data()?;
+        self.hasher = Some(Sha256::new());
+        self.existing = 0;
+        self.partial_identity = destination_identity(&file.metadata()?)?;
+        Ok(())
     }
 
     fn commit(self) -> Result<()> {
@@ -488,6 +969,11 @@ impl SecureDestination {
                 .context("removing a hard-linked finalized image")?;
                 bail!("final image acquired an unexpected hard link");
             }
+            let _ = rustix::fs::unlinkat(
+                &self.directory,
+                &self.identity_name,
+                rustix::fs::AtFlags::empty(),
+            );
             Ok(())
         })();
         if result.is_err() {
@@ -575,6 +1061,11 @@ impl SecureDestination {
                 .context("removing a hard-linked finalized image")?;
                 bail!("final image acquired an unexpected hard link");
             }
+            let _ = rustix::fs::unlinkat(
+                &self.directory,
+                &self.identity_name,
+                rustix::fs::AtFlags::empty(),
+            );
             Ok(())
         })();
         if result.is_err() {
@@ -889,6 +1380,52 @@ mod tests {
         assert!(validate_download_url("https://images.example/object#fragment").is_err());
     }
 
+    #[test]
+    fn partial_identity_prevents_cross_release_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("disk.img");
+        let printer = Printer::new(0, true, false);
+        let mut first = SystemImage {
+            package: "aos".into(),
+            release: "1.0.0".into(),
+            architecture: "x86_64".into(),
+            format: "qcow2".into(),
+            byte_size: 1024,
+            sha256: "a".repeat(64),
+            ..SystemImage::default()
+        };
+        prepare_partial_identity(&output, &first, false, &printer).unwrap();
+        fs::write(partial_path(&output).unwrap(), b"partial").unwrap();
+
+        first.release = "1.0.1".into();
+        first.sha256 = "b".repeat(64);
+        let error = prepare_partial_identity(&output, &first, false, &printer).unwrap_err();
+        assert!(error.to_string().contains("belongs to aos 1.0.0"));
+
+        prepare_partial_identity(&output, &first, true, &printer).unwrap();
+        assert_eq!(
+            read_partial_identity(&partial_identity_path(&output).unwrap())
+                .unwrap()
+                .unwrap(),
+            PartialDownloadIdentity::from(&first),
+        );
+    }
+
+    #[test]
+    fn partial_identity_rejects_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("disk.img");
+        let identity = partial_identity_path(&output).unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"{}").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &identity).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &identity).unwrap();
+
+        assert!(read_partial_identity(&identity).is_err());
+    }
+
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn atomic_finalize_installs_one_verified_inode_without_overwrite() {
@@ -896,7 +1433,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
-        let mut destination = SecureDestination::open(&output, true).unwrap();
+        let mut destination = SecureDestination::open(&output, true, None).unwrap();
         destination
             .file
             .as_mut()
@@ -909,12 +1446,34 @@ mod tests {
         assert_eq!(std::fs::metadata(&output).unwrap().nlink(), 1);
     }
 
+    #[test]
+    fn secure_destination_restart_clears_bytes_and_hash_state() {
+        use std::io::Write as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("disk.img");
+        let mut destination = SecureDestination::open(&output, true, None).unwrap();
+        destination
+            .file
+            .as_mut()
+            .unwrap()
+            .write_all(b"corrupt prefix")
+            .unwrap();
+        destination.hasher.as_mut().unwrap().update(b"corrupt prefix");
+
+        destination.restart().unwrap();
+
+        assert_eq!(destination.existing_len(), 0);
+        assert_eq!(destination.current_len().unwrap(), 0);
+        assert_eq!(destination.final_sha256().unwrap(), format!("{:x}", Sha256::digest([])));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn atomic_finalize_rejects_early_name_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
-        let destination = SecureDestination::open(&output, true).unwrap();
+        let destination = SecureDestination::open(&output, true, None).unwrap();
         let partial = temp.path().join(".disk.img.aos-part");
         let displaced = temp.path().join("displaced");
         std::fs::rename(&partial, &displaced).unwrap();
@@ -929,7 +1488,7 @@ mod tests {
     fn atomic_finalize_rejects_replacement_after_verified_link() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
-        let destination = SecureDestination::open(&output, true).unwrap();
+        let destination = SecureDestination::open(&output, true, None).unwrap();
         let partial = temp.path().join(".disk.img.aos-part");
         let displaced = temp.path().join("displaced");
         assert!(
@@ -949,7 +1508,7 @@ mod tests {
     fn atomic_finalize_rejects_hardlinked_partial() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
-        let destination = SecureDestination::open(&output, true).unwrap();
+        let destination = SecureDestination::open(&output, true, None).unwrap();
         std::fs::hard_link(
             temp.path().join(".disk.img.aos-part"),
             temp.path().join("alias"),

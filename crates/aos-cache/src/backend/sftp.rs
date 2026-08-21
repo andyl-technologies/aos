@@ -56,6 +56,10 @@ impl SftpBackend {
 
 #[async_trait]
 impl CacheBackend for SftpBackend {
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        Some(self.engine.as_ref())
+    }
+
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.remote_url(relative_path.trim_start_matches('/'));
         let result = self.engine.head(&url).await?;

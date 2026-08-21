@@ -108,12 +108,15 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
     Ok(())
 }
 
-/// Ensure every reachable object has a loose copy in the root `/objects/` store.
+/// Ensure every reachable object has a canonical loose copy in the root
+/// `/objects/` store.
 ///
 /// Enumerates every object reachable from the repository's refs (including
-/// objects that live only in per-release pack alternates) and writes any that
-/// are not already loose into `objects/xx/rest`, so dumb-HTTP clients can fetch
-/// the full graph.
+/// objects that live only in per-release pack alternates) and writes each into
+/// `objects/xx/rest`, so dumb-HTTP clients and Hub indexers can fetch the full
+/// graph. The stored-block zlib representation is canonical across compressor
+/// versions, making the immutable URL identify stable wire bytes as well as the
+/// decompressed Git object.
 ///
 /// # Errors
 ///
@@ -127,16 +130,12 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     let objects_dir = git_dir.join("objects");
 
     // Every reachable object (including those living only in per-release pack
-    // alternates) is read from the object database and written as a loose
-    // object in the root store, which is what dumb-HTTP clients fetch. We write
-    // the loose file directly rather than via `Odb::write`, which is a no-op
-    // when the object already exists in a pack and so would not create the
-    // loose copy.
+    // alternates) is read from the object database and written canonically in
+    // the root store. We write the loose file directly rather than via
+    // `Odb::write`, which is a no-op when the object already exists in a pack
+    // and preserves producer-dependent zlib bytes when it exists loose.
     for oid in reachable_objects(&repository)? {
         let loose = objects_dir.join(loose_object_path(&oid.to_string())?);
-        if loose.exists() {
-            continue;
-        }
         let object = odb
             .read(oid)
             .with_context(|| format!("reading reachable object {oid}"))?;
@@ -153,7 +152,6 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
 /// pre-image whose SHA-256 is the object id; the write is atomic via a temp
 /// file rename.
 fn write_loose_object_file(path: &Path, kind: git2::ObjectType, data: &[u8]) -> Result<()> {
-    use std::io::Write as _;
     let type_str = match kind {
         git2::ObjectType::Blob => "blob",
         git2::ObjectType::Commit => "commit",
@@ -163,12 +161,17 @@ fn write_loose_object_file(path: &Path, kind: git2::ObjectType, data: &[u8]) -> 
     };
     let mut content = format!("{type_str} {}\0", data.len()).into_bytes();
     content.extend_from_slice(data);
+    let compressed = canonical_zlib(&content);
+    if compressed.len() as u64 > aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES {
+        bail!(
+            "loose object exceeds the {}-byte publication limit",
+            aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+        );
+    }
 
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder
-        .write_all(&content)
-        .context("zlib-compressing loose object")?;
-    let compressed = encoder.finish().context("finishing zlib stream")?;
+    if fs::read(path).is_ok_and(|existing| existing == compressed) {
+        return Ok(());
+    }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -177,6 +180,44 @@ fn write_loose_object_file(path: &Path, kind: git2::ObjectType, data: &[u8]) -> 
     fs::write(&tmp, &compressed).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
     Ok(())
+}
+
+/// Encodes bytes as a deterministic zlib stream of uncompressed DEFLATE
+/// blocks. This intentionally trades a small static-origin storage cost for a
+/// representation independent of zlib library versions and tuning.
+fn canonical_zlib(content: &[u8]) -> Vec<u8> {
+    const MAX_STORED_BLOCK: usize = u16::MAX as usize;
+    let block_count = content.len().div_ceil(MAX_STORED_BLOCK).max(1);
+    let mut encoded = Vec::with_capacity(content.len() + block_count * 5 + 6);
+    // CM=DEFLATE, 32 KiB window, fastest/no-compression level. The pair is
+    // divisible by 31 as required by RFC 1950.
+    encoded.extend_from_slice(&[0x78, 0x01]);
+
+    if content.is_empty() {
+        encoded.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
+    } else {
+        let last = content.len().div_ceil(MAX_STORED_BLOCK) - 1;
+        for (index, block) in content.chunks(MAX_STORED_BLOCK).enumerate() {
+            encoded.push(u8::from(index == last));
+            let length = block.len() as u16;
+            encoded.extend_from_slice(&length.to_le_bytes());
+            encoded.extend_from_slice(&(!length).to_le_bytes());
+            encoded.extend_from_slice(block);
+        }
+    }
+    encoded.extend_from_slice(&adler32(content).to_be_bytes());
+    encoded
+}
+
+fn adler32(content: &[u8]) -> u32 {
+    const MODULUS: u32 = 65_521;
+    let mut a = 1_u32;
+    let mut b = 0_u32;
+    for byte in content {
+        a = (a + u32::from(*byte)) % MODULUS;
+        b = (b + a) % MODULUS;
+    }
+    (b << 16) | a
 }
 
 /// Enumerate every object reachable from the repository's refs — the
@@ -433,7 +474,7 @@ fn open_git_dir(git_dir: &Path) -> Result<git2::Repository> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read as _, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::Component;
     use std::sync::mpsc;
@@ -554,6 +595,34 @@ mod tests {
         let dir = repo.join("releases/1/2/3/objects");
         assert!(dir.join("info").is_dir());
         assert!(dir.join("pack").is_dir());
+    }
+
+    #[test]
+    fn canonical_zlib_is_stable_and_handles_multiple_stored_blocks() {
+        let content = (0..=u16::MAX)
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded = canonical_zlib(&content);
+        assert_eq!(&encoded[..2], &[0x78, 0x01]);
+        assert_eq!(encoded, canonical_zlib(&content));
+
+        let mut decoded = Vec::new();
+        flate2::read::ZlibDecoder::new(encoded.as_slice())
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn loose_object_writer_rejects_bytes_above_the_whole_upload_limit() {
+        let tmp = TempDir::new().unwrap();
+        let data =
+            vec![0_u8; aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize];
+
+        let error =
+            write_loose_object_file(&tmp.path().join("oversized"), git2::ObjectType::Blob, &data)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("publication limit"));
     }
 
     #[test]

@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 
 /// `aos graph <package>` — display the dependency graph for a package.
 ///
@@ -22,7 +22,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dot: bool) -> Resu
 
     printer.info(&format!("Building '{package}' to resolve dependencies..."));
 
-    let spinner = create_spinner(&format!("building {package}"));
+    let spinner = printer.activity(&format!("building {package}"));
     let store_path = nix
         .build(&attr, None)
         .with_context(|| format!("building '{package}' for dependency graph"))?;

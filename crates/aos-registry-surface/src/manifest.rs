@@ -303,6 +303,91 @@ pub struct SysrootUkiEntry {
     pub expected_pcr11: Option<String>,
 }
 
+/// Signed, uncounted recovery UKI paired with one immutable A/B slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryUkiEntry {
+    /// Normal slot whose update transaction owns this recovery copy.
+    pub copy: UkiSlot,
+    /// Relative recovery UKI path inside the image store artifact.
+    pub path: String,
+    /// Relative Type-1 loader-entry path inside the image store artifact.
+    pub entry_path: String,
+    /// Exact recovery UKI byte size authenticated by the release catalog.
+    pub byte_size: u64,
+    /// Lowercase hex SHA-256 of the recovery UKI bytes.
+    pub sha256: String,
+    /// Signed release identity carried by the recovery UKI.
+    pub release: String,
+    /// Recovery interface and artifact compatibility ABI.
+    pub recovery_abi: u32,
+    /// Lowercase hex SHA-256 of the Authenticode signer leaf certificate.
+    pub sb_signer_cert_sha256: String,
+    /// SBAT component/generation pairs read from this recovery UKI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sbat: Vec<SbatEntry>,
+}
+
+/// Closed component identifiers in an authenticated offline recovery bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecoveryBundleComponentId {
+    /// Immutable root filesystem bytes.
+    RootImage,
+    /// dm-verity hash-tree bytes.
+    RootVerity,
+    /// Canonical text dm-verity root hash.
+    RootHash,
+    /// Slot-A normal UKI.
+    NormalUkiA,
+    /// Slot-B normal UKI.
+    NormalUkiB,
+    /// Recovery copy A UKI.
+    RecoveryUkiA,
+    /// Recovery copy B UKI.
+    RecoveryUkiB,
+    /// Recovery copy A Type-1 loader entry.
+    RecoveryEntryA,
+    /// Recovery copy B Type-1 loader entry.
+    RecoveryEntryB,
+    /// Canonical public image metadata.
+    ImageMetadata,
+}
+
+/// One bounded regular-file component covered by a recovery bundle manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryBundleComponent {
+    /// Path-free closed identifier interpreted by recovery code.
+    pub id: RecoveryBundleComponentId,
+    /// Canonical relative source filename inside the bundle directory.
+    pub path: String,
+    /// Exact regular-file byte size.
+    pub byte_size: u64,
+    /// Lowercase hexadecimal SHA-256 of the complete file.
+    pub sha256: String,
+}
+
+/// Versioned manifest authenticated by the signed system-image catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryBundleManifest {
+    /// Exact recovery bundle schema identifier.
+    pub schema: String,
+    /// Signed system image release.
+    pub release: String,
+    /// Target CPU architecture.
+    pub architecture: String,
+    /// Target AOS platform identifier.
+    pub platform: String,
+    /// Module schema ABI required by the restored image.
+    pub module_abi: u32,
+    /// Recovery interface ABI required to interpret the bundle.
+    pub recovery_abi: u32,
+    /// Complete, duplicate-free closed component set.
+    pub components: Vec<RecoveryBundleComponent>,
+}
+
 /// A pre-compiled image entry within a platform entry.
 ///
 /// The trailing Secure Boot fields (RFC-0006) are populated only for signed
@@ -340,6 +425,12 @@ pub struct ImageEntry {
     /// Slot-specific UKI facts for an A/B image payload.
     #[serde(default)]
     pub ukis: Vec<SysrootUkiEntry>,
+    /// Slot-paired signed recovery UKIs carried by an A/B image payload.
+    #[serde(default)]
+    pub recovery_ukis: Vec<RecoveryUkiEntry>,
+    /// Versioned authenticated manifest for bounded offline restoration.
+    #[serde(default)]
+    pub recovery_bundle: Option<RecoveryBundleManifest>,
     /// Relative path inside `store_path` to the root filesystem image.
     #[serde(default)]
     pub root_image: Option<String>,
@@ -519,15 +610,10 @@ impl ImageDelivery {
             self.object_key == immutable_image_object_key(&self.sha256, &self.filename),
             "image object key is not the canonical content-addressed key"
         );
-        ensure!(
-            self.compression == ImageCompression::None,
-            "image compression is not supported by this delivery contract version"
-        );
-
         let (extension, media_type, targets): (&str, &str, &[ImageTarget]) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 &[ImageTarget::BareMetal],
             ),
             "qcow2" => (
@@ -545,8 +631,13 @@ impl ImageDelivery {
         };
         if format == "raw" {
             ensure!(
-                self.logical_disk_sha256 == self.sha256,
-                "raw image must be the canonical logical disk encoding"
+                self.compression == ImageCompression::Zstd,
+                "raw image must use zstd delivery compression"
+            );
+        } else {
+            ensure!(
+                self.compression == ImageCompression::None,
+                "converted disk images must not declare outer compression"
             );
         }
         ensure!(
@@ -671,6 +762,8 @@ pub enum ImageVerificationState {
 pub enum ImageCompression {
     /// No outer compression; the object bytes are the named disk encoding.
     None,
+    /// Zstandard compression of the complete named disk encoding.
+    Zstd,
 }
 
 /// End-user execution or installation target for an AOS system image.
@@ -841,8 +934,8 @@ mod image_delivery_tests {
         let info_sha256 = "b".repeat(64);
         let (extension, media_type, targets) = match format {
             "raw" => (
-                "img",
-                "application/vnd.aos.disk-image.raw",
+                "img.zst",
+                "application/vnd.aos.disk-image.raw+zstd",
                 vec![ImageTarget::BareMetal],
             ),
             "qcow2" => (
@@ -870,7 +963,11 @@ mod image_delivery_tests {
             filename: filename.clone(),
             object_key: immutable_image_object_key(&image_sha256, &filename),
             media_type: media_type.to_string(),
-            compression: ImageCompression::None,
+            compression: if format == "raw" {
+                ImageCompression::Zstd
+            } else {
+                ImageCompression::None
+            },
             byte_size: 4096,
             sha256: image_sha256.clone(),
             compatible_targets: targets,
@@ -985,6 +1082,18 @@ nar_size = 1
         assert!(wrong_target
             .validate("qcow2", "2026.08", "x86_64-linux")
             .is_err());
+
+        let mut uncompressed_raw = delivery("raw");
+        uncompressed_raw.compression = ImageCompression::None;
+        assert!(uncompressed_raw
+            .validate("raw", "2026.08", "x86_64-linux")
+            .is_err());
+
+        let mut compressed_qcow2 = delivery("qcow2");
+        compressed_qcow2.compression = ImageCompression::Zstd;
+        assert!(compressed_qcow2
+            .validate("qcow2", "2026.08", "x86_64-linux")
+            .is_err());
     }
 
     #[test]
@@ -1043,11 +1152,12 @@ nar_size = 1
         let qcow2 = raw_image_block(true)
             .replace("format = \"raw\"", "format = \"qcow2\"")
             .replace("server-raw", "server-qcow2")
-            .replace("aos-server.img", "aos-server.qcow2")
+            .replace("aos-server.img.zst", "aos-server.qcow2")
             .replace(
-                "application/vnd.aos.disk-image.raw",
+                "application/vnd.aos.disk-image.raw+zstd",
                 "application/vnd.aos.disk-image.qcow2",
             )
+            .replace("compression = \"zstd\"", "compression = \"none\"")
             .replace(
                 "compatible_targets = [\"bare-metal\"]",
                 "compatible_targets = [\"qemu-kvm\", \"openstack\"]",
@@ -1162,6 +1272,12 @@ pub struct SysrootImageEntry {
     /// record exactly one `a` and one `b` entry and consumers select by slot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ukis: Vec<SysrootUkiEntry>,
+    /// Slot-paired signed recovery UKIs and their uncounted loader entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_ukis: Vec<RecoveryUkiEntry>,
+    /// Versioned authenticated manifest for bounded offline restoration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_bundle: Option<RecoveryBundleManifest>,
     /// Relative path inside [`SysrootImageEntry::store_path`] to the root
     /// filesystem image consumed by `RootImage=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1999,7 +2115,9 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                             && image.sb_signer_cert_sha256
                                 == first_image.sb_signer_cert_sha256
                             && image.sbat == first_image.sbat
-                            && image.expected_pcr11 == first_image.expected_pcr11,
+                            && image.expected_pcr11 == first_image.expected_pcr11
+                            && image.recovery_ukis == first_image.recovery_ukis
+                            && image.recovery_bundle == first_image.recovery_bundle,
                         "release '{}' platform '{}' image encodings have different UKI or Secure Boot facts",
                         version.version,
                         platform

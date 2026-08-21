@@ -86,15 +86,15 @@ impl ApiClient {
         if !is_generated_connect_path(path) {
             return Err(TransportError::InvalidPath);
         }
-        let body = serde_json::to_string(request)
+        let request_body = serde_json::to_string(request)
             .map_err(|error| TransportError::Json(error.to_string()))?;
         let bearer = self.session_guard().access_token.clone();
-        let (mut status, mut body) = send_connect(path, &bearer, &body).await?;
+        let (mut status, mut response_body) = send_connect(path, &bearer, &request_body).await?;
         if status == 401 {
             let refreshed = exchange_browser_session(&self.csrf).await?;
             let bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
-            (status, body) = send_connect(path, &bearer, &body).await?;
+            (status, response_body) = send_connect(path, &bearer, &request_body).await?;
         }
         if status == 401 {
             redirect_to_login()?;
@@ -103,10 +103,11 @@ impl ApiClient {
         if !(200..300).contains(&status) {
             return Err(TransportError::Http {
                 status,
-                detail: bounded_detail(&body),
+                detail: bounded_detail(&response_body),
             });
         }
-        serde_json::from_str(&body).map_err(|error| TransportError::Json(error.to_string()))
+        serde_json::from_str(&response_body)
+            .map_err(|error| TransportError::Json(error.to_string()))
     }
 
     /// Collects every page from one generated Connect-JSON list method.

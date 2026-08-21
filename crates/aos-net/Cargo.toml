@@ -31,6 +31,7 @@ ssh2 = { workspace = true }
 tokio-util = { workspace = true }
 
 # Serialization (for auth token refresh)
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # Error handling

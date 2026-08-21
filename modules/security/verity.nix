@@ -61,7 +61,7 @@ in {
     ## Block device carrying the read-only root filesystem data (verity lower).
     dataDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/disk/by-partlabel/root-a";
+      default = config.aos.boot.storage.resolvedDevices.rootA;
       description = ''
         Block device containing the read-only root filesystem data — the device
         dm-verity verifies on every read. Discovered by GPT partlabel so it is
@@ -73,7 +73,7 @@ in {
     ## Block device carrying the dm-verity Merkle hash tree.
     hashDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/disk/by-partlabel/root-a-hash";
+      default = config.aos.boot.storage.resolvedDevices.rootAHash;
       description = ''
         Block device containing the dm-verity hash tree (Merkle tree). This is
         the `root-a-hash` partition the image builder places immediately after
@@ -102,6 +102,9 @@ in {
     # `/dev/mapper/root`. NOTE: the dracut-style verity.data=/verity.hash=
     # /verity.roothash= params are wrong for a systemd initrd and are gone.
     aos.boot.kernelParams = [
+      # aos-var-crypt is the sole /var unlocker. Disable the initrd's generic
+      # LUKS discovery so it cannot race the authenticated storage path.
+      "rd.luks=0"
       "systemd.verity=yes"
       "systemd.verity_root_data=${cfg.dataDevice}"
       "systemd.verity_root_hash=${cfg.hashDevice}"
@@ -126,8 +129,17 @@ in {
     # add event can leave the device conservatively marked not ready forever.
     boot.initrd.systemd.services."systemd-veritysetup@root" = {
       overrideStrategy = "asDropin";
+      requires = ["aos-boot-identity-guard.service"];
       wants = ["systemd-udev-settle.service"];
-      after = ["systemd-udev-settle.service"];
+      after = [
+        "aos-boot-identity-guard.service"
+        # The first-boot storage transaction must finish its partition-table
+        # rescan before verity opens root-a. Holding a partition from the disk
+        # while systemd-repart applies the remaining layout can leave the
+        # rescan blocked after the on-disk update has completed.
+        "aos-repart.service"
+        "systemd-udev-settle.service"
+      ];
       postStart = ''
         # Without libudev synchronization, the initial mapper event may be
         # observed before activation finishes. A change event after the
@@ -137,6 +149,43 @@ in {
           --subsystem-match=block \
           --sysname-match='dm-*'
         ${pkgs.systemd}/bin/udevadm settle
+      '';
+    };
+
+    # dm-verity validates blocks when they are read. Scan the complete mapper
+    # before exposing persistent state so corruption in an otherwise authentic
+    # counted image cannot release /var before the damaged block is touched.
+    boot.initrd.systemd.services."aos-verity-root-verify" = {
+      description = "Verify the complete dm-verity root before persistent state";
+      requiredBy = ["initrd-fs.target"];
+      requires = ["aos-boot-identity-guard.service"];
+      after = ["aos-boot-identity-guard.service"];
+      before = [
+        "aos-var-crypt.service"
+        "mount-var.service"
+        "initrd-fs.target"
+      ];
+      unitConfig = {
+        DefaultDependencies = "no";
+        OnFailure = "aos-boot-identity-failure.target";
+        OnFailureJobMode = "isolate";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        # The identity validator publishes the generated verity unit at
+        # runtime. Joining its start here keeps this static service in the
+        # original initrd-fs transaction while still waiting for the mapper.
+        ${pkgs.systemd}/bin/systemctl start systemd-veritysetup@root.service
+        ${pkgs.coreutils}/bin/dd \
+          if=/dev/mapper/root \
+          of=/dev/null \
+          bs=4M \
+          iflag=fullblock \
+          status=none
+        ${pkgs.coreutils}/bin/touch /run/aos/verity-root-valid
       '';
     };
   };

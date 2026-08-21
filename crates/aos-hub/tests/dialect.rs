@@ -391,11 +391,22 @@ async fn exercise_topology_multipart(
         .await
         .unwrap();
     let active = db
+        .claim_cache_write_backend_creation(
+            &active.ticket_id,
+            active.resource_version,
+            "dialect-cache-create-token",
+            200,
+            102,
+        )
+        .await
+        .unwrap();
+    let active = db
         .attach_cache_write_backend_upload(
             &active.ticket_id,
             active.resource_version,
+            "dialect-cache-create-token",
             "dialect-cache-backend-upload",
-            102,
+            103,
         )
         .await
         .unwrap();

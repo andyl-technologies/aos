@@ -1,5 +1,6 @@
 //! S3 (`s3://`) cache backend.
 
+use std::io::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -46,6 +47,10 @@ impl S3Backend {
 
 #[async_trait]
 impl CacheBackend for S3Backend {
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        Some(self.engine.as_ref())
+    }
+
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.s3_url(relative_path.trim_start_matches('/'));
         let result = self.engine.head(&url).await?;
@@ -106,7 +111,13 @@ impl CacheBackend for S3Backend {
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
         let url = self.s3_url(&format!("nar/{filename}"));
-        let mut req = TransferRequest::put(&url, data.to_vec());
+        // A rewindable file source lets the shared S3 transport select its
+        // bounded multipart path for large NARs and retry safely without
+        // cloning the complete payload for each attempt.
+        let mut spool = tempfile::NamedTempFile::new().context("creating S3 upload spool")?;
+        spool.write_all(data).context("writing S3 upload spool")?;
+        spool.flush().context("flushing S3 upload spool")?;
+        let mut req = TransferRequest::put_file(&url, spool.path().to_path_buf());
         // NAR archives are content-addressed by the hash embedded in their
         // filename, so the bytes behind a URL never change: cache immutably.
         add_static_metadata_headers(

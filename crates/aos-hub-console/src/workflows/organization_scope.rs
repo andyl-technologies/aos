@@ -31,3 +31,31 @@ pub(super) async fn organization_authorization_scope(
     }
     Ok(organization.authorization_scope_key)
 }
+
+/// Resolves the immutable owner scope for a typed registry or cache surface.
+///
+/// Organization-owned surface slugs begin with their organization slug. The
+/// human-facing segment is used only to fetch the organization record; the
+/// returned authorization scope always comes from that typed response.
+///
+/// # Errors
+///
+/// Returns an error when the surface is malformed or its organization cannot
+/// be resolved.
+pub(super) async fn surface_authorization_scope(
+    client: &ApiClient,
+    surface: &aos_proto_types::SurfaceRef,
+) -> Result<(String, Option<String>), String> {
+    use aos_proto_types::surface_ref::Target;
+
+    let slug = match surface.target.as_ref() {
+        Some(Target::RegistrySlug(slug) | Target::CacheSlug(slug)) if !slug.is_empty() => slug,
+        _ => return Err("the surface has no canonical slug".to_string()),
+    };
+    let Some((organization, _)) = slug.split_once('/') else {
+        return Ok(("instance".to_string(), None));
+    };
+    let organization = organization.to_string();
+    let scope = organization_authorization_scope(client, organization.clone()).await?;
+    Ok((scope, Some(organization)))
+}
