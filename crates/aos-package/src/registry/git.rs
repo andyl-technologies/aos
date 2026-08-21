@@ -26,6 +26,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use futures_util::{StreamExt, stream};
 
 use crate::download::join_cache_url;
 use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
@@ -65,6 +66,9 @@ struct ResolvedHead {
 /// Default freshness window (14 days) for channel-tracked registries when
 /// `max_staleness_seconds` is not configured.
 const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
+
+/// Maximum number of static channel partitions fetched concurrently.
+const CHANNEL_PARTITION_FETCH_CONCURRENCY: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Main sync flow
@@ -237,6 +241,7 @@ pub async fn sync_git(
     // Step 5: Determine the selected release commit.
     let mut record_successful_freshness = true;
     let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
+        progress.phase("Resolving signed release channel");
         match resolve_channel_head(
             config,
             &git_url,
@@ -912,31 +917,50 @@ async fn resolve_channel_head(
         None => channel::select_registry_bucket(&config.name, &channel::generate_bucket_salt()),
     };
 
-    let mut last_error = None;
-    for bucket in channel::probe_order(assigned_bucket) {
-        match fetch_and_verify_partition(
-            base_url,
-            channel_name,
-            bucket,
-            repo_dir,
-            trusted_keys,
-            &release_tags,
-        )
-        .await
-        {
-            Ok(Some((resolved, channel_oid))) => {
-                let floor = state
-                    .floor
-                    .as_deref()
-                    .map(semver::Version::parse)
-                    .transpose()
-                    .context("parsing registry semver floor")?;
-                channel::check_floor(floor.as_ref(), &resolved.semver)?;
+    let client = reqwest::Client::new();
+    let probes = stream::iter(
+        channel::probe_order(assigned_bucket)
+            .into_iter()
+            .map(|bucket| {
+                let client = client.clone();
+                let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
+                async move { (bucket, fetch_channel_partition(&client, &url).await) }
+            }),
+    )
+    .buffered(CHANNEL_PARTITION_FETCH_CONCURRENCY);
+    tokio::pin!(probes);
 
-                state.bucket.get_or_insert(assigned_bucket);
-                state.floor = Some(resolved.semver.to_string());
-                return Ok((resolved, channel_oid));
-            }
+    let mut last_error = None;
+    while let Some((bucket, result)) = probes.next().await {
+        match result {
+            Ok(Some(bytes)) => match verify_channel_partition(
+                channel_name,
+                bucket,
+                repo_dir,
+                trusted_keys,
+                &release_tags,
+                &bytes,
+            )
+            .await
+            {
+                Ok(Some((resolved, channel_oid))) => {
+                    let floor = state
+                        .floor
+                        .as_deref()
+                        .map(semver::Version::parse)
+                        .transpose()
+                        .context("parsing registry semver floor")?;
+                    channel::check_floor(floor.as_ref(), &resolved.semver)?;
+
+                    state.bucket.get_or_insert(assigned_bucket);
+                    state.floor = Some(resolved.semver.to_string());
+                    return Ok((resolved, channel_oid));
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            },
             Ok(None) => {}
             Err(err) => {
                 last_error = Some(err);
@@ -950,22 +974,14 @@ async fn resolve_channel_head(
     bail!("channel '{channel_name}' has no usable partition")
 }
 
-/// Fetch one channel partition object and verify its signed tag chain.
+/// Fetch one channel partition object from the static registry origin.
 ///
-/// Returns `Ok(None)` when the partition does not exist (404) or points at
-/// an unknown release tag, so the caller can probe forward to the next
-/// bucket. The raw partition bytes are hashed into the local object store
-/// so the chain verification reads exactly what was served.
-async fn fetch_and_verify_partition(
-    base_url: &str,
-    channel_name: &str,
-    bucket: u8,
-    repo_dir: &Path,
-    trusted_keys: &[String],
-    release_tags: &BTreeMap<String, semver::Version>,
-) -> Result<Option<(verify::VerifiedRelease, String)>> {
-    let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
-    let response = reqwest::get(&url)
+/// Returns `Ok(None)` when the partition does not exist (404), allowing the
+/// caller to continue through the deterministic fallback order.
+async fn fetch_channel_partition(client: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>> {
+    let response = client
+        .get(url)
+        .send()
         .await
         .with_context(|| format!("fetching channel partition {url}"))?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -975,17 +991,33 @@ async fn fetch_and_verify_partition(
         bail!("GET {url} failed with {}", response.status());
     }
 
-    let bytes = response
+    response
         .bytes()
         .await
-        .with_context(|| format!("reading channel partition {url}"))?;
-    let content = String::from_utf8_lossy(&bytes);
+        .map(|bytes| Some(bytes.to_vec()))
+        .with_context(|| format!("reading channel partition {url}"))
+}
+
+/// Verifies one fetched partition against its channel name and release tag.
+///
+/// The exact response bytes are hashed into the local object store before the
+/// signed channel-tag to release-tag chain is checked.
+async fn verify_channel_partition(
+    channel_name: &str,
+    bucket: u8,
+    repo_dir: &Path,
+    trusted_keys: &[String],
+    release_tags: &BTreeMap<String, semver::Version>,
+    bytes: &[u8],
+) -> Result<Option<(verify::VerifiedRelease, String)>> {
+    let partition = channel::partition_path(channel_name, bucket);
+    let content = String::from_utf8_lossy(bytes);
     let tag = verify::parse_tag_object(&content)
-        .with_context(|| format!("parsing channel partition {url}"))?;
+        .with_context(|| format!("parsing channel partition {partition}"))?;
     verify::verify_name_binding(&tag, channel_name)?;
     if tag.target_type != verify::TagTarget::Tag {
         bail!(
-            "channel partition {url} targets {:?}, expected tag",
+            "channel partition {partition} targets {:?}, expected tag",
             tag.target_type,
         );
     }
@@ -993,7 +1025,7 @@ async fn fetch_and_verify_partition(
         return Ok(None);
     };
 
-    let channel_oid = repo::hash_tag_object(repo_dir, &bytes)
+    let channel_oid = repo::hash_tag_object(repo_dir, bytes)
         .await
         .context("hashing channel partition tag object")?;
     verify::verify_tag_chain(
