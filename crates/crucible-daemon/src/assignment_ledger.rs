@@ -5,6 +5,18 @@
 //! attempt identity, so restart recovery does not materialize daemon history in
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
+//! Retention administration is a separate mutable capability whose fence binds
+//! one combined operational-root scan to a persistent generation.
+//!
+//! The directory layout is:
+//!
+//! ```text
+//! <ledger>/
+//!   writer.lock
+//!   retention-state-v1
+//!   assignments/<two-hex>/<assignment-id-hex>
+//!   attempts/<two-hex>/<attempt-key-hash>
+//! ```
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -26,10 +38,16 @@ const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1
 const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v3";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
+const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
+const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
+const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
+const RETENTION_STATE_FILE: &str = "retention-state-v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
+const MAX_RETENTION_STATE_BYTES: u64 = 256;
 const MAX_TYPED_ID_BYTES: usize = 256;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MEMORY_LEDGER_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// One immutable exact request and its first durable protocol response.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,6 +298,177 @@ pub enum AttemptStateCas {
     },
 }
 
+/// Exact digest of one stable operational retention-root inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AssignmentRetentionGeneration([u8; 32]);
+
+impl AssignmentRetentionGeneration {
+    /// Builds a backend-defined generation from exactly 32 canonical bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the raw generation digest.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Renders the generation as canonical lowercase hexadecimal text.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        encode_hex(&self.0)
+    }
+}
+
+/// One durable operational root observed under an assignment-ledger fence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssignmentRetentionRoot {
+    /// One in-progress or completed observation publication.
+    Observation(ObservationId),
+    /// One in-progress or paused exact-checkpoint publication.
+    ExactCheckpoint(ExactCheckpointId),
+}
+
+/// Terminal evidence that one fenced assignment-ledger inventory completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssignmentRetentionSummary {
+    generation: AssignmentRetentionGeneration,
+    attempt_records: u64,
+    observation_roots: u64,
+    checkpoint_roots: u64,
+}
+
+impl AssignmentRetentionSummary {
+    /// Builds terminal counters for one completed backend inventory.
+    #[must_use]
+    pub const fn new(
+        generation: AssignmentRetentionGeneration,
+        attempt_records: u64,
+        observation_roots: u64,
+        checkpoint_roots: u64,
+    ) -> Self {
+        Self {
+            generation,
+            attempt_records,
+            observation_roots,
+            checkpoint_roots,
+        }
+    }
+
+    /// Returns the exact operational-ledger generation.
+    #[must_use]
+    pub const fn generation(self) -> AssignmentRetentionGeneration {
+        self.generation
+    }
+
+    /// Returns the number of authenticated attempt records visited.
+    #[must_use]
+    pub const fn attempt_records(self) -> u64 {
+        self.attempt_records
+    }
+
+    /// Returns the number of observation roots emitted.
+    #[must_use]
+    pub const fn observation_roots(self) -> u64 {
+        self.observation_roots
+    }
+
+    /// Returns the number of exact-checkpoint roots emitted.
+    #[must_use]
+    pub const fn checkpoint_roots(self) -> u64 {
+        self.checkpoint_roots
+    }
+
+    fn visit(
+        &mut self,
+        state: AttemptRuntimeState,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<(), AssignmentRetentionVisitorError> {
+        self.attempt_records = self
+            .attempt_records
+            .checked_add(1)
+            .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+        if let Some(observation) = state.observation() {
+            self.observation_roots = self
+                .observation_roots
+                .checked_add(1)
+                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+            visitor(AssignmentRetentionRoot::Observation(observation))?;
+        }
+        if let Some(checkpoint) = state.checkpoint() {
+            self.checkpoint_roots = self
+                .checkpoint_roots
+                .checked_add(1)
+                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+            visitor(AssignmentRetentionRoot::ExactCheckpoint(checkpoint))?;
+        }
+        Ok(())
+    }
+}
+
+/// Stable reason a retention-inventory consumer stopped a fenced scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AssignmentRetentionVisitorError {
+    /// The consumer's checked work or output bound was exhausted.
+    #[error("assignment retention inventory limit exceeded")]
+    LimitExceeded,
+}
+
+/// Failure to complete one fenced assignment-ledger inventory.
+#[derive(Debug, thiserror::Error)]
+pub enum AssignmentRetentionInventoryError<E> {
+    /// The ledger could not authenticate or enumerate its complete state.
+    #[error("assignment retention inventory backend failed")]
+    Backend(#[source] E),
+    /// The inventory consumer rejected a tentative record prefix.
+    #[error(transparent)]
+    Visitor(#[from] AssignmentRetentionVisitorError),
+}
+
+/// Exclusive authority over one operational assignment-ledger root inventory.
+///
+/// Visitor output is tentative until terminal success. The visitor must not
+/// reenter the fenced ledger.
+pub trait AssignmentRetentionFence {
+    /// Backend-specific persistence or authentication failure.
+    type BackendError;
+
+    /// Streams every durable observation and exact-checkpoint root once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssignmentRetentionInventoryError::Backend`] when the ledger
+    /// cannot authenticate or completely enumerate its state, or
+    /// [`AssignmentRetentionInventoryError::Visitor`] when the consumer stops
+    /// the scan.
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>;
+}
+
+/// Separate maintenance capability for operational assignment-ledger roots.
+pub trait AssignmentRetentionAdmin {
+    /// Backend-specific fence-acquisition and inventory failure.
+    type Error;
+
+    /// Acquires exclusive root-inventory authority for this ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend error when the ledger cannot establish a complete,
+    /// stable root inventory or load its persistent generation.
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>;
+}
+
 /// Pluggable operational ledger used by the single-host executor supervisor.
 pub trait AssignmentLedger {
     /// Backend-specific persistence failure.
@@ -338,9 +527,10 @@ pub trait AssignmentLedger {
 
     /// Streams durable in-progress and completed observation retention roots.
     ///
-    /// GC root discovery calls this method before planning deletion. The
-    /// visitor is invoked once per runtime record that names an observation;
-    /// implementations must authenticate every visited record and must not
+    /// This unfenced operation supports executor recovery and diagnostics. It
+    /// is not a generation-bound input to destructive GC; maintenance code
+    /// must use [`AssignmentRetentionAdmin`]. The visitor is invoked once per
+    /// runtime record that names an observation, and implementations must not
     /// materialize the complete ledger in memory.
     ///
     /// # Errors
@@ -354,9 +544,11 @@ pub trait AssignmentLedger {
 
     /// Streams durable in-progress and paused exact-checkpoint roots.
     ///
-    /// GC root discovery invokes the visitor once per runtime record naming a
-    /// checkpoint. Implementations must authenticate every record and stream
-    /// without materializing the complete ledger.
+    /// This unfenced operation supports executor recovery and diagnostics. It
+    /// is not a generation-bound input to destructive GC; maintenance code
+    /// must use [`AssignmentRetentionAdmin`]. Implementations invoke the
+    /// visitor once per runtime record naming a checkpoint and stream without
+    /// materializing the complete ledger.
     ///
     /// # Errors
     ///
@@ -367,11 +559,52 @@ pub trait AssignmentLedger {
     ) -> Result<(), Self::Error>;
 }
 
+#[derive(Clone, Copy)]
+struct AssignmentRetentionState {
+    instance: [u8; 32],
+    generation: u64,
+}
+
+impl AssignmentRetentionState {
+    fn advance(&mut self) -> Result<(), AssignmentLedgerError> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(AssignmentLedgerError::GenerationExhausted)?;
+        Ok(())
+    }
+
+    fn digest(self) -> AssignmentRetentionGeneration {
+        let mut material = [0_u8; 40];
+        material[..32].copy_from_slice(&self.instance);
+        material[32..].copy_from_slice(&self.generation.to_le_bytes());
+        AssignmentRetentionGeneration(
+            CampaignHash::derive(RETENTION_GENERATION_DOMAIN, &material).as_bytes(),
+        )
+    }
+}
+
 /// In-memory assignment ledger for component tests and fake executors.
-#[derive(Default)]
 pub struct MemoryAssignmentLedger {
     assignments: BTreeMap<AssignmentId, AssignmentRecord>,
     attempts: BTreeMap<AttemptExecutionKey, AttemptRuntimeState>,
+    retention_generation: AssignmentRetentionGeneration,
+}
+
+impl Default for MemoryAssignmentLedger {
+    fn default() -> Self {
+        let ordinal = MEMORY_LEDGER_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let generation = CampaignHash::derive(
+            "crucible.executor.memory-assignment-ledger-instance.v1",
+            &ordinal.to_le_bytes(),
+        )
+        .as_bytes();
+        Self {
+            assignments: BTreeMap::new(),
+            attempts: BTreeMap::new(),
+            retention_generation: AssignmentRetentionGeneration::from_bytes(generation),
+        }
+    }
 }
 
 impl AssignmentLedger for MemoryAssignmentLedger {
@@ -417,6 +650,13 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         if current != expected {
             return Ok(AttemptStateCas::Conflict { current });
         }
+        self.retention_generation = AssignmentRetentionGeneration::from_bytes(
+            CampaignHash::derive(
+                "crucible.executor.memory-assignment-retention-next.v1",
+                &self.retention_generation.as_bytes(),
+            )
+            .as_bytes(),
+        );
         match next {
             Some(next) => {
                 self.attempts.insert(key, next);
@@ -453,7 +693,41 @@ impl AssignmentLedger for MemoryAssignmentLedger {
     }
 }
 
-/// Failure from a durable directory assignment ledger.
+impl AssignmentRetentionAdmin for MemoryAssignmentLedger {
+    type Error = std::convert::Infallible;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        Ok(Box::new(MemoryAssignmentRetentionFence { ledger: self }))
+    }
+}
+
+struct MemoryAssignmentRetentionFence<'a> {
+    ledger: &'a mut MemoryAssignmentLedger,
+}
+
+impl AssignmentRetentionFence for MemoryAssignmentRetentionFence<'_> {
+    type BackendError = std::convert::Infallible;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        let mut summary =
+            AssignmentRetentionSummary::new(self.ledger.retention_generation, 0, 0, 0);
+        for state in self.ledger.attempts.values().copied() {
+            summary.visit(state, visitor)?;
+        }
+        Ok(summary)
+    }
+}
+
+/// Failure from an assignment ledger.
 #[derive(Debug, thiserror::Error)]
 pub enum AssignmentLedgerError {
     /// A filesystem operation failed.
@@ -476,12 +750,16 @@ pub enum AssignmentLedgerError {
         /// Stable corruption category.
         reason: &'static str,
     },
+    /// A monotonic operational-retention generation was exhausted.
+    #[error("assignment ledger retention generation exhausted")]
+    GenerationExhausted,
 }
 
 /// Crash-safe directory ledger with one nonblocking process writer lock.
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
     _writer_lock: File,
+    retention_state: AssignmentRetentionState,
 }
 
 impl DirectoryAssignmentLedger {
@@ -513,9 +791,11 @@ impl DirectoryAssignmentLedger {
             )
         })?;
         sync_directory(&root)?;
+        let retention_state = load_or_create_retention_state(&root)?;
         Ok(Self {
             root,
             _writer_lock: writer_lock,
+            retention_state,
         })
     }
 
@@ -542,6 +822,14 @@ impl DirectoryAssignmentLedger {
         self.root.join("attempts").join(&encoded[..2]).join(encoded)
     }
 
+    fn advance_retention_state(&mut self) -> Result<(), AssignmentLedgerError> {
+        let mut next = self.retention_state;
+        next.advance()?;
+        persist_retention_state(&self.root, next)?;
+        self.retention_state = next;
+        Ok(())
+    }
+
     fn visit_attempt_states(
         &self,
         visitor: &mut dyn FnMut(AttemptRuntimeState),
@@ -556,6 +844,17 @@ impl DirectoryAssignmentLedger {
             let shard =
                 shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
             let shard_path = shard.path();
+            let shard_name = shard.file_name();
+            let shard_name = shard_name
+                .to_str()
+                .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
+            if shard_name.len() != 2
+                || !shard_name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(corrupt("attempt-root-shard-name"));
+            }
             if !shard
                 .file_type()
                 .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
@@ -570,11 +869,25 @@ impl DirectoryAssignmentLedger {
                     .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
                 let path = record.path();
                 let name = record.file_name();
-                let name = name.to_string_lossy();
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| corrupt("attempt-root-record-name"))?;
                 if name.starts_with('.') {
-                    continue;
+                    if is_staging_name(name)
+                        && record
+                            .file_type()
+                            .map_err(|source| io_error("stat-attempt-root-staging", &path, source))?
+                            .is_file()
+                    {
+                        continue;
+                    }
+                    return Err(corrupt("attempt-root-unknown-hidden-entry"));
                 }
-                if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                if name.len() != 64
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
                     return Err(corrupt("attempt-root-record-name"));
                 }
                 if !record
@@ -586,12 +899,28 @@ impl DirectoryAssignmentLedger {
                 }
                 let bytes = read_optional_bounded(&path)?
                     .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-                let (_, state) = decode_attempt_state(&bytes)?;
+                let (key, state) = decode_attempt_state(&bytes)?;
+                if self.attempt_path(key) != path {
+                    return Err(corrupt("attempt-root-record-path-identity-mismatch"));
+                }
                 visitor(state);
             }
         }
         Ok(())
     }
+}
+
+fn is_staging_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(".staging-") else {
+        return false;
+    };
+    let Some((process, ordinal)) = suffix.split_once('-') else {
+        return false;
+    };
+    !process.is_empty()
+        && process.bytes().all(|byte| byte.is_ascii_digit())
+        && !ordinal.is_empty()
+        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 impl AssignmentLedger for DirectoryAssignmentLedger {
@@ -668,6 +997,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         if current != expected {
             return Ok(AttemptStateCas::Conflict { current });
         }
+        self.advance_retention_state()?;
         let path = self.attempt_path(key);
         match next {
             Some(next) => replace_mutable(&path, &encode_attempt_state(key, next))?,
@@ -696,6 +1026,50 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
                 visitor(checkpoint);
             }
         })
+    }
+}
+
+impl AssignmentRetentionAdmin for DirectoryAssignmentLedger {
+    type Error = AssignmentLedgerError;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        Ok(Box::new(DirectoryAssignmentRetentionFence { ledger: self }))
+    }
+}
+
+struct DirectoryAssignmentRetentionFence<'a> {
+    ledger: &'a mut DirectoryAssignmentLedger,
+}
+
+impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
+    type BackendError = AssignmentLedgerError;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        let mut summary =
+            AssignmentRetentionSummary::new(self.ledger.retention_state.digest(), 0, 0, 0);
+        let mut visitor_error = None;
+        self.ledger
+            .visit_attempt_states(&mut |state| {
+                if visitor_error.is_none()
+                    && let Err(source) = summary.visit(state, visitor)
+                {
+                    visitor_error = Some(source);
+                }
+            })
+            .map_err(AssignmentRetentionInventoryError::Backend)?;
+        if let Some(source) = visitor_error {
+            return Err(AssignmentRetentionInventoryError::Visitor(source));
+        }
+        Ok(summary)
     }
 }
 
@@ -883,6 +1257,66 @@ fn parse_typed<T>(
     parse(text).map_err(Into::into)
 }
 
+fn load_or_create_retention_state(
+    root: &Path,
+) -> Result<AssignmentRetentionState, AssignmentLedgerError> {
+    let path = root.join(RETENTION_STATE_FILE);
+    if let Some(bytes) =
+        read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
+    {
+        return decode_retention_state(&bytes);
+    }
+
+    let mut instance = [0_u8; 32];
+    let random_path = Path::new("/dev/urandom");
+    File::open(random_path)
+        .and_then(|mut source| source.read_exact(&mut instance))
+        .map_err(|source| io_error("read-retention-instance", random_path, source))?;
+    let state = AssignmentRetentionState {
+        instance,
+        generation: 1,
+    };
+    persist_retention_state(root, state)?;
+    Ok(state)
+}
+
+fn persist_retention_state(
+    root: &Path,
+    state: AssignmentRetentionState,
+) -> Result<(), AssignmentLedgerError> {
+    replace_mutable(
+        &root.join(RETENTION_STATE_FILE),
+        &encode_retention_state(state),
+    )
+}
+
+fn encode_retention_state(state: AssignmentRetentionState) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(RETENTION_STATE_MAGIC.len() + 32 + size_of::<u64>() + 32);
+    payload.extend_from_slice(RETENTION_STATE_MAGIC);
+    payload.extend_from_slice(&state.instance);
+    payload.extend_from_slice(&state.generation.to_le_bytes());
+    seal(payload, RETENTION_STATE_CHECKSUM_DOMAIN)
+}
+
+fn decode_retention_state(bytes: &[u8]) -> Result<AssignmentRetentionState, AssignmentLedgerError> {
+    if bytes.len() as u64 > MAX_RETENTION_STATE_BYTES {
+        return Err(corrupt("retention-state-size"));
+    }
+    let payload = open_sealed(bytes, RETENTION_STATE_CHECKSUM_DOMAIN)?;
+    let mut cursor = RecordCursor::new(payload);
+    cursor.require(RETENTION_STATE_MAGIC)?;
+    let instance = cursor.fixed()?;
+    let generation = u64::from_le_bytes(cursor.fixed()?);
+    cursor.finish()?;
+    if generation == 0 {
+        return Err(corrupt("retention-state-zero-generation"));
+    }
+    Ok(AssignmentRetentionState {
+        instance,
+        generation,
+    })
+}
+
 fn seal(mut payload: Vec<u8>, domain: &str) -> Vec<u8> {
     let checksum = CampaignHash::derive(domain, &payload);
     payload.extend_from_slice(&checksum.as_bytes());
@@ -958,17 +1392,25 @@ impl<'a> RecordCursor<'a> {
 }
 
 fn read_optional_bounded(path: &Path) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
+    read_optional_with_limit(path, MAX_LEDGER_RECORD_BYTES, "record-size")
+}
+
+fn read_optional_with_limit(
+    path: &Path,
+    limit: u64,
+    size_reason: &'static str,
+) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(io_error("open-record", path, source)),
     };
     let mut bytes = Vec::new();
-    file.take(MAX_LEDGER_RECORD_BYTES + 1)
+    file.take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|source| io_error("read-record", path, source))?;
-    if bytes.len() as u64 > MAX_LEDGER_RECORD_BYTES {
-        return Err(corrupt("record-size"));
+    if bytes.len() as u64 > limit {
+        return Err(corrupt(size_reason));
     }
     Ok(Some(bytes))
 }

@@ -306,6 +306,246 @@ fn memory_ledger_matches_conditional_publish_contract() {
 }
 
 #[test]
+fn memory_retention_inventory_is_generation_bound_and_single_pass() {
+    let first = request(0x21, 0x41, 1);
+    let first_key = AttemptExecutionKey::new(first.lineage(), first.attempt());
+    let first_state = AttemptRuntimeState::Publishing {
+        execution_basis: first.execution_basis_digest(),
+        daemon_epoch: first.daemon_epoch(),
+        execution: execution(0x61),
+        observation: observation(0x81),
+    };
+    let second = request(0x22, 0x42, 1);
+    let second_key = AttemptExecutionKey::new(second.lineage(), second.attempt());
+    let second_state = AttemptRuntimeState::CheckpointPublishing {
+        execution_basis: second.execution_basis_digest(),
+        daemon_epoch: second.daemon_epoch(),
+        execution: execution(0x62),
+        checkpoint: checkpoint(0x82),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+
+    let initial = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire initial retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit empty inventory")
+    };
+    assert_eq!(initial.attempt_records(), 0);
+
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(first_key, None, Some(first_state))
+            .expect("publish observation root"),
+        AttemptStateCas::Advanced
+    );
+    let first_generation = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire first retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit first inventory")
+            .generation()
+    };
+    assert_ne!(initial.generation(), first_generation);
+
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(first_key, None, Some(first_state))
+            .expect("reject stale attempt compare"),
+        AttemptStateCas::Conflict {
+            current: Some(first_state)
+        }
+    );
+    let after_conflict = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire post-conflict fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit post-conflict inventory")
+            .generation()
+    };
+    assert_eq!(after_conflict, first_generation);
+
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(first_key, Some(first_state), Some(first_state))
+            .expect("accept same-value attempt replacement"),
+        AttemptStateCas::Advanced
+    );
+    let after_same_value = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire same-value retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit same-value inventory")
+            .generation()
+    };
+    assert_ne!(after_same_value, first_generation);
+
+    ledger
+        .compare_exchange_attempt(second_key, None, Some(second_state))
+        .expect("publish checkpoint root");
+    let mut roots = Vec::new();
+    let summary = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire complete retention fence");
+        fence
+            .visit_roots(&mut |root| {
+                roots.push(root);
+                Ok(())
+            })
+            .expect("visit complete inventory")
+    };
+    assert_eq!(summary.attempt_records(), 2);
+    assert_eq!(summary.observation_roots(), 1);
+    assert_eq!(summary.checkpoint_roots(), 1);
+    assert!(roots.contains(&AssignmentRetentionRoot::Observation(observation(0x81))));
+    assert!(roots.contains(&AssignmentRetentionRoot::ExactCheckpoint(checkpoint(0x82))));
+
+    let failure = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire rejecting retention fence");
+        fence.visit_roots(&mut |_| Err(AssignmentRetentionVisitorError::LimitExceeded))
+    };
+    assert!(matches!(
+        failure,
+        Err(AssignmentRetentionInventoryError::Visitor(
+            AssignmentRetentionVisitorError::LimitExceeded
+        ))
+    ));
+}
+
+#[test]
+fn directory_retention_generation_survives_restart_and_distinguishes_aba() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x23, 0x43, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let publishing = AttemptRuntimeState::Publishing {
+        execution_basis: request.execution_basis_digest(),
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x63),
+        observation: observation(0x83),
+    };
+    let running = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x63),
+    };
+
+    let published_generation = {
+        let mut ledger =
+            DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+        ledger
+            .compare_exchange_attempt(key, None, Some(publishing))
+            .expect("publish observation root");
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire published retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit published root")
+            .generation()
+    };
+
+    let mut ledger =
+        DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
+    let reopened_generation = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire reopened retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit reopened root")
+            .generation()
+    };
+    assert_eq!(reopened_generation, published_generation);
+
+    ledger
+        .compare_exchange_attempt(key, Some(publishing), Some(running))
+        .expect("remove observation root");
+    ledger
+        .compare_exchange_attempt(key, Some(running), Some(publishing))
+        .expect("restore observation root");
+    let restored_generation = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire restored retention fence");
+        fence
+            .visit_roots(&mut |_| Ok(()))
+            .expect("visit restored root")
+            .generation()
+    };
+    assert_ne!(restored_generation, published_generation);
+    drop(ledger);
+
+    fs::write(
+        directory.path().join(RETENTION_STATE_FILE),
+        vec![0_u8; (MAX_RETENTION_STATE_BYTES + 1) as usize],
+    )
+    .expect("write oversized retention state");
+    assert!(matches!(
+        DirectoryAssignmentLedger::open(directory.path()),
+        Err(AssignmentLedgerError::Corrupt {
+            reason: "retention-state-size"
+        })
+    ));
+}
+
+#[test]
+fn directory_retention_inventory_rejects_misplaced_attempt_records() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x24, 0x44, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = AttemptRuntimeState::Publishing {
+        execution_basis: request.execution_basis_digest(),
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x64),
+        observation: observation(0x84),
+    };
+    let mut ledger =
+        DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+    ledger
+        .compare_exchange_attempt(key, None, Some(state))
+        .expect("publish attempt state");
+
+    let canonical = ledger.attempt_path(key);
+    let canonical_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("canonical attempt name");
+    let mut wrong_name = canonical_name.as_bytes().to_vec();
+    wrong_name[0] = if wrong_name[0] == b'a' { b'b' } else { b'a' };
+    let misplaced = canonical
+        .parent()
+        .expect("attempt shard")
+        .join(String::from_utf8(wrong_name).expect("changed hex name"));
+    fs::copy(&canonical, &misplaced).expect("copy misplaced attempt state");
+
+    let result = {
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .expect("acquire retention fence");
+        fence.visit_roots(&mut |_| Ok(()))
+    };
+    assert!(matches!(
+        result,
+        Err(AssignmentRetentionInventoryError::Backend(
+            AssignmentLedgerError::Corrupt {
+                reason: "attempt-root-record-path-identity-mismatch"
+            }
+        ))
+    ));
+}
+
+#[test]
 fn directory_ledger_reads_legacy_v1_attempt_state() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x15, 0x35, 1);

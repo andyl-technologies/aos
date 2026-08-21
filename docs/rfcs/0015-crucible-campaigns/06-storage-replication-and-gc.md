@@ -152,9 +152,9 @@ therefore cannot recreate an earlier generation.
 
 This primitive does not compute reachability or confer deletion authority on
 `ImmutableBlobBackend`. It is not yet the complete `plan_gc`/`apply_gc`
-contract: store-graph inventory composition, the assignment-ledger root fence,
-canonical root-set and graph generations, and an interruption-safe application
-journal remain mandatory before destructive campaign GC is wired.
+contract: store-graph inventory composition, canonical root-set and graph
+generations, and an interruption-safe application journal remain mandatory
+before destructive campaign GC is wired.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
@@ -578,6 +578,30 @@ cancellation/quarantine transition is the only way to replace it.
 These operational records do not grant the executor authority to mutate a
 campaign ref.
 
+The ledger exposes this inventory only through the separate
+`AssignmentRetentionAdmin` maintenance capability. Acquiring its mutable fence
+excludes executor state transitions, and the directory ledger's lifetime
+single-writer lock excludes another cooperating process. One pass authenticates
+each canonical attempt-state path and record and streams both observation and
+checkpoint roots; a consumer-visible prefix is tentative until the terminal
+summary returns. The summary binds the complete root set to an
+`AssignmentRetentionGeneration`.
+
+The directory ledger persists `<ledger>/retention-state-v1` under the registered
+`crucible.executor.assignment-retention-state` schema v1. Its canonical binary
+body is the literal `crucible.executor.assignment-retention-state.v1\0`, a
+32-byte random backend instance, and a little-endian unsigned 64-bit generation,
+followed by the 32-byte `CampaignHash::derive`
+`crucible.executor.assignment-retention-state.v1` checksum of that preceding
+body. The generation digest is
+`CampaignHash::derive("crucible.executor.assignment-retention-generation.v1",
+instance || LE64(generation))`. The counter starts at one and advances durably
+before every accepted attempt-state replacement, including deletion and
+same-value replacement; a failed expected-state comparison does not advance it.
+An error after the state advance is conservative because it only invalidates an
+older plan. The memory ledger uses a process-local hash-chain generation for its
+ephemeral backend instance.
+
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
 roots. Assignment-ledger roots are lineage-qualified and host-local rather than
@@ -611,12 +635,13 @@ materialization never removes the semantic configuration or thin replay path.
 The implemented memory and directory leaves now provide both the exclusive
 physical inventory generation/idempotent exact-candidate deletion primitive and
 the exclusive authoritative-ref inventory generation needed by that apply
-step. Directory generations survive restart; memory generations are
-process-local and monotonic for their ephemeral backend instance. These
-primitives remain held by the daemon maintenance owner. No campaign repository,
-planner, executor, or ordinary store-graph handle receives them, and no
-deletion is safe until the full plan and the remaining ledger/graph fences
-above have been implemented and revalidated.
+step. The assignment ledger likewise provides one exclusive, persistent
+generation over its combined operational root inventory. Directory generations
+survive restart; memory generations are process-local and monotonic for their
+ephemeral backend instance. These primitives remain held by the daemon
+maintenance owner. No campaign repository, planner, executor, or ordinary
+store-graph handle receives them, and no deletion is safe until the full plan
+and remaining store-graph fence above have been implemented and revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

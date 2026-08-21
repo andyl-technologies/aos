@@ -306,16 +306,29 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
     }
-    for (schema, version) in [
-        ("crucible.executor.assignment-record", "1"),
-        ("crucible.executor.attempt-state-record", "3"),
+    for (schema, version, kind) in [
+        (
+            "crucible.executor.assignment-record",
+            "1",
+            "operational-record",
+        ),
+        (
+            "crucible.executor.attempt-state-record",
+            "3",
+            "operational-record",
+        ),
+        (
+            "crucible.executor.assignment-retention-state",
+            "1",
+            "administrative-record",
+        ),
     ] {
         let record = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor ledger schema {schema}"));
         assert_eq!(record[1], version);
         assert_eq!(record[2], "crucible-daemon::assignment_ledger");
-        assert_eq!(record[3], "operational-record");
+        assert_eq!(record[3], kind);
     }
     for (schema, version, owner, kind) in [
         (
