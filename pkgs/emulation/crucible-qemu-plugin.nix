@@ -2,6 +2,8 @@
 {
   lib,
   mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoDeps,
   glib,
   pkg-config,
@@ -9,16 +11,38 @@
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = fetchCargoDeps {
+    inherit src;
+    sourceRoot = "source/crates";
+    hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
+  };
+  cargoArtifactContract = {
+    family = "crucible-gpl-qemu-plugin-release-and-test";
+    nativeInputs = map toString [glib pkg-config qemu-crucible];
+    licenseScope = "GPL-2.0-only";
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "crucible-qemu-plugin-artifacts";
+    inherit version cargoDeps cargoArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "crucible-qemu-plugin-dummy-source";
+    };
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
+    ];
+    buildDeps = [glib pkg-config qemu-crucible];
+    runtimeDeps = [qemu-crucible];
+  };
 in
   mkCargoPackage {
     pname = "crucible-qemu-plugin";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
-    };
+    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    cargoRoot = "crates";
+    cargoNextest = true;
 
     cargoFlags = "-p crucible-qemu-plugin";
     cargoTestFlags = "-p crucible-qemu-plugin";
@@ -45,7 +69,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crates/crucible-qemu-plugin/src/abi.rs
+      done < crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -56,7 +80,7 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crates/crucible-shmem/src/lib.rs
+      done < crucible-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       shmem_header="${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h"
@@ -101,7 +125,6 @@ in
         -c "$TMPDIR/crucible-qemu-plugin-header-probe.c" \
         -o "$TMPDIR/crucible-qemu-plugin-header-probe.o"
 
-      cd crates
     '';
 
     postInstall = ''

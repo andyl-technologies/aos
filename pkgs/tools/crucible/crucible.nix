@@ -4,6 +4,8 @@
   stdenv,
   mkDerivation,
   mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoDeps,
   rust,
   openssl,
@@ -40,6 +42,11 @@
   cargoDepsHash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
   liveDebuggerMatrixScript = ../../../examples/codex-skills/crucible-debugger/scripts/live-matrix.sh;
   src = import ./_source.nix {inherit lib;};
+  cargoDeps = fetchCargoDeps {
+    inherit src;
+    sourceRoot = "source/crates";
+    hash = cargoDepsHash;
+  };
   packages = import ./_packages.nix;
   nonCrucibleWorkspacePackages = [
     "aos"
@@ -97,15 +104,63 @@
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
+  controllerCargoEnv = {
+    OPENSSL_DIR = "${openssl}";
+    OPENSSL_LIB_DIR = "${openssl}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl}/include";
+    OPENSSL_NO_VENDOR = "1";
+    OPENSSL_STATIC = "0";
+  };
+  controllerArtifactContract = {
+    family = "crucible-apache-host-release-and-test";
+    nativeInputs = map toString [rust.dev pkg-config openssl];
+    licenseScope = "Apache-2.0";
+  };
+  controllerArtifacts = mkCargoArtifacts {
+    pname = "crucible-apache-host-artifacts";
+    inherit version cargoDeps;
+    cargoEnv = controllerCargoEnv;
+    cargoArtifactContract = controllerArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../../crates;
+      name = "crucible-apache-host-dummy-source";
+    };
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags}"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
+    ];
+    buildDeps = [rust.dev pkg-config openssl];
+    runtimeDeps = [openssl];
+  };
+  debugGatewayArtifactContract = {
+    family = "crucible-gpl-debug-gateway-release-and-test";
+    nativeInputs = map toString [rust.dev];
+    licenseScope = "GPL-2.0-only";
+  };
+  debugGatewayArtifacts = mkCargoArtifacts {
+    pname = "crucible-debug-gateway-artifacts";
+    inherit version cargoDeps;
+    cargoArtifactContract = debugGatewayArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../../crates;
+      name = "crucible-debug-gateway-dummy-source";
+    };
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
+    ];
+    buildDeps = [rust.dev];
+  };
   controller = mkCargoPackage {
     pname = "crucible-controller";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = cargoDepsHash;
-    };
+    inherit cargoDeps;
+    cargoArtifacts = controllerArtifacts;
+    cargoArtifactContract = controllerArtifactContract;
+    cargoEnv = controllerCargoEnv;
+    cargoRoot = "crates";
+    cargoNextest = true;
 
     cargoFlags = workspaceCargoFlags;
     cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
@@ -126,10 +181,6 @@
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
-    preBuild = ''
-      cd crates
-    '';
-
     postBuild = ''
       cargo test \
         --frozen \
@@ -244,21 +295,17 @@
     pname = "crucible-debug-gateway";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = cargoDepsHash;
-    };
+    inherit cargoDeps;
+    cargoArtifacts = debugGatewayArtifacts;
+    cargoArtifactContract = debugGatewayArtifactContract;
+    cargoRoot = "crates";
+    cargoNextest = true;
 
     cargoFlags = "-p crucible-debug-gateway";
     cargoTestFlags = "-p crucible-debug-gateway";
     doCheck = true;
     buildDeps = [rust.dev];
     runtimeDeps = [];
-
-    preBuild = ''
-      cd crates
-    '';
 
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"
