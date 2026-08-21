@@ -129,10 +129,11 @@ in {
     systemd.services.aos-registry-sync = {
       description = "Refresh signed AOS registry metadata for host evaluation";
       wants = ["network-online.target"];
-      requires = ["local-fs.target"];
+      requires = ["local-fs.target" "systemd-networkd.service"];
       after = [
         "local-fs.target"
         "network-online.target"
+        "systemd-networkd.service"
         "aos-config-seed.service"
       ];
       before = ["aos-eval.service" "multi-user.target"];
@@ -141,6 +142,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "2min";
+        ExecStartPre = "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any --timeout=110";
       };
       script = ''
         ${pkgs.aos}/bin/apm update --system
