@@ -693,8 +693,9 @@ field remains insufficient and non-conforming. Production listener policy must
 configure the credential-to-principal resolver and the ordinary per-operation
 authorizer; neither mapping enters campaign state.
 
-The daemon listener checkpoint accepts an already-bound nonblocking Unix
-listener behind a fixed pool of `1..=256` connection workers and a bounded
+The daemon listener accepts either an explicitly embedded pre-bound descriptor
+or a managed filesystem endpoint behind a fixed pool of `1..=256` connection
+workers and a bounded
 `1..=1024` pending-socket queue. A full queue closes the newly accepted socket
 without decoding it. Each connection serves `1..=65,536` complete requests
 (4,096 by default) before reconnecting through listener admission. Each worker
@@ -712,7 +713,7 @@ listener owner. The accept loop observes shutdown at a configured interval from
 peer-rejected, and protocol-failed connection counts are operational telemetry
 and never enter campaign identity.
 
-The initial immutable local policy maps at most 4,096 exact effective
+The immutable local policy maps at most 4,096 exact effective
 `(uid,gid)` pairs to canonical campaign principals and retains at most 65,536
 principal/operation/scope grants. PID is diagnostic only and MUST NOT select a
 principal because process IDs are reusable. A grant scope is either one exact
@@ -723,12 +724,51 @@ is an explicit deny-all value. Missing peer bindings and missing grants return
 `Unauthorized`; the in-memory policy performs no external lookup and therefore
 cannot turn a denial into an availability result.
 
-The listener deliberately accepts a pre-bound descriptor. Daemon bootstrap
-still owns socket-path creation, stale-path handling, filesystem ownership and
-mode, parsing the typed principal/operation policy from deployment
-configuration, and operational diagnostic routing. Constructing the bounded
-listener without those controls does not make the endpoint
-production-authorized.
+The registered `crucible.campaign-local-policy` version-1 deployment format is
+strict UTF-8 TOML bounded to 1 MiB before parsing:
+
+```toml
+schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = 1000
+group_id = 1000
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+```
+
+Unknown fields, schema versions, operation labels, or noncanonical principals
+and campaign names reject the complete policy. `campaign = "*"` is the only
+wildcard. The closed operation labels are `create-campaign`,
+`derive-campaign`, `get-campaign`, `get-campaign-snapshot`, `watch-campaign`,
+`query-campaign-graph`, `get-campaign-graph-object`,
+`query-campaign-choices`, `query-campaign-frontier`,
+`get-campaign-frontier-object`, `get-campaign-choice-object`,
+`apply-campaign-command`, `pin-campaign`, and `submit-branch-request`.
+
+The production filesystem endpoint accepts one absolute pathname of at most
+107 bytes, with no NUL or dot components. Its existing parent must be a real
+directory with the configured exact UID/GID and no group/other write bits. A
+stable owner-only regular lock file is opened without following a final
+symlink and held under an exclusive nonblocking `flock` for the listener
+lifetime. Under that lock, bootstrap may remove only a preexisting Unix socket
+owned by the same configured UID/GID; every other stale-path type or owner fails
+closed. After bind, the socket's exact type, owner, configured permission bits,
+and device/inode are retained. Graceful teardown removes only that exact socket
+after acceptance and workers stop; crash recovery leaves a same-owner stale
+socket for the next locked incarnation. The endpoint directory and its
+ancestors are an operator-owned namespace: non-cooperating same-credential
+renames remain outside this local deployment contract.
+
+Operational diagnostic routing and the remaining CLI process bootstrap remain
+open. The pre-bound constructor remains useful for embedded/test deployments,
+but constructing it without equivalent path ownership and parsed policy does
+not make an endpoint production-authorized.
 
 The stable error envelope preserves authorization, stale/conflict, invalid
 transition, resource, availability, and integrity meaning across direct and

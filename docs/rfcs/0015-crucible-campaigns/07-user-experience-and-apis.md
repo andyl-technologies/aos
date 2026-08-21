@@ -441,16 +441,21 @@ conflict, transition, resource, availability, and integrity meaning. The
 daemon's authenticated repository adapter now reads
 Linux `SO_PEERCRED`, resolves exact PID/UID/GID through a mandatory operational
 principal mapper, and rejects a different self-asserted request principal
-before repository access. A bounded daemon listener now owns an already-bound
-nonblocking socket, uses at most 256 fixed connection workers and 1,024 queued
+before repository access. A bounded daemon listener now owns either an
+explicitly embedded pre-bound socket or a managed production socket, uses at
+most 256 fixed connection workers and 1,024 queued
 sockets, serves at most 65,536 requests per connection, resolves credentials
 once per connection, rejects excess connections, and joins all workers after
 sticky shutdown interrupts their active streams.
-Its immutable typed policy maps at most 4,096 exact effective UID/GID pairs to
+Its strict registered version-1 TOML policy is bounded to 1 MiB before parsing,
+maps at most 4,096 exact effective UID/GID pairs to
 principals and at most 65,536 exact operation plus campaign/all-campaign grants;
-PID never selects authority. Production bootstrap must still create and
-permission the socket path and parse that policy from deployment
-configuration; framing or the listener alone is never authentication.
+PID never selects authority. The managed endpoint pins one exact-owner,
+non-group/other-writable parent directory, holds a lifetime namespace lock,
+recovers only same-owner stale sockets, verifies the configured socket mode,
+and removes only the exact bound inode after listener shutdown. The directory
+and its ancestors remain operator-owned deployment state. Framing or the
+listener alone is never authentication.
 
 All mutation requests carry an authenticated principal. Mutations of an
 existing campaign also carry command ID and expected snapshot ID; creation

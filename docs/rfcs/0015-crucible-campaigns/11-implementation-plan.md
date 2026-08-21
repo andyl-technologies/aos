@@ -477,17 +477,23 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   resource/availability/integrity failure vocabulary. A connected-stream
   repository adapter now reads Linux `SO_PEERCRED`, resolves exact PID/UID/GID
   through a mandatory deployment policy, and binds the result to every claimed
-  request principal before repository access. A bounded listener over an
-  already-bound nonblocking socket now caps connection workers at 256 and its
+  request principal before repository access. A bounded listener over either
+  an embedded pre-bound socket or a managed filesystem endpoint now caps
+  connection workers at 256 and its
   pending queue at 1,024, caps one connection at 65,536 requests, resolves peer
   identity once per connection, rejects excess sockets, interrupts active
   streams on sticky shutdown, and joins every worker before returning
   operational counters. An immutable local policy now maps at most 4,096 exact
   effective UID/GID pairs (never PID) to principals and retains at most 65,536
   exact operation plus campaign/all-campaign grants, rejecting ambiguity and
-  unreachable grants. Socket-path ownership, deployment policy parsing,
-  diagnostic routing, and remaining CLI wiring remain open; message framing or
-  listener construction alone is not authentication.
+  unreachable grants. The registered strict version-1 TOML policy is bounded
+  to 1 MiB before parsing and rejects unknown fields, versions, and operation
+  labels. Managed listener bootstrap validates a canonical 107-byte Linux
+  pathname, exact-owner non-group/other-writable parent, owner-only lifetime
+  namespace lock, same-owner stale socket, configured socket mode, and
+  exact-inode conditional teardown. The parent tree remains operator-owned
+  deployment state. Diagnostic routing and remaining CLI wiring remain open;
+  message framing or listener construction alone is not authentication.
   Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529

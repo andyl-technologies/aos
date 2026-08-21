@@ -170,6 +170,15 @@ Mutating commands carry authenticated principal, command ID, expected snapshot,
 and authorization evidence. Principal identity is audit metadata and does not
 enter modeled configuration identity.
 
+The local campaign endpoint derives its principal from Linux peer credentials,
+not a request assertion. Production bootstrap loads a strict bounded immutable
+UID/GID-to-principal and operation/name policy, and retains an exclusive lock
+over an exact-owner, non-group/other-writable socket namespace for the complete
+listener lifetime. Stale cleanup is limited to same-owner Unix sockets and
+graceful cleanup is exact-inode conditional. The containing directory tree is
+operator-owned deployment state; sharing its mutation credential with an
+untrusted process is non-conforming.
+
 - **[CSEC-11]** Export and debugger capabilities MUST be separate from ordinary
   campaign operation because exact closures may contain secrets.
 

@@ -9,9 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_campaign::{
-    CampaignAuthorizationError, CampaignHash, CampaignName, CampaignPrincipal,
+    CampaignAuthorizationError, CampaignCodecError, CampaignHash, CampaignName, CampaignPrincipal,
     CampaignPrincipalAuthorizer, CampaignServiceOperation,
 };
+use serde::Deserialize;
 
 use crate::{UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver};
 
@@ -19,6 +20,13 @@ use crate::{UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver};
 pub const MAX_CAMPAIGN_PEER_BINDINGS: usize = 4_096;
 /// Maximum exact operation/campaign grants retained by one local policy.
 pub const MAX_CAMPAIGN_ACCESS_GRANTS: usize = 65_536;
+/// Maximum encoded deployment-policy bytes accepted before TOML parsing.
+pub const MAX_CAMPAIGN_POLICY_BYTES: usize = 1024 * 1024;
+
+/// Stable schema name for the local campaign deployment policy.
+pub const CAMPAIGN_POLICY_SCHEMA: &str = "crucible.campaign-local-policy";
+/// Current accepted local campaign deployment-policy version.
+pub const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
 
 /// Stable Unix identity selector used for campaign peer authentication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -184,6 +192,88 @@ impl UnixPeerCampaignPolicy {
         })
     }
 
+    /// Parses one strict bounded versioned local deployment policy.
+    ///
+    /// The TOML document uses this closed shape:
+    ///
+    /// ```toml
+    /// schema = "crucible.campaign-local-policy"
+    /// version = 1
+    ///
+    /// [[bindings]]
+    /// user_id = 1000
+    /// group_id = 1000
+    /// principal = "operator"
+    ///
+    /// [[grants]]
+    /// principal = "operator"
+    /// operation = "get-campaign"
+    /// campaign = "*"
+    /// ```
+    ///
+    /// A grant campaign of `"*"` selects all canonical campaign names. Every
+    /// other value is parsed through [`CampaignName`]. Unknown fields and
+    /// operation labels fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnixPeerCampaignPolicyLoadError`] for an oversized, non-UTF-8,
+    /// malformed, unsupported, noncanonical, ambiguous, or unreachable policy.
+    pub fn from_toml_bytes(bytes: &[u8]) -> Result<Self, UnixPeerCampaignPolicyLoadError> {
+        if bytes.len() > MAX_CAMPAIGN_POLICY_BYTES {
+            return Err(UnixPeerCampaignPolicyLoadError::TooLarge);
+        }
+        let text = std::str::from_utf8(bytes)
+            .map_err(|source| UnixPeerCampaignPolicyLoadError::Utf8 { source })?;
+        let document: CampaignPolicyDocument = toml::from_str(text)
+            .map_err(|source| UnixPeerCampaignPolicyLoadError::Toml { source })?;
+        if document.schema != CAMPAIGN_POLICY_SCHEMA
+            || document.version != CAMPAIGN_POLICY_SCHEMA_VERSION
+        {
+            return Err(UnixPeerCampaignPolicyLoadError::UnsupportedSchema);
+        }
+        if document.bindings.len() > MAX_CAMPAIGN_PEER_BINDINGS {
+            return Err(UnixPeerCampaignPolicyLoadError::Policy(
+                UnixPeerCampaignPolicyError::TooManyBindings,
+            ));
+        }
+        if document.grants.len() > MAX_CAMPAIGN_ACCESS_GRANTS {
+            return Err(UnixPeerCampaignPolicyLoadError::Policy(
+                UnixPeerCampaignPolicyError::TooManyGrants,
+            ));
+        }
+
+        let mut bindings = Vec::with_capacity(document.bindings.len());
+        for binding in document.bindings {
+            let principal = CampaignPrincipal::new(binding.principal)
+                .map_err(|source| UnixPeerCampaignPolicyLoadError::InvalidPrincipal { source })?;
+            bindings.push(UnixPeerCampaignBinding::new(
+                UnixPeerCampaignIdentity::new(binding.user_id, binding.group_id),
+                principal,
+            ));
+        }
+
+        let mut grants = Vec::with_capacity(document.grants.len());
+        for grant in document.grants {
+            let principal = CampaignPrincipal::new(grant.principal)
+                .map_err(|source| UnixPeerCampaignPolicyLoadError::InvalidPrincipal { source })?;
+            let operation = parse_operation(&grant.operation).ok_or_else(|| {
+                UnixPeerCampaignPolicyLoadError::UnknownOperation {
+                    operation: grant.operation.clone(),
+                }
+            })?;
+            let scope = if grant.campaign == "*" {
+                CampaignAccessScope::AllCampaigns
+            } else {
+                CampaignAccessScope::Campaign(CampaignName::new(grant.campaign).map_err(
+                    |source| UnixPeerCampaignPolicyLoadError::InvalidCampaign { source },
+                )?)
+            };
+            grants.push(CampaignAccessGrant::new(principal, operation, scope));
+        }
+        Self::new(bindings, grants).map_err(UnixPeerCampaignPolicyLoadError::Policy)
+    }
+
     /// Returns the exact number of Unix peer bindings.
     #[must_use]
     pub fn binding_count(&self) -> usize {
@@ -216,6 +306,53 @@ impl UnixPeerCampaignPolicy {
             CampaignAccessScope::Campaign(campaign.clone()),
         );
         self.grants.contains(&all) || self.grants.contains(&exact)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignPolicyDocument {
+    schema: String,
+    version: u32,
+    #[serde(default)]
+    bindings: Vec<CampaignPolicyBinding>,
+    #[serde(default)]
+    grants: Vec<CampaignPolicyGrant>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignPolicyBinding {
+    user_id: u32,
+    group_id: u32,
+    principal: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignPolicyGrant {
+    principal: String,
+    operation: String,
+    campaign: String,
+}
+
+fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
+    match operation {
+        "create-campaign" => Some(CampaignServiceOperation::CreateCampaign),
+        "derive-campaign" => Some(CampaignServiceOperation::DeriveCampaign),
+        "get-campaign" => Some(CampaignServiceOperation::GetCampaign),
+        "get-campaign-snapshot" => Some(CampaignServiceOperation::GetCampaignSnapshot),
+        "watch-campaign" => Some(CampaignServiceOperation::WatchCampaign),
+        "query-campaign-graph" => Some(CampaignServiceOperation::QueryCampaignGraph),
+        "get-campaign-graph-object" => Some(CampaignServiceOperation::GetCampaignGraphObject),
+        "query-campaign-choices" => Some(CampaignServiceOperation::QueryCampaignChoices),
+        "query-campaign-frontier" => Some(CampaignServiceOperation::QueryCampaignFrontier),
+        "get-campaign-frontier-object" => Some(CampaignServiceOperation::GetCampaignFrontierObject),
+        "get-campaign-choice-object" => Some(CampaignServiceOperation::GetCampaignChoiceObject),
+        "apply-campaign-command" => Some(CampaignServiceOperation::ApplyCampaignCommand),
+        "pin-campaign" => Some(CampaignServiceOperation::PinCampaign),
+        "submit-branch-request" => Some(CampaignServiceOperation::SubmitBranchRequest),
+        _ => None,
     }
 }
 
@@ -268,6 +405,54 @@ pub enum UnixPeerCampaignPolicyError {
     /// A grant named no principal reachable through a Unix binding.
     #[error("campaign access grant names an unbound principal")]
     UnknownGrantPrincipal,
+}
+
+/// Failure to parse and validate one local campaign deployment policy.
+#[derive(Debug, thiserror::Error)]
+pub enum UnixPeerCampaignPolicyLoadError {
+    /// Input exceeded the fixed pre-parse byte ceiling.
+    #[error("campaign peer policy exceeds 1 MiB")]
+    TooLarge,
+    /// Input was not UTF-8 TOML text.
+    #[error("campaign peer policy is not UTF-8")]
+    Utf8 {
+        /// Exact UTF-8 decoding failure.
+        #[source]
+        source: std::str::Utf8Error,
+    },
+    /// The strict TOML document was malformed or carried an unknown field.
+    #[error("campaign peer policy TOML is invalid")]
+    Toml {
+        /// Exact TOML decoding failure.
+        #[source]
+        source: toml::de::Error,
+    },
+    /// The document schema name or version is unsupported.
+    #[error("campaign peer policy schema is unsupported")]
+    UnsupportedSchema,
+    /// A configured principal violated the canonical service grammar.
+    #[error("campaign peer policy principal is invalid")]
+    InvalidPrincipal {
+        /// Exact canonical principal failure.
+        #[source]
+        source: CampaignCodecError,
+    },
+    /// A configured campaign scope violated the canonical repository grammar.
+    #[error("campaign peer policy campaign scope is invalid")]
+    InvalidCampaign {
+        /// Exact canonical campaign-name failure.
+        #[source]
+        source: CampaignCodecError,
+    },
+    /// A grant named an operation outside the closed v1 vocabulary.
+    #[error("campaign peer policy operation `{operation}` is unknown")]
+    UnknownOperation {
+        /// Exact rejected operation label.
+        operation: String,
+    },
+    /// The decoded bindings or grants violated closed policy invariants.
+    #[error(transparent)]
+    Policy(UnixPeerCampaignPolicyError),
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -16,9 +17,9 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    CampaignAccessGrant, CampaignAccessScope, LoopbackCampaignService, UnixPeerCampaignBinding,
-    UnixPeerCampaignCredentials, UnixPeerCampaignIdentity, UnixPeerCampaignPolicy,
-    UnixPeerCampaignPrincipalResolver,
+    CampaignAccessGrant, CampaignAccessScope, CampaignLoopbackEndpointConfig,
+    LoopbackCampaignService, UnixPeerCampaignBinding, UnixPeerCampaignCredentials,
+    UnixPeerCampaignIdentity, UnixPeerCampaignPolicy, UnixPeerCampaignPrincipalResolver,
 };
 
 struct AllowAll;
@@ -361,6 +362,63 @@ fn listener_enforces_the_immutable_unix_peer_policy_end_to_end() {
     assert_eq!(report.completed_connections(), 1);
     assert_eq!(report.peer_rejections(), 0);
     assert_eq!(report.protocol_failures(), 0);
+}
+
+#[test]
+fn managed_endpoint_and_loaded_policy_form_one_authenticated_server_boundary() {
+    let directory = tempdir().expect("managed server directory");
+    let metadata = std::fs::metadata(directory.path()).expect("managed directory metadata");
+    let socket = directory.path().join("campaign.sock");
+    let endpoint =
+        CampaignLoopbackEndpointConfig::new(&socket, metadata.uid(), metadata.gid(), 0o600)
+            .expect("managed endpoint config")
+            .bind()
+            .expect("bind managed endpoint");
+    let policy_text = format!(
+        r#"
+schema = "crucible.campaign-local-policy"
+version = 1
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator:alice"
+[[grants]]
+principal = "operator:alice"
+operation = "get-campaign"
+campaign = "absent"
+"#,
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    let policy = Arc::new(
+        UnixPeerCampaignPolicy::from_toml_bytes(policy_text.as_bytes())
+            .expect("load deployment policy"),
+    );
+    let server = CampaignLoopbackServer::from_managed_listener(
+        endpoint,
+        repository("campaign-managed-listener-policy"),
+        Arc::clone(&policy),
+        policy,
+        CampaignLoopbackServerConfig::default(),
+    )
+    .expect("managed campaign server");
+    let shutdown = server.shutdown_handle();
+    let server_thread = thread::spawn(move || server.serve().expect("serve managed endpoint"));
+
+    let stream = UnixStream::connect(&socket).expect("connect managed campaign client");
+    let client = CampaignClient::new(LoopbackCampaignService::new(stream).expect("loopback"));
+    assert!(matches!(
+        client.get_campaign(&request()),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::NotFound
+        ))
+    ));
+    drop(client);
+    wait_for_no_active_connections(&shutdown);
+    shutdown.shutdown();
+    let report = server_thread.join().expect("managed server thread");
+    assert_eq!(report.completed_connections(), 1);
+    assert!(!socket.exists());
 }
 
 #[test]
