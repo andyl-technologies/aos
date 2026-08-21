@@ -104,6 +104,10 @@ fn run() -> Result<(), String> {
         report.canonical_backpressure_retry_delivered
     );
     println!(
+        "backpressure_retry_icount={}",
+        report.backpressure_retry_icount.unwrap_or_default()
+    );
+    println!(
         "backpressure_guest_acknowledgement_seen={}",
         report.backpressure_guest_acknowledgement_seen
     );
@@ -114,6 +118,10 @@ fn run() -> Result<(), String> {
     println!(
         "retained_frame_durable_envelope_restored={}",
         report.retained_frame_durable_envelope_restored
+    );
+    println!(
+        "retained_frame_first_retry_icount={}",
+        report.retained_frame_first_retry_icount
     );
     println!(
         "deterministic_under_host_load={}",

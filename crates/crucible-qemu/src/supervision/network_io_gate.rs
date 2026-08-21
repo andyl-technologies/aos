@@ -35,8 +35,8 @@ use crate::{
 };
 use crucible::{BackendInput, Icount};
 use crucible_shmem::{
-    FrameDeliveryKey, FrameDeliveryState, FrameEntry, RegionAllocation, RegionConfig,
-    SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
+    FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameDeliveryKey, FrameDeliveryState, FrameEntry,
+    RegionAllocation, RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
 };
 
 mod error;
@@ -137,12 +137,16 @@ pub struct QemuLiveNetworkIoReport {
     pub boot_backpressure_retained: bool,
     /// Whether both retained boot-time frames later left canonical shared memory.
     pub canonical_backpressure_retry_delivered: bool,
+    /// Exact first retry coordinate observed in both live runs.
+    pub backpressure_retry_icount: Option<u64>,
     /// Whether guest userspace acknowledged the exact retained frame in both runs.
     pub backpressure_guest_acknowledgement_seen: bool,
     /// Whether a retained frame survived source death and a fresh QEMU restore.
     pub retained_frame_fresh_process_restored: bool,
     /// Whether the retained restore crossed the durable canonical envelope.
     pub retained_frame_durable_envelope_restored: bool,
+    /// Exact first retry coordinate observed after fresh-process restore.
+    pub retained_frame_first_retry_icount: u64,
     /// Whether the hostile-host run reproduced the reference observations.
     pub deterministic_under_host_load: bool,
     /// Absolute probe stamp from the hostile-host run.
@@ -177,7 +181,7 @@ struct NetworkIoRunOutcome {
     backpressure_acknowledgement_icount: Option<u64>,
     backpressure_delivery_attempts: u32,
     backpressure_last_attempt_icount: u64,
-    backpressure_consumed_icount: Option<u64>,
+    backpressure_retry_icount: Option<u64>,
     delayed_reply_applied: bool,
     orderly_child_exit: bool,
 }
@@ -237,6 +241,7 @@ pub fn run_qemu_live_network_io_gate(
             && hostile.boot_backpressure_retained,
         canonical_backpressure_retry_delivered: reference.canonical_backpressure_retry_delivered
             && hostile.canonical_backpressure_retry_delivered,
+        backpressure_retry_icount: reference.backpressure_retry_icount,
         backpressure_guest_acknowledgement_seen: reference
             .backpressure_acknowledgement_icount
             .is_some()
@@ -245,6 +250,7 @@ pub fn run_qemu_live_network_io_gate(
             && retained_report.guest_acknowledgement_seen
             && retained_report.retained_frame_consumed,
         retained_frame_durable_envelope_restored: retained_report.durable_envelope_round_trip,
+        retained_frame_first_retry_icount: retained_report.first_retry_icount,
         deterministic_under_host_load: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,

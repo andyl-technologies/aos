@@ -48,7 +48,7 @@ fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {
         backpressure_acknowledgement_icount: Some(probe_icount - 1),
         backpressure_delivery_attempts: 1,
         backpressure_last_attempt_icount: 1,
-        backpressure_consumed_icount: Some(4_000_001),
+        backpressure_retry_icount: Some(4_000_001),
         delayed_reply_applied: false,
         orderly_child_exit: true,
     }

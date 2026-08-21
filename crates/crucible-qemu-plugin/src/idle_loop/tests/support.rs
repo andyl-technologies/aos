@@ -183,6 +183,7 @@ pub(super) struct RecordingNetworkRxQueue<'a> {
     pub(super) direct_advance_ns_at_queue: Vec<i64>,
     pub(super) slot_status_at_queue: Vec<u8>,
     pub(super) delivery_error_at: Option<usize>,
+    pub(super) retained_at: Option<usize>,
 }
 
 impl<'a> RecordingNetworkRxQueue<'a> {
@@ -193,6 +194,7 @@ impl<'a> RecordingNetworkRxQueue<'a> {
             direct_advance_ns_at_queue: Vec::new(),
             slot_status_at_queue: Vec::new(),
             delivery_error_at: None,
+            retained_at: None,
         }
     }
 }
@@ -208,6 +210,9 @@ impl CanonicalNetworkRx for RecordingNetworkRxQueue<'_> {
         self.direct_advance_ns_at_queue
             .push(last_direct_advance_ns());
         self.slot_status_at_queue.push(self.slot.snapshot().status);
+        if self.retained_at == Some(self.queued_payloads.len()) {
+            return Ok(NetworkRxDeliveryOutcome::Retained);
+        }
         self.queued_payloads.push(payload.to_vec());
         Ok(NetworkRxDeliveryOutcome::Delivered)
     }

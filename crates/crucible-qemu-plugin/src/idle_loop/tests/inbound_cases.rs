@@ -4,7 +4,7 @@ use super::super::*;
 
 use super::support::*;
 use crate::NetworkRxDeliveryError;
-use crucible_shmem::{KIND_VM, RingHeader, STATUS_IDLE, STATUS_RUNNING};
+use crucible_shmem::{FrameDeliveryState, KIND_VM, RingHeader, STATUS_IDLE, STATUS_RUNNING};
 
 #[test]
 fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
@@ -243,6 +243,73 @@ fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
     assert_eq!(clock.current_icount(), 20);
     assert_eq!(ring.read_index(), 0);
     assert_eq!(slot.snapshot().status, STATUS_IDLE);
+}
+
+#[test]
+fn idle_loop_rx_backpressure_marks_canonical_head_retained() {
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10, 1);
+    let ring = RingHeader::new();
+    let mut entries = empty_entries();
+    let retained = frame(20, 1, 0, b"retained");
+    enqueue(&ring, &mut entries, retained.clone());
+    publish_ceiling(&slot, ceiling(0, 10));
+    let request = PluginIdleHotLoop::begin_idle_with_inbound_rings(
+        &slot,
+        &clock,
+        &deadline_reader(deadline_80),
+        [InboundFrameRing::new(0, &ring, &entries)],
+        None,
+    )
+    .unwrap_or_else(|error| panic!("idle begin should select inbound head: {error}"));
+
+    publish_ceiling(&slot, ceiling(10, 20));
+    let mut clock = clock;
+    let network_rx = PluginNetworkRx::new();
+    let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+    rx_queue.retained_at = Some(0);
+    let pending = expect_pending(
+        PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            &queued_idle_advance(),
+            request,
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+    );
+
+    let result =
+        PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            request,
+            pending,
+            successful_completion(pending),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        )
+        .unwrap_or_else(|error| panic!("backpressure should retain the ring head: {error}"));
+
+    assert_eq!(ring.read_index(), 0);
+    assert_eq!(
+        entries[0].delivery_state(),
+        Ok(FrameDeliveryState::Retained)
+    );
+    assert_eq!(entries[0].delivery_attempts(), 1);
+    assert_eq!(entries[0].last_delivery_attempt_icount(), 20);
+    let injection = result
+        .network_rx_injection()
+        .unwrap_or_else(|| panic!("backpressure should report an RX result"));
+    assert_eq!(injection.delivered_frame_keys(), &[]);
+    assert_eq!(
+        injection.retained_frame_key(),
+        Some(retained.delivery_key())
+    );
+    assert!(rx_queue.queued_payloads.is_empty());
+    assert_eq!(slot.snapshot().status, STATUS_RUNNING);
 }
 
 #[test]
