@@ -87,6 +87,10 @@ impl ConflictAfterCreateRefBackend {
 }
 
 impl MutableRefBackend for ConflictAfterCreateRefBackend {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+        self.inner.acquire_publication_guard()
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         self.inner.read_ref(name)
     }

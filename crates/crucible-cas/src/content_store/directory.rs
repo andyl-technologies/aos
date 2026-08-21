@@ -8,6 +8,7 @@
 //! <blob-root>/.inventory-admin/state-v1
 //! <ref-root>/refs/<validated RefName>
 //! <ref-root>/.ref-admin/lock
+//! <ref-root>/.ref-admin/publication-lock
 //! <ref-root>/.ref-admin/state-v1
 //! ```
 //!
@@ -18,9 +19,11 @@
 //! state uses the same field grammar under the registered
 //! `crucible.content-store.directory-ref-inventory-state.v1` domain.
 //! Cooperating object puts, ref replacements, and administrative enumeration
-//! serialize on their corresponding lock; neither root may be mutated by an
-//! uncooperating process. State readers reject input larger than 256 bytes
-//! before retaining more input.
+//! serialize on their corresponding lock. Repository transactions also retain
+//! a shared `publication-lock` from before their first immutable child write
+//! through their final ref comparison; ref inventory takes the exclusive side.
+//! Neither root may be mutated by an uncooperating process. State readers reject
+//! input larger than 256 bytes before retaining more input.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -893,6 +896,11 @@ impl DirectoryRefBackend {
 }
 
 impl MutableRefBackend for DirectoryRefBackend {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+        let lock = self.acquire_ref_publication_lock(FlockOperation::LockShared)?;
+        Ok(Box::new(DirectoryRefPublicationGuard { _lock: lock }))
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
         let _lock = self.acquire_lock(name, FlockOperation::LockShared)?;
@@ -917,6 +925,12 @@ impl MutableRefBackend for DirectoryRefBackend {
         Ok(RefCasOutcome::Advanced { next })
     }
 }
+
+struct DirectoryRefPublicationGuard {
+    _lock: File,
+}
+
+impl RefPublicationGuard for DirectoryRefPublicationGuard {}
 
 fn directory_receipt(name: &str, id: ContentId, logical_length: u64) -> PutReceipt {
     PutReceipt::one(

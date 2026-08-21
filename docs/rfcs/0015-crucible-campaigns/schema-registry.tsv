@@ -78,6 +78,7 @@ crucible.campaign.service-error-response	1	crucible-campaign::campaign_service	c
 crucible.campaign.gc-plan	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.campaign.gc-root-manifest	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.campaign.gc-candidate-manifest	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
+crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	3	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition

@@ -68,11 +68,13 @@ pub use assignment_ledger::{
 };
 pub use campaign_gc::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
-    CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcManifestError,
-    CampaignGcPhysicalStore, CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId,
-    CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest, CampaignGcRootSetId,
-    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
-    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, MAX_CAMPAIGN_GC_PLAN_BYTES, plan_single_host_campaign_gc,
+    CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcJournalCreateDisposition,
+    CampaignGcJournalError, CampaignGcJournalPhase, CampaignGcJournalTransition,
+    CampaignGcManifestError, CampaignGcPhysicalStore, CampaignGcPlan, CampaignGcPlanError,
+    CampaignGcPlanId, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
+    CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
+    MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    MAX_CAMPAIGN_GC_PLAN_BYTES, plan_single_host_campaign_gc,
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,

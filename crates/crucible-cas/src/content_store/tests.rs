@@ -7,8 +7,9 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -199,6 +200,38 @@ fn memory_ref_inventory_is_exclusive_and_aba_bound() {
         .expect("visit memory refs after ABA");
     assert_ne!(after.generation(), before.generation());
     assert_eq!(after.refs(), before.refs());
+}
+
+#[test]
+fn memory_ref_inventory_waits_for_in_flight_publication() {
+    let refs = Arc::new(MemoryRefBackend::new());
+    let publication = refs
+        .acquire_publication_guard()
+        .expect("acquire memory publication guard");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let worker_refs = Arc::clone(&refs);
+    let worker = thread::spawn(move || {
+        started_tx.send(()).expect("signal inventory attempt");
+        let _fence = worker_refs
+            .acquire_ref_inventory_fence()
+            .expect("acquire memory inventory fence");
+        acquired_tx.send(()).expect("signal acquired inventory");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("inventory worker started");
+    assert!(matches!(
+        acquired_rx.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    drop(publication);
+    acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("inventory acquired after publication completed");
+    worker.join().expect("join memory inventory worker");
 }
 
 #[test]
@@ -431,6 +464,40 @@ fn directory_ref_inventory_is_persistent_fenced_and_fail_closed() {
             reason: "directory ref inventory state exceeds its byte limit"
         })
     ));
+}
+
+#[test]
+fn directory_ref_inventory_waits_for_cross_instance_publication() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("authority");
+    let publisher = DirectoryRefBackend::new(&root);
+    let publication = publisher
+        .acquire_publication_guard()
+        .expect("acquire directory publication guard");
+    let (started_tx, started_rx) = mpsc::channel();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let inventor = DirectoryRefBackend::new(root);
+        started_tx.send(()).expect("signal inventory attempt");
+        let _fence = inventor
+            .acquire_ref_inventory_fence()
+            .expect("acquire directory inventory fence");
+        acquired_tx.send(()).expect("signal acquired inventory");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("inventory worker started");
+    assert!(matches!(
+        acquired_rx.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    drop(publication);
+    acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("inventory acquired after publication completed");
+    worker.join().expect("join directory inventory worker");
 }
 
 #[test]
