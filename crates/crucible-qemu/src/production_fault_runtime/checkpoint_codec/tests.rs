@@ -60,19 +60,21 @@ fn complete_production_checkpoint_round_trips_canonically() {
     let seed = ContentHash::from_bytes(b"empty checkpoint seed");
     let checkpoint = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
 
-    assert!(matches!(
-        checkpoint.to_canonical_bytes_with_limit(64),
-        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
-            field: "production fault checkpoint",
-            configured: 64,
-            hard: 68_719_476_736,
-            ..
-        })
-    ));
-
     let bytes = checkpoint
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
+    let aggregate_limit = u64::try_from(bytes.len().saturating_sub(1))
+        .unwrap_or_else(|_| panic!("checkpoint length should fit the aggregate limit"));
+    assert!(matches!(
+        checkpoint.to_canonical_bytes_with_limit(aggregate_limit),
+        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "production fault checkpoint",
+            configured,
+            hard: 68_719_476_736,
+            ..
+        }) if configured == aggregate_limit
+    ));
+
     let restored = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed)
         .unwrap_or_else(|error| panic!("checkpoint should decode: {error}"));
 
@@ -125,7 +127,7 @@ fn aggregate_codec_rejects_pre_policy_version() {
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v3\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v4\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),
