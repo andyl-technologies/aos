@@ -4,8 +4,13 @@ use super::*;
 
 #[path = "campaign/object.rs"]
 mod object;
+#[path = "campaign/snapshot.rs"]
+mod snapshot;
 
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
+use snapshot::{
+    query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
+};
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -160,6 +165,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_head(&client, principal, &args.command)?;
             render_campaign_head(&report, cli.output_format())?
         }
+        CampaignCommand::Snapshot(_) | CampaignCommand::Compare(_) => {
+            let report = query_campaign_snapshot(&client, principal, &args.command)?;
+            render_campaign_snapshot(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_) | CampaignCommand::Choices(_) | CampaignCommand::Frontier(_) => {
             let report = query_campaign_page(&client, principal, &args.command)?;
             render_campaign_page(&report, cli.output_format())?
@@ -278,6 +287,10 @@ fn prepare_campaign_command(
             validate_campaign_object_basis(&object.name, &object.snapshot)?;
             CampaignHash::parse(&object.key)
                 .map_err(|error| usage_error(format!("invalid campaign graph key: {error}")))?;
+            Ok(None)
+        }
+        CampaignCommand::Snapshot(_) | CampaignCommand::Compare(_) => {
+            validate_campaign_snapshot_command(command)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -837,6 +850,8 @@ fn campaign_mutation_spec(
         | CampaignCommand::Branch(_)
         | CampaignCommand::Status(_)
         | CampaignCommand::Watch(_)
+        | CampaignCommand::Snapshot(_)
+        | CampaignCommand::Compare(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
@@ -1138,6 +1153,7 @@ mod tests {
         map: MerkleMap,
         root: ContentId,
         snapshot: CampaignSnapshot,
+        snapshots: BTreeMap<CampaignSnapshotId, CampaignSnapshot>,
         object_key: CampaignHash,
         object: ObjectEnvelope,
     }
@@ -1316,9 +1332,15 @@ mod tests {
 
         fn get_campaign_snapshot(
             &self,
-            _request: &GetCampaignSnapshotRequest,
+            request: &GetCampaignSnapshotRequest,
         ) -> Result<GetCampaignSnapshotResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            let snapshot = self
+                .snapshots
+                .get(&request.snapshot())
+                .expect("requested fixture snapshot")
+                .clone();
+            Ok(GetCampaignSnapshotResponse::new(request, snapshot)
+                .expect("bound campaign snapshot response"))
         }
 
         fn watch_campaign(
@@ -1598,7 +1620,7 @@ mod tests {
 
     #[test]
     fn campaign_graph_page_uses_the_checked_proof_bearing_transport() {
-        let (service, snapshot) = graph_page_service();
+        let (service, snapshot, _) = graph_page_service();
         let command = CampaignCommand::Graph(CampaignPageArgs {
             name: "example".to_owned(),
             snapshot: snapshot.to_string(),
@@ -1630,7 +1652,7 @@ mod tests {
 
     #[test]
     fn campaign_graph_object_uses_the_checked_proof_bearing_transport() {
-        let (service, snapshot) = graph_page_service();
+        let (service, snapshot, _) = graph_page_service();
         let key = service.object_key;
         let command = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
             name: "example".to_owned(),
@@ -1661,6 +1683,42 @@ mod tests {
         assert_eq!(decoded["snapshot"], snapshot.to_string());
         assert_eq!(decoded["object"]["kind"], "configuration");
         assert_eq!(decoded["object"]["key"], key.to_hex());
+    }
+
+    #[test]
+    fn campaign_compare_uses_two_checked_historical_snapshot_reads() {
+        let (service, right, left) = graph_page_service();
+        let command = CampaignCommand::Compare(CampaignCompareArgs {
+            name: "example".to_owned(),
+            left: left.to_string(),
+            right: right.to_string(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve left snapshot request");
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve right snapshot request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_snapshot(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked campaign comparison");
+        server.join().expect("campaign server thread");
+
+        let rendered = render_campaign_snapshot(&report, OutputFormat::Json).expect("compare JSON");
+        let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(decoded["schema"], "crucible.cli.campaign-compare.v1");
+        assert_eq!(decoded["direct_relationship"], "left-parent-of-right");
+        assert_eq!(decoded["left"]["id"], left.to_string());
+        assert_eq!(decoded["right"]["id"], right.to_string());
+        assert_eq!(decoded["changed"]["active_policy"], true);
     }
 
     #[test]
@@ -1883,6 +1941,17 @@ mod tests {
             after: Some("not-a-snapshot".to_owned()),
         });
         assert!(validate_campaign_command(&bad_watch).is_err());
+        let bad_snapshot = CampaignCommand::Snapshot(CampaignSnapshotArgs {
+            name: "example".to_owned(),
+            snapshot: "not-a-snapshot".to_owned(),
+        });
+        assert!(validate_campaign_command(&bad_snapshot).is_err());
+        let bad_compare = CampaignCommand::Compare(CampaignCompareArgs {
+            name: "example".to_owned(),
+            left: snapshot("left").to_string(),
+            right: "not-a-snapshot".to_owned(),
+        });
+        assert!(validate_campaign_command(&bad_compare).is_err());
 
         let bad_graph_cursor = CampaignCommand::Graph(CampaignPageArgs {
             name: "example".to_owned(),
@@ -1998,6 +2067,51 @@ mod tests {
             watch.command,
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::Watch(CampaignWatchArgs { after: Some(_), .. }),
+                ..
+            })
+        ));
+
+        let left_snapshot = snapshot("left").to_string();
+        let right_snapshot = snapshot("right").to_string();
+        let snapshot_command = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "snapshot",
+            "example",
+            "--snapshot",
+            &left_snapshot,
+        ])
+        .expect("campaign snapshot arguments");
+        assert!(matches!(
+            snapshot_command.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Snapshot(_),
+                ..
+            })
+        ));
+        let compare_command = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "compare",
+            "example",
+            "--left",
+            &left_snapshot,
+            "--right",
+            &right_snapshot,
+        ])
+        .expect("campaign compare arguments");
+        assert!(matches!(
+            compare_command.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Compare(_),
                 ..
             })
         ));
@@ -2414,7 +2528,7 @@ mod tests {
         request.request().clone()
     }
 
-    fn graph_page_service() -> (GraphPageService, CampaignSnapshotId) {
+    fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapshotId) {
         let backend = Arc::new(MemoryBlobBackend::new("cli-graph-page", u64::MAX));
         let map = MerkleMap::new(backend);
         let mut root = map.empty().expect("empty graph root");
@@ -2455,18 +2569,36 @@ mod tests {
             accounting: root.content_id(),
             coordination: root.content_id(),
         };
-        let snapshot = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
-            .expect("graph snapshot");
-        let snapshot_id = snapshot.id().expect("graph snapshot ID");
+        let historical = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
+            .expect("historical graph snapshot");
+        let historical_id = historical.id().expect("historical graph snapshot ID");
+        let transition = CampaignFactId::parse(&format!(
+            "crucible.campaign.fact@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"cli-graph-transition").encode()
+        ))
+        .expect("transition fact ID");
+        let snapshot = CampaignSnapshot::successor(
+            historical_id,
+            lineage("lineage"),
+            policy("next-policy"),
+            roots,
+            transition,
+        )
+        .expect("current graph snapshot");
+        let snapshot_id = snapshot.id().expect("current graph snapshot ID");
+        let snapshots =
+            BTreeMap::from([(historical_id, historical), (snapshot_id, snapshot.clone())]);
         (
             GraphPageService {
                 map,
                 root: root.content_id(),
                 snapshot,
+                snapshots,
                 object_key,
                 object,
             },
             snapshot_id,
+            historical_id,
         )
     }
 
