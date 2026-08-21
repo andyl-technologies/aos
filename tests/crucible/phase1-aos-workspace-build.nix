@@ -145,9 +145,9 @@ in
               ${packages.crucible}/nix-support/aos-release-policy
             grep -q '^discovery_hint=runtime-environment-wrapper$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^shmem_abi_version=15$' \
+            grep -q '^shmem_abi_version=16$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^shmem_abi=crucible-shmem-abi-v15$' \
+            grep -q '^shmem_abi=crucible-shmem-abi-v16$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^guest_host_protocol_version=1$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -177,17 +177,17 @@ in
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_plugin_abi=qemu-plugin-api-v4$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^shmem_abi_version=15$' \
+            grep -q '^shmem_abi_version=16$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^shmem_abi=crucible-shmem-abi-v15$' \
+            grep -q '^shmem_abi=crucible-shmem-abi-v16$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_shmem_abi=crucible-shmem-abi-v15$' \
+            grep -q '^qemu_shmem_abi=crucible-shmem-abi-v16$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^shmem_generated_header=${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^shmem_generated_header_hash=${packages.qemu-crucible.passthru.shmemHeaderHash}$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^plugin_abi=crucible-shmem-abi-v15$' \
+            grep -q '^plugin_abi=crucible-shmem-abi-v16$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
 
             test -f ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
@@ -209,14 +209,14 @@ in
             grep -q 'qemu_plugin_crucible_rr_switch_quantum' \
               ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
             test -f ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
-            grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION 15u' \
+            grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION 16u' \
               ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
             test -f ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
             grep -q '^qemu_sim_capability=qemu-crucible$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
-            grep -q '^qemu_shmem_abi_version=15$' \
+            grep -q '^qemu_shmem_abi_version=16$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
-            grep -q '^qemu_shmem_abi=crucible-shmem-abi-v15$' \
+            grep -q '^qemu_shmem_abi=crucible-shmem-abi-v16$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
             grep -q '^qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
@@ -235,7 +235,7 @@ in
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
             qemu_discovery_hint=runtime-environment-wrapper
             qemu_plugin_abi=qemu-plugin-api-v4
-            shmem_abi=crucible-shmem-abi-v15
+            shmem_abi=crucible-shmem-abi-v16
             guest_host_protocol_abi=crucible-guest-host-channel-v1
             rpc_abi=5.0.0+crucible-rpc-abi-v5
             qemu_sim_capability=qemu-crucible

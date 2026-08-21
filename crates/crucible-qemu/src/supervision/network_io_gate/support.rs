@@ -105,6 +105,10 @@ pub(super) fn certify_run(
         Some("reply was not stamped at the fixed icount latency")
     } else if acknowledgements != 1 || outcome.acknowledgement_icount.is_none() {
         Some("guest did not receive the reply and emit one acknowledgement")
+    } else if !outcome.snapshot.backpressure_acknowledgement_seen
+        || outcome.backpressure_acknowledgement_icount.is_none()
+    {
+        Some("guest did not acknowledge the exact retained backpressure frame")
     } else if require_delay && !outcome.delayed_reply_applied {
         Some("hostile-host leg did not delay physical reply publication")
     } else if !outcome.orderly_child_exit {

@@ -26,6 +26,8 @@ pub const LIVE_NETWORK_REPLY_PAYLOAD: &[u8] = b"crucible-network-reply-v1";
 pub const LIVE_NETWORK_ACK_PAYLOAD: &[u8] = b"crucible-network-ack-v1";
 /// Router frame used before guest-driver initialization to force real backpressure.
 pub const LIVE_NETWORK_BACKPRESSURE_PAYLOAD: &[u8] = b"crucible-network-backpressure-v1";
+/// Guest acknowledgement for the exact boot-time backpressure canary.
+pub const LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD: &[u8] = b"crucible-network-backpressure-ack-v1";
 /// Fixed logical latency between probe emission and reply delivery.
 ///
 /// The deliberately broad window lets the guest enter its blocking receive
@@ -57,6 +59,8 @@ pub struct LiveNetworkIoSnapshot {
     pub reply_delivery_icount: Option<u64>,
     /// Whether the guest emitted the post-RX acknowledgement frame.
     pub acknowledgement_seen: bool,
+    /// Whether guest userspace acknowledged the exact retained boot-time frame.
+    pub backpressure_acknowledgement_seen: bool,
 }
 
 /// Result of one network-ring servicing pass.
@@ -68,6 +72,8 @@ pub struct LiveNetworkIoServiceStep {
     pub reply_enqueued: bool,
     /// Whether an acknowledgement was observed during this pass.
     pub acknowledgement_seen: bool,
+    /// Whether this pass observed the retained-frame acknowledgement.
+    pub backpressure_acknowledgement_seen: bool,
 }
 
 /// Host-side deterministic router for a single live guest.
@@ -100,48 +106,43 @@ impl QemuLiveNetworkIoServicer {
         })
     }
 
-    /// Enqueues the boot-time frame that must encounter the unready guest NIC.
+    /// Builds the boot-time frame that must encounter the unready guest NIC.
     ///
-    /// The scheduler hot path publishes the first ceiling and wake after this
-    /// method returns. The frame therefore remains a normal router-owned input;
-    /// no host network injector or QEMU-private queue participates.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the ring pair cannot be borrowed, the frame
-    /// cannot be represented, or the bounded inbound ring is full or corrupt.
-    pub fn enqueue_boot_backpressure_probe(
-        &mut self,
-        delivery_icount: u64,
-    ) -> Result<FrameDeliveryKey, QemuLiveNetworkIoServicerError> {
-        let router_slot = SLOT_NET_ROUTER as u32;
-        let pair = self
-            .region
-            .node_directed_ring_pair_mut(
-                self.vm_slot,
-                self.vm_slot,
-                router_slot,
-                router_slot,
-                self.vm_slot,
-            )
-            .map_err(|source| QemuLiveNetworkIoServicerError::RegionAccess { source })?;
+    /// The caller publishes these bytes through the production scheduler hot
+    /// path, which assigns the canonical router sequence and validates that its
+    /// delivery coordinate is strictly in the future.
+    #[must_use]
+    pub fn boot_backpressure_probe() -> Vec<u8> {
         let mut payload = vec![0_u8; MINIMUM_ETHERNET_FRAME_LEN];
         payload[..6].fill(0xff);
         payload[6..12].copy_from_slice(&ROUTER_MAC);
         payload[12..14].copy_from_slice(&LIVE_NETWORK_ETHERTYPE);
         payload[14..14 + LIVE_NETWORK_BACKPRESSURE_PAYLOAD.len()]
             .copy_from_slice(LIVE_NETWORK_BACKPRESSURE_PAYLOAD);
-        let frame = FrameEntry::new(delivery_icount, router_slot, self.reply_sequence, &payload)
-            .map_err(|source| QemuLiveNetworkIoServicerError::Frame { source })?;
-        pair.second
-            .header
-            .enqueue(pair.second.entries, &frame)
-            .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?;
+        payload
+    }
+
+    /// Advances the servicer's router sequence after a hot-path publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error if the hot path did not publish the sequence the
+    /// servicer expected to precede its next deterministic reply.
+    pub fn observe_router_publication(
+        &mut self,
+        frame: FrameDeliveryKey,
+    ) -> Result<(), QemuLiveNetworkIoServicerError> {
+        if frame.src_node != SLOT_NET_ROUTER as u32 || frame.seq != self.reply_sequence {
+            return Err(QemuLiveNetworkIoServicerError::RouterSequenceMismatch {
+                expected: self.reply_sequence,
+                actual: frame,
+            });
+        }
         self.reply_sequence = self
             .reply_sequence
             .checked_add(1)
             .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
-        Ok(frame.delivery_key())
+        Ok(())
     }
 
     /// Drains guest TX and schedules the fixed reply for the first valid probe.
@@ -220,6 +221,10 @@ impl QemuLiveNetworkIoServicer {
             if is_live_network_ack(&observation.payload) {
                 step.acknowledgement_seen = true;
                 self.snapshot.acknowledgement_seen = true;
+            }
+            if is_live_network_backpressure_ack(&observation.payload) {
+                step.backpressure_acknowledgement_seen = true;
+                self.snapshot.backpressure_acknowledgement_seen = true;
             }
 
             if self.snapshot.reply_delivery_icount.is_none()
@@ -331,6 +336,10 @@ fn is_live_network_ack(frame: &[u8]) -> bool {
     ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
 }
 
+fn is_live_network_backpressure_ack(frame: &[u8]) -> bool {
+    ethernet_payload(frame) == Some(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+}
+
 fn ethernet_payload(frame: &[u8]) -> Option<&[u8]> {
     if frame.len() < ETHERNET_HEADER_LEN
         || frame[12..14] != LIVE_NETWORK_ETHERTYPE
@@ -397,6 +406,16 @@ pub enum QemuLiveNetworkIoServicerError {
     /// The response sequence counter overflowed.
     #[error("live network reply sequence overflowed")]
     ReplySequenceOverflow,
+    /// A scheduler hot-path publication disagreed with the router sequence.
+    #[error(
+        "live network router sequence mismatch: expected {expected}, observed frame {actual:?}"
+    )]
+    RouterSequenceMismatch {
+        /// Sequence the servicer expected the hot path to publish.
+        expected: u32,
+        /// Actual canonical frame key found in shared memory.
+        actual: FrameDeliveryKey,
+    },
     /// A probe was too short to contain an Ethernet source address.
     #[error("live network probe is malformed at {length} bytes")]
     MalformedProbe {
@@ -448,6 +467,9 @@ mod tests {
             LIVE_NETWORK_ACK_PAYLOAD
         )));
         assert!(is_live_network_ack(&frame_with(LIVE_NETWORK_ACK_PAYLOAD)));
+        assert!(is_live_network_backpressure_ack(&frame_with(
+            LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
+        )));
     }
 
     #[test]

@@ -22,19 +22,21 @@ use self::support::{
     reap_child, vm_launch_config,
 };
 use super::network_io_servicer::{
-    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT,
-    LiveNetworkIoSnapshot, QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError,
+    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
+    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LiveNetworkIoSnapshot, QemuLiveNetworkIoServicer,
+    QemuLiveNetworkIoServicerError,
 };
 use crate::{
     LaunchProfileCandidate, QemuHostPluginSetup, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
-    QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuMappedQuantumShmemHotPath,
+    QemuNodeChild, QemuPluginIpcControlChannel, QemuQmpChannelConfig, QemuQuantumShmemConfig,
+    QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
+    run_qemu_live_retained_network_snapshot_gate, spawn_qemu_child_with_fds_in_directory,
 };
-use crucible::Icount;
+use crucible::{BackendInput, Icount};
 use crucible_shmem::{
-    FrameDeliveryKey, FrameDeliveryState, RegionAllocation, RegionConfig, SLOT_NET_ROUTER,
-    STATUS_IDLE, mmap_setup_region,
+    FrameDeliveryKey, FrameDeliveryState, FrameEntry, RegionAllocation, RegionConfig,
+    SLOT_NET_ROUTER, STATUS_IDLE, mmap_setup_region,
 };
 
 mod error;
@@ -135,6 +137,10 @@ pub struct QemuLiveNetworkIoReport {
     pub boot_backpressure_retained: bool,
     /// Whether both retained boot-time frames later left canonical shared memory.
     pub canonical_backpressure_retry_delivered: bool,
+    /// Whether guest userspace acknowledged the exact retained frame in both runs.
+    pub backpressure_guest_acknowledgement_seen: bool,
+    /// Whether a retained frame survived source death and a fresh QEMU restore.
+    pub retained_frame_fresh_process_restored: bool,
     /// Whether the hostile-host run reproduced the reference observations.
     pub deterministic_under_host_load: bool,
     /// Absolute probe stamp from the hostile-host run.
@@ -166,6 +172,7 @@ struct NetworkIoRunOutcome {
     acknowledgement_icount: Option<u64>,
     boot_backpressure_retained: bool,
     canonical_backpressure_retry_delivered: bool,
+    backpressure_acknowledgement_icount: Option<u64>,
     delayed_reply_applied: bool,
     orderly_child_exit: bool,
 }
@@ -195,6 +202,29 @@ pub fn run_qemu_live_network_io_gate(
     let hostile_probe_emit_icount = probe_emit_icount(&hostile);
     let reference_acknowledgement_offset_icount = acknowledgement_offset_icount(&reference);
     let hostile_acknowledgement_offset_icount = acknowledgement_offset_icount(&hostile);
+    let mut retained_config = QemuLiveNodeStepGateConfig::new(
+        &config.qemu_executable,
+        &config.plugin,
+        &config.kernel,
+        &config.firmware,
+        config.run_directory.join("retained-network-exact"),
+    )
+    .with_initrd(&config.initrd)
+    .with_vm_shape(GATE_MEMORY_MIB, 1, 0)
+    .with_shmem_network_mac(crate::DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC)
+    .with_fingerprint(QemuLaunchPluginSwitch::On)
+    .with_completion_timeout(config.completion_timeout)
+    .with_second_run_host_load(false);
+    if let Some(cmdline) = &config.kernel_cmdline {
+        retained_config = retained_config.with_kernel_cmdline(cmdline.clone());
+    }
+    let retained_report = run_qemu_live_retained_network_snapshot_gate(
+        &retained_config,
+        &QemuLiveNetworkIoServicer::boot_backpressure_probe(),
+        LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD,
+        config.busy_ceiling_icount,
+    )
+    .map_err(|source| QemuLiveNetworkIoGateError::RetainedExactSnapshot { source })?;
     Ok(QemuLiveNetworkIoReport {
         reference: reference.snapshot,
         acknowledgement_seen: reference.acknowledgement_icount.is_some(),
@@ -202,6 +232,13 @@ pub fn run_qemu_live_network_io_gate(
             && hostile.boot_backpressure_retained,
         canonical_backpressure_retry_delivered: reference.canonical_backpressure_retry_delivered
             && hostile.canonical_backpressure_retry_delivered,
+        backpressure_guest_acknowledgement_seen: reference
+            .backpressure_acknowledgement_icount
+            .is_some()
+            && hostile.backpressure_acknowledgement_icount.is_some(),
+        retained_frame_fresh_process_restored: retained_report.source_process_force_crashed
+            && retained_report.guest_acknowledgement_seen
+            && retained_report.retained_frame_consumed,
         deterministic_under_host_load: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,
@@ -336,16 +373,19 @@ fn run_once(
     // workload's origin even though every modeled network interval is exact.
     let host_load =
         HostLoad::start_if(matches!(role, RunRole::Hostile) && config.second_run_host_load);
-    let (acknowledgement_icount, delayed_reply_applied) = drive_exchange(
-        &mut hot_path,
-        &mut servicer,
-        &setup,
-        &mut child,
-        config.busy_ceiling_icount,
-        config.completion_timeout,
-        role.delay(),
-        backpressure_probe,
-    )?;
+    let (acknowledgement_icount, backpressure_acknowledgement_icount, delayed_reply_applied) =
+        drive_exchange(
+            &mut hot_path,
+            &mut servicer,
+            &setup,
+            &mut child,
+            DriveExchangeOptions {
+                ceiling: config.busy_ceiling_icount,
+                timeout: config.completion_timeout,
+                reply_wall_delay: role.delay(),
+                backpressure_probe,
+            },
+        )?;
     let snapshot = servicer.snapshot();
 
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
@@ -360,6 +400,7 @@ fn run_once(
         acknowledgement_icount,
         boot_backpressure_retained: true,
         canonical_backpressure_retry_delivered: true,
+        backpressure_acknowledgement_icount,
         delayed_reply_applied,
         orderly_child_exit,
     })
@@ -372,8 +413,44 @@ fn prime_guest_off_boot_barrier(
     child: &mut QemuNodeChild,
     timeout: Duration,
 ) -> Result<FrameDeliveryKey, QemuLiveNetworkIoGateError> {
-    let backpressure_probe = servicer
-        .enqueue_boot_backpressure_probe(0)
+    let backpressure_payload = QemuLiveNetworkIoServicer::boot_backpressure_probe();
+    QemuShmemHotPathChannel::deliver_frame_at(
+        hot_path,
+        BackendInput {
+            node: node_id(GATE_NODE),
+            payload: backpressure_payload.clone(),
+        },
+        Icount {
+            retired: BACKPRESSURE_PROBE_CEILING_ICOUNT,
+        },
+    )
+    .map_err(|source| {
+        QemuLiveNetworkIoGateError::drive("publish exact backpressure frame", source)
+    })?;
+    let published = QemuShmemHotPathChannel::checkpoint_network_transport(hot_path)
+        .map_err(|source| QemuLiveNetworkIoGateError::drive("inspect pending frame", source))?;
+    let backpressure_probe = published
+        .inbound
+        .frames
+        .iter()
+        .find(|frame| {
+            frame.delivery_icount == BACKPRESSURE_PROBE_CEILING_ICOUNT
+                && frame
+                    .payload()
+                    .is_ok_and(|payload| payload == backpressure_payload)
+                && frame
+                    .delivery_state()
+                    .is_ok_and(|state| state == FrameDeliveryState::Pending)
+        })
+        .map(FrameEntry::delivery_key)
+        .ok_or_else(|| QemuLiveNetworkIoGateError::BootBackpressureNotRetained {
+            evidence: format!(
+                "canonical pending publication missing: {:?}",
+                published.inbound.frames
+            ),
+        })?;
+    servicer
+        .observe_router_publication(backpressure_probe)
         .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
     let backpressure_pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
@@ -456,16 +533,27 @@ fn wait_for_prime_ceiling(
     Err(QemuLiveNetworkIoGateError::PrimeDidNotReach { ceiling, evidence })
 }
 
+#[derive(Clone, Copy)]
+struct DriveExchangeOptions {
+    ceiling: u64,
+    timeout: Duration,
+    reply_wall_delay: Duration,
+    backpressure_probe: FrameDeliveryKey,
+}
+
 fn drive_exchange(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     servicer: &mut QemuLiveNetworkIoServicer,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
-    ceiling: u64,
-    timeout: Duration,
-    reply_wall_delay: Duration,
-    backpressure_probe: FrameDeliveryKey,
-) -> Result<(Option<u64>, bool), QemuLiveNetworkIoGateError> {
+    options: DriveExchangeOptions,
+) -> Result<(Option<u64>, Option<u64>, bool), QemuLiveNetworkIoGateError> {
+    let DriveExchangeOptions {
+        ceiling,
+        timeout,
+        reply_wall_delay,
+        backpressure_probe,
+    } = options;
     let discovery_pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
@@ -476,6 +564,7 @@ fn drive_exchange(
     )
     .map_err(|source| QemuLiveNetworkIoGateError::drive("start probe-discovery quantum", source))?;
     let mut acknowledgement_icount = None;
+    let mut backpressure_acknowledgement_icount = None;
     let mut delay_applied = false;
     let mut discovery_complete = false;
     for _ in 0..bounded_drive_polls(timeout) {
@@ -494,10 +583,23 @@ fn drive_exchange(
             delay_applied = true;
         }
         let service_snapshot = servicer.snapshot();
+        if backpressure_acknowledgement_icount.is_none() {
+            backpressure_acknowledgement_icount = service_snapshot
+                .tx_frames
+                .iter()
+                .find(|frame| {
+                    frame
+                        .payload
+                        .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
+                        .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+                })
+                .map(|frame| frame.emit_icount);
+        }
         let node_snapshot = servicer
             .vm_node_snapshot()
             .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
         if service_snapshot.reply_delivery_icount.is_some()
+            && backpressure_acknowledgement_icount.is_some()
             && node_snapshot.status == STATUS_IDLE
             && node_snapshot.idle_wake_icount > PROBE_DISCOVERY_CEILING_ICOUNT
         {
@@ -539,6 +641,14 @@ fn drive_exchange(
         return Err(QemuLiveNetworkIoGateError::BackpressureRetryDidNotDeliver {
             frame: backpressure_probe,
         });
+    }
+    if backpressure_acknowledgement_icount.is_none() {
+        return Err(
+            QemuLiveNetworkIoGateError::BackpressureAcknowledgementDidNotArrive {
+                frame: backpressure_probe,
+                evidence: format!("{:?}", servicer.snapshot()),
+            },
+        );
     }
     let reply_delivery_icount = servicer.snapshot().reply_delivery_icount.ok_or_else(|| {
         QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
@@ -626,7 +736,11 @@ fn drive_exchange(
             ),
         });
     }
-    Ok((acknowledgement_icount, delay_applied))
+    Ok((
+        acknowledgement_icount,
+        backpressure_acknowledgement_icount,
+        delay_applied,
+    ))
 }
 
 #[cfg(test)]

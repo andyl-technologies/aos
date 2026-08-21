@@ -7,8 +7,8 @@
 use thiserror::Error;
 
 use crucible_shmem::{
-    FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError, FrameEntry, RingHeader,
-    SpscRingError,
+    FrameDeliveryAttemptError, FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError,
+    FrameEntry, RingHeader, SpscRingError,
 };
 
 use crate::shmem_ordering::PluginShmemOrdering;
@@ -207,7 +207,7 @@ impl PluginInboundFrames {
         })
     }
 
-    /// Marks the exact live head retained after real guest backpressure.
+    /// Records backpressure on the exact live head after a concrete RX attempt.
     ///
     /// # Errors
     ///
@@ -245,6 +245,12 @@ impl PluginInboundFrames {
                 actual: Some(actual),
             });
         }
+        ring.entries[slot]
+            .record_delivery_attempt(crate::NETWORK_RX_DELIVERY_ATTEMPT_LIMIT)
+            .map_err(|source| InboundFrameError::DeliveryAttemptLimit {
+                frame: expected,
+                source,
+            })?;
         ring.entries[slot]
             .mark_delivery_retained()
             .map_err(|source| map_delivery_state_error(expected, source))
@@ -434,6 +440,14 @@ pub enum InboundFrameError {
         frame: FrameDeliveryKey,
         /// The rejected shared-memory state byte.
         state: u8,
+    },
+    /// A retained head exhausted its bounded concrete QEMU RX attempts.
+    #[error("inbound frame {frame:?} exhausted its delivery-attempt bound: {source}")]
+    DeliveryAttemptLimit {
+        /// Canonical frame that exhausted the bound.
+        frame: FrameDeliveryKey,
+        /// Canonical attempt counter and configured hard limit.
+        source: FrameDeliveryAttemptError,
     },
     /// The frame reported backpressured is no longer the unique ring head.
     #[error("retained inbound head mismatch: expected {expected:?}, actual {actual:?}")]

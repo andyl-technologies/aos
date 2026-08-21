@@ -108,6 +108,22 @@ pub enum QemuLiveNetworkIoGateError {
         /// The deterministic boot-time frame key.
         frame: crucible_shmem::FrameDeliveryKey,
     },
+    /// Guest userspace did not acknowledge the exact retained frame.
+    #[error(
+        "live network retained frame {frame:?} left shared memory without a guest acknowledgement: {evidence}"
+    )]
+    BackpressureAcknowledgementDidNotArrive {
+        /// The deterministic boot-time frame key.
+        frame: crucible_shmem::FrameDeliveryKey,
+        /// Guest TX and node evidence captured after retry.
+        evidence: String,
+    },
+    /// The fresh-process retained-network exact snapshot proof failed.
+    #[error("live retained-network exact snapshot certification failed")]
+    RetainedExactSnapshot {
+        /// Exact-snapshot launch, capture, restore, or continuation failure.
+        source: crate::QemuLiveNodeStepGateError,
+    },
     /// The probe/reply discovery quantum did not park with a scheduled reply.
     #[error(
         "live network probe discovery did not schedule a reply and park at its ceiling: {evidence}"

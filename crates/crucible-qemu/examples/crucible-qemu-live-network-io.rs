@@ -104,6 +104,14 @@ fn run() -> Result<(), String> {
         report.canonical_backpressure_retry_delivered
     );
     println!(
+        "backpressure_guest_acknowledgement_seen={}",
+        report.backpressure_guest_acknowledgement_seen
+    );
+    println!(
+        "retained_frame_fresh_process_restored={}",
+        report.retained_frame_fresh_process_restored
+    );
+    println!(
         "deterministic_under_host_load={}",
         report.deterministic_under_host_load
     );

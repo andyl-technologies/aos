@@ -131,6 +131,8 @@ in
           grep -Fxq 'acknowledgement_seen=true' "$report"
           grep -Fxq 'boot_backpressure_retained=true' "$report"
           grep -Fxq 'canonical_backpressure_retry_delivered=true' "$report"
+          grep -Fxq 'backpressure_guest_acknowledgement_seen=true' "$report"
+          grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"
@@ -178,7 +180,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"

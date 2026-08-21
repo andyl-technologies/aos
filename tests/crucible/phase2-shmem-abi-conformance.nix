@@ -29,6 +29,7 @@
   setupValidation = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   goldenFixture = builtins.readFile ../../crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture;
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  interfaceManifest = builtins.readFile ../../crates/crucible-shmem/interface/crucible-shmem-abi.toml;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
@@ -404,7 +405,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=15";
+        needle = "abi_version=16";
       }
       {
         label = "total serialized length";
@@ -441,6 +442,12 @@
       {
         label = "guest-introspection complete CRGI record marker";
         needle = "9896=4352474901000700010000000000000000000000";
+      }
+    ]
+    ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
+      {
+        label = "machine-readable ABI version";
+        needle = "abi_version = 16";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
@@ -647,6 +654,10 @@
       {
         label = "frame padding offset static assert";
         needle = "offsetof(crucible_shmem_frame_entry, pad) == CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET";
+      }
+      {
+        label = "frame delivery attempts offset static assert";
+        needle = "offsetof(crucible_shmem_frame_entry, delivery_attempts) == CRUCIBLE_SHMEM_FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET";
       }
       {
         label = "frame payload offset static assert";
@@ -931,7 +942,7 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 39586304u);
+                atomic_init(&header.region_size, 42011648u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -951,6 +962,7 @@ in
                 atomic_init(&slot.kind, CRUCIBLE_SHMEM_KIND_VM);
                 atomic_init(&slot.device_io_active, 1u);
                 atomic_init(&slot.publish_gen, 4u);
+                atomic_init(&slot.control_boundary_ack, 11u);
                 atomic_init(&slot.preemption_at_icount, 160u);
                 atomic_init(&slot.preemption_deadline_icount, 128u);
                 atomic_init(&slot.preemption_ceiling_icount, 256u);
@@ -962,6 +974,10 @@ in
                     &slot.preemption_kind,
                     CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH
                 );
+                atomic_init(&slot.logical_time_raw_icount, 96u);
+                atomic_init(&slot.logical_time_restore_target, 128u);
+                atomic_init(&slot.logical_time_restore_request, 13u);
+                atomic_init(&slot.logical_time_restore_ack, 13u);
 
                 crucible_shmem_ring_header ring;
                 memset(&ring, 0, sizeof(ring));
@@ -975,6 +991,7 @@ in
                 frame.seq = 42u;
                 frame.len = 4u;
                 atomic_init(&frame.delivery_state, CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED);
+                atomic_init(&frame.delivery_attempts, 3u);
                 memcpy(frame.data, "PING", 4);
 
                 crucible_shmem_coverage_entry coverage;
@@ -1008,6 +1025,19 @@ in
                     sizeof(close_record)
                 );
 
+                crucible_shmem_accelerator_entry accelerator;
+                memset(&accelerator, 0, sizeof(accelerator));
+                accelerator.sequence = 23u;
+                accelerator.generation = 5u;
+                memset(accelerator.device_id, 0xa5, sizeof(accelerator.device_id));
+                accelerator.class_id = 2u;
+                accelerator.job_kind = 1u;
+                accelerator.queue_id = 7u;
+                accelerator.protocol_version = 1u;
+                accelerator.data_len = 4u;
+                accelerator.service_units = 16u;
+                memcpy(accelerator.data, "TENS", 4);
+
                 int failed = 0;
                 uint32_t request_ring = UINT32_MAX;
                 uint32_t response_ring = UINT32_MAX;
@@ -1031,7 +1061,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        39586304u,
+                        42011648u,
                         &guest_layout
                     ) != 0
                     || guest_layout.ring_count != 4u
@@ -1041,7 +1071,7 @@ in
                     || guest_layout.ring_data_off != 38390272u
                     || guest_layout.entry_stride
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
-                    || guest_layout.region_size != 39586304u
+                    || guest_layout.region_size != 42011648u
                     || crucible_shmem_guest_introspection_layout_compute(
                         5888u,
                         12u,
@@ -1049,7 +1079,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         0u,
-                        39586304u,
+                        42011648u,
                         &guest_layout
                     ) == 0
                     || crucible_shmem_guest_introspection_layout_compute(
@@ -1059,7 +1089,7 @@ in
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        39586303u,
+                        42011647u,
                         &guest_layout
                     ) == 0) {
                     fprintf(stderr, "guest-introspection geometry validation failed\n");
@@ -1076,6 +1106,12 @@ in
                     &guest_introspection,
                     sizeof(guest_introspection),
                     "guest-introspection entry"
+                );
+                failed |= write_exact(
+                    out,
+                    &accelerator,
+                    sizeof(accelerator),
+                    "accelerator entry"
                 );
                 if (fclose(out) != 0) {
                     perror("fclose");
@@ -1134,6 +1170,7 @@ in
                 crucible_shmem_coverage_entry coverage;
                 crucible_shmem_whitebox_marker_entry marker;
                 crucible_shmem_guest_introspection_entry guest_introspection;
+                crucible_shmem_accelerator_entry accelerator;
 
                 int failed = 0;
                 failed |= read_exact(in, &header, sizeof(header), "region header");
@@ -1147,6 +1184,12 @@ in
                     &guest_introspection,
                     sizeof(guest_introspection),
                     "guest-introspection entry"
+                );
+                failed |= read_exact(
+                    in,
+                    &accelerator,
+                    sizeof(accelerator),
+                    "accelerator entry"
                 );
                 if (fclose(in) != 0) {
                     perror("fclose input");
@@ -1164,7 +1207,7 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 39586304u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42011648u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
@@ -1185,6 +1228,7 @@ in
                     || atomic_load_explicit(&slot.kind, memory_order_acquire) != CRUCIBLE_SHMEM_KIND_VM
                     || atomic_load_explicit(&slot.device_io_active, memory_order_acquire) != 1u
                     || atomic_load_explicit(&slot.publish_gen, memory_order_acquire) != 4u
+                    || atomic_load_explicit(&slot.control_boundary_ack, memory_order_acquire) != 11u
                     || atomic_load_explicit(&slot.preemption_at_icount, memory_order_acquire) != 160u
                     || atomic_load_explicit(&slot.preemption_deadline_icount, memory_order_acquire) != 128u
                     || atomic_load_explicit(&slot.preemption_ceiling_icount, memory_order_acquire) != 256u
@@ -1193,7 +1237,11 @@ in
                     || atomic_load_explicit(&slot.preemption_arg0, memory_order_acquire) != 0u
                     || atomic_load_explicit(&slot.preemption_arg1, memory_order_acquire) != 1u
                     || atomic_load_explicit(&slot.preemption_kind, memory_order_acquire)
-                        != CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH) {
+                        != CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH
+                    || atomic_load_explicit(&slot.logical_time_raw_icount, memory_order_acquire) != 96u
+                    || atomic_load_explicit(&slot.logical_time_restore_target, memory_order_acquire) != 128u
+                    || atomic_load_explicit(&slot.logical_time_restore_request, memory_order_acquire) != 13u
+                    || atomic_load_explicit(&slot.logical_time_restore_ack, memory_order_acquire) != 13u) {
                     fprintf(stderr, "node slot validation failed\n");
                     return 1;
                 }
@@ -1210,6 +1258,7 @@ in
                     || frame.len != 4u
                     || atomic_load_explicit(&frame.delivery_state, memory_order_acquire)
                         != CRUCIBLE_SHMEM_FRAME_DELIVERY_RETAINED
+                    || atomic_load_explicit(&frame.delivery_attempts, memory_order_acquire) != 3u
                     || memcmp(frame.data, "PING", 4) != 0) {
                     fprintf(stderr, "frame entry validation failed\n");
                     return 1;
@@ -1249,6 +1298,25 @@ in
                     return 1;
                 }
 
+                if (accelerator.sequence != 23u
+                    || accelerator.generation != 5u
+                    || accelerator.class_id != 2u
+                    || accelerator.job_kind != 1u
+                    || accelerator.queue_id != 7u
+                    || accelerator.protocol_version != 1u
+                    || accelerator.data_len != 4u
+                    || accelerator.service_units != 16u
+                    || memcmp(accelerator.data, "TENS", 4) != 0) {
+                    fprintf(stderr, "accelerator entry validation failed\n");
+                    return 1;
+                }
+                for (size_t index = 0; index < sizeof(accelerator.device_id); ++index) {
+                    if (accelerator.device_id[index] != 0xa5u) {
+                        fprintf(stderr, "accelerator device identity validation failed\n");
+                        return 1;
+                    }
+                }
+
                 FILE *out = fopen(argv[2], "wb");
                 if (out == NULL) {
                     perror("fopen output");
@@ -1265,6 +1333,12 @@ in
                     &guest_introspection,
                     sizeof(guest_introspection),
                     "guest-introspection entry"
+                );
+                failed |= write_exact(
+                    out,
+                    &accelerator,
+                    sizeof(accelerator),
+                    "accelerator entry"
                 );
                 if (fclose(out) != 0) {
                     perror("fclose output");

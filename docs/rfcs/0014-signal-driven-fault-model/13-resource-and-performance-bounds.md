@@ -95,6 +95,13 @@ Medium overlap lookup must use an interval/resource index, not scan all pending
 frames. Route lookup must be bounded radix/prefix lookup or equivalent ordered
 index. A frame traverses at most `network_path_hops` plus
 `network_loop_hops`; route mutation cannot reset the consumed hop budget.
+The QEMU NIC handoff is a transport boundary rather than a modeled path hop,
+but it is bounded by the same compiled maximum: each canonical shared-memory
+frame records backpressured guest RX attempts and fails with a typed terminal
+error before attempt 1,025. Retained retries are deterministically spaced by
+4,000,000 guest instructions, so a callback storm cannot consume the bound
+before the guest can make progress. Exact checkpoint/restore preserves that
+counter, so a restore cannot reset either the retry schedule or budget.
 
 ## 13.5 Storage and 9p limits
 

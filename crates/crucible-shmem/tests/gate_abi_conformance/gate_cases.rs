@@ -78,6 +78,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_frame_entry, src_node)",
         "offsetof(crucible_shmem_frame_entry, seq)",
         "offsetof(crucible_shmem_frame_entry, len)",
+        "offsetof(crucible_shmem_frame_entry, delivery_attempts)",
         "offsetof(crucible_shmem_frame_entry, pad)",
         "offsetof(crucible_shmem_frame_entry, data)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry)",
@@ -243,6 +244,7 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.node.logical_time_restore_ack, 13);
     assert_eq!(decoded.frame.payload, b"PING");
     assert_eq!(decoded.frame.delivery_state, FRAME_DELIVERY_RETAINED);
+    assert_eq!(decoded.frame.delivery_attempts, 3);
     assert_eq!(decoded.coverage.current_icount, 901);
     assert_eq!(decoded.coverage.guest_pc, 0x4010);
     assert_eq!(decoded.coverage.map_index, 17);

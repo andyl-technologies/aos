@@ -193,7 +193,7 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// drained-control-boundary publication acknowledgement.
 /// Version 15 assigns one frame-entry padding byte to the consumer-owned
 /// canonical backpressure-retention state.
-pub const ABI_VERSION: u32 = 15;
+pub const ABI_VERSION: u32 = 16;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
