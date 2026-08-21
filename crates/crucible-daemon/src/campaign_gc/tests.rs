@@ -321,7 +321,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
     )
     .expect("live envelope");
     let live_bytes = live.canonical_bytes();
-    let live_id = live.content_id(ObjectKind::Finding);
+    let live_id = live.content_id(ObjectKind::Trace);
     blobs
         .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes))
         .expect("store live object");
@@ -384,7 +384,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
     let graph = Arc::new(
         StoreGraph::build(StoreGraphConfig {
             root: write_back.clone(),
-            admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
                 (
                     write_back,
@@ -422,7 +422,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         b"pending".to_vec(),
     )
     .expect("pending envelope");
-    let pending_id = pending.content_id(ObjectKind::Finding);
+    let pending_id = pending.content_id(ObjectKind::Trace);
     graph
         .put_if_absent(
             pending_id,
@@ -436,7 +436,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         b"orphan".to_vec(),
     )
     .expect("orphan envelope");
-    let orphan_id = orphan.content_id(ObjectKind::Finding);
+    let orphan_id = orphan.content_id(ObjectKind::Trace);
     let staging_leaf = DirectoryBlobBackend::new("staging", &staging_root);
     staging_leaf
         .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
@@ -800,7 +800,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         b"live".to_vec(),
     )
     .expect("live envelope");
-    let live_id = live.content_id(ObjectKind::Finding);
+    let live_id = live.content_id(ObjectKind::Trace);
     blobs
         .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
         .expect("store live directory object");
@@ -868,7 +868,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     let packed_node = StoreNodeId::new("packed-primary").expect("packed node");
     let graph_config = || StoreGraphConfig {
         root: packed_node.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
             packed_node.clone(),
             StoreNodeSpec::Packed {
@@ -889,7 +889,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         b"live".to_vec(),
     )
     .expect("live envelope");
-    let live_id = live.content_id(ObjectKind::Finding);
+    let live_id = live.content_id(ObjectKind::RamExtent);
     graph
         .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
         .expect("store live packed object");
@@ -941,7 +941,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     let verified = StoreNodeId::new("verified-root").expect("verified root");
     let (different_graph, different_admin) = StoreGraph::build_with_admin(StoreGraphConfig {
         root: verified.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
+        admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([
             (
                 verified,

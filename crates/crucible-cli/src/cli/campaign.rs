@@ -29,12 +29,13 @@ use crucible_campaign::{
     CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignService,
     CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateSource,
     ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
-    ContinuationState, ControlRequest, CreateCampaignRequest, DeriveCampaignRequest,
+    ContinuationState, ControlRequest, CreateCampaignRequest, DeriveCampaignRequest, FindingKind,
     GetCampaignRequest, IntegerValue, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
-    QueryCampaignChoicesRequest, QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
-    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
+    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
+    QueryCampaignFrontierRequest, QueryCampaignGraphRequest, StopCondition,
+    SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
@@ -97,6 +98,20 @@ enum CampaignPageEntry {
         completed_visits: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         required_visits: Option<u64>,
+    },
+    Finding {
+        finding: String,
+        cluster: String,
+        finding_kind: &'static str,
+        fingerprint: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        property: Option<String>,
+        failure_class: String,
+        observation: String,
+        occurrences: u32,
+        reproduction: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        minimized: Option<String>,
     },
 }
 
@@ -179,7 +194,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_explanation(&client, principal, &args.command)?;
             render_campaign_explanation(&report, cli.output_format())?
         }
-        CampaignCommand::Graph(_) | CampaignCommand::Choices(_) | CampaignCommand::Frontier(_) => {
+        CampaignCommand::Graph(_)
+        | CampaignCommand::Choices(_)
+        | CampaignCommand::Frontier(_)
+        | CampaignCommand::Findings(_) => {
             let report = query_campaign_page(&client, principal, &args.command)?;
             render_campaign_page(&report, cli.output_format())?
         }
@@ -294,6 +312,15 @@ fn prepare_campaign_command(
                 "frontier",
                 MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
                 |cursor| BranchRequestId::parse(cursor).map(|_| ()),
+            )?;
+            Ok(None)
+        }
+        CampaignCommand::Findings(page) => {
+            validate_campaign_page(
+                page,
+                "finding",
+                MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+                |cursor| CampaignHash::parse(cursor).map(|_| ()),
             )?;
             Ok(None)
         }
@@ -695,6 +722,56 @@ where
                     .collect(),
             })
         }
+        CampaignCommand::Findings(page) => {
+            let (campaign, snapshot) = campaign_page_basis(page)?;
+            let after = page
+                .after
+                .as_deref()
+                .map(CampaignHash::parse)
+                .transpose()
+                .map_err(|error| {
+                    usage_error(format!("invalid campaign finding cursor: {error}"))
+                })?;
+            let request = QueryCampaignFindingsRequest::new(
+                principal,
+                campaign.clone(),
+                snapshot,
+                after,
+                page.limit,
+            )
+            .map_err(|error| usage_error(format!("invalid campaign findings query: {error}")))?;
+            let response = client.query_campaign_findings(&request).map_err(|error| {
+                backend_error(format!("campaign findings query failed: {error}"))
+            })?;
+            Ok(CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "findings",
+                campaign: campaign.as_str().to_owned(),
+                snapshot: snapshot.to_string(),
+                next_after: response.next_after().map(|cursor| cursor.to_hex()),
+                entries: response
+                    .entries()
+                    .iter()
+                    .map(|finding| {
+                        let finding_id = finding.id().map_err(|error| {
+                            backend_error(format!("validated finding identity failed: {error}"))
+                        })?;
+                        Ok(CampaignPageEntry::Finding {
+                            finding: finding_id.to_string(),
+                            cluster: finding.signature().cluster_key().to_hex(),
+                            finding_kind: finding_kind_label(finding.signature().kind()),
+                            fingerprint: finding.signature().fingerprint().to_hex(),
+                            property: finding.signature().property().map(str::to_owned),
+                            failure_class: finding.signature().failure_class().to_owned(),
+                            observation: finding.observation().to_string(),
+                            occurrences: finding.occurrence_count(),
+                            reproduction: finding.reproduction().to_string(),
+                            minimized: finding.minimized().map(|id| id.to_string()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CliError>>()?,
+            })
+        }
         _ => Err(backend_error(
             "non-page campaign command reached the page query path",
         )),
@@ -960,6 +1037,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Choices(_)
         | CampaignCommand::ChoiceObject(_)
         | CampaignCommand::Frontier(_)
+        | CampaignCommand::Findings(_)
         | CampaignCommand::FrontierObject(_)
         | CampaignCommand::Pin(_)
         | CampaignCommand::Unpin(_) => Err(backend_error(
@@ -1186,6 +1264,9 @@ fn render_campaign_page_table(report: &CampaignPageReport) -> Result<String, Cli
         "frontier" => lines.push(String::from(
             "request\tbranch_point\tstate\tcompleted_visits\trequired_visits",
         )),
+        "findings" => lines.push(String::from(
+            "finding\tcluster\tkind\tfingerprint\tproperty\tfailure_class\tobservation\toccurrences\treproduction\tminimized",
+        )),
         _ => return Err(backend_error("unknown campaign page report operation")),
     }
     for entry in &report.entries {
@@ -1207,6 +1288,9 @@ fn render_campaign_page_markdown(report: &CampaignPageReport) -> String {
         "choices" => output.push_str("| Opportunity |\n| --- |\n"),
         "frontier" => output.push_str(
             "| Request | Branch point | State | Completed visits | Required visits |\n| --- | --- | --- | --- | --- |\n",
+        ),
+        "findings" => output.push_str(
+            "| Finding | Cluster | Kind | Fingerprint | Property | Failure class | Observation | Occurrences | Reproduction | Minimized |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
         ),
         _ => {}
     }
@@ -1233,6 +1317,30 @@ fn campaign_page_entry_row(entry: &CampaignPageEntry, separator: &str) -> String
             completed_visits.map_or_else(|| "-".to_owned(), |value| value.to_string()),
             required_visits.map_or_else(|| "-".to_owned(), |value| value.to_string())
         ),
+        CampaignPageEntry::Finding {
+            finding,
+            cluster,
+            finding_kind,
+            fingerprint,
+            property,
+            failure_class,
+            observation,
+            occurrences,
+            reproduction,
+            minimized,
+        } => format!(
+            "{finding}{separator}{cluster}{separator}{finding_kind}{separator}{fingerprint}{separator}{}{separator}{failure_class}{separator}{observation}{separator}{occurrences}{separator}{reproduction}{separator}{}",
+            property.as_deref().unwrap_or("-"),
+            minimized.as_deref().unwrap_or("-")
+        ),
+    }
+}
+
+const fn finding_kind_label(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::PropertyViolation => "property-violation",
+        FindingKind::Divergence => "divergence",
+        FindingKind::Timeout => "timeout",
     }
 }
 
@@ -1266,6 +1374,8 @@ mod tests {
         opportunity: ChoiceOpportunity,
         branch_request: BranchRequest,
         frontier_projection: ContinuationProjection,
+        finding: Finding,
+        finding_root: ContentId,
     }
 
     impl CampaignService for FixedHeadService {
@@ -1342,6 +1452,13 @@ mod tests {
             &self,
             _request: &QueryCampaignGraphRequest,
         ) -> Result<QueryCampaignGraphResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn query_campaign_findings(
+            &self,
+            _request: &QueryCampaignFindingsRequest,
+        ) -> Result<QueryCampaignFindingsResponse, Self::Error> {
             unreachable!("unused campaign-service operation")
         }
 
@@ -1496,6 +1613,24 @@ mod tests {
                 proof,
             )
             .expect("bound graph response"))
+        }
+
+        fn query_campaign_findings(
+            &self,
+            request: &QueryCampaignFindingsRequest,
+        ) -> Result<QueryCampaignFindingsResponse, Self::Error> {
+            let (page, proof) = self
+                .map
+                .scan_with_proof(self.finding_root, request.after(), request.limit() as usize)
+                .expect("proof-bearing finding page");
+            Ok(QueryCampaignFindingsResponse::new(
+                request,
+                self.snapshot.clone(),
+                vec![self.finding.clone()],
+                page.next_after(),
+                proof,
+            )
+            .expect("bound finding response"))
         }
 
         fn get_campaign_graph_object(
@@ -1757,7 +1892,7 @@ mod tests {
                 schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
                 operation: "frontier",
                 campaign: "example".to_owned(),
-                snapshot,
+                snapshot: snapshot.clone(),
                 next_after: None,
                 entries: vec![CampaignPageEntry::Frontier {
                     request: "request".to_owned(),
@@ -1765,6 +1900,25 @@ mod tests {
                     state: "waiting-for-feedback",
                     completed_visits: Some(3),
                     required_visits: Some(5),
+                }],
+            },
+            CampaignPageReport {
+                schema: CAMPAIGN_PAGE_REPORT_SCHEMA,
+                operation: "findings",
+                campaign: "example".to_owned(),
+                snapshot,
+                next_after: Some(hash("finding-cursor").to_hex()),
+                entries: vec![CampaignPageEntry::Finding {
+                    finding: "finding".to_owned(),
+                    cluster: hash("cluster").to_hex(),
+                    finding_kind: "timeout",
+                    fingerprint: hash("fingerprint").to_hex(),
+                    property: None,
+                    failure_class: "timeout.execution".to_owned(),
+                    observation: "observation".to_owned(),
+                    occurrences: 3,
+                    reproduction: "reproduction".to_owned(),
+                    minimized: None,
                 }],
             },
         ];
@@ -1834,6 +1988,46 @@ mod tests {
         assert_eq!(report.snapshot, snapshot.to_string());
         assert_eq!(report.entries.len(), 1);
         assert!(report.next_after.is_some());
+    }
+
+    #[test]
+    fn campaign_findings_page_uses_the_checked_proof_bearing_transport() {
+        let (service, snapshot, _) = graph_page_service();
+        let command = CampaignCommand::Findings(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            after: None,
+            limit: 1,
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve finding page request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_page(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked findings query");
+        server.join().expect("campaign server thread");
+
+        assert_eq!(report.operation, "findings");
+        assert_eq!(report.snapshot, snapshot.to_string());
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.next_after.is_none());
+        assert!(matches!(
+            &report.entries[0],
+            CampaignPageEntry::Finding {
+                finding_kind: "timeout",
+                occurrences: 3,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2304,6 +2498,13 @@ mod tests {
             limit: 8,
         });
         assert!(validate_campaign_command(&bad_frontier_cursor).is_err());
+        let bad_finding_cursor = CampaignCommand::Findings(CampaignPageArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            after: Some("not-a-hash".to_owned()),
+            limit: 1,
+        });
+        assert!(validate_campaign_command(&bad_finding_cursor).is_err());
         let bad_graph_object = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
             name: "example".to_owned(),
             snapshot: snapshot("current").to_string(),
@@ -2469,7 +2670,7 @@ mod tests {
             })
         ));
 
-        for operation in ["graph", "choices", "frontier"] {
+        for operation in ["graph", "choices", "frontier", "findings"] {
             let page = Cli::try_parse_from([
                 "crucible",
                 "campaign",
@@ -2490,7 +2691,8 @@ mod tests {
                 Commands::Campaign(CampaignArgs {
                     command: CampaignCommand::Graph(CampaignPageArgs { limit: 3, .. })
                         | CampaignCommand::Choices(CampaignPageArgs { limit: 3, .. })
-                        | CampaignCommand::Frontier(CampaignPageArgs { limit: 3, .. }),
+                        | CampaignCommand::Frontier(CampaignPageArgs { limit: 3, .. })
+                        | CampaignCommand::Findings(CampaignPageArgs { limit: 3, .. }),
                     ..
                 })
             ));
@@ -3059,13 +3261,47 @@ mod tests {
                 frontier_index.content_id(),
             )
             .expect("frontier explanation anchor");
+        let finding_observation = ObservationId::parse(&format!(
+            "crucible.campaign.observation@{}",
+            ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-observation").encode()
+        ))
+        .expect("finding observation ID");
+        let finding = Finding::new(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                hash("finding-fingerprint"),
+                None,
+                "timeout.execution".to_owned(),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            finding_observation,
+            ReproductionArtifactId::parse(&format!(
+                "crucible.campaign.reproduction-artifact@{}",
+                ContentId::for_bytes(ObjectKind::Finding, 1, b"cli-finding-reproduction").encode()
+            ))
+            .expect("finding reproduction ID"),
+            snapshot("finding-first-seen"),
+            FindingOccurrenceSet::new(empty, 3, finding_observation).expect("finding occurrences"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("finding");
+        let finding_root = map
+            .insert(
+                empty,
+                finding_index_key(finding.signature().cluster_key()),
+                finding.id().expect("finding ID").content_id(),
+            )
+            .expect("finding index");
         let roots = CampaignRoots {
             graph: root.content_id(),
             exploration: exploration.content_id(),
             observations: empty,
             corpus: empty,
             coverage: empty,
-            findings: empty,
+            findings: finding_root.content_id(),
             pins: empty,
             accounting: empty,
             coordination: empty,
@@ -3102,10 +3338,21 @@ mod tests {
                 opportunity,
                 branch_request,
                 frontier_projection,
+                finding,
+                finding_root: finding_root.content_id(),
             },
             snapshot_id,
             historical_id,
         )
+    }
+
+    fn finding_index_key(cluster: CampaignHash) -> CampaignHash {
+        let namespace = "findings.signature";
+        let mut bytes = Vec::with_capacity(namespace.len() + 40);
+        bytes.extend_from_slice(&(namespace.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(namespace.as_bytes());
+        bytes.extend_from_slice(&cluster.as_bytes());
+        CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
     }
 
     fn mismatch_explanation_frontier(

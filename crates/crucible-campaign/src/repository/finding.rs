@@ -430,7 +430,7 @@ impl CampaignRepository {
     }
 }
 
-fn finding_signature_key(signature: CampaignHash) -> CampaignHash {
+pub(crate) fn finding_signature_key(signature: CampaignHash) -> CampaignHash {
     map_key_hash("findings.signature", signature)
 }
 

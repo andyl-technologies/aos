@@ -330,6 +330,8 @@ enum CampaignCommand {
     ChoiceObject(CampaignChoiceObjectArgs),
     /// Read one authenticated page of continuation states.
     Frontier(CampaignPageArgs),
+    /// Read one authenticated page of canonical failure findings.
+    Findings(CampaignPageArgs),
     /// Inspect one exact branch request and its current continuation state.
     FrontierObject(CampaignFrontierObjectArgs),
     /// Begin or resume issuing campaign work.

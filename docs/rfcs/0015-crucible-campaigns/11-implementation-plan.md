@@ -431,8 +431,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   cache eviction, restart, or a same-basis CAS race. Canonical bounded finding
   and self-contained reproduction records now have a verifier-backed Crucible
   importer and an atomic occurrence-clustering owner with restart validation.
-  Paged finding queries, rich frontier explanation, start-attachment porcelain,
-  and richer filtered/aggregated CLI views remain open. The CLI wiring uses the
+  Rich frontier explanation, start-attachment porcelain, and richer
+  filtered/aggregated CLI views remain open. The CLI wiring uses the
   checked local Unix-stream client for authenticated `status`, one-shot
   resumable `watch`, exact immutable pages of graph keys, discovered choice
   opportunities, and continuation states, and exact-command,
@@ -467,10 +467,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   A separate choice-object read authenticates the opportunity's authoritative
   graph membership and returns only its exact declaration or effective domain;
   arbitrary non-graph reads remain unavailable.
+  `QueryFindings` returns at most four complete canonical finding records from
+  the authenticated findings root with an exact range/EOF proof and
+  signature-key/body identity validation; the checked CLI renders their stable
+  class, fingerprint, representative observation, occurrence count, and
+  reproduction IDs without granting child-object reads.
   The local
   Unix-stream binding
-  now dispatches all twenty-eight current success messages plus one stable
-  request-bound error envelope under a version-13, 64-MiB-body,
+  now dispatches all thirty current success messages plus one stable
+  request-bound error envelope under a version-14, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -793,9 +798,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   changes. The first explanation operation joins an authenticated choice
   declaration to an authenticated frontier request and fails closed unless
   their opportunity and domain agree before reporting legality, producer,
-  cause, budget, stop, and continuation state. Paged findings,
-  proposal/attempt/finding explanations, and richer filtered or aggregated
-  views remain open.
+  cause, budget, stop, and continuation state. A proof-bearing findings page
+  returns complete canonical clusters in signature-key order and renders their
+  stable failure and reproduction projection. Proposal/attempt/finding
+  explanations and richer filtered or aggregated views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,

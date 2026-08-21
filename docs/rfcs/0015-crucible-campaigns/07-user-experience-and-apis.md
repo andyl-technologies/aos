@@ -217,11 +217,11 @@ crucible campaign frontier-object NAME --snapshot SNAPSHOT --request ID
 crucible campaign snapshot NAME --snapshot SNAPSHOT
 crucible campaign compare NAME --left SNAPSHOT --right SNAPSHOT
 crucible campaign explain NAME --snapshot SNAPSHOT --opportunity ID --request ID
-crucible campaign findings NAME
+crucible campaign findings NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
 ```
 
 The read-only porcelain implements `status`, a one-shot resumable `watch`, and
-one immutable page of `graph`, `choices`, or `frontier` over the authenticated
+one immutable page of `graph`, `choices`, `frontier`, or `findings` over the authenticated
 local campaign-service Unix socket. Every command requires the socket path and
 the principal expected from the daemon's peer policy, validates strict
 request-bound responses through the checked client, and renders table,
@@ -230,7 +230,8 @@ Markdown, pretty JSON, or JSONL through the common CLI output selector. `watch
 it with the returned snapshot cursor to follow a campaign without treating the
 transport as authoritative state. Each page command instead requires an exact
 immutable snapshot and accepts only the cursor type returned by that operation:
-a graph key hash, choice-opportunity ID, or branch-request ID. The output echoes
+a graph key hash, choice-opportunity ID, branch-request ID, or finding
+signature-index hash. The output echoes
 the exact snapshot and next cursor. Graph pages carry and verify the bounded
 Merkle proof specified below before rendering; choice and frontier pages verify
 their snapshot-bound nested-index proofs through the same checked client.
@@ -240,7 +241,7 @@ joins one authenticated choice declaration with one authenticated frontier
 request, rejects a mismatched opportunity or domain, and reports exact legality,
 producer, cause, budget, stop, and continuation fields. The lifecycle mutations
 described in §07.3 and exact-precondition `pin`/`unpin` commands use that same
-transport; findings, proposal/attempt/finding explanations, and rich
+transport; proposal/attempt/finding explanations and rich
 filtered/aggregated inspection remain open.
 
 A concise status view includes:
