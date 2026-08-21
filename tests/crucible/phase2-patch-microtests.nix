@@ -372,7 +372,7 @@
           test "$(grep -c '^+.*tb_flush(first_cpu);' "$patch_file")" -eq 2
           grep -q '^+.*canonical_insns > 32' "$patch_file"
           grep -q '^+.*CF_NO_GOTO_TB | CF_NO_GOTO_PTR | canonical_insns' "$patch_file"
-          grep -q 'successful save path and successful load path flush' ${../docs/rfcs/0014-signal-driven-fault-model/14-qemu-fault-patches/59-deterministic-network-kick.md}
+          grep -q 'successful save path and successful load path flush' ${../../docs/rfcs/0014-signal-driven-fault-model/14-qemu-fault-patches/59-deterministic-network-kick.md}
           tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
           stock_pci="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio-pci.c"
           stock_virtio="$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/hw/virtio/virtio.c"

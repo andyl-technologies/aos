@@ -748,6 +748,13 @@
       enforces = "DET-1,QFP-STATE-2,QEMU-43";
       capability = "fresh sim-mode execution establishes vCPU 0 position 0 before the first budget, the serialized owner remains authoritative across partial turns and VMState restore, and terminal live observation emits canonical RR-switch transitions";
     }
+    {
+      file = "0108-crucible-deterministic-network-kick.patch";
+      catalogName = "crucible-deterministic-network-kick";
+      class = "D";
+      enforces = "DET-1,PLUG-23,PLUG-24,QEMU-43";
+      capability = "sim-mode virtio-net queue kicks and serialized tx_waiting resumes drain every deferred TX bottom half synchronously, supply one committed raw transmit icount, preserve the virtqueue notification cursor in an optional sim VMState subsection, symmetrically flush pre-checkpoint translation history, and use bounded cache-independent TB shapes without direct chains on both continuations so VMState restore preserves packet and fault-decision continuation";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

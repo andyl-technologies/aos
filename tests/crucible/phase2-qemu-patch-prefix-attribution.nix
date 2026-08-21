@@ -503,6 +503,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0108-crucible-deterministic-network-kick.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
