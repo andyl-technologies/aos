@@ -2189,7 +2189,7 @@ impl CampaignRepository {
     ) -> Result<PlanningScanPage, CampaignRepositoryError> {
         let limit_usize =
             usize::try_from(limit).map_err(|_| integrity("planner-scan-page-limit-is-invalid"))?;
-        if limit_usize == 0 || limit_usize > 10_000 {
+        if limit == 0 || limit > MAX_PLANNER_SCAN_PAGE_ITEMS {
             return Err(integrity("planner-scan-page-limit-is-invalid"));
         }
         if let Some(after) = after {

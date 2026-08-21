@@ -48,6 +48,10 @@ impl PlannerAuthorityKey {
         constant_time_bytes_eq(&self.0, &debugger.0)
     }
 
+    pub(crate) fn has_same_planner_material(&self, other: &Self) -> bool {
+        constant_time_bytes_eq(&self.0, &other.0)
+    }
+
     pub(crate) fn authenticate_component_basis(&self, domain: &str, basis: &[u8]) -> CampaignHash {
         authenticate(&self.0, domain, basis)
     }
