@@ -1004,7 +1004,14 @@ pub fn enqueue(&self, entries: &mut [FrameEntry], e: &FrameEntry) -> Result<(), 
   exact inverse, re-establishing the same live sequence with `read_idx`/`write_idx`
   normalized. The ABI-defined consumer delivery state MUST be serialized;
   padding bytes inside each entry MUST be excluded from (or canonicalized in)
-  the serialization so they cannot perturb the content hash.
+  the serialization so they cannot perturb the content hash. The process-private
+  decoded snapshot MUST remain compact: it stores only each frame's canonical
+  metadata and valid payload bytes, never the fixed-capacity unused
+  `FrameEntry::data` tail. The decoder MUST admit the declared frame count and
+  minimum encoded body before reserving, use fallible reservation, and reject a
+  malformed or over-capacity stream with a typed error. Thus a valid compact
+  checkpoint cannot amplify into one full 4,640-byte shared-memory slot per
+  zero-payload frame before restore.
   *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:* §13.6.
 
 - **[SHM-23]** The SPSC implementation MUST be covered by property-based and

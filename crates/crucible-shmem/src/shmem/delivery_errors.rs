@@ -335,6 +335,18 @@ pub enum SpscRingError {
         /// Canonical frame count that could not be admitted.
         count: usize,
     },
+    /// The compact payload for one decoded frame could not be reserved.
+    #[error("SPSC snapshot cannot reserve {len} payload bytes")]
+    SnapshotPayloadAllocationFailed {
+        /// Valid payload length that could not be admitted.
+        len: usize,
+    },
+    /// The canonical byte representation could not be reserved.
+    #[error("SPSC snapshot cannot reserve {len} canonical bytes")]
+    SnapshotByteAllocationFailed {
+        /// Canonical byte length that could not be admitted.
+        len: usize,
+    },
     /// The canonical snapshot byte stream ended before the declared field.
     #[error(
         "SPSC snapshot decode truncated at byte {offset}: needed {needed} bytes, available {available}"

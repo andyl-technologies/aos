@@ -450,10 +450,15 @@ impl RingHeader {
         let head = self.read_idx.load(Ordering::Acquire);
         let tail = self.write_idx.load(Ordering::Acquire);
         let live = live_count(head, tail, capacity)?;
-        let mut frames = Vec::with_capacity(live as usize);
+        let live = live as usize;
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(live)
+            .map_err(|_| SpscRingError::SnapshotAllocationFailed { count: live })?;
         for offset in 0..live {
+            let offset = offset as u64;
             let slot = ((head.wrapping_add(offset)) & (capacity - 1)) as usize;
-            frames.push(entries[slot].canonicalized_for_snapshot()?);
+            frames.push(SnapshotFrameEntry::from_live(&entries[slot])?);
         }
 
         Ok(SpscRingSnapshot { frames })
@@ -480,7 +485,7 @@ impl RingHeader {
         }
 
         for (slot, frame) in snapshot.frames.iter().enumerate() {
-            entries[slot] = frame.clone();
+            entries[slot] = frame.to_live()?;
         }
         self.read_idx.store(0, Ordering::Release);
         self.write_idx
@@ -520,4 +525,4 @@ mod coverage_entry;
 mod snapshot;
 
 pub use coverage_entry::*;
-pub use snapshot::SpscRingSnapshot;
+pub use snapshot::{SnapshotFrameEntry, SpscRingSnapshot};

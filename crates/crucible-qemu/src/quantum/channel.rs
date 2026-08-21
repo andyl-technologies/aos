@@ -81,7 +81,7 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             .inbound
             .frames
             .iter()
-            .map(crucible_shmem::FrameEntry::delivery_key)
+            .map(crucible_shmem::SnapshotFrameEntry::delivery_key)
             .collect();
         Ok(())
     }

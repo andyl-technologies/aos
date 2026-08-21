@@ -102,6 +102,13 @@ error before attempt 1,025. Retained retries are deterministically spaced by
 4,000,000 guest instructions, so a callback storm cannot consume the bound
 before the guest can make progress. Exact checkpoint/restore preserves that
 counter, so a restore cannot reset either the retry schedule or budget.
+Canonical ring decoding also remains proportional to its authenticated input:
+the process-private snapshot holds compact metadata plus only valid payload
+bytes, admits the declared frame count before reservation, and does not
+materialize fixed-size shared-memory frame slots until copying into an already
+configured destination ring. This prevents a small zero-payload checkpoint from
+requesting gigabytes of decoded heap while preserving the full configured frame
+ceiling.
 
 ## 13.5 Storage and 9p limits
 
