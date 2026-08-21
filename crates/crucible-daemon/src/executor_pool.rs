@@ -14,7 +14,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crucible_campaign::{
-    CampaignExecutorStore, ExecutorCapabilityService, ExecutorCapacityReport, ExecutorDescription,
+    CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorRejection, ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
     WatchExecutorCapacityRequest,
@@ -174,6 +175,23 @@ where
         self.shared
             .lock_executor()?
             .get_attempt_execution(request)
+            .map_err(LocalExecutorPoolServiceError::Supervisor)
+    }
+}
+
+impl<L, V> ExecutorControlService for LocalExecutorPoolService<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator + Send + Sync,
+{
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.shared.require_running()?;
+        self.shared
+            .lock_executor()?
+            .cancel_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
 }

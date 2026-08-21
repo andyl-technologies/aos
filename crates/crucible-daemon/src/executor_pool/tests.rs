@@ -13,11 +13,12 @@ use crucible_campaign::{
     BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
     CampaignCommandId, CampaignControlAction, CampaignExecutorDriver, CampaignExecutorStepOutcome,
     CampaignExecutorStore, CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode,
-    CampaignPolicy, CampaignRepository, CampaignSeed, CandidateSource, ChoiceClassContext,
-    ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue,
-    ConfigurationArtifact, ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch,
-    ExactRational, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
-    ExecutorCompatibilityProfile, ExecutorDescription, ExecutorMaterializationCapability,
+    CampaignPolicy, CampaignRepository, CampaignSeed, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+    ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExactRational,
+    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
     ExecutorRejection, ExecutorService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
     ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
@@ -130,6 +131,15 @@ impl<S: ExecutorStatusService> ExecutorStatusService for CountingExecutorService
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
         self.status_reads.fetch_add(1, Ordering::AcqRel);
         self.inner.get_attempt_execution(request)
+    }
+}
+
+impl<S: ExecutorControlService> ExecutorControlService for CountingExecutorService<S> {
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.inner.cancel_attempt_execution(request)
     }
 }
 

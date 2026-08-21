@@ -102,6 +102,9 @@ impl<S> CampaignPlannerDriver<S> {
             &self.initial_state,
         )?;
         let (snapshot, state, after) = match resume {
+            PlannerResume::Inactive { snapshot, state } => {
+                return Ok(CampaignPlannerStepOutcome::Inactive { snapshot, state });
+            }
             PlannerResume::Ready {
                 snapshot,
                 state,
@@ -155,6 +158,10 @@ impl<S> CampaignPlannerDriver<S> {
     pub fn into_planner(self) -> PlannerClient<S> {
         self.planner
     }
+
+    pub(super) fn repository(&self) -> &Arc<CampaignRepository> {
+        &self.repository
+    }
 }
 
 impl CampaignRepository {
@@ -165,8 +172,14 @@ impl CampaignRepository {
         artifact: &PolicyArtifact,
         initial_state: &PlannerState,
     ) -> Result<PlannerResume, CampaignRepositoryError> {
-        let head = self.head(campaign)?;
+        let (head, lifecycle) = self.head_with_lifecycle(campaign)?;
         let snapshot = head.snapshot_id();
+        if lifecycle.state() != CampaignState::Running {
+            return Ok(PlannerResume::Inactive {
+                snapshot,
+                state: lifecycle.state(),
+            });
+        }
         let input_view = head.snapshot().planning_view().id()?;
         let engine_id = engine.id()?;
         let artifact_id = artifact.id()?;
@@ -220,6 +233,10 @@ impl CampaignRepository {
 }
 
 enum PlannerResume {
+    Inactive {
+        snapshot: CampaignSnapshotId,
+        state: CampaignState,
+    },
     Ready {
         snapshot: CampaignSnapshotId,
         state: PlannerState,
@@ -235,6 +252,13 @@ enum PlannerResume {
 /// Result of one bounded coordinator planner step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignPlannerStepOutcome {
+    /// The campaign is not running, so no planner component was invoked.
+    Inactive {
+        /// Exact lifecycle snapshot observed by the driver.
+        snapshot: CampaignSnapshotId,
+        /// Authenticated lifecycle state at that snapshot.
+        state: CampaignState,
+    },
     /// One authenticated response advanced the campaign.
     Advanced {
         /// Stable repository acceptance result.

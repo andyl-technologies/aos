@@ -526,9 +526,27 @@ impl CampaignRepository {
         &self,
         name: &str,
     ) -> Result<(CampaignHead, CampaignState), CampaignRepositoryError> {
+        self.head_with_lifecycle(name)
+            .map(|(head, lifecycle)| (head, lifecycle.state()))
+    }
+
+    /// Resolves one authenticated head and its complete lifecycle intent.
+    ///
+    /// The state and active-attempt policy are projected from the same exact
+    /// content ID returned in the head, so a concurrent ref advance cannot mix
+    /// lifecycle fields from different snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::NotFound`] for an absent name or an
+    /// integrity/store error for an invalid reachable closure or lifecycle.
+    pub fn head_with_lifecycle(
+        &self,
+        name: &str,
+    ) -> Result<(CampaignHead, CampaignLifecycle), CampaignRepositoryError> {
         let head = self.head(name)?;
-        let state = self.state_at_snapshot(head.snapshot_id())?;
-        Ok((head, state))
+        let lifecycle = self.lifecycle_at_snapshot(head.snapshot_id())?;
+        Ok((head, lifecycle))
     }
 
     /// Resolves the authenticated genesis snapshot of one named campaign.
@@ -562,9 +580,26 @@ impl CampaignRepository {
         &self,
         snapshot: CampaignSnapshotId,
     ) -> Result<CampaignState, CampaignRepositoryError> {
+        self.lifecycle_at_snapshot(snapshot)
+            .map(CampaignLifecycle::state)
+    }
+
+    /// Projects complete lifecycle intent from one exact authenticated snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity/store error when the snapshot or its reachable
+    /// ancestry is absent, malformed, excessive, or semantically invalid.
+    pub fn lifecycle_at_snapshot(
+        &self,
+        snapshot: CampaignSnapshotId,
+    ) -> Result<CampaignLifecycle, CampaignRepositoryError> {
         self.validate_complete_head(snapshot.content_id())?;
         self.current_lifecycle(snapshot.content_id())
-            .map(|state| state.visible)
+            .map(|state| CampaignLifecycle {
+                state: state.visible,
+                active_attempt_policy: state.active_attempt_policy,
+            })
     }
 
     /// Makes an operator-supplied choice authoritative campaign knowledge.

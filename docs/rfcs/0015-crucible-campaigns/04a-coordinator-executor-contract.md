@@ -966,7 +966,7 @@ local implementation:
 ```text
 DescribeExecutor      WatchCapacity
 SubmitAttempt         GetAttemptExecution
-WatchExecutions       CancelExecution
+WatchExecutions       CancelAttemptExecution
 QueryMaterializations EnsureMaterialization
 RetainExactClosure    EvictMaterialization
 GetHealth
@@ -989,6 +989,12 @@ GetAttemptExecutionRequestV1 = version | daemon_epoch | lineage_id | attempt_id 
 
 GetAttemptExecutionResponseV1 = version | daemon_epoch | attempt_id | execution_id |
                                 request_digest | disposition
+
+CancelAttemptExecutionRequestV1 = version | daemon_epoch | lineage_id | attempt_id |
+                                  execution_id | execution_basis_digest
+
+CancelAttemptExecutionResponseV1 = version | daemon_epoch | attempt_id | execution_id |
+                                   request_digest | disposition
 ```
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
@@ -1033,6 +1039,20 @@ durable cancellation. Absence or any epoch, lineage, attempt, execution, or
 execution-basis mismatch is `not-current`. This operation reads the direct
 lineage-qualified attempt-state record and MUST NOT create an assignment record.
 
+`CancelAttemptExecution` is the idempotent mutation for the same exact
+execution basis. Its request digest is
+`H("crucible.campaign.cancel-attempt-execution-request.v1", canonical_request)`;
+the response repeats the exact epoch, attempt, and execution and is rejected if
+any echo or the digest differs. Its closed disposition vocabulary is
+`canceled | already-canceled | already-completed(observation ID) | not-current`.
+The executor compares epoch, lineage-qualified attempt, execution ID, and
+execution-basis digest before signaling cancellation. A mismatch is
+`not-current` and MUST NOT signal another incarnation. Durable cancellation is
+semantic-neutral: the coordinator releases its volatile reservation, while the
+executor continues charging physical capacity until the worker acknowledges
+exit. `already-completed` is independently authenticated and incorporated by
+the observation owner.
+
 The implementor-facing Rust `ExecutorService` trait implements this same vocabulary.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
@@ -1055,14 +1075,16 @@ remains the next implementation checkpoint.
 The bounded loopback binding is:
 
 ```text
-ExecutorLoopbackFrameV2 = magic[8] | kind:u8 | reserved[3] |
+ExecutorLoopbackFrameV3 = magic[8] | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 
 kind = submit-attempt-request(1) | submit-attempt-response(2) |
        describe-executor-request(3) | executor-description(4) |
        watch-capacity-request(5) | capacity-report(6) |
-       get-attempt-execution-request(7) | get-attempt-execution-response(8)
-magic = "CRUCEX02"
+       get-attempt-execution-request(7) | get-attempt-execution-response(8) |
+       cancel-attempt-execution-request(9) |
+       cancel-attempt-execution-response(10)
+magic = "CRUCEX03"
 ```
 
 The body limit is 4 KiB and is checked before allocation. Reserved bytes must

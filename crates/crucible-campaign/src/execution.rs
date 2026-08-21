@@ -12,6 +12,10 @@
 //!                                execution | execution-basis-digest
 //! GetAttemptExecutionResponseV1 = version | daemon-epoch | attempt | execution |
 //!                                 request-digest | disposition
+//! CancelAttemptExecutionRequestV1 = version | daemon-epoch | lineage | attempt |
+//!                                   execution | execution-basis-digest
+//! CancelAttemptExecutionResponseV1 = version | daemon-epoch | attempt | execution |
+//!                                    request-digest | disposition
 //! ```
 //!
 //! Assignment, execution, epoch, resource, and retention fields are local
@@ -1097,6 +1101,324 @@ impl Canonical for GetAttemptExecutionResponse {
     }
 }
 
+/// Strict idempotent cancellation request for one exact execution incarnation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancelAttemptExecutionRequest {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    execution_basis: CampaignHash,
+}
+
+impl CancelAttemptExecutionRequest {
+    /// Builds a cancellation request from the exact accepted assignment basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        assignment: &SubmitAttemptRequest,
+        execution: ExecutionId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: assignment.daemon_epoch(),
+            lineage: assignment.lineage(),
+            attempt: assignment.attempt(),
+            execution,
+            execution_basis: assignment.execution_basis_digest(),
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "cancel-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the daemon incarnation that accepted the execution.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the exact compatibility lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> CampaignLineageId {
+        self.lineage
+    }
+
+    /// Returns the immutable semantic attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution incarnation to cancel.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub const fn execution_basis(&self) -> CampaignHash {
+        self.execution_basis
+    }
+
+    /// Returns a domain-separated digest of every canonical request field.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign.cancel-attempt-execution-request.v1",
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "cancel-attempt-execution-request-encoded-bytes")
+    }
+}
+
+impl Canonical for CancelAttemptExecutionRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.lineage.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.execution_basis.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            lineage: CampaignLineageId::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            execution_basis: CampaignHash::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "cancel-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+}
+
+/// Idempotent outcome of canceling one exact execution incarnation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelAttemptExecutionDisposition {
+    /// Cancellation became durable for the named execution.
+    Canceled,
+    /// The exact execution was already durably canceled.
+    AlreadyCanceled,
+    /// Canonical completion won before cancellation.
+    AlreadyCompleted {
+        /// Published immutable observation identity.
+        observation: ObservationId,
+    },
+    /// The named execution is not the current incarnation of this attempt.
+    NotCurrent,
+}
+
+impl Canonical for CancelAttemptExecutionDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Canceled => encoder.u8(0),
+            Self::AlreadyCanceled => encoder.u8(1),
+            Self::AlreadyCompleted { observation } => {
+                encoder.u8(2);
+                observation.encode(encoder);
+            }
+            Self::NotCurrent => encoder.u8(3),
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Canceled),
+            1 => Ok(Self::AlreadyCanceled),
+            2 => Ok(Self::AlreadyCompleted {
+                observation: ObservationId::decode(decoder)?,
+            }),
+            3 => Ok(Self::NotCurrent),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "cancel-attempt-execution-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Strict response bound to one exact cancellation request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancelAttemptExecutionResponse {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    request_digest: CampaignHash,
+    disposition: CancelAttemptExecutionDisposition,
+}
+
+impl CancelAttemptExecutionResponse {
+    /// Builds one response that cannot be replayed across another execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        request: &CancelAttemptExecutionRequest,
+        disposition: CancelAttemptExecutionDisposition,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: request.daemon_epoch(),
+            attempt: request.attempt(),
+            execution: request.execution(),
+            request_digest: request.request_digest(),
+            disposition,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "cancel-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the daemon incarnation copied from the request.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the semantic attempt copied from the request.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution incarnation copied from the request.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the digest of the complete request this response answers.
+    #[must_use]
+    pub const fn request_digest(&self) -> CampaignHash {
+        self.request_digest
+    }
+
+    /// Returns the executor's stable cancellation outcome.
+    #[must_use]
+    pub const fn disposition(&self) -> CancelAttemptExecutionDisposition {
+        self.disposition
+    }
+
+    /// Validates that this response answers every field of one exact request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] when the response belongs
+    /// to another cancellation basis.
+    pub fn validate_for(
+        &self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.daemon_epoch == request.daemon_epoch()
+            && self.attempt == request.attempt()
+            && self.execution == request.execution()
+            && self.request_digest == request.request_digest()
+        {
+            Ok(())
+        } else {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "cancel attempt execution response does not match request",
+            })
+        }
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "cancel-attempt-execution-response-encoded-bytes")
+    }
+
+    /// Decodes a response and binds it to one exact cancellation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for strict decoding failure or a response for another
+    /// request basis.
+    pub fn from_canonical_bytes_for(
+        request: &CancelAttemptExecutionRequest,
+        bytes: &[u8],
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self::from_canonical_bytes(bytes)?;
+        response.validate_for(request)?;
+        Ok(response)
+    }
+}
+
+impl Canonical for CancelAttemptExecutionResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.disposition.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            request_digest: CampaignHash::decode(decoder)?,
+            disposition: CancelAttemptExecutionDisposition::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "cancel-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
 /// Implementor-facing transport-neutral executor assignment interface.
 ///
 /// A loopback RPC adapter must strictly decode the same
@@ -1135,6 +1457,20 @@ pub trait ExecutorStatusService: ExecutorService {
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error>;
+}
+
+/// Idempotent cancellation extension implemented by direct and RPC executors.
+pub trait ExecutorControlService: ExecutorStatusService {
+    /// Requests cancellation of one exact execution incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific error when operational state cannot
+    /// be changed or a protocol response cannot be constructed.
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error>;
 }
 
 /// Coordinator-facing checked client over one direct or RPC executor service.
@@ -1193,6 +1529,28 @@ impl<S: ExecutorStatusService> ExecutorClient<S> {
         let response = self
             .service
             .get_attempt_execution(request)
+            .map_err(ExecutorClientError::Service)?;
+        response
+            .validate_for(request)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        Ok(response)
+    }
+}
+
+impl<S: ExecutorControlService> ExecutorClient<S> {
+    /// Cancels and validates one exact local execution incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] for service failure or
+    /// [`ExecutorClientError::InvalidResponse`] for a cross-request response.
+    pub fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, ExecutorClientError<S::Error>> {
+        let response = self
+            .service
+            .cancel_attempt_execution(request)
             .map_err(ExecutorClientError::Service)?;
         response
             .validate_for(request)
@@ -1481,6 +1839,81 @@ mod tests {
             GetAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
             Err(CampaignCodecError::UnknownTag {
                 kind: "get-attempt-execution-disposition",
+                tag: 0xff
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
+        let assignment = fixture_request();
+        let execution = ExecutionId::from_bytes([0x39; 16]).expect("execution");
+        let request = CancelAttemptExecutionRequest::new(&assignment, execution)
+            .expect("cancellation request");
+        let request_bytes = request.canonical_bytes();
+        assert_eq!(
+            CancelAttemptExecutionRequest::from_canonical_bytes(&request_bytes)
+                .expect("cancellation request decode"),
+            request
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.cancel-attempt-execution-request-vector.v1",
+                &request_bytes,
+            )
+            .to_hex(),
+            "a2ebce5940c222189062af114c7ff2c3fb7f67117b1e4e493b4c104499cfb2ed"
+        );
+
+        let observation = ObservationId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Observation,
+            1,
+            b"executor-cancellation-observation",
+        ))
+        .expect("observation");
+        let response = CancelAttemptExecutionResponse::new(
+            &request,
+            CancelAttemptExecutionDisposition::AlreadyCompleted { observation },
+        )
+        .expect("cancellation response");
+        let response_bytes = response.canonical_bytes();
+        assert_eq!(
+            CancelAttemptExecutionResponse::from_canonical_bytes_for(&request, &response_bytes)
+                .expect("cancellation response decode"),
+            response
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.cancel-attempt-execution-response-vector.v1",
+                &response_bytes,
+            )
+            .to_hex(),
+            "0e99eaf0b0318c3893e5d2990434df1461f3516018016a09c68cab68418ade46"
+        );
+
+        let other = CancelAttemptExecutionRequest::new(
+            &assignment,
+            ExecutionId::from_bytes([0x3a; 16]).expect("other execution"),
+        )
+        .expect("other cancellation request");
+        assert_eq!(
+            CancelAttemptExecutionResponse::from_canonical_bytes_for(&other, &response_bytes),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "cancel attempt execution response does not match request"
+            })
+        );
+
+        let mut unknown_disposition = CancelAttemptExecutionResponse::new(
+            &request,
+            CancelAttemptExecutionDisposition::AlreadyCanceled,
+        )
+        .expect("already canceled response")
+        .canonical_bytes();
+        *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+        assert_eq!(
+            CancelAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
+            Err(CampaignCodecError::UnknownTag {
+                kind: "cancel-attempt-execution-disposition",
                 tag: 0xff
             })
         );

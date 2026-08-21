@@ -36,6 +36,8 @@ crucible.campaign.submit-attempt-request	1	crucible-campaign::execution	componen
 crucible.campaign.submit-attempt-response	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-request	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-response	1	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.cancel-attempt-execution-request	1	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.cancel-attempt-execution-response	1	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.describe-executor-request	1	crucible-campaign::executor_capability	component-message	gate:component-contract
 crucible.campaign.executor-description	1	crucible-campaign::executor_capability	component-message	gate:component-contract
 crucible.campaign.watch-executor-capacity-request	1	crucible-campaign::executor_capability	component-message	gate:component-contract
@@ -69,7 +71,7 @@ crucible.campaign.submit-campaign-branch-response	1	crucible-campaign::campaign_
 crucible.campaign.service-error-response	1	crucible-campaign::campaign_service	component-message	gate:component-contract
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
 crucible.executor.attempt-state-record	2	crucible-daemon::assignment_ledger	operational-record	gate:component-contract
-crucible.executor.loopback-frame	2	crucible-daemon::executor_loopback	component-message	gate:component-contract
+crucible.executor.loopback-frame	3	crucible-daemon::executor_loopback	component-message	gate:component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:component-contract
 crucible.campaign.loopback-frame	12	crucible-daemon::campaign_loopback	component-message	gate:component-contract
 crucible.executor.crucible-scenario-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay

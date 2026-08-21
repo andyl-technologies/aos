@@ -792,6 +792,12 @@ budget condition, or genuine finite exhaustion has been recorded. Additional
 budget or a policy revision may reopen a completed campaign unless the operator
 sealed it.
 
+The lifecycle projection retains the exact active-attempt policy from the
+authoritative pause transition. Ordinary sealed snapshots preserve that policy;
+only `resume` or `complete` clears it. A daemon therefore derives both the state
+and its pause behavior from one authenticated snapshot instead of consulting
+process-local intent or re-reading a moving head.
+
 - **[CMOD-20]** Pause and daemon restart MUST require no state outside the
   campaign snapshot and reachable objects. In-flight attempts without published
   observations become claimable again.

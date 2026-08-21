@@ -60,11 +60,13 @@ pub use choice::{
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
-    AssignmentId, AttemptResourceLimits, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
-    ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorRejection,
-    ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId,
+    ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorRejection, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
@@ -134,13 +136,16 @@ pub use policy::{
 pub use repository::{
     AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
     AttemptReservation, BranchRequestResult, CampaignCommandResult, CampaignDerivationResult,
-    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
-    CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead, CampaignPlannerDriver,
-    CampaignPlannerDriverConfigError, CampaignPlannerDriverError, CampaignPlannerStepOutcome,
-    CampaignRepository, CampaignRepositoryError, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult,
-    ObservationCandidate, ObservationDisposition, ObservationResult, PlannerStepResult,
-    ProposalResult, ResolvedSelection, WorkerSlotId,
+    CampaignExecutorCancelOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
+    CampaignExecutorDriverError, CampaignExecutorStepOutcome, CampaignExecutorStore, CampaignHead,
+    CampaignLifecycle, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
+    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscoveryResult,
+    ClaimableAttemptPage, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObservationCandidate,
+    ObservationDisposition, ObservationResult, PlannerStepResult, ProposalResult,
+    ResolvedSelection, WorkerSlotId,
 };
 
 #[cfg(test)]

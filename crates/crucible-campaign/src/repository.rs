@@ -17,18 +17,18 @@ use crucible_cas::content_store::{
 use thiserror::Error;
 
 use crate::{
-    AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId, AttemptAdmissionRole,
-    AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest, BranchRequestCause,
-    BranchRequestId, CampaignCodecError, CampaignControlAction, CampaignDerivation, CampaignFact,
-    CampaignHash, CampaignLineage, CampaignLineageId, CampaignMode, CampaignPlanningView,
-    CampaignPolicy, CampaignPolicyId, CampaignSnapshot, CampaignSnapshotId, CampaignState,
-    CampaignStoreError, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
-    CandidateGeneratorSpecId, CandidateSource, CanonicalFrontierPlanner, ChoiceDomain,
-    ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity, ChoiceOpportunityId,
-    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
-    ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch, DebuggerAuthorityKey,
-    DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit,
-    ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
+    ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
+    AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath, BranchPathId, BranchRequest,
+    BranchRequestCause, BranchRequestId, CampaignCodecError, CampaignControlAction,
+    CampaignDerivation, CampaignFact, CampaignHash, CampaignLineage, CampaignLineageId,
+    CampaignMode, CampaignPlanningView, CampaignPolicy, CampaignPolicyId, CampaignSnapshot,
+    CampaignSnapshotId, CampaignState, CampaignStoreError, CandidateGeneratorAlgorithm,
+    CandidateGeneratorSpec, CandidateGeneratorSpecId, CandidateSource, CanonicalFrontierPlanner,
+    ChoiceDomain, ChoiceDomainId, ChoiceGroup, ChoiceGroupId, ChoiceOpportunity,
+    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
+    ContinuationProjection, ControlRequest, CoverageProjection, CoverageProjectionId, DaemonEpoch,
+    DebuggerAuthorityKey, DebuggerSubmission, ExecutorCompatibilityProfile, ExecutorRejection,
+    ExpansionCredit, ExpansionState, ExpansionStateId, MeasurementSet, MeasurementSetId, MerkleMap,
     MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
     NonModeledAttemptDisposition, ObjectEnvelope, Observation, ObservationId, PlannerAuthorityKey,
     PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
@@ -81,6 +81,32 @@ pub struct CampaignHead {
     name: String,
     snapshot_id: CampaignSnapshotId,
     snapshot: CampaignSnapshot,
+}
+
+/// Authenticated lifecycle intent projected from one exact campaign snapshot.
+///
+/// The active-attempt policy is present after a `Pause` command until a later
+/// `Resume` or `Complete` command supersedes it. It remains visible while a
+/// paused campaign is sealed so the daemon can finish the declared handling of
+/// work that was already active when the pause became authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignLifecycle {
+    state: CampaignState,
+    active_attempt_policy: Option<ActiveAttemptPolicy>,
+}
+
+impl CampaignLifecycle {
+    /// Returns the visible durable campaign state.
+    #[must_use]
+    pub const fn state(self) -> CampaignState {
+        self.state
+    }
+
+    /// Returns the policy governing attempts active at the latest pause.
+    #[must_use]
+    pub const fn active_attempt_policy(self) -> Option<ActiveAttemptPolicy> {
+        self.active_attempt_policy
+    }
 }
 
 impl CampaignHead {
@@ -621,14 +647,15 @@ mod planner_issue;
 mod projection;
 mod queue;
 mod records;
+mod supervisor;
 mod transactions;
 
 use attempt_closure::non_modeled_attempt_key;
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{
-    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
-    CampaignExecutorStepOutcome,
+    CampaignExecutorCancelOutcome, CampaignExecutorDriver, CampaignExecutorDriverConfigError,
+    CampaignExecutorDriverError, CampaignExecutorStepOutcome,
 };
 pub use planner_driver::{
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
@@ -637,6 +664,10 @@ pub use planner_driver::{
 pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
+};
+pub use supervisor::{
+    CampaignSupervisor, CampaignSupervisorConfigError, CampaignSupervisorError,
+    CampaignSupervisorStepOutcome, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
 };
 
 struct LoadedSnapshot {
@@ -673,6 +704,7 @@ impl ChoiceValidationCache {
 struct ProjectedState {
     visible: CampaignState,
     sealed_prior: Option<CampaignState>,
+    active_attempt_policy: Option<ActiveAttemptPolicy>,
 }
 
 #[derive(Clone, Copy)]
@@ -695,6 +727,7 @@ impl ProjectedState {
         Self {
             visible: CampaignState::Created,
             sealed_prior: None,
+            active_attempt_policy: None,
         }
     }
 
@@ -708,12 +741,15 @@ impl ProjectedState {
                 ) =>
             {
                 self.visible = CampaignState::Running;
+                self.active_attempt_policy = None;
             }
-            CampaignControlAction::Pause(_) if state == CampaignState::Running => {
+            CampaignControlAction::Pause(policy) if state == CampaignState::Running => {
                 self.visible = CampaignState::Paused;
+                self.active_attempt_policy = Some(*policy);
             }
             CampaignControlAction::Complete if state != CampaignState::Sealed => {
                 self.visible = CampaignState::Completed;
+                self.active_attempt_policy = None;
             }
             CampaignControlAction::Seal if state != CampaignState::Sealed => {
                 self.sealed_prior = Some(state);
@@ -727,6 +763,7 @@ impl ProjectedState {
             {
                 if state == CampaignState::Completed {
                     self.visible = CampaignState::Paused;
+                    self.active_attempt_policy = None;
                 }
             }
             _ => return Err(CampaignRepositoryError::InvalidTransition { state }),

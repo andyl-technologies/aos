@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use super::*;
 use crate::{
-    AssignmentId, AttemptResourceLimits, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
-    ExecutorClientError, ExecutorRejection, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest,
+    AssignmentId, AttemptResourceLimits, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
+    ExecutorClientError, ExecutorControlService, ExecutorRejection, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
 };
 
 /// Coordinator-owned bounded driver for one local executor component.
@@ -295,10 +296,119 @@ impl<S> CampaignExecutorDriver<S> {
         self.queue.reservation_count()
     }
 
+    /// Returns the fixed reservation ceiling configured for this driver.
+    #[must_use]
+    pub const fn maximum_reservations(&self) -> usize {
+        self.queue.maximum_reservations()
+    }
+
+    /// Returns the number of exact executor incarnations being polled.
+    #[must_use]
+    pub fn active_execution_count(&self) -> usize {
+        self.active_executions.len()
+    }
+
+    pub(super) fn first_drain_worker_slot(&self) -> Option<WorkerSlotId> {
+        self.active_executions
+            .first_key_value()
+            .map(|(worker_slot, _)| *worker_slot)
+            .or_else(|| {
+                self.queue
+                    .first_reservation()
+                    .map(AttemptReservation::worker_slot)
+            })
+    }
+
+    /// Releases or requests cancellation of at most one held reservation.
+    ///
+    /// Accepted executions are selected by lowest worker-slot identity;
+    /// otherwise the lowest unaccepted reservation is released without an
+    /// executor call. A transport or response-validation failure retains the
+    /// exact reservation and execution basis for retry. Durable cancellation
+    /// releases only the coordinator's volatile lease; the executor remains
+    /// responsible for charging physical resources until its worker
+    /// acknowledges exit.
+    /// Completion that won the race is independently authenticated and
+    /// incorporated through the ordinary observation owner transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a checked executor-client, repository, or reservation error. The
+    /// active poll remains owned unless the returned outcome explicitly
+    /// canceled, resolved, or incorporated it.
+    pub fn cancel_one(
+        &mut self,
+        campaign: &str,
+    ) -> Result<CampaignExecutorCancelOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorControlService,
+    {
+        let Some((worker_slot, active)) = self
+            .active_executions
+            .iter()
+            .next()
+            .map(|(worker_slot, active)| (*worker_slot, active.clone()))
+        else {
+            let Some(reservation) = self.queue.first_reservation() else {
+                return Ok(CampaignExecutorCancelOutcome::Idle);
+            };
+            self.queue.release(reservation)?;
+            self.reset_scan();
+            return Ok(CampaignExecutorCancelOutcome::Released {
+                attempt: reservation.attempt(),
+            });
+        };
+        let request = CancelAttemptExecutionRequest::new(&active.request, active.execution)?;
+        let response = self
+            .executor
+            .cancel_attempt_execution(&request)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match response.disposition() {
+            CancelAttemptExecutionDisposition::Canceled
+            | CancelAttemptExecutionDisposition::AlreadyCanceled => {
+                let already_canceled = matches!(
+                    response.disposition(),
+                    CancelAttemptExecutionDisposition::AlreadyCanceled
+                );
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorCancelOutcome::Canceled {
+                    attempt: active.reservation.attempt(),
+                    execution: active.execution,
+                    already_canceled,
+                })
+            }
+            CancelAttemptExecutionDisposition::AlreadyCompleted { observation } => {
+                let observation_record = self.repository.load_observation(observation)?;
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result =
+                    self.repository
+                        .publish_observation(campaign, expected, &observation_record)?;
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorCancelOutcome::Incorporated(result))
+            }
+            CancelAttemptExecutionDisposition::NotCurrent => {
+                self.queue.release(active.reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorCancelOutcome::AssignmentRenewed {
+                    attempt: active.reservation.attempt(),
+                })
+            }
+        }
+    }
+
     /// Returns the checked executor client when coordinator ownership ends.
     #[must_use]
     pub fn into_executor(self) -> ExecutorClient<S> {
         self.executor
+    }
+
+    pub(super) fn repository(&self) -> &Arc<CampaignRepository> {
+        &self.repository
     }
 
     fn request_for(
@@ -460,6 +570,34 @@ pub enum CampaignExecutorStepOutcome {
     Incorporated(ObservationResult),
     /// A stable non-modeled disposition closed the attempt ordinal.
     Closed(NonModeledAttemptResult),
+}
+
+/// One bounded coordinator cancellation transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignExecutorCancelOutcome {
+    /// No accepted local execution remains to cancel.
+    Idle,
+    /// A reservation not yet accepted by an executor was released locally.
+    Released {
+        /// Immutable attempt made claimable again for a later resume.
+        attempt: AttemptId,
+    },
+    /// Cancellation is durable for one exact executor incarnation.
+    Canceled {
+        /// Immutable attempt made claimable again for a later resume.
+        attempt: AttemptId,
+        /// Exact local execution incarnation that was canceled.
+        execution: ExecutionId,
+        /// Whether the executor had already accepted the same cancellation.
+        already_canceled: bool,
+    },
+    /// The execution was no longer current and its lease was released.
+    AssignmentRenewed {
+        /// Immutable attempt that remains semantically claimable.
+        attempt: AttemptId,
+    },
+    /// Canonical completion won and advanced campaign state.
+    Incorporated(ObservationResult),
 }
 
 /// Invalid static configuration for a campaign executor driver.

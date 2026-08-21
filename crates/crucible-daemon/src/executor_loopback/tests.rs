@@ -9,8 +9,10 @@ use std::thread;
 use std::time::Duration;
 
 use crucible_campaign::{
-    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, DaemonEpoch, ExecutionId,
-    ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile,
+    AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId,
+    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
     ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
     ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
     GetAttemptExecutionResponse, SubmitAttemptDisposition,
@@ -75,6 +77,19 @@ impl ExecutorStatusService for CapabilityExecutor {
             GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::Running)
                 .expect("bounded status response"),
         )
+    }
+}
+
+impl ExecutorControlService for CapabilityExecutor {
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        Ok(CancelAttemptExecutionResponse::new(
+            request,
+            CancelAttemptExecutionDisposition::AlreadyCanceled,
+        )
+        .expect("bounded cancellation response"))
     }
 }
 
@@ -202,6 +217,45 @@ fn direct_and_loopback_execution_status_are_identical() {
 }
 
 #[test]
+fn direct_and_loopback_execution_cancellation_are_identical() {
+    let (description, report) = capability_fixture();
+    let assignment = request(0x1a);
+    let cancel_request = CancelAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x62; 16]).expect("execution"),
+    )
+    .expect("cancellation request");
+    let direct = ExecutorClient::new(CapabilityExecutor {
+        description: description.clone(),
+        report: report.clone(),
+    })
+    .cancel_attempt_execution(&cancel_request)
+    .expect("direct cancellation");
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description,
+            report,
+        };
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve cancellation");
+    });
+    let loopback = ExecutorClient::new(
+        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
+    )
+    .cancel_attempt_execution(&cancel_request)
+    .expect("loopback cancellation");
+    server.join().expect("server thread");
+
+    assert_eq!(loopback, direct);
+}
+
+#[test]
 fn frame_header_and_canonical_body_have_one_exact_encoding() {
     let request = request(0x12);
     let body = request.canonical_bytes();
@@ -216,7 +270,7 @@ fn frame_header_and_canonical_body_have_one_exact_encoding() {
 
     let mut encoded = vec![0; FRAME_HEADER_BYTES + body.len()];
     reader.read_exact(&mut encoded).expect("read exact frame");
-    assert_eq!(&encoded[..8], b"CRUCEX02");
+    assert_eq!(&encoded[..8], b"CRUCEX03");
     assert_eq!(encoded[8], SUBMIT_ATTEMPT_REQUEST_KIND);
     assert_eq!(&encoded[9..12], &[0, 0, 0]);
     assert_eq!(
@@ -365,6 +419,79 @@ fn client_poisons_after_cross_execution_status_response() {
             )
     ));
     server.join().expect("server thread");
+}
+
+#[test]
+fn client_poisons_after_cross_execution_cancellation_response() {
+    let assignment = request(0x26);
+    let submitted = CancelAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x73; 16]).expect("execution"),
+    )
+    .expect("cancellation request");
+    let other = CancelAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x74; 16]).expect("other execution"),
+    )
+    .expect("other cancellation request");
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let _request = read_frame(
+            &mut server_stream,
+            CANCEL_ATTEMPT_EXECUTION_REQUEST_KIND,
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("read cancellation request");
+        let response = CancelAttemptExecutionResponse::new(
+            &other,
+            CancelAttemptExecutionDisposition::NotCurrent,
+        )
+        .expect("other response");
+        write_frame(
+            &mut server_stream,
+            CANCEL_ATTEMPT_EXECUTION_RESPONSE_KIND,
+            &response.canonical_bytes(),
+            DEFAULT_LOOPBACK_TIMEOUT,
+        )
+        .expect("write wrong cancellation response");
+        thread::sleep(Duration::from_millis(100));
+    });
+    let deadlines =
+        LoopbackExecutorTimeouts::new(Duration::from_millis(250), Duration::from_millis(250))
+            .expect("finite deadlines");
+    let mut service = LoopbackExecutorService::with_timeouts(client_stream, deadlines)
+        .expect("configure client deadlines");
+    assert!(matches!(
+        service.cancel_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Codec(_))
+    ));
+    assert!(matches!(
+        service.cancel_attempt_execution(&submitted),
+        Err(LoopbackExecutorProtocolError::Io(ref error))
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+    ));
+    server.join().expect("server thread");
+}
+
+#[test]
+fn executor_loopback_v3_rejects_v2_frames() {
+    let (mut client, mut server) = UnixStream::pair().expect("loopback pair");
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    header[..8].copy_from_slice(b"CRUCEX02");
+    header[8] = SUBMIT_ATTEMPT_REQUEST_KIND;
+    client.write_all(&header).expect("write legacy header");
+
+    assert!(matches!(
+        serve_loopback_executor_once(&mut server, &mut RejectingExecutor),
+        Err(LoopbackExecutorServerError::Protocol(
+            LoopbackExecutorProtocolError::InvalidFrame {
+                reason: "unsupported-frame-version"
+            }
+        ))
+    ));
 }
 
 #[test]

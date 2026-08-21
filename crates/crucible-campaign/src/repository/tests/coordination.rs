@@ -883,7 +883,21 @@ fn create_and_control_form_linear_authenticated_history() {
         repository.state("network-recovery").expect("state"),
         CampaignState::Paused
     );
+    let (_, lifecycle) = repository
+        .head_with_lifecycle("network-recovery")
+        .expect("paused lifecycle intent");
+    assert_eq!(lifecycle.state(), CampaignState::Paused);
+    assert_eq!(
+        lifecycle.active_attempt_policy(),
+        Some(crate::ActiveAttemptPolicy::Drain)
+    );
     assert_ne!(paused.new_snapshot, resumed.new_snapshot);
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let (_, restarted_lifecycle) = restarted
+        .head_with_lifecycle("network-recovery")
+        .expect("restart lifecycle intent");
+    assert_eq!(restarted_lifecycle, lifecycle);
 }
 
 #[test]
@@ -1839,6 +1853,56 @@ fn canonical_planner_client(
     )
 }
 
+struct SupervisorExecutor {
+    execution: ExecutionId,
+    cancellations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::ExecutorService for SupervisorExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Accepted {
+                execution: self.execution,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl crate::ExecutorStatusService for SupervisorExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &crate::GetAttemptExecutionRequest,
+    ) -> Result<crate::GetAttemptExecutionResponse, Self::Error> {
+        crate::GetAttemptExecutionResponse::new(
+            request,
+            crate::GetAttemptExecutionDisposition::Running,
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl crate::ExecutorControlService for SupervisorExecutor {
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &crate::CancelAttemptExecutionRequest,
+    ) -> Result<crate::CancelAttemptExecutionResponse, Self::Error> {
+        self.cancellations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::CancelAttemptExecutionResponse::new(
+            request,
+            crate::CancelAttemptExecutionDisposition::Canceled,
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
 #[test]
 fn planner_driver_rejects_invalid_static_configuration_without_repository_writes() {
     let (repository, _, _, blobs, planner_authority, _) = authorized_fixture();
@@ -1901,6 +1965,255 @@ fn planner_driver_rejects_invalid_static_configuration_without_repository_writes
 }
 
 #[test]
+fn campaign_supervisor_applies_cancel_and_checkpoint_pause_policies_without_planning() {
+    let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
+    let (_, admitted, _) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "campaign-supervisor-pause");
+    let running = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-pause-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume campaign");
+    let repository = Arc::new(repository);
+    let planner_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let planner = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        canonical_planner_client(&planner_authority, Arc::clone(&planner_calls)),
+        engine,
+        artifact,
+        initial_state,
+        16,
+        budget,
+    )
+    .expect("planner driver");
+    let cancellations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let execution = ExecutionId::from_bytes([0x73; 16]).expect("execution");
+    let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 0, 10_000).expect("resources");
+    let executor = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        crate::ExecutorClient::new(SupervisorExecutor {
+            execution,
+            cancellations: Arc::clone(&cancellations),
+        }),
+        DaemonEpoch::from_bytes([0x74; 16]).expect("daemon epoch"),
+        2,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("executor driver");
+    let mut supervisor = CampaignSupervisor::new(
+        Arc::clone(&repository),
+        crate::CampaignName::new("campaign-supervisor-pause").expect("campaign name"),
+        planner,
+        executor,
+        2,
+    )
+    .expect("campaign supervisor");
+
+    assert!(matches!(
+        supervisor.step().expect("reserve attempt"),
+        CampaignSupervisorStepOutcome::Executor {
+            outcome:
+                CampaignExecutorStepOutcome::Running {
+                    attempt,
+                    execution: accepted,
+                    newly_accepted: true,
+                },
+            ..
+        } if attempt == admitted.attempt && accepted == execution
+    ));
+    let drain_pause = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-drain-pause",
+                running.new_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+            ),
+        )
+        .expect("pause to drain");
+    assert!(matches!(
+        supervisor.step().expect("poll only held drain work"),
+        CampaignSupervisorStepOutcome::Executor {
+            worker_slot,
+            outcome:
+                CampaignExecutorStepOutcome::Running {
+                    attempt,
+                    execution: active,
+                    newly_accepted: false,
+                },
+        } if worker_slot == WorkerSlotId::new(0)
+            && attempt == admitted.attempt
+            && active == execution
+    ));
+    assert_eq!(supervisor.reservation_count(), 1);
+    assert_eq!(cancellations.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let drain_resume = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-drain-resume",
+                drain_pause.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume drained campaign");
+    let cancel_pause = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-cancel-pause",
+                drain_resume.new_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::CancelAndRetry),
+            ),
+        )
+        .expect("pause with cancellation");
+    assert_eq!(
+        supervisor.step().expect("cancel paused execution"),
+        CampaignSupervisorStepOutcome::Cancellation(CampaignExecutorCancelOutcome::Canceled {
+            attempt: admitted.attempt,
+            execution,
+            already_canceled: false,
+        })
+    );
+    assert_eq!(supervisor.reservation_count(), 0);
+    assert_eq!(cancellations.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(matches!(
+        supervisor.step().expect("stable paused campaign"),
+        CampaignSupervisorStepOutcome::Inactive {
+            lifecycle,
+            snapshot,
+        } if lifecycle.state() == CampaignState::Paused
+            && lifecycle.active_attempt_policy()
+                == Some(crate::ActiveAttemptPolicy::CancelAndRetry)
+            && snapshot == cancel_pause.new_snapshot
+    ));
+
+    let resumed = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-second-resume",
+                cancel_pause.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume canceled attempt");
+    assert!(matches!(
+        supervisor.step().expect("reassign canceled attempt"),
+        CampaignSupervisorStepOutcome::Executor {
+            outcome: CampaignExecutorStepOutcome::Running { attempt, .. },
+            ..
+        } if attempt == admitted.attempt
+    ));
+    let checkpoint_pause = repository
+        .apply_control(
+            "campaign-supervisor-pause",
+            &command(
+                "campaign-supervisor-checkpoint-pause",
+                resumed.new_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::ExactCheckpoint),
+            ),
+        )
+        .expect("pause for exact checkpoint");
+    assert_eq!(
+        supervisor.step().expect("require exact checkpoint"),
+        CampaignSupervisorStepOutcome::ExactCheckpointRequired {
+            snapshot: checkpoint_pause.new_snapshot,
+            reservations: 1,
+            active_executions: 1,
+        }
+    );
+    assert_eq!(supervisor.reservation_count(), 1);
+    assert_eq!(cancellations.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() {
+    let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
+    let created = repository
+        .create(
+            "campaign-supervisor-planning",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create campaign");
+    repository
+        .apply_control(
+            "campaign-supervisor-planning",
+            &command(
+                "campaign-supervisor-planning-resume",
+                created.snapshot_id(),
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume campaign");
+    let repository = Arc::new(repository);
+    let planner_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
+    let planner = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        canonical_planner_client(&planner_authority, Arc::clone(&planner_calls)),
+        engine,
+        artifact,
+        initial_state,
+        16,
+        budget,
+    )
+    .expect("planner driver");
+    let resources = AttemptResourceLimits::new(1, 4096, 0, 64).expect("resources");
+    let executor = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        crate::ExecutorClient::new(SupervisorExecutor {
+            execution: ExecutionId::from_bytes([0x75; 16]).expect("execution"),
+            cancellations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }),
+        DaemonEpoch::from_bytes([0x76; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("executor driver");
+    let mut supervisor = CampaignSupervisor::new(
+        repository,
+        crate::CampaignName::new("campaign-supervisor-planning").expect("campaign name"),
+        planner,
+        executor,
+        1,
+    )
+    .expect("campaign supervisor");
+
+    assert!(matches!(
+        supervisor.step().expect("scan executor queue"),
+        CampaignSupervisorStepOutcome::Executor {
+            outcome: CampaignExecutorStepOutcome::Idle { .. },
+            ..
+        }
+    ));
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(matches!(
+        supervisor.step().expect("plan empty view"),
+        CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::NoWork,
+            ..
+        })
+    ));
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
 fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
     let (repository, lineage, policy, _, planner_authority, debugger_authority) =
         authorized_fixture();
@@ -1941,6 +2254,16 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
             &second_request,
         )
         .expect("submit second request");
+    let running = repository
+        .apply_control(
+            "planner-driver-restart",
+            &command(
+                "planner-driver-restart-resume",
+                second.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume planner campaign");
     let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut driver = CampaignPlannerDriver::new(
@@ -1960,7 +2283,7 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
             result,
             disposition: PlannerDisposition::ContinueScan { cursor },
         } => {
-            assert_eq!(result.prior_snapshot, second.new_snapshot);
+            assert_eq!(result.prior_snapshot, running.new_snapshot);
             (
                 result.new_snapshot,
                 result.step,
@@ -2020,7 +2343,7 @@ fn planner_driver_resumes_an_authenticated_page_cursor_after_restart() {
 fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
     let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
     let repository = Arc::new(repository);
-    repository
+    let created = repository
         .create(
             "planner-driver-settled",
             &lineage,
@@ -2031,7 +2354,7 @@ fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
     let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut driver = CampaignPlannerDriver::new(
-        repository,
+        Arc::clone(&repository),
         canonical_planner_client(&planner_authority, Arc::clone(&calls)),
         engine,
         artifact,
@@ -2040,6 +2363,27 @@ fn planner_driver_does_not_reinvoke_a_terminal_current_view() {
         budget,
     )
     .expect("planner driver");
+
+    assert_eq!(
+        driver
+            .step("planner-driver-settled")
+            .expect("created campaign is inactive"),
+        CampaignPlannerStepOutcome::Inactive {
+            snapshot: created.snapshot_id(),
+            state: CampaignState::Created,
+        }
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    repository
+        .apply_control(
+            "planner-driver-settled",
+            &command(
+                "planner-driver-settled-resume",
+                created.snapshot_id(),
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume empty campaign");
 
     let accepted = driver
         .step("planner-driver-settled")
@@ -2094,7 +2438,17 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
             &BTreeMap::new(),
         )
         .expect("create campaign");
-    let genesis_snapshot = genesis.snapshot_id();
+    let running = repository
+        .apply_control(
+            "planner-driver-concurrency",
+            &command(
+                "planner-driver-concurrency-resume",
+                genesis.snapshot_id(),
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume planner campaign");
+    let running_snapshot = running.new_snapshot;
     let (engine, artifact, initial_state, budget) = canonical_planner_driver_basis(&repository);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let inner = crate::AuthorizedPlannerService::new(
@@ -2133,9 +2487,9 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
         let result = mutation_repository.apply_control(
             "planner-driver-concurrency",
             &command(
-                "planner-driver-concurrent-resume",
-                genesis_snapshot,
-                CampaignControlAction::Resume,
+                "planner-driver-concurrent-pause",
+                running_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
             ),
         );
         mutation_tx.send(result).expect("return mutation result");
@@ -2156,7 +2510,7 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
         drive_result,
         Err(CampaignPlannerDriverError::Repository(
             CampaignRepositoryError::Stale { expected, current }
-        )) if expected == genesis_snapshot && current == mutation_result.new_snapshot
+        )) if expected == running_snapshot && current == mutation_result.new_snapshot
     ));
     assert_eq!(
         repository
