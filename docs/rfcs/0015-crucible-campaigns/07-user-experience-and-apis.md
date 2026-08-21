@@ -239,8 +239,9 @@ historical snapshot against the named campaign. The initial `explain` operation
 joins one authenticated choice declaration with one authenticated frontier
 request, rejects a mismatched opportunity or domain, and reports exact legality,
 producer, cause, budget, stop, and continuation fields. The lifecycle mutations
-described in §07.3 use that same transport; findings, proposal/attempt/finding
-explanations, and rich filtered/aggregated inspection remain open.
+described in §07.3 and exact-precondition `pin`/`unpin` commands use that same
+transport; findings, proposal/attempt/finding explanations, and rich
+filtered/aggregated inspection remain open.
 
 A concise status view includes:
 
@@ -311,8 +312,8 @@ the selected model implementation's pure replay verifier before execution.
 ## 07.5 Retention, replay, and debugging
 
 ```text
-crucible campaign pin NAME CONFIG [--tier thin|exact] [--reason TEXT]
-crucible campaign unpin NAME CONFIG
+crucible campaign pin NAME CONFIG --expected SNAPSHOT --command ID [--tier thin|exact] [--reason TEXT]
+crucible campaign unpin NAME CONFIG --expected SNAPSHOT --command ID [--reason TEXT]
 crucible campaign replay NAME FINDING|CONFIG [--check]
 crucible campaign debug NAME FINDING|CONFIG
 crucible campaign export NAME --mode metadata|findings|debug|executable|mirror
@@ -382,6 +383,7 @@ CampaignService
   GetFrontierObject
   QueryChoices
   GetChoiceObject
+  PinCampaign
   SubmitBranchRequest
   DeriveCampaign
   QueryFindings
@@ -416,7 +418,7 @@ The direct service contract implements strict request-bound `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced
 `WatchCampaign`, snapshot-bound
 `QueryGraph`,
-`ApplyCampaignCommand`, and operator
+`ApplyCampaignCommand`, semantic `PinCampaign`, and operator
 `SubmitBranchRequest`
 messages over the semantic repository owner. Creation carries the complete
 bounded lineage/policy basis and exactly replays the authenticated
@@ -428,9 +430,9 @@ Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
 initial nested CLI now exposes authenticated current status, one-shot resumable
-watch, and exact-precondition lifecycle mutation; creation, derivation,
-branching, resource attachment, and remaining paged inspection are still
-required before the service is complete. Repeated bounded `WatchCampaign`
+watch, exact-precondition lifecycle mutation, and semantic pin/unpin mutation;
+resource attachment and remaining paged inspection are still required before
+the service is complete. Repeated bounded `WatchCampaign`
 calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now

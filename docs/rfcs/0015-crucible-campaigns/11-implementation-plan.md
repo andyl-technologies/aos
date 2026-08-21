@@ -359,8 +359,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   The repository owner now also implements the core schema-v5 pin transaction:
   graph-scoped target validation, exact command replay and reuse rejection,
   pins/accounting/coordination root projection, tombstoned unpin intent, and
-  imported-history recomputation. The user-facing service/loopback/CLI binding
-  and GC retention-plan consumer remain part of T-CAM-8.3.
+  imported-history recomputation. The principal-aware user-facing service,
+  versioned loopback, and exact-precondition `pin`/`unpin` CLI binding are now
+  implemented. The GC retention-plan consumer remains part of T-CAM-8.3.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
@@ -452,8 +453,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   arbitrary non-graph reads remain unavailable.
   The local
   Unix-stream binding
-  now dispatches all twenty-six current success messages plus one stable
-  request-bound error envelope under a version-12, 64-MiB-body,
+  now dispatches all twenty-eight current success messages plus one stable
+  request-bound error envelope under a version-13, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -718,7 +719,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   cause, budget, stop, and continuation state. Paged findings,
   proposal/attempt/finding explanations, and richer filtered or aggregated
   views remain open.
-- [ ] **T-CAM-8.3** Implement pin/unpin, replay/debug, export/import,
+- [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
+  projection in GC retention plans; implement replay/debug, export/import,
   push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel

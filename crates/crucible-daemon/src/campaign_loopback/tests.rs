@@ -25,7 +25,8 @@ use crucible_campaign::{
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
     GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MerkleMap, ObjectEnvelope, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
+    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
+    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
     QueryCampaignChoicesResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
     QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
     RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, StopCondition,
@@ -310,6 +311,21 @@ impl CampaignService for FixedCampaignService {
         .expect("command response"))
     }
 
+    fn pin_campaign(
+        &self,
+        request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, Self::Error> {
+        Ok(PinCampaignResponse::new(
+            request,
+            CampaignCommandResult {
+                prior_snapshot: request.command().expected_snapshot,
+                new_snapshot: snapshot("pin-next"),
+                replayed: false,
+            },
+        )
+        .expect("pin response"))
+    }
+
     fn submit_branch_request(
         &self,
         request: &SubmitCampaignBranchRequest,
@@ -391,6 +407,7 @@ fn direct_and_loopback_campaign_services_are_identical() {
         CampaignChoiceObjectKind::Domain,
     );
     let apply = apply_request("network-recovery");
+    let pin = pin_request("network-recovery");
     let branch = branch_submission("network-recovery");
     let direct = CampaignClient::new(FixedCampaignService);
     let expected_create = direct.create_campaign(&create).expect("direct create");
@@ -419,13 +436,14 @@ fn direct_and_loopback_campaign_services_are_identical() {
         .get_campaign_choice_object(&choice_object)
         .expect("direct choice object");
     let expected_apply = direct.apply_campaign_command(&apply).expect("direct apply");
+    let expected_pin = direct.pin_campaign(&pin).expect("direct pin");
     let expected_branch = direct
         .submit_branch_request(&branch)
         .expect("direct branch");
 
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
-        for _ in 0..13 {
+        for _ in 0..14 {
             serve_loopback_campaign_once(&mut server_stream, &FixedCampaignService)
                 .expect("serve campaign request");
         }
@@ -499,6 +517,10 @@ fn direct_and_loopback_campaign_services_are_identical() {
         expected_apply
     );
     assert_eq!(
+        client.pin_campaign(&pin).expect("loopback pin"),
+        expected_pin
+    );
+    assert_eq!(
         client
             .submit_branch_request(&branch)
             .expect("loopback branch"),
@@ -543,7 +565,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS12\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS13\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -590,6 +612,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS09",
         b"CRUCCS10",
         b"CRUCCS11",
+        b"CRUCCS12",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
@@ -762,6 +785,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &ApplyCampaignCommandRequest,
     ) -> Result<ApplyCampaignCommandResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn pin_campaign(
+        &self,
+        _request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 
@@ -1728,6 +1758,24 @@ fn apply_request(name: &str) -> ApplyCampaignCommandRequest {
         },
     )
     .expect("apply request")
+}
+
+fn pin_request(name: &str) -> PinCampaignRequest {
+    PinCampaignRequest::new(
+        principal(),
+        CampaignName::new(name).expect("campaign name"),
+        PinRequest {
+            command: CampaignCommandId::from_hash(hash("pin")),
+            expected_snapshot: snapshot("pin-prior"),
+            change: PinChange::new(
+                ConfigurationId::from_hash(hash("pinned-configuration")),
+                Some(PinRetention::Exact),
+                "retain reproducer",
+            )
+            .expect("pin change"),
+        },
+    )
+    .expect("pin request")
 }
 
 fn watch_request(name: &str, after: Option<CampaignSnapshotId>) -> WatchCampaignRequest {

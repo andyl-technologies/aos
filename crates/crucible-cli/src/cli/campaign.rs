@@ -28,12 +28,13 @@ use crucible_campaign::{
     CampaignCommandId, CampaignControlAction, CampaignHash, CampaignLineage, CampaignName,
     CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignService,
     CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateSource,
-    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ContinuationState,
-    ControlRequest, CreateCampaignRequest, DeriveCampaignRequest, GetCampaignRequest, IntegerValue,
-    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, QueryCampaignChoicesRequest,
-    QueryCampaignFrontierRequest, QueryCampaignGraphRequest, StopCondition,
-    SubmitCampaignBranchRequest, WatchCampaignRequest,
+    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
+    ContinuationState, ControlRequest, CreateCampaignRequest, DeriveCampaignRequest,
+    GetCampaignRequest, IntegerValue, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    QueryCampaignChoicesRequest, QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
+    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
@@ -188,6 +189,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_object(&client, principal, &args.command)?;
             render_campaign_object(&report, cli.output_format())?
         }
+        CampaignCommand::Pin(_) | CampaignCommand::Unpin(_) => {
+            let report = apply_campaign_pin(&client, principal, &args.command)?;
+            render_campaign_mutation(&report, cli.output_format())?
+        }
         _ => {
             let report = apply_campaign_mutation(&client, principal, &args.command)?;
             render_campaign_mutation(&report, cli.output_format())?
@@ -317,6 +322,16 @@ fn prepare_campaign_command(
             validate_campaign_object_basis(&object.name, &object.snapshot)?;
             BranchRequestId::parse(&object.request).map_err(|error| {
                 usage_error(format!("invalid campaign frontier request: {error}"))
+            })?;
+            Ok(None)
+        }
+        CampaignCommand::Pin(_) | CampaignCommand::Unpin(_) => {
+            let (basis, _, _) = campaign_pin_spec(command)?;
+            campaign_name(basis.name)?;
+            CampaignCommandId::parse(basis.command)
+                .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?;
+            CampaignSnapshotId::parse(basis.expected).map_err(|error| {
+                usage_error(format!("invalid campaign snapshot precondition: {error}"))
             })?;
             Ok(None)
         }
@@ -800,6 +815,80 @@ where
     })
 }
 
+fn apply_campaign_pin<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    command: &CampaignCommand,
+) -> Result<CampaignMutationReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let (basis, operation, change) = campaign_pin_spec(command)?;
+    let campaign = campaign_name(basis.name)?;
+    let command_id = CampaignCommandId::parse(basis.command)
+        .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?;
+    let expected_snapshot = CampaignSnapshotId::parse(basis.expected)
+        .map_err(|error| usage_error(format!("invalid campaign snapshot precondition: {error}")))?;
+    let request = PinCampaignRequest::new(
+        principal,
+        campaign.clone(),
+        PinRequest {
+            command: command_id,
+            expected_snapshot,
+            change,
+        },
+    )
+    .map_err(|error| usage_error(format!("invalid campaign pin request: {error}")))?;
+    let response = client
+        .pin_campaign(&request)
+        .map_err(|error| backend_error(format!("campaign {operation} failed: {error}")))?;
+
+    Ok(CampaignMutationReport {
+        schema: CAMPAIGN_MUTATION_REPORT_SCHEMA,
+        operation,
+        campaign: campaign.as_str().to_owned(),
+        command: command_id.to_string(),
+        prior_snapshot: response.prior_snapshot().to_string(),
+        new_snapshot: response.new_snapshot().to_string(),
+        replayed: response.replayed(),
+    })
+}
+
+fn campaign_pin_spec(
+    command: &CampaignCommand,
+) -> Result<(CampaignMutationBasisRef<'_>, &'static str, PinChange), CliError> {
+    let (basis, operation, configuration, retention, reason) = match command {
+        CampaignCommand::Pin(pin) => (
+            mutation_basis_ref(&pin.basis),
+            "pin",
+            pin.configuration.as_str(),
+            Some(match pin.tier {
+                CampaignPinRetentionArg::Thin => PinRetention::Thin,
+                CampaignPinRetentionArg::Exact => PinRetention::Exact,
+            }),
+            pin.reason.as_str(),
+        ),
+        CampaignCommand::Unpin(unpin) => (
+            mutation_basis_ref(&unpin.basis),
+            "unpin",
+            unpin.configuration.as_str(),
+            None,
+            unpin.reason.as_str(),
+        ),
+        _ => {
+            return Err(backend_error(
+                "campaign non-pin operation reached the pin-mutation path",
+            ));
+        }
+    };
+    let configuration = ConfigurationId::parse(configuration)
+        .map_err(|error| usage_error(format!("invalid campaign configuration ID: {error}")))?;
+    let change = PinChange::new(configuration, retention, reason)
+        .map_err(|error| usage_error(format!("invalid campaign pin change: {error}")))?;
+    Ok((basis, operation, change))
+}
+
 fn campaign_mutation_spec(
     command: &CampaignCommand,
 ) -> Result<
@@ -871,7 +960,9 @@ fn campaign_mutation_spec(
         | CampaignCommand::Choices(_)
         | CampaignCommand::ChoiceObject(_)
         | CampaignCommand::Frontier(_)
-        | CampaignCommand::FrontierObject(_) => Err(backend_error(
+        | CampaignCommand::FrontierObject(_)
+        | CampaignCommand::Pin(_)
+        | CampaignCommand::Unpin(_) => Err(backend_error(
             "campaign non-control operation reached the control-mutation path",
         )),
     }
@@ -1308,6 +1399,21 @@ mod tests {
             .expect("fixed campaign mutation response"))
         }
 
+        fn pin_campaign(
+            &self,
+            request: &PinCampaignRequest,
+        ) -> Result<PinCampaignResponse, Self::Error> {
+            Ok(PinCampaignResponse::new(
+                request,
+                CampaignCommandResult {
+                    prior_snapshot: request.command().expected_snapshot,
+                    new_snapshot: snapshot("pinned"),
+                    replayed: false,
+                },
+            )
+            .expect("fixed campaign pin response"))
+        }
+
         fn submit_branch_request(
             &self,
             request: &SubmitCampaignBranchRequest,
@@ -1496,6 +1602,13 @@ mod tests {
             &self,
             _request: &ApplyCampaignCommandRequest,
         ) -> Result<ApplyCampaignCommandResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn pin_campaign(
+            &self,
+            _request: &PinCampaignRequest,
+        ) -> Result<PinCampaignResponse, Self::Error> {
             unreachable!("unused campaign-service operation")
         }
 
@@ -1994,6 +2107,24 @@ mod tests {
     }
 
     #[test]
+    fn campaign_pin_uses_the_checked_loopback_transport() {
+        let configuration = ConfigurationId::from_hash(hash("pin-configuration"));
+        let command = CampaignCommand::Pin(CampaignPinArgs {
+            basis: mutation_basis("pin"),
+            configuration: configuration.to_string(),
+            tier: CampaignPinRetentionArg::Exact,
+            reason: "retain reproducer".to_owned(),
+        });
+        let report = pin_over_loopback(&command);
+
+        assert_eq!(report.operation, "pin");
+        assert_eq!(report.command, hash("pin").to_hex());
+        assert_eq!(report.prior_snapshot, snapshot("current").to_string());
+        assert_eq!(report.new_snapshot, snapshot("pinned").to_string());
+        assert!(!report.replayed);
+    }
+
+    #[test]
     fn campaign_mutation_actions_preserve_exact_operator_intent() {
         let resume = CampaignCommand::Resume(mutation_basis("resume"));
         assert!(matches!(
@@ -2078,6 +2209,28 @@ mod tests {
             campaign_mutation_spec(&steer).expect("steer mutation").2,
             CampaignControlAction::ActivatePolicy(next) if next == policy("next")
         ));
+
+        let configuration = ConfigurationId::from_hash(hash("pin-configuration"));
+        let pin = CampaignCommand::Pin(CampaignPinArgs {
+            basis: mutation_basis("pin"),
+            configuration: configuration.to_string(),
+            tier: CampaignPinRetentionArg::Exact,
+            reason: "retain reproducer".to_owned(),
+        });
+        let pin_change = campaign_pin_spec(&pin).expect("pin mutation").2;
+        assert_eq!(pin_change.configuration(), configuration);
+        assert_eq!(pin_change.retention(), Some(PinRetention::Exact));
+        assert_eq!(pin_change.reason(), "retain reproducer");
+
+        let unpin = CampaignCommand::Unpin(CampaignUnpinArgs {
+            basis: mutation_basis("unpin"),
+            configuration: configuration.to_string(),
+            reason: "resolved".to_owned(),
+        });
+        let unpin_change = campaign_pin_spec(&unpin).expect("unpin mutation").2;
+        assert_eq!(unpin_change.configuration(), configuration);
+        assert_eq!(unpin_change.retention(), None);
+        assert_eq!(unpin_change.reason(), "resolved");
     }
 
     #[test]
@@ -2575,6 +2728,65 @@ mod tests {
                 ..
             })
         ));
+
+        let configuration = ConfigurationId::from_hash(hash("pin-configuration")).to_string();
+        let pin = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "pin",
+            "example",
+            "--expected",
+            &expected,
+            "--command",
+            &hash("pin").to_hex(),
+            &configuration,
+            "--tier",
+            "exact",
+            "--reason",
+            "retain reproducer",
+        ])
+        .expect("campaign pin arguments");
+        assert!(matches!(
+            pin.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Pin(CampaignPinArgs {
+                    tier: CampaignPinRetentionArg::Exact,
+                    ref reason,
+                    ..
+                }),
+                ..
+            }) if reason == "retain reproducer"
+        ));
+
+        let unpin = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "unpin",
+            "example",
+            "--expected",
+            &expected,
+            "--command",
+            &hash("unpin").to_hex(),
+            &configuration,
+            "--reason",
+            "resolved",
+        ])
+        .expect("campaign unpin arguments");
+        assert!(matches!(
+            unpin.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Unpin(CampaignUnpinArgs { ref reason, .. }),
+                ..
+            }) if reason == "resolved"
+        ));
     }
 
     fn query_over_loopback(command: &CampaignCommand) -> CampaignHeadReport {
@@ -2609,6 +2821,24 @@ mod tests {
             command,
         )
         .expect("checked campaign mutation");
+        server.join().expect("campaign server thread");
+        report
+    }
+
+    fn pin_over_loopback(command: &CampaignCommand) -> CampaignMutationReport {
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &FixedHeadService)
+                .expect("serve one campaign pin mutation");
+        });
+        let service = LoopbackCampaignService::new(client_stream).expect("loopback client");
+        let client = CampaignClient::new(service);
+        let report = apply_campaign_pin(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            command,
+        )
+        .expect("checked campaign pin mutation");
         server.join().expect("campaign server thread");
         report
     }

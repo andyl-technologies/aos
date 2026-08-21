@@ -344,6 +344,10 @@ enum CampaignCommand {
     Budget(CampaignBudgetArgs),
     /// Activate an imported compatible policy for future work.
     Steer(CampaignSteerArgs),
+    /// Add or update one semantic configuration pin.
+    Pin(CampaignPinArgs),
+    /// Remove one semantic configuration pin.
+    Unpin(CampaignUnpinArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -624,6 +628,42 @@ struct CampaignSteerArgs {
     /// Imported compatible policy to activate.
     #[arg(long, value_name = "POLICY", required = true)]
     policy: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignPinRetentionArg {
+    /// Retain semantic replay inputs.
+    #[default]
+    Thin,
+    /// Retain the complete portable exact closure.
+    Exact,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPinArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Semantic configuration ID to retain.
+    #[arg(value_name = "CONFIGURATION")]
+    configuration: String,
+    /// Semantic retention tier.
+    #[arg(long, value_enum, value_name = "thin|exact", default_value_t)]
+    tier: CampaignPinRetentionArg,
+    /// Bounded operator-facing history reason.
+    #[arg(long, value_name = "TEXT", default_value = "")]
+    reason: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignUnpinArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Semantic configuration ID whose current pin is removed.
+    #[arg(value_name = "CONFIGURATION")]
+    configuration: String,
+    /// Bounded operator-facing history reason.
+    #[arg(long, value_name = "TEXT", default_value = "")]
+    reason: String,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
