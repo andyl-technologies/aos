@@ -308,6 +308,18 @@ enum CampaignCommand {
     Status(CampaignStatusArgs),
     /// Return the latest coalesced head after an optional snapshot cursor.
     Watch(CampaignWatchArgs),
+    /// Begin or resume issuing campaign work.
+    Resume(CampaignMutationBasisArgs),
+    /// Pause new work under an explicit active-attempt policy.
+    Pause(CampaignPauseArgs),
+    /// Complete or seal a campaign.
+    Stop(CampaignStopArgs),
+    /// Re-enable mutation of a sealed campaign.
+    Unseal(CampaignMutationBasisArgs),
+    /// Grant additive proposal and attempt budget.
+    Budget(CampaignBudgetArgs),
+    /// Activate an imported compatible policy for future work.
+    Steer(CampaignSteerArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -325,6 +337,93 @@ struct CampaignWatchArgs {
     /// Last observed campaign snapshot cursor.
     #[arg(long, value_name = "SNAPSHOT")]
     after: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignMutationBasisArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this mutation expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Stable lowercase hexadecimal idempotency key.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignPausePolicyArg {
+    /// Let accepted attempts drain before durable pause.
+    #[default]
+    Drain,
+    /// Capture exact checkpoints for accepted attempts before durable pause.
+    Checkpoint,
+    /// Cancel accepted attempts and leave their semantic work retryable.
+    Retry,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPauseArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Select how accepted attempts reach the paused boundary.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "drain|checkpoint|retry",
+        default_value_t = CampaignPausePolicyArg::Drain
+    )]
+    active: CampaignPausePolicyArg,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStopArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Seal the campaign against accidental future mutation.
+    #[arg(long)]
+    seal: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignBudgetArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this mutation expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Stable lowercase hexadecimal idempotency key.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+    #[command(subcommand)]
+    operation: CampaignBudgetCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignBudgetCommand {
+    /// Add bounded proposal and semantic-attempt allowances.
+    Add(CampaignBudgetAddArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignBudgetAddArgs {
+    /// Additional semantic attempts permitted.
+    #[arg(value_name = "ATTEMPTS")]
+    attempts: u64,
+    /// Additional planner proposals permitted.
+    #[arg(long, value_name = "PROPOSALS", default_value_t = 0)]
+    proposals: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSteerArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Imported compatible policy to activate.
+    #[arg(long, value_name = "POLICY", required = true)]
+    policy: String,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]

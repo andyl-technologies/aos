@@ -124,11 +124,14 @@ campaign explicitly admits defaults; otherwise validation fails.
 crucible campaign create NAME --scenario SCENARIO --policy POLICY
 crucible campaign validate NAME|POLICY
 crucible campaign start NAME [--workers N] [--memory SIZE]
-crucible campaign pause NAME [--active drain|checkpoint|retry]
-crucible campaign resume NAME
-crucible campaign stop NAME [--seal]
-crucible campaign budget NAME add ATTEMPTS
-crucible campaign steer NAME --policy POLICY
+crucible campaign pause NAME --expected SNAPSHOT --command COMMAND \
+  [--active drain|checkpoint|retry]
+crucible campaign resume NAME --expected SNAPSHOT --command COMMAND
+crucible campaign stop NAME --expected SNAPSHOT --command COMMAND [--seal]
+crucible campaign unseal NAME --expected SNAPSHOT --command COMMAND
+crucible campaign budget NAME --expected SNAPSHOT --command COMMAND \
+  add ATTEMPTS [--proposals PROPOSALS]
+crucible campaign steer NAME --expected SNAPSHOT --command COMMAND --policy POLICY
 crucible campaign derive NAME@SNAPSHOT NEW_NAME [--policy POLICY]
 ```
 
@@ -140,6 +143,18 @@ budget grants until an explicit unseal command.
 
 Operational flags such as `--workers` and `--memory` are daemon attachment
 configuration and do not alter policy identity.
+
+The current lifecycle-mutation porcelain implements `resume`, `pause`, `stop`,
+`unseal`, additive `budget`, and `steer` over the same checked local
+campaign-service client as status/watch. `--command` is the caller's exact
+64-character lowercase hexadecimal idempotency key and `--expected` is the
+exact snapshot precondition; neither is generated or silently refreshed by the
+CLI. An exact retry therefore returns the original transition, while command
+reuse or a stale
+precondition remains visible. Every successful format includes campaign,
+operation, command ID, prior snapshot, new snapshot, and replay status. Start's
+local resource attachment plus create/validate/derive/branch porcelain remain
+open even though their lower service/repository primitives exist in part.
 
 Semantic alternatives use a separate command:
 
@@ -197,7 +212,8 @@ checked client, and render table, Markdown, pretty JSON, or JSONL through the
 common CLI output selector. `watch --after` returns the latest coalesced head
 and an `advanced` flag; callers repeat it with the returned snapshot cursor to
 follow a campaign without treating the transport as authoritative state.
-Lifecycle mutation and the richer paged inspection commands below remain open.
+The lifecycle mutations described in §07.3 use that same transport; the richer
+paged inspection commands below remain open.
 
 A concise status view includes:
 
@@ -384,8 +400,9 @@ those immutable objects do not travel in the campaign control message.
 Derivation creates an audited successor rooted at an authenticated snapshot in
 the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
-initial nested CLI now exposes authenticated current status and one-shot
-resumable watch; lifecycle mutation and remaining paged inspection remain
+initial nested CLI now exposes authenticated current status, one-shot resumable
+watch, and exact-precondition lifecycle mutation; creation, derivation,
+branching, resource attachment, and remaining paged inspection are still
 required before the service is complete. Repeated bounded `WatchCampaign`
 calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned

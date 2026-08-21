@@ -401,10 +401,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. Paged finding queries,
-  rich frontier explanation, mutation porcelain, and richer CLI wiring remain
-  open. The first read-only CLI wiring uses the checked local Unix-stream
-  client for authenticated `status` and one-shot resumable `watch`, with the
-  common table, Markdown, JSON, and JSONL renderers. A bounded
+  rich frontier explanation, create/derive/branch/start-attachment porcelain,
+  and richer CLI wiring remain open. The CLI wiring uses the checked local
+  Unix-stream client for authenticated `status`, one-shot resumable `watch`,
+  and exact-command,
+  snapshot-preconditioned `resume`, `pause`, `stop`/`seal`, `unseal`, additive
+  budget, and policy steering. Every mutation reports its prior/new snapshots,
+  command ID, and replay status through the common table, Markdown, JSON, and
+  JSONL renderers. A bounded
   coalesced `WatchCampaign`
   operation returns one exact current-head cursor and lifecycle projection,
   including stale/unknown-cursor recovery without ancestry work. A bounded
@@ -459,8 +463,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   effective UID/GID pairs (never PID) to principals and retains at most 65,536
   exact operation plus campaign/all-campaign grants, rejecting ambiguity and
   unreachable grants. Socket-path ownership, deployment policy parsing,
-  diagnostic routing, and CLI wiring remain open; message framing or listener
-  construction alone is not authentication.
+  diagnostic routing, and remaining CLI wiring remain open; message framing or
+  listener construction alone is not authentication.
   Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529
