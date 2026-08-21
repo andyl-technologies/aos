@@ -831,6 +831,38 @@ fn staged_render_bytes_and_credential_handles_enter_generation_manifest() {
 }
 
 #[test]
+fn package_without_config_accepts_canonical_empty_credential_stage() {
+    let graph = ConfigGraph::default();
+    let manifest = strict_manifest(&["acl"], &graph);
+    let source = serde_json::to_value(&manifest).unwrap();
+    let all = pkgset(&["acl"]);
+    let mut projection = reproject_manifest(&source, &graph, &all, &all).unwrap();
+    let staging = tempfile::tempdir().unwrap();
+    let directory = super::subverbs::staging_package_dir(staging.path(), &manifest, "acl").unwrap();
+    let transaction = graph_transaction(&manifest).unwrap();
+    let index = json!({
+        "schema": "aos.render-stage/v1",
+        "manifest": transaction.manifest,
+        "package_pin": transaction.packages["acl"],
+        "package": "acl",
+        "artifacts": [],
+        "credentials": {},
+        "units": {}
+    });
+    crate::config_eval::materialize::write_bytes_beneath(
+        &directory,
+        "stage.json",
+        &serde_json::to_vec(&index).unwrap(),
+        "0600",
+    )
+    .unwrap();
+
+    super::reproject::merge_staged_projection(&manifest, staging.path(), &mut projection).unwrap();
+
+    assert_eq!(projection.manifest["credentials"], json!({"acl": {}}));
+}
+
+#[test]
 fn canonical_hash_is_key_order_independent() {
     use super::reproject::hash_cjson;
     let a = json!({"b": 1, "a": 2});
