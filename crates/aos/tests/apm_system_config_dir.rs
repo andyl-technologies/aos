@@ -615,6 +615,39 @@ references = []
 }
 
 #[test]
+fn all_registry_update_fails_after_attempting_invalid_registries() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let registries_dir = system_dir.join("registries.d");
+    fs::create_dir_all(&registries_dir)?;
+
+    for name in ["first", "second"] {
+        fs::write(
+            registries_dir.join(format!("{name}.toml")),
+            format!(
+                "[registry]\nname = \"{name}\"\nurl = \"https://registry.invalid/{name}\"\nbranch = \"main\"\nchannel = \"stable\"\n"
+            ),
+        )?;
+    }
+
+    let output = run_aos_package_output(&home, &system_dir, &["--progress", "off", "update"])?;
+    assert!(
+        !output.status.success(),
+        "an unfiltered update must fail when every registry refresh fails"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Registry 'first': invalid tracking config"), "{stderr}");
+    assert!(stderr.contains("Registry 'second': invalid tracking config"), "{stderr}");
+    assert!(
+        stderr.contains("failed to update 2 registry(s): first, second"),
+        "{stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
