@@ -172,6 +172,34 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Captures a running node and leaves successful source artifacts paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or exact continuation
+    /// capture fails. A determinate pre-save failure resumes the running node.
+    pub fn capture_exact_snapshot_for_publication(
+        &mut self,
+        node: &NodeId,
+        checkpoint: crucible::Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        self.node_mut(node)?
+            .capture_exact_snapshot_for_publication(node, checkpoint)
+            .map_err(BackendError::from)
+    }
+
+    /// Resumes one running node after paused exact-artifact publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or QMP cannot confirm
+    /// the running-state transition.
+    pub fn resume_after_exact_snapshot(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .resume_after_exact_snapshot()
+            .map_err(BackendError::from)
+    }
+
     /// Captures one terminal lifecycle transition without resuming QEMU.
     ///
     /// # Errors
