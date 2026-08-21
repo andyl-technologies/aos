@@ -1325,8 +1325,11 @@ by when the producer's store landed in shared memory.
   reserved executor slots, and assert no `MAX_NODES` reference escapes this layer.
   — satisfies [SHM-16], [SHM-17], [SHM-18]; spec §13.5.
 - [x] **T-SHM-13** Implement deliverability (`delivery_icount <= current_icount`)
-  and the `(delivery_icount, src_node, seq)` total order on the consumer side. —
-  satisfies [SHM-33], [SHM-34], [SHM-35]; spec §13.9.
+  and the `(delivery_icount, src_node, seq)` total order on the consumer side.
+  Represent real guest backpressure as a consumer-owned retained-head state with
+  canonical attempt count and last-attempt coordinate, enforce the bounded retry
+  deadline, and preserve that provenance across snapshot/restore. — satisfies
+  [SHM-33], [SHM-34], [SHM-35], [SHM-52]; spec §13.3.3, §13.9.
 - [x] **T-SHM-14** Wire `gate:abi-conformance`: generated-header diff +
   bilateral static asserts + golden-vector round-trip. — satisfies [SHM-30],
   [SHM-31], [SHM-32]; spec §13.8.
