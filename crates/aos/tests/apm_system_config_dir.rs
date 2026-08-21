@@ -637,11 +637,30 @@ fn all_registry_update_fails_after_attempting_invalid_registries() -> Result<()>
         "an unfiltered update must fail when every registry refresh fails"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Registry 'first': invalid tracking config"), "{stderr}");
-    assert!(stderr.contains("Registry 'second': invalid tracking config"), "{stderr}");
+    assert!(
+        stderr.contains("Registry 'first': invalid tracking config"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Registry 'second': invalid tracking config"),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("failed to update 2 registry(s): first, second"),
         "{stderr}"
+    );
+
+    let json_output =
+        run_aos_package_output(&home, &system_dir, &["--json", "--progress", "off", "update"])?;
+    assert!(!json_output.status.success());
+    let documents = String::from_utf8(json_output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(documents.len(), 1, "failed JSON updates must emit one document");
+    assert_eq!(
+        documents[0]["error"],
+        "registry error: failed to update 2 registry(s): first, second"
     );
 
     Ok(())

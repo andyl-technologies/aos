@@ -282,6 +282,17 @@ pub async fn run(
         );
     }
 
+    if !failed_registries.is_empty() {
+        return Err(AosError::RegistryError {
+            message: format!(
+                "failed to update {} registry(s): {}",
+                failed_registries.len(),
+                failed_registries.join(", ")
+            ),
+        }
+        .into());
+    }
+
     if json_mode {
         let updated = json_registries
             .iter()
@@ -295,17 +306,6 @@ pub async fn run(
             "updated": updated,
             "registries": json_registries,
         }));
-    }
-
-    if !failed_registries.is_empty() {
-        return Err(AosError::RegistryError {
-            message: format!(
-                "failed to update {} registry(s): {}",
-                failed_registries.len(),
-                failed_registries.join(", ")
-            ),
-        }
-        .into());
     }
 
     Ok(())
