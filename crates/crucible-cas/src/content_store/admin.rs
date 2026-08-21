@@ -9,7 +9,7 @@
 
 use super::*;
 
-/// Exact digest of one stable physical loose-object inventory.
+/// Exact digest of one stable physical blob inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InventoryGeneration([u8; 32]);
 
@@ -45,13 +45,13 @@ impl BlobInventoryRecord {
         Self { id, logical_length }
     }
 
-    /// Returns the exact logical object identity encoded by the placement path.
+    /// Returns the exact logical object identity represented by the placement.
     #[must_use]
     pub const fn id(self) -> ContentId {
         self.id
     }
 
-    /// Returns the physical loose object's observed byte length.
+    /// Returns the logical object's authenticated byte length.
     #[must_use]
     pub const fn logical_length(self) -> u64 {
         self.logical_length
@@ -94,13 +94,13 @@ impl BlobInventorySummary {
         self.generation
     }
 
-    /// Returns the number of logical loose objects visited.
+    /// Returns the number of logical objects visited.
     #[must_use]
     pub const fn objects(&self) -> u64 {
         self.objects
     }
 
-    /// Returns the checked sum of observed loose-object byte lengths.
+    /// Returns the checked sum of authenticated logical-object byte lengths.
     #[must_use]
     pub const fn logical_bytes(&self) -> u64 {
         self.logical_bytes
@@ -110,7 +110,7 @@ impl BlobInventorySummary {
 /// Outcome of removing one exact candidate while an inventory fence is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlannedDeleteDisposition {
-    /// The exact loose-object placement was removed durably.
+    /// The exact logical candidate was removed durably from the inventory.
     Deleted,
     /// The exact placement was already absent during an idempotent retry.
     AlreadyAbsent,
@@ -126,27 +126,30 @@ pub enum PlannedDeleteDisposition {
 /// fence required by that plan. A visitor must not call back into the fenced
 /// backend; the exclusive fence is intentionally non-reentrant.
 pub trait BlobInventoryFence {
-    /// Streams every exact logical loose-object placement while fenced.
+    /// Streams every exact logical-object placement while fenced.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when enumeration is incomplete, a physical path
-    /// is malformed or unsupported, or terminal counters overflow.
+    /// Returns [`StoreError`] when enumeration is incomplete, physical
+    /// placement metadata is malformed or unsupported, or terminal counters
+    /// overflow.
     fn visit_inventory(
         &mut self,
         visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
     ) -> Result<BlobInventorySummary, StoreError>;
 
-    /// Removes one exact plan-approved loose-object candidate.
+    /// Removes one exact plan-approved logical-object candidate.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the placement path cannot be inspected,
-    /// removed, or made durable. This primitive does not decide reachability.
+    /// Returns [`StoreError`] when the placement cannot be inspected, removed,
+    /// or made durable. A packed backend may retain shared physical pack bytes
+    /// until its final logical entry is removed or a later repack reclaims the
+    /// sparse pack. This primitive does not decide reachability.
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError>;
 }
 
-/// Separate administrative capability for a physical loose-object backend.
+/// Separate administrative capability for a physical blob backend.
 pub trait BlobStoreAdmin: Send + Sync {
     /// Acquires exclusive inventory/delete authority for this backend.
     ///

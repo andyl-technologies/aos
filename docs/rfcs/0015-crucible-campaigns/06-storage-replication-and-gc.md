@@ -131,15 +131,15 @@ pub trait StoreAdmin: Send + Sync {
 ```
 
 `StoreAdmin` above is the complete maintenance target, not authority granted to
-a campaign repository. The current loose-leaf checkpoint implements its
-physical foundation as a separate `BlobStoreAdmin` capability on the memory and
-directory blob leaves. An acquired `BlobInventoryFence` excludes cooperating
-puts, streams exact `(ContentId, logical_length)` placements with checked
-terminal counts, returns a backend-instance-bound `InventoryGeneration`, and
-permits only exact caller-selected candidate deletion. A visitor can fail early
-when its own work bound is exhausted. Prefix output is tentative until terminal
-enumeration succeeds, and the visitor cannot reenter the exclusively fenced
-backend.
+a campaign repository. The current leaf checkpoint implements its physical
+foundation as a separate `BlobStoreAdmin` capability on the memory, directory,
+and packed blob leaves. An acquired `BlobInventoryFence` excludes cooperating
+puts and repacks, streams exact `(ContentId, logical_length)` placements with
+checked terminal counts, returns a backend-instance-bound
+`InventoryGeneration`, and permits only exact caller-selected logical-candidate
+deletion. A visitor can fail early when its own work bound is exhausted. Prefix
+output is tentative until terminal enumeration succeeds, and the visitor cannot
+reenter the exclusively fenced backend.
 
 The same capability separation applies to authoritative names. `RefStoreAdmin`
 is not part of `MutableRefBackend`; its `RefInventoryFence` excludes every
@@ -558,6 +558,105 @@ collecting sparse packs preserves every logical ID.
   object after range extraction and MUST recover safely from interruption
   between pack and index publication.
 
+The single-host packed leaf implements the following registered canonical v1
+physical formats. Every integer is unsigned big-endian, every content ID is its
+canonical lowercase ASCII form preceded by a `u16` byte length, and every
+literal includes the shown trailing NUL where present:
+
+```text
+PackV1 =
+  "crucible.content-store.pack.v1\0"
+  configuration[32]
+  entry_count_u32
+  manifest_length_u32
+  repeated entry_count {
+    content_id_length_u16
+    content_id_ascii[content_id_length]
+    absolute_body_offset_u64
+    logical_length_u64
+  }
+  manifest_checksum[32]
+  concatenated_logical_bodies
+
+PackIndexV1 =
+  "crucible.content-store.pack-index.v1\0"
+  configuration[32]
+  backend_instance[32]
+  generation_u64
+  last_repack_tag_u8          # 0 None, 1 Some
+  [last_repack_plan_id[32]]   # present exactly when tag is 1
+  entry_count_u32
+  repeated entry_count {
+    content_id_length_u16
+    content_id_ascii[content_id_length]
+    pack_id[32]
+    absolute_body_offset_u64
+    logical_length_u64
+  }
+  index_checksum[32]
+
+PackedRepackPlanV1 =
+  "crucible.content-store.pack-repack-plan.v1\0"
+  configuration[32]
+  backend_instance[32]
+  index_generation_u64
+  exact_index_digest[32]
+  accounting_generation_u64
+  logical_object_count_u64
+  logical_bytes_u64
+  referenced_pack_count_u64
+  referenced_physical_bytes_u64
+  plan_checksum[32]
+```
+
+`configuration = BLAKE3("crucible.content-store.packed-configuration.v1" ||
+BE64(name_length) || name_utf8 || BE64(root_path_byte_length) ||
+root_path_bytes || BE64(target_pack_bytes))`.
+`manifest_checksum = BLAKE3("crucible.content-store.pack-manifest.v1" ||
+the exact pack bytes preceding the checksum)` and
+`PackId = BLAKE3("crucible.content-store.pack-id.v1" || configuration ||
+the exact manifest entry bytes)`. Logical bodies are authenticated by their
+manifest `ContentId`s, so physical pack identity does not become logical
+identity. `index_checksum` uses the domain
+`crucible.content-store.pack-index.v1` over the exact preceding index bytes.
+`exact_index_digest` uses
+`crucible.content-store.pack-index-digest.v1` over the complete checksummed
+index. `plan_checksum` uses
+`crucible.content-store.pack-repack-plan.v1`, and `PackedRepackPlanId` uses
+`crucible.content-store.pack-repack-plan-id.v1` over the complete checksummed
+plan.
+
+`accounting_generation_u64` MUST equal `index_generation_u64`; count, byte, and
+pack relationships are checked before a decoded plan can be applied.
+
+One index admits at most 65,536 logical objects and 65,536 referenced packs and
+is at most 16 MiB. One pack contains 1 through 4,096 entries and is at most
+128 MiB including metadata and bodies. Configured target size is 64 KiB through
+128 MiB. Empty logical objects are valid. Entry IDs are strictly increasing;
+offsets are absolute, contiguous, overflow-checked, and cover the exact pack
+length. Decoders reject unknown tags, duplicate IDs, trailing bytes,
+configuration mismatch, checksum mismatch, missing referenced packs, and an
+index entry that does not exactly match its pack manifest.
+
+Ordinary puts durably publish an authenticated one-object pack before atomically
+advancing the index. Repack planning is read-only and binds the exact backend
+configuration, persistent instance, generation, complete index digest, and
+checked logical/physical accounting. Apply accepts only that exact basis,
+writes and verifies every deterministic replacement pack, atomically publishes
+the next checksummed index by write-fsync-rename-directory-fsync, and then
+durably removes superseded pack names. A publication error is reconciled by
+reloading and re-fsyncing the visible index. The next index retains the applied
+plan ID, so retry after an indeterminate switch or cleanup error is idempotent;
+any later put, delete, or repack generation makes the old plan stale.
+
+Startup removes complete unindexed pack names left by a pack-before-index
+interruption, but fails closed for a missing or malformed referenced pack.
+Readers retain an open pack inode before releasing the state lock and
+authenticate the complete logical body, including bytes outside a requested
+range; replacement and unlink therefore cannot retarget an in-flight read.
+Logical deletion removes only the index entry until the final entry in that
+pack is deleted. Repack is the operation that reclaims sparse physical bytes.
+
 ## 06.9 Publication, archival transfer, and offline movement
 
 Publishing a new campaign snapshot is:
@@ -823,22 +922,26 @@ and indexes, atomically switches the index generation, waits for existing
 readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
 
-The implemented memory and directory leaves now provide both the exclusive
-physical inventory generation/idempotent exact-candidate deletion primitive and
-the exclusive authoritative-ref inventory generation and publication-lifecycle
-fence needed by that apply step. The assignment ledger likewise provides one
-exclusive, persistent generation over its combined operational root inventory. Directory generations
-survive restart; memory generations are process-local and monotonic for their
-ephemeral backend instance. These primitives remain held by the daemon
-maintenance owner. The canonical bounded v1 plan header now binds these
+The implemented memory, directory, and packed blob leaves now provide the
+exclusive physical inventory generation/idempotent exact-candidate deletion
+primitive. The memory and directory ref leaves provide the exclusive
+authoritative-ref inventory generation and publication-lifecycle fence needed
+by that apply step. The assignment ledger likewise provides one
+exclusive, persistent generation over its combined operational root inventory.
+Directory and packed generations survive restart; memory generations are
+process-local and monotonic for their ephemeral backend instance. These
+primitives remain held by the daemon maintenance owner. The canonical bounded
+v1 plan header now binds these
 generations to constructed root and candidate manifests, and the external
 journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
-revalidated. The implemented single-host loose-leaf apply satisfies that rule;
-composed tiers, packs, and exact-materialization policy require their additional
-fences before deletion.
+revalidated. The implemented single-host loose-leaf apply satisfies that rule.
+The packed leaf separately provides generation-bound repack plan/apply and
+logical candidate deletion under its exclusive lifecycle fence; composed tiers
+and exact-materialization policy still require their additional fences before
+global deletion.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

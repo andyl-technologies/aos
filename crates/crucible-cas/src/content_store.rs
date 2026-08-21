@@ -25,6 +25,7 @@ mod composition;
 mod directory;
 mod graph;
 mod memory;
+mod packed;
 mod write_back;
 
 pub use admin::{
@@ -38,6 +39,10 @@ pub use graph::{
     StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
+pub use packed::{
+    PackedBlobBackend, PackedRepackPlan, PackedRepackPlanId, PackedRepackReport,
+    PackedStorageAccounting,
+};
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
     WriteBackRetentionRoot, WriteBackRetentionSummary,
@@ -1001,7 +1006,11 @@ pub(crate) fn validate_range(logical_length: u64, range: ByteRange) -> Result<()
     Ok(())
 }
 
-fn content_hasher(kind: ObjectKind, schema_version: u32, logical_length: u64) -> blake3::Hasher {
+pub(crate) fn content_hasher(
+    kind: ObjectKind,
+    schema_version: u32,
+    logical_length: u64,
+) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&(CONTENT_ID_DOMAIN.len() as u64).to_be_bytes());
     hasher.update(CONTENT_ID_DOMAIN);
