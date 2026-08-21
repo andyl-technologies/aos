@@ -11395,7 +11395,8 @@ impl RpcService {
     ) -> Result<pb::SystemImage, RpcError> {
         let delivery = image.delivery;
         let uki = delivery.uki.clone();
-        let store_backed = cache_delivery && !image.store_path.is_empty();
+        let store_backed =
+            delivery.is_store_backed() || (cache_delivery && !image.store_path.is_empty());
         Ok(pb::SystemImage {
             package: image.package,
             release: image.release,
@@ -11433,6 +11434,9 @@ impl RpcService {
                 media_type: delivery.image_info.media_type,
                 byte_size: delivery.image_info.byte_size,
                 sha256: delivery.image_info.sha256,
+                store_path: delivery.image_info.store_path,
+                nar_hash: delivery.image_info.nar_hash,
+                nar_size: delivery.image_info.nar_size,
             }),
             logical_disk_sha256: delivery.logical_disk_sha256,
             rootfs_sha256: delivery.rootfs_sha256,
@@ -36893,6 +36897,9 @@ mod cache_upload_tests {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".into(),
                     object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".into(),
                     byte_size: 8,
                     sha256: info_sha256,

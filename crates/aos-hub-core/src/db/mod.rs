@@ -3685,6 +3685,9 @@ impl Database {
         let mut expected = std::collections::BTreeMap::new();
         for release in &snapshot.release_images {
             for image in &release.images {
+                if image.delivery.is_store_backed() {
+                    continue;
+                }
                 for (key, digest, size) in [
                     (
                         image.delivery.object_key.as_str(),
@@ -4023,6 +4026,9 @@ impl Database {
                         image.platform,
                         image.format
                     );
+                }
+                if image.delivery.is_store_backed() {
+                    continue;
                 }
                 for (role, key, hash, size) in [
                     (
@@ -13026,7 +13032,9 @@ impl Database {
             .await?
             .into_iter()
             .filter_map(|image| {
-                if image.delivery.object_key == object_key {
+                if image.delivery.is_store_backed() {
+                    None
+                } else if image.delivery.object_key == object_key {
                     Some(IndexedSystemImageObject::Disk(image))
                 } else if image.delivery.image_info.object_key == object_key {
                     Some(IndexedSystemImageObject::ImageInfo(image))
@@ -13554,6 +13562,9 @@ impl Database {
         registry_id: i64,
         delivery: &aos_registry_surface::manifest::ImageDelivery,
     ) -> Result<bool> {
+        if delivery.is_store_backed() {
+            return Ok(true);
+        }
         for (key, hash, size) in [
             (
                 delivery.object_key.as_str(),
@@ -24851,6 +24862,9 @@ mod tests {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".into(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".into(),
                     byte_size: 512,
                     sha256: info_sha256,

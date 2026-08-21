@@ -883,6 +883,9 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".to_string(),
                     object_key: info_key.to_string(),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".to_string(),
                     byte_size: info.len() as u64,
                     sha256: info_sha256.to_string(),

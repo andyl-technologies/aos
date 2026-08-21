@@ -559,6 +559,10 @@ message ImageInfo {
   string media_type = 4;
   uint64 byte_size = 5;
   string sha256 = 6;
+  // Canonical cache identity for store-backed metadata artifacts.
+  string store_path = 7;
+  string nar_hash = 8;
+  uint64 nar_size = 9;
 }
 
 // One registered registry with its verified index status.

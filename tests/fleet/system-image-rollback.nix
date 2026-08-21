@@ -113,6 +113,8 @@
   ];
   candidateTop = candidate.config.system.build.toplevel;
   candidateImage = candidate.config.system.build.image.raw;
+  candidateImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
+  candidateImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
   candidateUki = candidate.config.system.build.uki;
 
   # Image-mode machines boot the system image directly, so fleet
@@ -492,7 +494,9 @@ in {
             --license MIT \\
             --maintainer test \\
             --sysroot \\
-            --image '${candidateImage}' --image-format raw \\
+            --image-payload '${candidateImage}' \\
+            --image-disk '${candidateImageDisk}' \\
+            --image-info '${candidateImageInfo}' --image-format raw \\
             --image-uki "$CANDIDATE_UKI" \\
             --no-ca \\
             --registry sysreg \\

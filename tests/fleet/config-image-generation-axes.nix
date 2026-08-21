@@ -42,6 +42,8 @@
   ];
   abi2Top = abi2.config.system.build.toplevel;
   abi2Image = abi2.config.system.build.image.raw;
+  abi2ImageDisk = abi2.config.system.build.imageArtifacts.raw.disk;
+  abi2ImageInfo = abi2.config.system.build.imageArtifacts.raw.info;
   abi2Uki = abi2.config.system.build.uki;
 
   # A real installable package whose authored configuration module supports
@@ -424,7 +426,9 @@ in {
             --license MIT \
             --maintainer test \
             --sysroot \
-            --image '${abi2Image}' --image-format raw \
+            --image-payload '${abi2Image}' \
+            --image-disk '${abi2ImageDisk}' \
+            --image-info '${abi2ImageInfo}' --image-format raw \
             --image-uki "$ABI2_UKI" \
             --no-ca \
             --registry sysreg \

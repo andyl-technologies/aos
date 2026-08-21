@@ -160,8 +160,8 @@ refs, and refs become visible only after every required placement verifies the
 declared bytes.
 
 Stage the release locally first. A filesystem destination contains the Git
-origin, image objects, and binary-cache objects in the exact paths consumers
-will request:
+origin and the binary-cache objects for packages and images in the exact paths
+consumers will request:
 
 ```sh
 publication_root="$(mktemp -d)"

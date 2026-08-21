@@ -1014,6 +1014,9 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 image_info: ImageInfoReference {
                     filename: "image-info.json".to_string(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".to_string(),
                     byte_size: info.len() as u64,
                     sha256: info_sha256,
