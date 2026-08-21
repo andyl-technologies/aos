@@ -387,7 +387,7 @@ where
     let _switch_lock = if params.switch_lock_held {
         None
     } else {
-        Some(HeldSwitchLock(acquire_switch_lock(&params.switch_lock)?))
+        Some(acquire_switch_lock(&params.switch_lock)?)
     };
     let running_image = params
         .running_image
@@ -725,19 +725,6 @@ fn acquire_switch_lock(path: &Path) -> Result<SwitchLockGuard> {
         )
     })?;
     Ok(SwitchLockGuard { file })
-}
-
-/// Releases a switch lock explicitly before closing its descriptor.
-///
-/// An explicit unlock makes the activation boundary independent of descriptor
-/// close timing, which is required when a long-lived process performs a later
-/// activation against the same lock path.
-struct HeldSwitchLock(File);
-
-impl Drop for HeldSwitchLock {
-    fn drop(&mut self) {
-        let _ = flock(&self.0, FlockOperation::Unlock);
-    }
 }
 
 /// Acquires the global system-switch lock for a non-manifest activation path.
