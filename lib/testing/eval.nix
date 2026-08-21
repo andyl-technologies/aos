@@ -260,6 +260,11 @@
         system.config.systemd.services.aos-registry-sync.script)
     then throw "the registry refresh must update the system-scope snapshot"
     else if
+      !(containsStr
+        "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
+        system.config.systemd.services.aos-registry-sync.serviceConfig.ExecStartPre)
+    then throw "the registry refresh must wait for a routable managed interface"
+    else if
       system.config.systemd.services.aos-registry-sync.unitConfig.ConditionPathExists
       != system.config.aos.config.evalAtBoot.hostNix
     then throw "registry refresh must run only when operator host policy is present"
