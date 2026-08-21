@@ -495,3 +495,25 @@ pub struct ShmemDequeueResult {
     /// Wake issued to the producer after a live slot was freed.
     pub producer_wake: Option<WakeAction>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_core_snapshot_rejects_prior_version() {
+        let core = IoCore::new(8, 1, 2, 2)
+            .unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        let mut bytes = core
+            .snapshot()
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
+        let version_index = b"crucible.io-core-snapshot.v".len();
+        assert_eq!(bytes[version_index], b'2');
+        bytes[version_index] = b'1';
+        assert_eq!(
+            IoCoreSnapshot::from_canonical_bytes(&bytes),
+            Err(IoCoreSnapshotCodecError::Version)
+        );
+    }
+}
