@@ -25473,6 +25473,13 @@ impl RpcService {
             // succeeded but its derived index did not. Returning immediately
             // here would leave operators waiting for a periodic reconciliation
             // even though the commit request is safe and idempotent.
+            self.db
+                .restore_ready_registry_publication_object_evidence(
+                    &req.publication_id,
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(RpcError::internal)?;
             self.refresh_registry_index_after_publication(&registry, &req.publication_id)
                 .await;
             return self

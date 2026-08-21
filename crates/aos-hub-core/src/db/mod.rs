@@ -7105,6 +7105,74 @@ impl Database {
         Ok(())
     }
 
+    /// Restores missing evidence for the exact current ready publication.
+    ///
+    /// This is the idempotent commit-recovery path for objects whose durable
+    /// placement identity is still exact. The signed index independently
+    /// compares each inherited strong ETag with the live backend before making
+    /// an image visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id, a negative observation
+    /// time, or database failure.
+    pub async fn restore_ready_registry_publication_object_evidence(
+        &self,
+        publication_id: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if observed_at < 0 {
+            bail!("publication evidence observation time cannot be negative");
+        }
+        self.backend
+            .execute(
+                "INSERT INTO registry_publication_object_evidence
+                   (publication_id, surface_object_id, placement_id,
+                    observed_hash, observed_size, strong_etag, observed_at)
+                 SELECT publication.publication_id, object.id, placement.id,
+                        presence.observed_hash, presence.observed_size,
+                        presence.etag, ?2
+                 FROM registry_publications publication
+                 JOIN registry_publication_state current
+                   ON current.registry_id = publication.registry_id
+                  AND current.current_publication_id = publication.publication_id
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                  AND object.lifecycle_state = 'active'
+                  AND object.content_hash = declared.expected_hash
+                  AND object.size = declared.expected_size
+                  AND (object.object_kind = 'immutable'
+                    OR object.mutable_publication_id = publication.publication_id)
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.required = 1 AND required.state = 'ready'
+                 JOIN surface_placement_effective placement
+                   ON placement.id = required.placement_id
+                  AND placement.registry_id = publication.registry_id
+                  AND placement.mutable_publication_id = publication.publication_id
+                 JOIN object_placements presence
+                   ON presence.surface_object_id = object.id
+                  AND presence.placement_id = placement.id
+                  AND presence.registry_id = publication.registry_id
+                  AND presence.cache_id IS NULL
+                  AND presence.state = 'present'
+                  AND presence.observed_hash = declared.expected_hash
+                  AND presence.observed_size = declared.expected_size
+                  AND presence.etag IS NOT NULL
+                 WHERE publication.publication_id = ?1
+                   AND publication.state = 'ready'
+                 ON CONFLICT(publication_id, surface_object_id, placement_id)
+                 DO NOTHING",
+                &vals![publication_id, observed_at],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Refreshes exact placement evidence for an object in the current ready publication.
     ///
     /// This is the bounded repair counterpart to upload-time evidence recording.
@@ -7300,10 +7368,10 @@ impl Database {
         if expected <= 0 {
             bail!("publication has no mutable pointers");
         }
-        let affected = self
-            .backend
-            .execute(
-                "UPDATE surface_objects
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE surface_objects
                  SET content_hash = (SELECT po.expected_hash
                        FROM registry_publication_objects po
                        WHERE po.publication_id = ?1
@@ -7331,13 +7399,38 @@ impl Database {
                                  AND presence.state = 'present'
                                  AND presence.observed_hash = po.expected_hash
                                  AND presence.observed_size = po.expected_size)))",
-                &vals![publication_id, unix_now()],
-            )
-            .await?;
-        if affected != u64::try_from(expected).context("publication object count overflow")? {
-            bail!("publication mutable objects are incomplete or publication is not writable");
-        }
-        Ok(())
+                    vals![publication_id, unix_now()],
+                )
+                .expecting(u64::try_from(expected).context("publication object count overflow")?),
+                Statement::new(
+                    "UPDATE object_placements
+                     SET catalog_object_resource_version = (SELECT object.resource_version
+                       FROM surface_objects object
+                       WHERE object.id = object_placements.surface_object_id)
+                     WHERE surface_object_id IN (
+                       SELECT declared.surface_object_id
+                       FROM registry_publication_objects declared
+                       JOIN surface_objects object
+                         ON object.id = declared.surface_object_id
+                       WHERE declared.publication_id = ?1
+                         AND declared.object_kind = 'mutable_pointer'
+                         AND object.mutable_publication_id = ?1
+                         AND object.content_hash = declared.expected_hash
+                         AND object.size = declared.expected_size)
+                       AND state = 'present'
+                       AND observed_hash = (SELECT declared.expected_hash
+                         FROM registry_publication_objects declared
+                         WHERE declared.publication_id = ?1
+                           AND declared.surface_object_id = object_placements.surface_object_id)
+                       AND observed_size = (SELECT declared.expected_size
+                         FROM registry_publication_objects declared
+                         WHERE declared.publication_id = ?1
+                           AND declared.surface_object_id = object_placements.surface_object_id)",
+                    vals![publication_id],
+                )
+                .unchecked(),
+            ])
+            .await
     }
 
     /// Attaches one same-registry, content-exact object snapshot to a preparing publication.
