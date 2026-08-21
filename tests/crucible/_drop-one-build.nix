@@ -144,7 +144,10 @@ in
             git rev-parse HEAD >> "$TMPDIR/commits"
           done < "$patchReplayMetadataPath"
           head_commit=$(git rev-parse HEAD)
-          test "$head_commit" = "${series.patchBranchHeadCommit}"
+          if [ "$head_commit" != "${series.patchBranchHeadCommit}" ]; then
+            echo "replayed patch branch head $head_commit does not match ${series.patchBranchHeadCommit}" >&2
+            exit 1
+          fi
 
           onto=$(sed -n "$((DROP_INDEX))p" "$TMPDIR/commits")
           drop=$(sed -n "$((DROP_INDEX + 1))p" "$TMPDIR/commits")
