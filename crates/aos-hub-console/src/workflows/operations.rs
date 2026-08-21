@@ -414,9 +414,7 @@ fn timestamp(value: i64) -> String {
 }
 
 fn reload() {
-    if let Some(window) = leptos::web_sys::window() {
-        let _ = window.location().reload();
-    }
+    crate::app::refresh();
 }
 
 #[cfg(test)]

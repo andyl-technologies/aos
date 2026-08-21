@@ -97,7 +97,6 @@
               --arg sha256 "$image_sha256" \
               --arg logicalDiskSha256 "$logical_disk_sha256" \
               --arg rootfsSha256 "$logical_disk_sha256" \
-              --arg objectKey "images/sha256/$image_sha256/$filename" \
               --arg mediaType '${
               if format == "raw"
               then "application/vnd.aos.disk-image.raw+zstd"
@@ -113,9 +112,9 @@
               then ''["bare-metal"]''
               else ''["qemu-kvm","openstack"]''
             }' \
-              '{schemaVersion: 1, name: "server", version: "2026.03",
+              '{schemaVersion: 2, name: "server", version: "2026.03",
                 architecture: "x86_64", platform: "x86_64-linux",
-                format: $format, filename: $filename, objectKey: $objectKey,
+                format: $format, filename: $filename,
                 mediaType: $mediaType, compression: "${
               if format == "raw"
               then "zstd"
@@ -154,6 +153,46 @@
 
   imageRaw = mkImage {format = "raw";};
   imageQcow2 = mkImage {format = "qcow2";};
+  projectImageFile = {
+    image,
+    filename,
+    pname,
+  }:
+    pkgs.mkDerivation {
+      inherit pname;
+      version = "2026.03";
+      src = null;
+      buildDeps = [pkgs.coreutils image];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            rmdir "$out"
+            cp '${image}/${filename}' "$out"
+          '';
+        }
+      ];
+    };
+  imageRawDisk = projectImageFile {
+    image = imageRaw;
+    filename = "aos-test.img.zst";
+    pname = "apm-vm-image-raw-disk";
+  };
+  imageRawInfo = projectImageFile {
+    image = imageRaw;
+    filename = "image-info.json";
+    pname = "apm-vm-image-raw-info";
+  };
+  imageQcow2Disk = projectImageFile {
+    image = imageQcow2;
+    filename = "aos-test.qcow2";
+    pname = "apm-vm-image-qcow2-disk";
+  };
+  imageQcow2Info = projectImageFile {
+    image = imageQcow2;
+    filename = "image-info.json";
+    pname = "apm-vm-image-qcow2-info";
+  };
 
   imageWorkflowDeps =
     fixtures.commonDeps
@@ -165,7 +204,11 @@
       pkgs.zstd
       serverToplevel
       imageRaw
+      imageRawDisk
+      imageRawInfo
       imageQcow2
+      imageQcow2Disk
+      imageQcow2Info
     ];
 
   setupImageRegistryWorkflow = ''
@@ -176,16 +219,20 @@
 
     IMAGE_RAW_STORE="${imageRaw}"
     IMAGE_QCOW2_STORE="${imageQcow2}"
+    IMAGE_RAW_DISK_STORE="${imageRawDisk}"
+    IMAGE_RAW_INFO_STORE="${imageRawInfo}"
+    IMAGE_QCOW2_DISK_STORE="${imageQcow2Disk}"
+    IMAGE_QCOW2_INFO_STORE="${imageQcow2Info}"
     SERVER_STORE="${serverToplevel}"
-    RAW_HASH=$(basename "$IMAGE_RAW_STORE" | cut -d- -f1)
-    QCOW2_HASH=$(basename "$IMAGE_QCOW2_STORE" | cut -d- -f1)
+    RAW_HASH=$(basename "$IMAGE_RAW_DISK_STORE" | cut -d- -f1)
+    RAW_INFO_HASH=$(basename "$IMAGE_RAW_INFO_STORE" | cut -d- -f1)
+    QCOW2_HASH=$(basename "$IMAGE_QCOW2_DISK_STORE" | cut -d- -f1)
+    QCOW2_INFO_HASH=$(basename "$IMAGE_QCOW2_INFO_STORE" | cut -d- -f1)
     SERVER_HASH=$(basename "$SERVER_STORE" | cut -d- -f1)
     RAW_FILE="$IMAGE_RAW_STORE/aos-test.img.zst"
     QCOW2_FILE="$IMAGE_QCOW2_STORE/aos-test.qcow2"
     RAW_EXPECTED=$(sha256sum "$RAW_FILE" | cut -d' ' -f1)
     QCOW2_EXPECTED=$(sha256sum "$QCOW2_FILE" | cut -d' ' -f1)
-    RAW_INFO_SHA=$(sha256sum "$IMAGE_RAW_STORE/image-info.json" | cut -d' ' -f1)
-    QCOW2_INFO_SHA=$(sha256sum "$IMAGE_QCOW2_STORE/image-info.json" | cut -d' ' -f1)
 
     assert_store_valid() {
       path="$1"
@@ -239,10 +286,14 @@
       --license MIT \
       --maintainer image-workflow@example.invalid \
       --sysroot \
-      --image "$IMAGE_RAW_STORE" \
+      --image-payload "$IMAGE_RAW_STORE" \
+      --image-disk "$IMAGE_RAW_DISK_STORE" \
+      --image-info "$IMAGE_RAW_INFO_STORE" \
       --image-format raw \
       --image-uki '${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
-      --image "$IMAGE_QCOW2_STORE" \
+      --image-payload "$IMAGE_QCOW2_STORE" \
+      --image-disk "$IMAGE_QCOW2_DISK_STORE" \
+      --image-info "$IMAGE_QCOW2_INFO_STORE" \
       --image-format qcow2 \
       --image-uki '${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
       --registry image-reg \
@@ -261,31 +312,19 @@
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "format = \"qcow2\"" "published package records qcow2 image format"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "schema_version = 1" "published image catalog requires direct-delivery schema"
+      "schema_version = 2" "published image catalog requires store-backed delivery"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "images/sha256/$RAW_EXPECTED/aos-test.img.zst" \
-      "signed raw catalog points at immutable disk bytes"
+      "$RAW_INFO_HASH" "signed raw catalog records metadata store identity"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "images/sha256/$QCOW2_EXPECTED/aos-test.qcow2" \
-      "signed QCOW2 catalog points at immutable disk bytes"
+      "$QCOW2_INFO_HASH" "signed QCOW2 catalog records metadata store identity"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "application/vnd.aos.image-info+json" \
       "signed catalog carries per-format image-info references"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "compatible_targets = \[\"qemu-kvm\", \"openstack\"\]" \
       "signed QCOW2 catalog carries end-user target mapping"
-    assert_file_exists \
-      "$REG_DIR/.git/aos-image-staging/images/sha256/$RAW_EXPECTED/aos-test.img.zst" \
-      "raw direct-delivery bytes are staged outside Git objects"
-    assert_file_exists \
-      "$REG_DIR/.git/aos-image-staging/images/sha256/$QCOW2_EXPECTED/aos-test.qcow2" \
-      "QCOW2 direct-delivery bytes are staged outside Git objects"
-    assert_file_exists \
-      "$REG_DIR/.git/aos-image-staging/images/sha256/$RAW_EXPECTED/metadata/$RAW_INFO_SHA/image-info.json" \
-      "raw encoding carries content-bound image-info"
-    assert_file_exists \
-      "$REG_DIR/.git/aos-image-staging/images/sha256/$QCOW2_EXPECTED/metadata/$QCOW2_INFO_SHA/image-info.json" \
-      "QCOW2 encoding carries content-bound image-info"
+    assert_file_not_exists "$REG_DIR/.git/aos-image-staging" \
+      "publisher does not create a parallel direct-image plane"
 
     $APR cache generate \
       --registry image-reg \
@@ -297,8 +336,12 @@
       "static cache has server narinfo"
     assert_file_exists "/tmp/image-cache/$RAW_HASH.narinfo" \
       "static cache has raw image narinfo"
+    assert_file_exists "/tmp/image-cache/$RAW_INFO_HASH.narinfo" \
+      "static cache has raw image metadata narinfo"
     assert_file_exists "/tmp/image-cache/$QCOW2_HASH.narinfo" \
       "static cache has qcow2 image narinfo"
+    assert_file_exists "/tmp/image-cache/$QCOW2_INFO_HASH.narinfo" \
+      "static cache has qcow2 image metadata narinfo"
     assert_dir_exists "/tmp/image-cache/nar" "static cache has NAR directory"
     assert_file_contains "$REG_DIR/registry.toml" \
       "http://127.0.0.1:18084" "registry records cache URL"
@@ -362,8 +405,10 @@
     ln -sfn /var/lib/apm/registries/image-reg /var/lib/apm/remote/image-reg
 
     assert_store_valid "$SERVER_STORE" "server sysroot"
-    assert_store_valid "$IMAGE_RAW_STORE" "raw image"
-    assert_store_valid "$IMAGE_QCOW2_STORE" "qcow2 image"
+    assert_store_valid "$IMAGE_RAW_DISK_STORE" "raw image disk"
+    assert_store_valid "$IMAGE_RAW_INFO_STORE" "raw image metadata"
+    assert_store_valid "$IMAGE_QCOW2_DISK_STORE" "qcow2 image disk"
+    assert_store_valid "$IMAGE_QCOW2_INFO_STORE" "qcow2 image metadata"
   '';
 
   mkImagePullTest = {
@@ -428,7 +473,7 @@ in {
   image-pull-raw = mkImagePullTest {
     format = "raw";
     output = "/tmp/server.raw";
-    storeVar = "IMAGE_RAW_STORE";
+    storeVar = "IMAGE_RAW_DISK_STORE";
     expectedVar = "RAW_EXPECTED";
     extraCheck = ''
       if grep -q "AOSRAW" /tmp/server.raw; then
@@ -442,7 +487,7 @@ in {
   image-pull-qcow2 = mkImagePullTest {
     format = "qcow2";
     output = "/tmp/server.qcow2";
-    storeVar = "IMAGE_QCOW2_STORE";
+    storeVar = "IMAGE_QCOW2_DISK_STORE";
     expectedVar = "QCOW2_EXPECTED";
     extraCheck = ''
       MAGIC=$(dd if=/tmp/server.qcow2 bs=1 count=3 2>/dev/null)
@@ -589,7 +634,7 @@ in {
       assert_file_not_contains /tmp/image-qcow2-after-fix.out "Available: raw, qcow2" \
         "qcow2 rejection does not advertise pruned image"
 
-      delete_store_path "$IMAGE_RAW_STORE" "raw image after validate fix"
+      delete_store_path "$IMAGE_RAW_DISK_STORE" "raw image after validate fix"
       rm -f /tmp/server-pruned.raw
       $APM install server --system --registry image-reg --image raw \
         --output /tmp/server-pruned.raw --yes \

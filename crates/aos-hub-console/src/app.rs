@@ -53,33 +53,19 @@ pub fn App() -> impl IntoView {
         // with its loading fallback. Crossing a resource root still exchanges
         // a token for the new authorization scope.
         let _ = session_scope.get();
+        let route = route
+            .get_untracked()
+            .map(|route| route.href(route.page))
+            .unwrap_or_else(|| "/".to_string());
         let csrf = csrf.clone();
-        async move { ApiClient::from_browser_session(&csrf).await }
+        async move { ApiClient::from_browser_session(&csrf, &route).await }
     });
 
     view! {
         {move || match route.get() {
             Some(route) => {
-                let fallback_route = route.clone();
                 view! {
-                    <Transition fallback=move || view! { <LoadingShell route=fallback_route.clone()/> }>
-                        {move || {
-                            let route = route.clone();
-                            Suspend::new(async move {
-                                match session.await.as_ref() {
-                                    Ok(client) if client.allows(route.page.navigation_permission()) => view! {
-                                        <ManagementShell route=route client=client.clone() navigate=navigate/>
-                                    }.into_any(),
-                                    Ok(_) => view! {
-                                        <PermissionDenied route=route/>
-                                    }.into_any(),
-                                    Err(error) => view! {
-                                        <FailureShell route=route detail=error.to_string()/>
-                                    }.into_any(),
-                                }
-                            })
-                        }}
-                    </Transition>
+                    <ManagementShell route=route session=session navigate=navigate/>
                 }.into_any()
             },
             None => view! {
@@ -96,17 +82,13 @@ pub fn App() -> impl IntoView {
 #[component]
 fn ManagementShell(
     route: ConsoleRoute,
-    client: ApiClient,
+    session: LocalResource<Result<ApiClient, crate::transport::TransportError>>,
     navigate: Callback<String>,
 ) -> impl IntoView {
-    let principal = client
-        .session()
-        .principal
-        .as_ref()
-        .map(|principal| principal.email.clone())
-        .unwrap_or_else(|| "signed-in user".to_string());
     let context = scope_title(&route.scope);
     let page_label = route.page.label;
+    let navigation_route = route.clone();
+    let context_route = route.clone();
     let workflow_route = route.clone();
     let brand = shell_meta("aos-site-brand").unwrap_or_else(|| "AOS Hub".to_string());
     let tagline = shell_meta("aos-site-tagline").unwrap_or_default();
@@ -180,7 +162,7 @@ fn ManagementShell(
                     " · "
                     <a href="/-/account">"account"</a>
                     " · "
-                    <span class="who">{principal}</span>
+                    <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
                     " · "
                     <a href="/logout">"log out"</a>
                 </span>
@@ -189,12 +171,16 @@ fn ManagementShell(
             <div class="settings">
                 <details class="settings-nav-disclosure" open>
                     <summary>"Settings navigation"</summary>
-                    <Navigation route=route.clone() client=client.clone()/>
+                    <Transition fallback=move || view! { <nav class="settings-nav" aria-label="Settings navigation" aria-busy="true"><span class="settings-nav-label">"Loading navigation…"</span></nav> }>
+                        {move || { let route = navigation_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) => view! { <Navigation route=route client=client.clone()/> }.into_any(), Err(_) => view! { <nav class="settings-nav" aria-label="Settings navigation"><a href=route.base_path.clone()>"Overview"</a></nav> }.into_any() } }) }}
+                    </Transition>
                 </details>
                 <main id="main-content" class="settings-body">
                     <h1>{page_label}</h1>
-                    <ContextRail route=route.clone()/>
-                    <ResourceWorkflow route=workflow_route client=client/>
+                    <ContextRail route=context_route.clone()/>
+                    <Transition fallback=move || view! { <p class="loading-row" aria-busy="true">"Loading management data…"</p> }>
+                        {move || { let route = workflow_route.clone(); Suspend::new(async move { match session.await.as_ref() { Ok(client) if client.allows(route.page.navigation_permission()) => view! { <ResourceWorkflow route=route client=client.clone()/> }.into_any(), Ok(_) => view! { <PermissionDenied route=route/> }.into_any(), Err(error) => view! { <FailureShell route=route detail=error.to_string()/> }.into_any() } }) }}
+                    </Transition>
                 </main>
             </div>
             <footer class="statline">
@@ -322,37 +308,26 @@ fn Navigation(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
 }
 
 #[component]
-fn LoadingShell(route: ConsoleRoute) -> impl IntoView {
-    view! {
-        <main class="fatal-page" aria-busy="true">
-            <p class="eyebrow">{scope_title(&route.scope)}</p>
-            <h1>{route.page.label}</h1>
-            <p>"Establishing a short-lived management session…"</p>
-        </main>
-    }
-}
-
-#[component]
 fn FailureShell(route: ConsoleRoute, detail: String) -> impl IntoView {
     view! {
-        <main class="fatal-page">
+        <section class="workflow-message">
             <p class="eyebrow">{scope_title(&route.scope)}</p>
             <h1>"Management session unavailable"</h1>
             <p>{detail}</p>
             <a class="button" href="/login">"Sign in again"</a>
-        </main>
+        </section>
     }
 }
 
 #[component]
 fn PermissionDenied(route: ConsoleRoute) -> impl IntoView {
     view! {
-        <main class="fatal-page">
+        <section class="workflow-message">
             <p class="eyebrow">{scope_title(&route.scope)}</p>
             <h1>"Permission required"</h1>
             <p>"Your current live grants do not permit this management page."</p>
             <a class="button" href=route.base_path>"Return to overview"</a>
-        </main>
+        </section>
     }
 }
 
@@ -375,6 +350,56 @@ fn navigation_groups(route: &ConsoleRoute, client: &ApiClient) -> Vec<Navigation
         }
     }
     groups
+}
+
+/// Navigates to one canonical management route without replacing the document.
+///
+/// Mutation workflows use this path after a successful apply so the mounted
+/// application chrome and in-memory browser session survive. Dispatching a
+/// synthetic `popstate` event drives the same route refresh as browser
+/// back/forward navigation.
+pub(crate) fn navigate(path: &str) {
+    let Some(route) = ConsoleRoute::resolve(path) else {
+        return;
+    };
+    let Some(window) = leptos::web_sys::window() else {
+        return;
+    };
+    let pushed = window
+        .history()
+        .and_then(|history| history.push_state_with_url(&JsValue::NULL, "", Some(path)))
+        .is_ok();
+    if !pushed {
+        let _ = window.location().set_href(path);
+        return;
+    }
+    if let Some(document) = window.document() {
+        document.set_title(&format!("{} — AOS Hub", route.page.label));
+    }
+    window.scroll_to_with_x_and_y(0.0, 0.0);
+    match leptos::web_sys::PopStateEvent::new("popstate") {
+        Ok(event) => {
+            let _ = window.dispatch_event(&event);
+        }
+        Err(_) => {
+            let _ = window.location().set_href(path);
+        }
+    }
+}
+
+/// Refreshes the active workflow without unloading the management application.
+pub(crate) fn refresh() {
+    let Some(window) = leptos::web_sys::window() else {
+        return;
+    };
+    match leptos::web_sys::PopStateEvent::new("popstate") {
+        Ok(event) => {
+            let _ = window.dispatch_event(&event);
+        }
+        Err(_) => {
+            let _ = window.location().reload();
+        }
+    }
 }
 
 fn current_route() -> Option<ConsoleRoute> {

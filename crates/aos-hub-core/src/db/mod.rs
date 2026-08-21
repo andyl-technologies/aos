@@ -384,6 +384,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("portable_recovery_cursor.sql"),
     include_str!("org_usage_backfill.sql"),
     include_str!("cache_multipart_creation.sql"),
+    include_str!("publication_object_evidence.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
@@ -1241,8 +1242,48 @@ pub struct IndexedSystemImage {
     pub platform: String,
     /// Signed disk encoding name.
     pub format: String,
+    /// Canonical Nix store path of the image artifact.
+    pub store_path: String,
+    /// Signed hash of the image artifact's uncompressed NAR.
+    pub nar_hash: String,
+    /// Signed byte size of the image artifact's uncompressed NAR.
+    pub nar_size: u64,
     /// Complete signed direct-delivery contract.
     pub delivery: aos_registry_surface::manifest::ImageDelivery,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSystemImageIdentity {
+    store_path: String,
+    nar_hash: String,
+    nar_size: u64,
+    delivery: aos_registry_surface::manifest::ImageDelivery,
+}
+
+fn encode_stored_system_image(image: &IndexedSystemImage) -> Result<String> {
+    serde_json::to_string(&StoredSystemImageIdentity {
+        store_path: image.store_path.clone(),
+        nar_hash: image.nar_hash.clone(),
+        nar_size: image.nar_size,
+        delivery: image.delivery.clone(),
+    })
+    .context("encoding signed image artifact identity")
+}
+
+fn decode_stored_system_image(encoded: &str) -> Result<StoredSystemImageIdentity> {
+    if let Ok(image) = serde_json::from_str(encoded) {
+        return Ok(image);
+    }
+
+    let delivery =
+        serde_json::from_str(encoded).context("decoding signed image delivery metadata")?;
+    Ok(StoredSystemImageIdentity {
+        store_path: String::new(),
+        nar_hash: String::new(),
+        nar_size: 0,
+        delivery,
+    })
 }
 
 /// Signed role of an immutable image-related delivery object.
@@ -3644,6 +3685,9 @@ impl Database {
         let mut expected = std::collections::BTreeMap::new();
         for release in &snapshot.release_images {
             for image in &release.images {
+                if image.delivery.is_store_backed() {
+                    continue;
+                }
                 for (key, digest, size) in [
                     (
                         image.delivery.object_key.as_str(),
@@ -3983,61 +4027,63 @@ impl Database {
                         image.format
                     );
                 }
-                for (role, key, hash, size) in [
-                    (
-                        "disk",
-                        image.delivery.object_key.as_str(),
-                        image.delivery.sha256.as_str(),
-                        image.delivery.byte_size,
-                    ),
-                    (
-                        "image_info",
-                        image.delivery.image_info.object_key.as_str(),
-                        image.delivery.image_info.sha256.as_str(),
-                        image.delivery.image_info.byte_size,
-                    ),
-                ] {
-                    let size = i64::try_from(size)
-                        .context("signed image object size exceeds database range")?;
-                    if let Some(existing) = self
-                        .surface_object_named(SurfaceTarget::Registry(registry_id), key)
-                        .await?
-                    {
-                        if existing.object_kind != "immutable"
-                            || existing.content_hash.as_deref() != Some(hash)
-                            || existing.size != Some(size)
+                if !image.delivery.is_store_backed() {
+                    for (role, key, hash, size) in [
+                        (
+                            "disk",
+                            image.delivery.object_key.as_str(),
+                            image.delivery.sha256.as_str(),
+                            image.delivery.byte_size,
+                        ),
+                        (
+                            "image_info",
+                            image.delivery.image_info.object_key.as_str(),
+                            image.delivery.image_info.sha256.as_str(),
+                            image.delivery.image_info.byte_size,
+                        ),
+                    ] {
+                        let size = i64::try_from(size)
+                            .context("signed image object size exceeds database range")?;
+                        if let Some(existing) = self
+                            .surface_object_named(SurfaceTarget::Registry(registry_id), key)
+                            .await?
                         {
-                            bail!(
-                                "signed image object key '{}' conflicts with existing surface identity",
-                                key
-                            );
+                            if existing.object_kind != "immutable"
+                                || existing.content_hash.as_deref() != Some(hash)
+                                || existing.size != Some(size)
+                            {
+                                bail!(
+                                    "signed image object key '{}' conflicts with existing surface identity",
+                                    key
+                                );
+                            }
                         }
-                    }
-                    stmts.push(Statement::new(
-                        "INSERT INTO surface_objects
-                         (registry_id, cache_id, object_key, object_kind,
-                          partition_key, content_hash, size,
-                          mutable_publication_id, created_at, updated_at)
-                         VALUES (?1, NULL, ?2, 'immutable', ?3, ?4, ?5,
-                                 NULL, ?6, ?6)
-                         ON CONFLICT(registry_id, object_key) DO NOTHING",
-                        vals![
-                            registry_id,
-                            key,
-                            sha2::Sha256::digest(key.as_bytes()).to_vec(),
-                            hash,
+                        stmts.push(Statement::new(
+                            "INSERT INTO surface_objects
+                             (registry_id, cache_id, object_key, object_kind,
+                              partition_key, content_hash, size,
+                              mutable_publication_id, created_at, updated_at)
+                             VALUES (?1, NULL, ?2, 'immutable', ?3, ?4, ?5,
+                                     NULL, ?6, ?6)
+                             ON CONFLICT(registry_id, object_key) DO NOTHING",
+                            vals![
+                                registry_id,
+                                key,
+                                sha2::Sha256::digest(key.as_bytes()).to_vec(),
+                                hash,
+                                size,
+                                indexed_at
+                            ]
+                            .to_vec(),
+                        ));
+                        image_roots.push((
+                            catalog.release_tag.clone(),
+                            key.to_string(),
+                            hash.to_string(),
                             size,
-                            indexed_at
-                        ]
-                        .to_vec(),
-                    ));
-                    image_roots.push((
-                        catalog.release_tag.clone(),
-                        key.to_string(),
-                        hash.to_string(),
-                        size,
-                        role.to_string(),
-                    ));
+                            role.to_string(),
+                        ));
+                    }
                 }
                 stmts.push(Statement::new(
                     "INSERT INTO registry_system_images
@@ -4053,7 +4099,7 @@ impl Database {
                         image.package,
                         image.platform,
                         image.format,
-                        serde_json::to_string(&image.delivery)?,
+                        encode_stored_system_image(image)?,
                     ]
                     .to_vec(),
                 ));
@@ -4498,6 +4544,43 @@ impl Database {
              VALUES (?1, 'failed', ?2)
              ON CONFLICT(registry_id) DO UPDATE SET state = 'failed', error = excluded.error",
                     vals![registry_id, error],
+                )
+                .unchecked(),
+            ])
+            .await?;
+        Ok(())
+    }
+
+    /// Records an indexing failure only if no newer index generation committed.
+    ///
+    /// A slow verification pass can overlap a later pass that successfully
+    /// publishes a fresh snapshot. Its terminal error must not replace that
+    /// newer success. The generation predicate makes that ordering check part
+    /// of the same database statement as the state transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or while a registry publication is
+    /// active.
+    pub async fn mark_index_failed_if_generation(
+        &self,
+        registry_id: i64,
+        expected_generation: i64,
+        error: &str,
+    ) -> Result<()> {
+        if expected_generation < 0 {
+            bail!("expected registry index generation cannot be negative");
+        }
+        self.backend
+            .checked_batch(&[
+                Self::registry_index_publication_guard(registry_id),
+                Statement::new(
+                    "INSERT INTO registry_index (registry_id, state, error)
+             VALUES (?1, 'failed', ?3)
+             ON CONFLICT(registry_id) DO UPDATE SET
+               state = 'failed', error = excluded.error
+             WHERE registry_index.generation = ?2",
+                    vals![registry_id, expected_generation, error],
                 )
                 .unchecked(),
             ])
@@ -6920,6 +7003,297 @@ impl Database {
                     ],
                 )
                 .expecting(1),
+                Statement::new(
+                    "INSERT INTO registry_publication_object_evidence
+                     (publication_id, surface_object_id, placement_id,
+                      observed_hash, observed_size, strong_etag, observed_at)
+                     SELECT pub.publication_id, object.id, placement.id,
+                            ?4, ?5, ?6, ?7
+                     FROM registry_publications pub
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = pub.publication_id
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = pub.registry_id
+                     JOIN registry_publication_placements progress
+                       ON progress.publication_id = pub.publication_id
+                     JOIN surface_placements placement
+                       ON placement.id = progress.placement_id
+                      AND placement.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND object.id = ?2
+                       AND placement.id = ?3
+                       AND pub.state IN ('preparing', 'writing_pointers')
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5
+                     ON CONFLICT(publication_id, surface_object_id, placement_id)
+                     DO UPDATE SET observed_hash = excluded.observed_hash,
+                       observed_size = excluded.observed_size,
+                       strong_etag = excluded.strong_etag,
+                       observed_at = excluded.observed_at",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Binds reusable placement evidence to a newly admitted publication.
+    ///
+    /// Immutable objects may already be present with an exact digest, size, and
+    /// backend version from an earlier publication. This snapshots that evidence
+    /// into the new publication receipt so deduplication does not weaken the
+    /// publication-scoped image verification performed by the indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id or database failure.
+    pub async fn inherit_registry_publication_object_evidence(
+        &self,
+        publication_id: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if observed_at < 0 {
+            bail!("publication evidence observation time cannot be negative");
+        }
+        self.backend
+            .execute(
+                "INSERT INTO registry_publication_object_evidence
+                   (publication_id, surface_object_id, placement_id,
+                    observed_hash, observed_size, strong_etag, observed_at)
+                 SELECT publication.publication_id, object.id, placement.id,
+                        presence.observed_hash, presence.observed_size,
+                        presence.etag, ?2
+                 FROM registry_publications publication
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                  AND object.lifecycle_state = 'active'
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.required = 1
+                 JOIN surface_placements placement
+                   ON placement.id = required.placement_id
+                  AND placement.registry_id = publication.registry_id
+                 JOIN object_placements presence
+                   ON presence.surface_object_id = object.id
+                  AND presence.placement_id = placement.id
+                  AND presence.registry_id = publication.registry_id
+                  AND presence.cache_id IS NULL
+                  AND presence.state = 'present'
+                  AND presence.observed_hash = declared.expected_hash
+                  AND presence.observed_size = declared.expected_size
+                  AND presence.catalog_object_resource_version = object.resource_version
+                 WHERE publication.publication_id = ?1
+                   AND publication.state IN ('preparing', 'writing_pointers')
+                 ON CONFLICT(publication_id, surface_object_id, placement_id)
+                 DO NOTHING",
+                &vals![publication_id, observed_at],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Restores missing evidence for the exact current ready publication.
+    ///
+    /// This is the idempotent commit-recovery path for objects whose durable
+    /// placement identity is still exact. The signed index independently
+    /// compares each inherited strong ETag with the live backend before making
+    /// an image visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication id, a negative observation
+    /// time, or database failure.
+    pub async fn restore_ready_registry_publication_object_evidence(
+        &self,
+        publication_id: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        if observed_at < 0 {
+            bail!("publication evidence observation time cannot be negative");
+        }
+        self.backend
+            .execute(
+                "INSERT INTO registry_publication_object_evidence
+                   (publication_id, surface_object_id, placement_id,
+                    observed_hash, observed_size, strong_etag, observed_at)
+                 SELECT publication.publication_id, object.id, placement.id,
+                        presence.observed_hash, presence.observed_size,
+                        presence.etag, ?2
+                 FROM registry_publications publication
+                 JOIN registry_publication_state current
+                   ON current.registry_id = publication.registry_id
+                  AND current.current_publication_id = publication.publication_id
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                  AND object.lifecycle_state = 'active'
+                  AND object.content_hash = declared.expected_hash
+                  AND object.size = declared.expected_size
+                  AND (object.object_kind = 'immutable'
+                    OR object.mutable_publication_id = publication.publication_id)
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.required = 1 AND required.state = 'ready'
+                 JOIN surface_placement_effective placement
+                   ON placement.id = required.placement_id
+                  AND placement.registry_id = publication.registry_id
+                  AND placement.mutable_publication_id = publication.publication_id
+                 JOIN object_placements presence
+                   ON presence.surface_object_id = object.id
+                  AND presence.placement_id = placement.id
+                  AND presence.registry_id = publication.registry_id
+                  AND presence.cache_id IS NULL
+                  AND presence.state = 'present'
+                  AND presence.observed_hash = declared.expected_hash
+                  AND presence.observed_size = declared.expected_size
+                  AND presence.etag IS NOT NULL
+                 WHERE publication.publication_id = ?1
+                   AND publication.state = 'ready'
+                 ON CONFLICT(publication_id, surface_object_id, placement_id)
+                 DO NOTHING",
+                &vals![publication_id, observed_at],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Refreshes exact placement evidence for an object in the current ready publication.
+    ///
+    /// This is the bounded repair counterpart to upload-time evidence recording.
+    /// It cannot change a declaration or attach evidence to a retired, non-current,
+    /// optional, or unreconciled placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched evidence, a stale publication or placement,
+    /// malformed input, or a database failure.
+    pub async fn refresh_ready_registry_publication_object_presence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: &str,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(observed_hash, "observed object hash", 128)?;
+        validate_key_bytes(etag, "observed object ETag", 255)?;
+        if observed_size < 0 {
+            bail!("observed object size cannot be negative");
+        }
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE surface_object_id = ?2 AND placement_id = ?3
+                       AND registry_id = (SELECT registry_id
+                         FROM registry_publications WHERE publication_id = ?1)",
+                    vals![publication_id, surface_object_id, placement_id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO object_placements
+                     (surface_object_id, cache_id, registry_id, placement_id,
+                      state, observed_hash, observed_size, etag,
+                      observed_inventory_generation, observed_at,
+                      catalog_object_resource_version)
+                     SELECT object.id, NULL, publication.registry_id, placement.id,
+                            'present', ?4, ?5, ?6, publication.ordinal, ?7,
+                            object.resource_version
+                     FROM registry_publications publication
+                     JOIN registry_publication_state current
+                       ON current.registry_id = publication.registry_id
+                      AND current.current_publication_id = publication.publication_id
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = publication.publication_id
+                      AND declared.surface_object_id = ?2
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = publication.registry_id
+                     JOIN registry_publication_placements required
+                       ON required.publication_id = publication.publication_id
+                      AND required.placement_id = ?3
+                      AND required.required = 1 AND required.state = 'ready'
+                     JOIN surface_placement_effective placement
+                       ON placement.id = required.placement_id
+                      AND placement.registry_id = publication.registry_id
+                      AND placement.mutable_publication_id = publication.publication_id
+                     WHERE publication.publication_id = ?1
+                       AND publication.state = 'ready'
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO registry_publication_object_evidence
+                     (publication_id, surface_object_id, placement_id,
+                      observed_hash, observed_size, strong_etag, observed_at)
+                     SELECT publication.publication_id, object.id, placement.id,
+                            ?4, ?5, ?6, ?7
+                     FROM registry_publications publication
+                     JOIN registry_publication_state current
+                       ON current.registry_id = publication.registry_id
+                      AND current.current_publication_id = publication.publication_id
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = publication.publication_id
+                      AND declared.surface_object_id = ?2
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = publication.registry_id
+                     JOIN registry_publication_placements required
+                       ON required.publication_id = publication.publication_id
+                      AND required.placement_id = ?3
+                      AND required.required = 1 AND required.state = 'ready'
+                     JOIN surface_placement_effective placement
+                       ON placement.id = required.placement_id
+                      AND placement.registry_id = publication.registry_id
+                      AND placement.mutable_publication_id = publication.publication_id
+                     WHERE publication.publication_id = ?1
+                       AND publication.state = 'ready'
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5
+                     ON CONFLICT(publication_id, surface_object_id, placement_id)
+                     DO UPDATE SET observed_hash = excluded.observed_hash,
+                       observed_size = excluded.observed_size,
+                       strong_etag = excluded.strong_etag,
+                       observed_at = excluded.observed_at",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
             ])
             .await
     }
@@ -6993,10 +7367,10 @@ impl Database {
         if expected <= 0 {
             bail!("publication has no mutable pointers");
         }
-        let affected = self
-            .backend
-            .execute(
-                "UPDATE surface_objects
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE surface_objects
                  SET content_hash = (SELECT po.expected_hash
                        FROM registry_publication_objects po
                        WHERE po.publication_id = ?1
@@ -7024,13 +7398,38 @@ impl Database {
                                  AND presence.state = 'present'
                                  AND presence.observed_hash = po.expected_hash
                                  AND presence.observed_size = po.expected_size)))",
-                &vals![publication_id, unix_now()],
-            )
-            .await?;
-        if affected != u64::try_from(expected).context("publication object count overflow")? {
-            bail!("publication mutable objects are incomplete or publication is not writable");
-        }
-        Ok(())
+                    vals![publication_id, unix_now()],
+                )
+                .expecting(u64::try_from(expected).context("publication object count overflow")?),
+                Statement::new(
+                    "UPDATE object_placements
+                     SET catalog_object_resource_version = (SELECT object.resource_version
+                       FROM surface_objects object
+                       WHERE object.id = object_placements.surface_object_id)
+                     WHERE surface_object_id IN (
+                       SELECT declared.surface_object_id
+                       FROM registry_publication_objects declared
+                       JOIN surface_objects object
+                         ON object.id = declared.surface_object_id
+                       WHERE declared.publication_id = ?1
+                         AND declared.object_kind = 'mutable_pointer'
+                         AND object.mutable_publication_id = ?1
+                         AND object.content_hash = declared.expected_hash
+                         AND object.size = declared.expected_size)
+                       AND state = 'present'
+                       AND observed_hash = (SELECT declared.expected_hash
+                         FROM registry_publication_objects declared
+                         WHERE declared.publication_id = ?1
+                           AND declared.surface_object_id = object_placements.surface_object_id)
+                       AND observed_size = (SELECT declared.expected_size
+                         FROM registry_publication_objects declared
+                         WHERE declared.publication_id = ?1
+                           AND declared.surface_object_id = object_placements.surface_object_id)",
+                    vals![publication_id],
+                )
+                .unchecked(),
+            ])
+            .await
     }
 
     /// Attaches one same-registry, content-exact object snapshot to a preparing publication.
@@ -12684,9 +13083,8 @@ impl Database {
             if catalog_digest.len() != 64 {
                 bail!("indexed signed image catalog has invalid digest identity");
             }
-            let delivery: aos_registry_surface::manifest::ImageDelivery =
-                serde_json::from_str(&encoded)
-                    .context("decoding signed image delivery metadata")?;
+            let stored = decode_stored_system_image(&encoded)?;
+            let delivery = stored.delivery;
             delivery
                 .validate(&format, &release, &platform)
                 .context("validating indexed signed image delivery metadata")?;
@@ -12701,6 +13099,9 @@ impl Database {
                 release,
                 platform,
                 format,
+                store_path: stored.store_path,
+                nar_hash: stored.nar_hash,
+                nar_size: stored.nar_size,
                 delivery,
             });
         }
@@ -12723,7 +13124,9 @@ impl Database {
             .await?
             .into_iter()
             .filter_map(|image| {
-                if image.delivery.object_key == object_key {
+                if image.delivery.is_store_backed() {
+                    None
+                } else if image.delivery.object_key == object_key {
                     Some(IndexedSystemImageObject::Disk(image))
                 } else if image.delivery.image_info.object_key == object_key {
                     Some(IndexedSystemImageObject::ImageInfo(image))
@@ -12793,8 +13196,8 @@ impl Database {
     /// Returns whether the last good index contains a signed image catalog.
     ///
     /// The indexer uses this to disable its metadata-only incremental path:
-    /// every refresh of an image-bearing registry must re-read and re-hash the
-    /// exact release objects before restoring serving visibility.
+    /// every refresh of an image-bearing registry must revalidate the exact
+    /// release objects before restoring serving visibility.
     ///
     /// # Errors
     ///
@@ -12980,6 +13383,60 @@ impl Database {
             )
             .await?
             .map(|row| row.get(0))
+            .transpose()
+    }
+
+    /// Returns publication-verified identity evidence for one object placement.
+    ///
+    /// The result exists only when the current publication declared the exact
+    /// object, the selected required placement reached `ready`, and its
+    /// durable publication receipt still matches the declaration byte-for-byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed keys or a database failure.
+    pub async fn registry_publication_verified_object_at_placement(
+        &self,
+        publication_id: &str,
+        placement_id: i64,
+        object_key: &str,
+    ) -> Result<Option<VerifiedRegistryImageObject>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(object_key, "surface object key", 512)?;
+        self.backend
+            .query_opt(
+                "SELECT declared.expected_hash, declared.expected_size, evidence.strong_etag
+                 FROM registry_publications publication
+                 JOIN registry_publication_objects declared
+                   ON declared.publication_id = publication.publication_id
+                 JOIN surface_objects object
+                   ON object.id = declared.surface_object_id
+                  AND object.registry_id = publication.registry_id
+                 JOIN registry_publication_placements required
+                   ON required.publication_id = publication.publication_id
+                  AND required.placement_id = ?2
+                  AND required.required = 1 AND required.state = 'ready'
+                 JOIN registry_publication_object_evidence evidence
+                   ON evidence.publication_id = publication.publication_id
+                  AND evidence.surface_object_id = object.id
+                  AND evidence.placement_id = required.placement_id
+                 WHERE publication.publication_id = ?1
+                   AND publication.state = 'ready'
+                   AND object.object_key = ?3
+                   AND evidence.observed_hash = declared.expected_hash
+                   AND evidence.observed_size = declared.expected_size
+                   AND evidence.strong_etag IS NOT NULL",
+                &vals![publication_id, placement_id, object_key],
+            )
+            .await?
+            .map(|row| {
+                Ok(VerifiedRegistryImageObject {
+                    object_key: object_key.to_string(),
+                    sha256: row.get(0)?,
+                    byte_size: row.get(1)?,
+                    strong_etag: row.get(2)?,
+                })
+            })
             .transpose()
     }
 
@@ -13197,6 +13654,9 @@ impl Database {
         registry_id: i64,
         delivery: &aos_registry_surface::manifest::ImageDelivery,
     ) -> Result<bool> {
+        if delivery.is_store_backed() {
+            return Ok(true);
+        }
         for (key, hash, size) in [
             (
                 delivery.object_key.as_str(),
@@ -13664,6 +14124,21 @@ impl Database {
                     store_hash: store_hash_component(image_path),
                     store_path: image_path.to_string(),
                 });
+                if let Some(image_info_path) = image
+                    .get("delivery")
+                    .and_then(|delivery| delivery.get("image_info"))
+                    .and_then(|image_info| image_info.get("store_path"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package_name.clone(),
+                        package_version: package_version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "image".to_string(),
+                        store_hash: store_hash_component(image_info_path),
+                        store_path: image_info_path.to_string(),
+                    });
+                }
             }
         }
         artifacts.sort_by(|left, right| {
@@ -24494,6 +24969,9 @@ mod tests {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".into(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".into(),
                     byte_size: 512,
                     sha256: info_sha256,
@@ -24576,6 +25054,9 @@ source_nar_hash = ""
                         release: release.to_string(),
                         platform: platform.clone(),
                         format: image.format.clone(),
+                        store_path: image.store_path.clone(),
+                        nar_hash: image.nar_hash.clone(),
+                        nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
                     });
                 }
@@ -24588,6 +25069,30 @@ source_nar_hash = ""
             catalog_digest: "d".repeat(64),
             images,
         }
+    }
+
+    fn store_backed_image_package() -> aos_registry_surface::manifest::PackageToml {
+        let mut package = signed_image_package();
+        for version in &mut package.versions {
+            for artifact in version.platforms.values_mut() {
+                for image in &mut artifact.images {
+                    let store_hash = match image.format.as_str() {
+                        "raw" => "cccccccccccccccccccccccccccccccc",
+                        "qcow2" => "dddddddddddddddddddddddddddddddd",
+                        other => panic!("unsupported image test format {other}"),
+                    };
+                    image.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.schema_version = 2;
+                    image.delivery.object_key.clear();
+                    image.delivery.image_info.object_key.clear();
+                    image.delivery.image_info.store_path =
+                        format!("/aos/store/{store_hash}-aos-system-{}-info", image.format);
+                    image.delivery.image_info.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.image_info.nar_size = 1;
+                }
+            }
+        }
+        package
     }
 
     #[tokio::test]
@@ -24704,6 +25209,7 @@ source_nar_hash = ""
             "image_snapshots",
             "image_snapshot_references",
             "image_snapshot_leases",
+            "registry_publication_object_evidence",
         ] {
             let present: i64 = connection
                 .query_row(
@@ -25304,6 +25810,54 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn store_backed_images_remain_discoverable_without_legacy_object_roots() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("store-images", &[], false)
+            .await
+            .unwrap();
+        let package = store_backed_image_package();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "AOS system".into(),
+            packages: vec![package.clone()],
+            releases: vec![ReleaseRow {
+                semver: "2026.8.0".into(),
+                tag_oid: "a".repeat(64),
+                commit_oid: "c".repeat(64),
+                signer: Some("release-signer".into()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            release_images: vec![signed_image_release_snapshot(
+                &package,
+                "2026.8.0",
+                &"c".repeat(64),
+                &"a".repeat(64),
+            )],
+            ..Default::default()
+        };
+
+        db.apply_snapshot(registry_id, &snapshot).await.unwrap();
+
+        let images = db.list_system_images(registry_id).await.unwrap();
+        assert_eq!(images.len(), 2);
+        assert!(images.iter().all(|image| image.delivery.is_store_backed()));
+        let legacy_root_count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM registry_image_roots WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(legacy_root_count, 0);
+    }
+
+    #[tokio::test]
     async fn signed_images_require_complete_exact_placement_presence_and_remain_gc_roots() {
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("image-roots", "Image roots").await.unwrap();
@@ -25430,6 +25984,106 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
+
+        let publication_id = "image-evidence-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "image-evidence-generation".into(),
+            manifest_digest: "e".repeat(64),
+            refs_digest: "f".repeat(64),
+            default_commit: Some(snapshot.commit.clone()),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        for identity in &identities {
+            let object = db
+                .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
+                .await
+                .unwrap()
+                .unwrap();
+            db.set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: publication_id.into(),
+                surface_object_id: object.id,
+                object_kind: "immutable".into(),
+                expected_hash: identity.sha256.clone(),
+                expected_size: identity.byte_size,
+            })
+            .await
+            .unwrap();
+            db.record_registry_publication_object_presence(
+                publication_id,
+                object.id,
+                placement.id,
+                &identity.sha256,
+                identity.byte_size,
+                Some(&identity.strong_etag),
+                unix_now(),
+            )
+            .await
+            .unwrap();
+        }
+        db.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registry_publications
+                     SET state = 'ready', completed_at = ?2
+                     WHERE publication_id = ?1",
+                    vals![publication_id, unix_now()],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_placements
+                     SET state = 'ready', observed_at = ?3
+                     WHERE publication_id = ?1 AND placement_id = ?2",
+                    vals![publication_id, placement.id, unix_now()],
+                )
+                .expecting(1),
+            ])
+            .await
+            .unwrap();
+        let verified_before = db
+            .registry_publication_verified_object_at_placement(
+                publication_id,
+                placement.id,
+                &identities[0].object_key,
+            )
+            .await
+            .unwrap();
+        assert!(verified_before.is_some());
+
+        db.apply_snapshot_with_image_presence(
+            registry_id,
+            &snapshot,
+            placement.id,
+            &identities,
+            unix_now(),
+        )
+        .await
+        .unwrap();
+        let verified_after = db
+            .registry_publication_verified_object_at_placement(
+                publication_id,
+                placement.id,
+                &identities[0].object_key,
+            )
+            .await
+            .unwrap();
+        assert!(
+            verified_after.is_some(),
+            "derived image-presence replacement must preserve publication evidence"
+        );
+
         assert_eq!(
             db.channel_floor(registry_id, "stable")
                 .await
@@ -29588,6 +30242,51 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn stale_index_failure_cannot_replace_a_newer_success() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("index-failure-generation", &[], false)
+            .await
+            .unwrap();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "generation guard".into(),
+            description: None,
+            readme: None,
+            caches: Vec::new(),
+            cache_stack: None,
+            roster: Vec::new(),
+            packages: Vec::new(),
+            releases: Vec::new(),
+            release_artifact_snapshots: Vec::new(),
+            release_images: Vec::new(),
+            channels: Vec::new(),
+            refs_digest: Some("d".repeat(64)),
+        };
+
+        db.apply_snapshot(registry_id, &snapshot).await.unwrap();
+        let fresh = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(fresh.state, "fresh");
+        assert_eq!(fresh.generation, 1);
+
+        db.mark_index_failed_if_generation(registry_id, 0, "late failure")
+            .await
+            .unwrap();
+        let retained = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(retained.state, "fresh");
+        assert_eq!(retained.generation, 1);
+        assert!(retained.error.is_none());
+
+        db.mark_index_failed_if_generation(registry_id, 1, "current failure")
+            .await
+            .unwrap();
+        let failed = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.error.as_deref(), Some("current failure"));
+        assert_eq!(failed.generation, 1);
+    }
+
+    #[tokio::test]
     async fn registry_publication_manifest_is_invisible_and_exact() {
         let db = Database::open_in_memory().await.unwrap();
         let registry_id = db
@@ -29658,6 +30357,129 @@ source_nar_hash = ""
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_inherits_exact_reusable_evidence() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("reuse", "Reuse").await.unwrap();
+        let binding_id = create_test_binding(&db, org_id, "reuse", "/tmp/reuse").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(registry_id), "primary", "reuse", 0);
+        placement.storage_binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+
+        let first_publication = "reusepublication000000000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: first_publication.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/sha256/aa/system.qcow2".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: first_publication.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: first_publication.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        db.record_registry_publication_object_presence(
+            first_publication,
+            object.id,
+            placement.id,
+            &"d".repeat(64),
+            91,
+            Some("\"r2-version-1\""),
+            2,
+        )
+        .await
+        .unwrap();
+        db.fail_registry_publication(first_publication, 3)
+            .await
+            .unwrap();
+
+        let second_publication = "reusepublication000000000000000002";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: second_publication.into(),
+            registry_id,
+            generation: "generation-2".into(),
+            manifest_digest: "e".repeat(64),
+            refs_digest: "f".repeat(64),
+            default_commit: Some("0".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: second_publication.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: "d".repeat(64),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: second_publication.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 4,
+        })
+        .await
+        .unwrap();
+
+        db.inherit_registry_publication_object_evidence(second_publication, 5)
+            .await
+            .unwrap();
+
+        let evidence = db
+            .backend
+            .query_opt(
+                "SELECT observed_hash, observed_size, strong_etag, observed_at
+                 FROM registry_publication_object_evidence
+                 WHERE publication_id = ?1 AND surface_object_id = ?2
+                   AND placement_id = ?3",
+                &vals![second_publication, object.id, placement.id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.get::<String>(0).unwrap(), "d".repeat(64));
+        assert_eq!(evidence.get::<i64>(1).unwrap(), 91);
+        assert_eq!(evidence.get::<String>(2).unwrap(), "\"r2-version-1\"");
+        assert_eq!(evidence.get::<i64>(3).unwrap(), 5);
     }
 
     #[tokio::test]

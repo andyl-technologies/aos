@@ -8,6 +8,11 @@
         type = lib.types.str;
         description = "Registry git/HTTP URL.";
       };
+      channel = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        default = "stable";
+        description = "Signed release channel tracked by this registry.";
+      };
       trustKeys = lib.mkOption {
         type = lib.types.nonEmptyListOf lib.types.str;
         description = ''
@@ -81,6 +86,7 @@
     [registry]
     name = "${name}"
     url = "${registry.url}"
+    channel = ${builtins.toJSON registry.channel}
     priority = ${builtins.toString registry.priority}
     enabled = true
     ${registryCaches registry}
