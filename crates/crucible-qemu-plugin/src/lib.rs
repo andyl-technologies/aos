@@ -219,11 +219,11 @@ pub use io_wire_fuzz::{
     run_io_wire_fuzz_target,
 };
 pub use network_rx::{
-    LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
-    NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
-    QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL, QemuLosslessNetworkRxQueue,
-    QemuPluginNetCanReceiveFn, QemuPluginNetFlushFn, QemuPluginNetSendFn,
-    handle_network_rx_idle_callback, resolve_qemu_net_can_receive_symbol,
+    LosslessNetworkRxQueue, NetworkRxError, NetworkRxFlushOutcome, NetworkRxInjection,
+    NetworkRxQueueError, NetworkRxQueueOperation, PluginNetworkRx,
+    QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL, QEMU_PLUGIN_NET_FLUSH_SYMBOL, QEMU_PLUGIN_NET_SEND_SYMBOL,
+    QemuLosslessNetworkRxQueue, QemuPluginNetCanReceiveFn, QemuPluginNetFlushFn,
+    QemuPluginNetSendFn, handle_network_rx_idle_callback, resolve_qemu_net_can_receive_symbol,
     resolve_qemu_net_flush_symbol, resolve_qemu_net_send_symbol,
 };
 pub use network_tx::{

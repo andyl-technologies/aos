@@ -1102,6 +1102,10 @@ extern "C" fn test_net_flush() -> std::os::raw::c_int {
     0
 }
 
+extern "C" fn test_net_can_receive() -> std::os::raw::c_int {
+    1
+}
+
 extern "C" fn test_reentrant_net_flush() -> std::os::raw::c_int {
     let state = TEST_REENTRANT_RX_STATE.load(Ordering::Acquire);
     if state.is_null() {
