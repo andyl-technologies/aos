@@ -701,7 +701,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed
   cursor are now exposed through the checked local client in table, Markdown,
-  JSON, and JSONL; rich views plus findings/explain/compare remain open.
+  JSON, and JSONL. Exact graph configuration/opportunity bodies, choice
+  declaration/domain dependencies, and frontier branch requests are also
+  exposed through their separately authorized proof-bearing operations with
+  semantic source, budget, continuation, and provenance fields. Paged findings,
+  explanation/compare operations, and richer filtered or aggregated views
+  remain open.
 - [ ] **T-CAM-8.3** Implement pin/unpin, replay/debug, export/import,
   push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage

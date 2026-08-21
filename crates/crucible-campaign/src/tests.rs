@@ -1096,6 +1096,13 @@ fn opportunities_and_selections_fail_closed_on_domain_drift() {
         None,
     )
     .expect("choice opportunity");
+    let opportunity_envelope =
+        ObjectEnvelope::for_choice_opportunity(&opportunity).expect("choice opportunity envelope");
+    assert_eq!(
+        ChoiceOpportunity::from_canonical_bytes(opportunity_envelope.body())
+            .expect("canonical choice opportunity"),
+        opportunity
+    );
     let selection = Selection::new(
         &opportunity,
         &narrowed,

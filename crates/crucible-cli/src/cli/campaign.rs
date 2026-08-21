@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "campaign/object.rs"]
+mod object;
+
+use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
+
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
@@ -159,6 +164,12 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_page(&client, principal, &args.command)?;
             render_campaign_page(&report, cli.output_format())?
         }
+        CampaignCommand::GraphObject(_)
+        | CampaignCommand::ChoiceObject(_)
+        | CampaignCommand::FrontierObject(_) => {
+            let report = query_campaign_object(&client, principal, &args.command)?;
+            render_campaign_object(&report, cli.output_format())?
+        }
         _ => {
             let report = apply_campaign_mutation(&client, principal, &args.command)?;
             render_campaign_mutation(&report, cli.output_format())?
@@ -261,6 +272,26 @@ fn prepare_campaign_command(
                 MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
                 |cursor| BranchRequestId::parse(cursor).map(|_| ()),
             )?;
+            Ok(None)
+        }
+        CampaignCommand::GraphObject(object) => {
+            validate_campaign_object_basis(&object.name, &object.snapshot)?;
+            CampaignHash::parse(&object.key)
+                .map_err(|error| usage_error(format!("invalid campaign graph key: {error}")))?;
+            Ok(None)
+        }
+        CampaignCommand::ChoiceObject(object) => {
+            validate_campaign_object_basis(&object.name, &object.snapshot)?;
+            ChoiceOpportunityId::parse(&object.opportunity).map_err(|error| {
+                usage_error(format!("invalid campaign choice opportunity: {error}"))
+            })?;
+            Ok(None)
+        }
+        CampaignCommand::FrontierObject(object) => {
+            validate_campaign_object_basis(&object.name, &object.snapshot)?;
+            BranchRequestId::parse(&object.request).map_err(|error| {
+                usage_error(format!("invalid campaign frontier request: {error}"))
+            })?;
             Ok(None)
         }
         _ => {
@@ -807,8 +838,11 @@ fn campaign_mutation_spec(
         | CampaignCommand::Status(_)
         | CampaignCommand::Watch(_)
         | CampaignCommand::Graph(_)
+        | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
-        | CampaignCommand::Frontier(_) => Err(backend_error(
+        | CampaignCommand::ChoiceObject(_)
+        | CampaignCommand::Frontier(_)
+        | CampaignCommand::FrontierObject(_) => Err(backend_error(
             "campaign non-control operation reached the control-mutation path",
         )),
     }
@@ -1104,6 +1138,8 @@ mod tests {
         map: MerkleMap,
         root: ContentId,
         snapshot: CampaignSnapshot,
+        object_key: CampaignHash,
+        object: ObjectEnvelope,
     }
 
     impl CampaignService for FixedHeadService {
@@ -1317,9 +1353,20 @@ mod tests {
 
         fn get_campaign_graph_object(
             &self,
-            _request: &GetCampaignGraphObjectRequest,
+            request: &GetCampaignGraphObjectRequest,
         ) -> Result<GetCampaignGraphObjectResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            assert_eq!(request.key(), self.object_key);
+            let (_, proof) = self
+                .map
+                .get_with_proof(self.root, request.key())
+                .expect("proof-bearing graph object");
+            Ok(GetCampaignGraphObjectResponse::new(
+                request,
+                self.snapshot.clone(),
+                self.object.clone(),
+                proof,
+            )
+            .expect("bound graph object response"))
         }
 
         fn query_campaign_choices(
@@ -1582,6 +1629,41 @@ mod tests {
     }
 
     #[test]
+    fn campaign_graph_object_uses_the_checked_proof_bearing_transport() {
+        let (service, snapshot) = graph_page_service();
+        let key = service.object_key;
+        let command = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            key: key.to_hex(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve graph object request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_object(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked graph object query");
+        server.join().expect("campaign server thread");
+
+        let rendered = render_campaign_object(&report, OutputFormat::Json).expect("object JSON");
+        let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(decoded["schema"], "crucible.cli.campaign-object.v1");
+        assert_eq!(decoded["operation"], "graph-object");
+        assert_eq!(decoded["snapshot"], snapshot.to_string());
+        assert_eq!(decoded["object"]["kind"], "configuration");
+        assert_eq!(decoded["object"]["key"], key.to_hex());
+    }
+
+    #[test]
     fn campaign_create_derive_and_branch_use_checked_loopback_transport() {
         let (lineage_record, policy_record) = campaign_records();
         let principal = CampaignPrincipal::new("operator").expect("campaign principal");
@@ -1830,6 +1912,25 @@ mod tests {
             limit: 8,
         });
         assert!(validate_campaign_command(&bad_frontier_cursor).is_err());
+        let bad_graph_object = CampaignCommand::GraphObject(CampaignGraphObjectArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            key: "not-a-hash".to_owned(),
+        });
+        assert!(validate_campaign_command(&bad_graph_object).is_err());
+        let bad_choice_object = CampaignCommand::ChoiceObject(CampaignChoiceObjectArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            opportunity: "not-an-opportunity".to_owned(),
+            kind: CampaignChoiceObjectKindArg::Declaration,
+        });
+        assert!(validate_campaign_command(&bad_choice_object).is_err());
+        let bad_frontier_object = CampaignCommand::FrontierObject(CampaignFrontierObjectArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot("current").to_string(),
+            request: "not-a-request".to_owned(),
+        });
+        assert!(validate_campaign_command(&bad_frontier_object).is_err());
 
         let mut duplicate_branch = branch_args("duplicate");
         duplicate_branch.values = vec!["true".to_owned(), "true".to_owned()];
@@ -1927,6 +2028,85 @@ mod tests {
                 })
             ));
         }
+
+        let object_snapshot = snapshot("object").to_string();
+        let graph_object = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "graph-object",
+            "example",
+            "--snapshot",
+            &object_snapshot,
+            "--key",
+            &hash("graph-object").to_hex(),
+        ])
+        .expect("campaign graph-object arguments");
+        assert!(matches!(
+            graph_object.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::GraphObject(_),
+                ..
+            })
+        ));
+
+        let object_branch = branch_args("objects");
+        let choice_object = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "choice-object",
+            "example",
+            "--snapshot",
+            &object_snapshot,
+            "--opportunity",
+            &object_branch.opportunity,
+            "--kind",
+            "domain",
+        ])
+        .expect("campaign choice-object arguments");
+        assert!(matches!(
+            choice_object.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::ChoiceObject(CampaignChoiceObjectArgs {
+                    kind: CampaignChoiceObjectKindArg::Domain,
+                    ..
+                }),
+                ..
+            })
+        ));
+
+        let frontier_object = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "frontier-object",
+            "example",
+            "--snapshot",
+            &object_snapshot,
+            "--request",
+            &branch_request("objects")
+                .id()
+                .expect("request ID")
+                .to_string(),
+        ])
+        .expect("campaign frontier-object arguments");
+        assert!(matches!(
+            frontier_object.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::FrontierObject(_),
+                ..
+            })
+        ));
 
         let create = Cli::try_parse_from([
             "crucible",
@@ -2238,15 +2418,32 @@ mod tests {
         let backend = Arc::new(MemoryBlobBackend::new("cli-graph-page", u64::MAX));
         let map = MerkleMap::new(backend);
         let mut root = map.empty().expect("empty graph root");
-        for label in ["first", "second"] {
-            root = map
-                .insert(
-                    root.content_id(),
-                    hash(label),
-                    ContentId::for_bytes(ObjectKind::CampaignFact, 1, label.as_bytes()),
-                )
-                .expect("graph insertion");
-        }
+        let scenario_artifact = ScenarioArtifactId::parse(&format!(
+            "crucible.campaign.scenario-artifact@{}",
+            ContentId::for_bytes(ObjectKind::Scenario, 1, b"cli-graph-scenario").encode()
+        ))
+        .expect("scenario artifact ID");
+        let configuration = ConfigurationArtifact::new(
+            ScenarioDefId::from_hash(hash("scenario")),
+            scenario_artifact,
+            ConfigurationId::from_hash(hash("configuration")),
+            1,
+            b"configuration".to_vec(),
+        )
+        .expect("configuration artifact");
+        let object = ObjectEnvelope::for_configuration_artifact(&configuration)
+            .expect("configuration envelope");
+        let object_key = hash("first");
+        root = map
+            .insert(root.content_id(), object_key, object.content_id())
+            .expect("configuration graph insertion");
+        root = map
+            .insert(
+                root.content_id(),
+                hash("second"),
+                ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"second"),
+            )
+            .expect("second graph insertion");
         let roots = CampaignRoots {
             graph: root.content_id(),
             exploration: root.content_id(),
@@ -2266,6 +2463,8 @@ mod tests {
                 map,
                 root: root.content_id(),
                 snapshot,
+                object_key,
+                object,
             },
             snapshot_id,
         )
