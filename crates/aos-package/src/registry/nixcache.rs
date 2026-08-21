@@ -1168,6 +1168,15 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
                     if let Some(path) = image.get("store_path").and_then(TomlValue::as_str) {
                         paths.insert(path.to_string());
                     }
+                    if let Some(path) = image
+                        .get("delivery")
+                        .and_then(|delivery| delivery.get("image_info"))
+                        .and_then(|metadata| metadata.get("store_path"))
+                        .and_then(TomlValue::as_str)
+                        .filter(|path| !path.is_empty())
+                    {
+                        paths.insert(path.to_string());
+                    }
                 }
             }
             if let Some(config_module) = platform.get("config_module") {
@@ -1541,6 +1550,9 @@ store_path = "/nix/store/img111-system-image"
 nar_hash = "sha256:image"
 nar_size = 2
 
+[versions.platforms.x86_64-linux.images.delivery.image_info]
+store_path = "/nix/store/info111-system-image-info"
+
 [versions.platforms.x86_64-linux.config_module.config_output]
 store_path = "/nix/store/cfg111-kernel-config"
 nar_hash = "sha256:config"
@@ -1561,6 +1573,7 @@ references = []
             vec![
                 "/nix/store/cfg111-kernel-config".to_string(),
                 "/nix/store/img111-system-image".to_string(),
+                "/nix/store/info111-system-image-info".to_string(),
                 "/nix/store/lib111-config-base-lib".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),

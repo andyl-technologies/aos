@@ -2606,6 +2606,9 @@ mod tests {
                 image_info: ImageInfoReference {
                     filename: "image-info.json".into(),
                     object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
                     media_type: "application/vnd.aos.image-info+json".into(),
                     byte_size: 512,
                     sha256: info_sha256,

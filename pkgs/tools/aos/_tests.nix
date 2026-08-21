@@ -2040,14 +2040,13 @@ in {
         uki_size=$(@AOS_COREUTILS@/bin/stat -c %s "$uki_store/$uki_filename")
         @AOS_JQ@/bin/jq -S -n \
           --arg sha256 "$image_sha256" \
-          --arg objectKey "images/sha256/$image_sha256/hostsysroot.qcow2" \
           --arg ukiFilename "$uki_filename" \
           --arg ukiSha256 "$uki_sha256" \
           --argjson byteSize "$image_size" \
           --argjson ukiSize "$uki_size" \
-          '{schemaVersion: 1, name: "hostsysroot", version: "1.0.0",
+          '{schemaVersion: 2, name: "hostsysroot", version: "1.0.0",
             architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
-            filename: "hostsysroot.qcow2", objectKey: $objectKey,
+            filename: "hostsysroot.qcow2",
             mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
             byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
             compatibleTargets: ["qemu-kvm", "openstack"],
@@ -2057,6 +2056,13 @@ in {
             uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-hostsysroot.efi",
               byteSize: $ukiSize, sha256: $ukiSha256, signed: false}}' \
           > "$out/image-info.json"
+        SCRIPT
+        cat > "$work/host-project-image-file.sh" << 'SCRIPT'
+        set -eu
+        source=$1
+        member=$2
+        @AOS_COREUTILS@/bin/rmdir "$out"
+        @AOS_COREUTILS@/bin/cp "$source/$member" "$out"
         SCRIPT
         substitute_fixture_paths() {
           ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' '${pkgs.jq}' '${pkgs.systemd}/lib/systemd/boot/efi' << 'PY'
@@ -2084,6 +2090,7 @@ in {
         substitute_fixture_paths "$work/host-build-bulk.sh"
         substitute_fixture_paths "$work/host-build-sysroot.sh"
         substitute_fixture_paths "$work/host-build-sysroot-image.sh"
+        substitute_fixture_paths "$work/host-project-image-file.sh"
         cat > "$work/host-install-fixtures.nix" << 'NIX'
         let
           bash = "@AOS_BASH@/bin/bash";
@@ -2133,9 +2140,17 @@ in {
             builder = bash;
             args = [ ./host-build-sysroot-image.sh ];
           };
+          imageArtifact = name: member: derivation {
+            inherit name system;
+            builder = bash;
+            args = [ ./host-project-image-file.sh sysrootImage member ];
+            source = sysrootImage;
+          };
+          sysrootImageDisk = imageArtifact "hostsysroot-image-disk-1.0.0" "hostsysroot.qcow2";
+          sysrootImageInfo = imageArtifact "hostsysroot-image-info-1.0.0" "image-info.json";
         in {
           leaf = leafV1;
-          inherit leafV1 leafV11 leafV2 bulk sysroot sysrootImage;
+          inherit leafV1 leafV11 leafV2 bulk sysroot sysrootImage sysrootImageDisk sysrootImageInfo;
           appV1 = app "hostinstall-1.0.0" leafV1 ./host-build-app-v1.sh;
           appV11 = app "hostinstall-1.1.0" leafV11 ./host-build-app-v11.sh;
           appV2 = app "hostinstall-2.0.0" leafV2 ./host-build-app-v2.sh;
@@ -2160,8 +2175,10 @@ in {
         sysroot_drv=$(nix_store -q --deriver "$sysroot_store")
         test -e "$sysroot_drv"
         sysroot_image_store=$(nix_build "$work/host-install-fixtures.nix" -A sysrootImage --no-out-link)
-        sysroot_image_hash=$(basename "$sysroot_image_store" | cut -d- -f1)
-        sysroot_image_drv=$(nix_store -q --deriver "$sysroot_image_store")
+        sysroot_image_disk_store=$(nix_build "$work/host-install-fixtures.nix" -A sysrootImageDisk --no-out-link)
+        sysroot_image_info_store=$(nix_build "$work/host-install-fixtures.nix" -A sysrootImageInfo --no-out-link)
+        sysroot_image_hash=$(basename "$sysroot_image_disk_store" | cut -d- -f1)
+        sysroot_image_drv=$(nix_store -q --deriver "$sysroot_image_disk_store")
         test -e "$sysroot_image_drv"
 
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
@@ -3638,7 +3655,9 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --sysroot \
-          --image "$sysroot_image_store" \
+          --image-payload "$sysroot_image_store" \
+          --image-disk "$sysroot_image_disk_store" \
+          --image-info "$sysroot_image_info_store" \
           --image-format qcow2 \
           --image-uki '${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
           --registry host-image-channel \
@@ -3646,7 +3665,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           --arg store "$sysroot_store" \
           --arg source "$sysroot_drv" \
-          --arg image "$sysroot_image_store" \
+          --arg image "$sysroot_image_disk_store" \
           '.action == "publish"
             and .registry == "host-image-channel"
             and .package == "hostsysroot"
@@ -3731,12 +3750,12 @@ in {
         test -f "$work/install-static-cache-upload/image-cache/channels/stable/00"
         test -f "$work/install-static-cache-upload/image-cache/$sysroot_image_hash.narinfo"
 
-        if nix_store --check-validity "$sysroot_image_store" \
+        if nix_store --check-validity "$sysroot_image_disk_store" \
           > "$work/nix-valid-host-sysroot-image-before-delete.out" 2>&1; then
-          nix_store --delete --ignore-liveness "$sysroot_image_store" \
+          nix_store --delete --ignore-liveness "$sysroot_image_disk_store" \
             > "$work/nix-delete-host-sysroot-image-before-download.out" 2>&1
         fi
-        if nix_store --check-validity "$sysroot_image_store" \
+        if nix_store --check-validity "$sysroot_image_disk_store" \
           > "$work/nix-valid-host-sysroot-image-after-delete.out" 2>&1; then
           cat "$work/nix-valid-host-sysroot-image-after-delete.out"
           exit 1
@@ -3766,7 +3785,7 @@ in {
           --output "$work/hostsysroot-dry-run.qcow2" \
           --dry-run > "$work/apm-install-host-sysroot-image-dry-run.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg store "$sysroot_image_store" \
+          --arg store "$sysroot_image_disk_store" \
           --arg output "$work/hostsysroot-dry-run.qcow2" \
           '.action == "image_download"
             and .status == "planned"
@@ -3781,7 +3800,7 @@ in {
             and .downloads.imported == 0' \
           "$work/apm-install-host-sysroot-image-dry-run.json" >/dev/null
         test ! -e "$work/hostsysroot-dry-run.qcow2"
-        if nix_store --check-validity "$sysroot_image_store" \
+        if nix_store --check-validity "$sysroot_image_disk_store" \
           > "$work/nix-valid-host-sysroot-image-after-dry-run.out" 2>&1; then
           cat "$work/nix-valid-host-sysroot-image-after-dry-run.out"
           exit 1
@@ -3792,7 +3811,7 @@ in {
           --output "$work/hostsysroot-downloaded.qcow2" \
           --yes > "$work/apm-install-host-sysroot-image.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg store "$sysroot_image_store" \
+          --arg store "$sysroot_image_disk_store" \
           --arg output "$work/hostsysroot-downloaded.qcow2" \
           '.action == "image_download"
             and .status == "downloaded"
@@ -3810,7 +3829,7 @@ in {
           "$work/hostsysroot-downloaded.qcow2"
         grep -q "boot-marker=hostsysroot" \
           "$work/hostsysroot-downloaded.qcow2"
-        nix_store --check-validity "$sysroot_image_store" \
+        nix_store --check-validity "$sysroot_image_disk_store" \
           > "$work/nix-valid-host-sysroot-image-imported.out" 2>&1
         assert_default_profile_absent
         assert_no_profile

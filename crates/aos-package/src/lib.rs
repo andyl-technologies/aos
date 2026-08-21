@@ -1111,13 +1111,19 @@ pub enum RegistryCommand {
         /// Source derivation or source store path to record for this package
         #[arg(long = "source-drv")]
         source_drv: Option<String>,
-        /// Pre-compiled image store path (repeatable, paired with --image-format)
-        #[arg(long = "image")]
-        images: Vec<String>,
-        /// Image format for each --image (repeatable, paired with --image)
+        /// Image payload bundle used to verify layout and recovery facts
+        #[arg(long = "image-payload")]
+        image_payloads: Vec<String>,
+        /// Regular-file disk store output for each image payload
+        #[arg(long = "image-disk")]
+        image_disks: Vec<String>,
+        /// Regular-file image-info store output for each image payload
+        #[arg(long = "image-info")]
+        image_infos: Vec<String>,
+        /// Image format for each image artifact group
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Exact UKI file for each --image (repeatable, paired with --image)
+        /// Exact UKI file for each image artifact group
         #[arg(long = "image-uki")]
         image_ukis: Vec<String>,
         /// Expose manifest.json to publish with package metadata
@@ -1406,13 +1412,19 @@ pub enum RegistryCommand {
         /// Source derivation or source store path when --store-path is used
         #[arg(long = "source-drv")]
         source_drv: Option<String>,
-        /// Pre-compiled image store path (repeatable, paired with --image-format)
-        #[arg(long = "image")]
-        images: Vec<String>,
-        /// Image format for each --image (repeatable, paired with --image)
+        /// Image payload bundle used to verify layout and recovery facts
+        #[arg(long = "image-payload")]
+        image_payloads: Vec<String>,
+        /// Regular-file disk store output for each image payload
+        #[arg(long = "image-disk")]
+        image_disks: Vec<String>,
+        /// Regular-file image-info store output for each image payload
+        #[arg(long = "image-info")]
+        image_infos: Vec<String>,
+        /// Image format for each image artifact group
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Exact UKI file for each --image when --store-path is used
+        /// Exact UKI file for each image artifact group
         #[arg(long = "image-uki")]
         image_ukis: Vec<String>,
         /// Bless additional content for paths already recorded with different
@@ -4119,7 +4131,9 @@ async fn run_registry(
             sysroot,
             previous,
             source_drv,
-            images,
+            image_payloads,
+            image_disks,
+            image_infos,
             image_formats,
             image_ukis,
             expose_manifest,
@@ -4147,7 +4161,9 @@ async fn run_registry(
                 *sysroot,
                 previous.as_deref(),
                 source_drv.as_deref(),
-                images,
+                image_payloads,
+                image_disks,
+                image_infos,
                 image_formats,
                 image_ukis,
                 expose_manifest.as_deref(),
@@ -4349,7 +4365,9 @@ async fn run_registry(
             sysroot,
             previous,
             source_drv,
-            images,
+            image_payloads,
+            image_disks,
+            image_infos,
             image_formats,
             image_ukis,
             bless,
@@ -4386,7 +4404,9 @@ async fn run_registry(
                 *sysroot,
                 previous.as_deref(),
                 source_drv.as_deref(),
-                images,
+                image_payloads,
+                image_disks,
+                image_infos,
                 image_formats,
                 image_ukis,
                 *bless,

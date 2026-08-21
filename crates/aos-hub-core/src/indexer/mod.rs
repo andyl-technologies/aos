@@ -511,6 +511,7 @@ async fn index_registry_inner(
             if !images.is_empty() {
                 let selected_keys = images
                     .iter()
+                    .filter(|image| !image.delivery.is_store_backed())
                     .flat_map(|image| {
                         [
                             image.delivery.object_key.clone(),
@@ -706,6 +707,16 @@ fn release_snapshot_artifacts(
                         store_hash: store_hash_component(&image.store_path),
                         store_path: image.store_path.clone(),
                     });
+                    if image.delivery.is_store_backed() {
+                        artifacts.push(ReleaseSnapshotArtifact {
+                            package_name: package.package.name.clone(),
+                            package_version: version.version.clone(),
+                            platform: platform.clone(),
+                            artifact_kind: "image_metadata".to_string(),
+                            store_hash: store_hash_component(&image.delivery.image_info.store_path),
+                            store_path: image.delivery.image_info.store_path.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -914,6 +925,7 @@ async fn verify_system_image_objects(
     snapshot_leases: &mut Vec<String>,
 ) -> Result<VerifiedSystemImageCatalog> {
     let mut expected = BTreeMap::<String, ExpectedImageObject>::new();
+    let mut catalog_artifacts = BTreeMap::<String, ExpectedImageObject>::new();
     let mut images = Vec::new();
     for package in packages.iter().filter(|package| package.package.sysroot) {
         for version in &package.versions {
@@ -933,6 +945,34 @@ async fn verify_system_image_objects(
                         nar_size: image.nar_size,
                         delivery: image.delivery.clone(),
                     });
+                    if image.delivery.is_store_backed() {
+                        for (path, hash, size, role) in [
+                            (
+                                image.store_path.as_str(),
+                                image.nar_hash.as_str(),
+                                image.nar_size,
+                                ImageObjectRole::Disk,
+                            ),
+                            (
+                                image.delivery.image_info.store_path.as_str(),
+                                image.delivery.image_info.nar_hash.as_str(),
+                                image.delivery.image_info.nar_size,
+                                ImageObjectRole::ImageInfo,
+                            ),
+                        ] {
+                            insert_expected_image_artifact(
+                                &mut catalog_artifacts,
+                                path,
+                                ExpectedImageObject {
+                                    sha256: aos_registry_surface::store::normalize_digest(hash)?,
+                                    byte_size: i64::try_from(size)
+                                        .context("signed image NAR size exceeds database range")?,
+                                    role,
+                                },
+                            )?;
+                        }
+                        continue;
+                    }
                     for (key, hash, size, role) in [
                         (
                             image.delivery.object_key.as_str(),
@@ -954,33 +994,14 @@ async fn verify_system_image_objects(
                             byte_size: size,
                             role,
                         };
-                        match expected.entry(key.to_string()) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
-                                entry.insert(identity);
-                            }
-                            std::collections::btree_map::Entry::Occupied(entry)
-                                if entry.get() == &identity => {}
-                            std::collections::btree_map::Entry::Occupied(_) => {
-                                anyhow::bail!(
-                                    "signed image object key '{key}' has conflicting identities"
-                                );
-                            }
-                        }
+                        insert_expected_image_artifact(&mut expected, key, identity.clone())?;
+                        insert_expected_image_artifact(&mut catalog_artifacts, key, identity)?;
                     }
                 }
             }
         }
     }
 
-    if expected.is_empty() {
-        return Ok(VerifiedSystemImageCatalog {
-            digest: image_catalog_digest(registry_identity, &expected)?,
-            images,
-            objects: Vec::new(),
-        });
-    }
-    verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
-    let digest = image_catalog_digest(registry_identity, &expected)?;
     let publication = current_verified_publication(
         db,
         registry_id,
@@ -991,6 +1012,16 @@ async fn verify_system_image_objects(
     .await?;
     verify_system_image_cache_objects(db, fetch, publication.as_ref(), &images, snapshot_leases)
         .await?;
+
+    if expected.is_empty() {
+        return Ok(VerifiedSystemImageCatalog {
+            digest: image_catalog_digest(registry_identity, &catalog_artifacts)?,
+            images,
+            objects: Vec::new(),
+        });
+    }
+    verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
+    let digest = image_catalog_digest(registry_identity, &catalog_artifacts)?;
 
     let mut verified = Vec::with_capacity(expected.len());
     for (object_key, identity) in expected {
@@ -1025,6 +1056,23 @@ async fn verify_system_image_objects(
         images,
         objects: verified,
     })
+}
+
+fn insert_expected_image_artifact(
+    artifacts: &mut BTreeMap<String, ExpectedImageObject>,
+    key: &str,
+    identity: ExpectedImageObject,
+) -> Result<()> {
+    match artifacts.entry(key.to_string()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(identity);
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &identity => {}
+        std::collections::btree_map::Entry::Occupied(_) => {
+            bail!("signed image artifact '{key}' has conflicting identities");
+        }
+    }
+    Ok(())
 }
 
 const MAX_IMAGE_NARINFO_BYTES: usize = 64 * 1024;
@@ -1082,74 +1130,96 @@ async fn verify_system_image_cache_objects(
 ) -> Result<()> {
     let mut verified_store_paths = std::collections::BTreeSet::new();
     for image in images {
-        if !verified_store_paths.insert(image.store_path.as_str()) {
-            continue;
+        let mut artifacts = vec![(
+            image.store_path.as_str(),
+            image.nar_hash.as_str(),
+            image.nar_size,
+            "image disk",
+        )];
+        if image.delivery.is_store_backed() {
+            artifacts.push((
+                image.delivery.image_info.store_path.as_str(),
+                image.delivery.image_info.nar_hash.as_str(),
+                image.delivery.image_info.nar_size,
+                "image metadata",
+            ));
         }
-        let store_hash = aos_registry_surface::store::store_path_hash(&image.store_path)?;
-        let narinfo_key = format!("{store_hash}.narinfo");
-        let narinfo_bytes = fetch
-            .fetch_bounded(&narinfo_key, MAX_IMAGE_NARINFO_BYTES)
-            .await?
-            .with_context(|| format!("image narinfo '{narinfo_key}' is unavailable"))?;
-        let narinfo_text = std::str::from_utf8(&narinfo_bytes)
-            .with_context(|| format!("image narinfo '{narinfo_key}' is not UTF-8"))?;
-        let narinfo = parse_image_narinfo(narinfo_text)
-            .with_context(|| format!("parsing image narinfo '{narinfo_key}'"))?;
-        anyhow::ensure!(
-            narinfo.store_path == image.store_path
-                && aos_registry_surface::store::normalize_digest(&narinfo.nar_hash)?
-                    == aos_registry_surface::store::normalize_digest(&image.nar_hash)?
-                && narinfo.nar_size == image.nar_size,
-            "image narinfo '{narinfo_key}' disagrees with the signed store identity"
-        );
-        anyhow::ensure!(
-            narinfo.url.starts_with("nar/")
-                && !narinfo.url.starts_with('/')
-                && narinfo.url.split('/').all(|component| !component.is_empty()
-                    && component != "."
-                    && component != ".."),
-            "image narinfo '{narinfo_key}' carries an unsafe NAR URL"
-        );
-        let file_hash = aos_registry_surface::store::canonical_digest_hex(&narinfo.file_hash)?;
-        let file_size = narinfo.file_size;
-        let file_size =
-            i64::try_from(file_size).context("image NAR size exceeds database range")?;
-        let narinfo_hash = hex::encode(Sha256::digest(&narinfo_bytes));
-        let narinfo_size = i64::try_from(narinfo_bytes.len())
-            .context("image narinfo size exceeds database range")?;
+        for (store_path, signed_nar_hash, signed_nar_size, label) in artifacts {
+            if !verified_store_paths.insert(store_path) {
+                continue;
+            }
+            let store_hash = aos_registry_surface::store::store_path_hash(store_path)?;
+            let narinfo_key = format!("{store_hash}.narinfo");
+            let narinfo_bytes = fetch
+                .fetch_bounded(&narinfo_key, MAX_IMAGE_NARINFO_BYTES)
+                .await?
+                .with_context(|| format!("{label} narinfo '{narinfo_key}' is unavailable"))?;
+            let narinfo_text = std::str::from_utf8(&narinfo_bytes)
+                .with_context(|| format!("image narinfo '{narinfo_key}' is not UTF-8"))?;
+            let narinfo = parse_image_narinfo(narinfo_text)
+                .with_context(|| format!("parsing image narinfo '{narinfo_key}'"))?;
+            anyhow::ensure!(
+                narinfo.store_path == store_path
+                    && aos_registry_surface::store::normalize_digest(&narinfo.nar_hash)?
+                        == aos_registry_surface::store::normalize_digest(signed_nar_hash)?
+                    && narinfo.nar_size == signed_nar_size,
+                "{label} narinfo '{narinfo_key}' disagrees with the signed store identity"
+            );
+            anyhow::ensure!(
+                narinfo.url.starts_with("nar/")
+                    && !narinfo.url.starts_with('/')
+                    && narinfo.url.split('/').all(|component| !component.is_empty()
+                        && component != "."
+                        && component != ".."),
+                "image narinfo '{narinfo_key}' carries an unsafe NAR URL"
+            );
+            let file_hash = aos_registry_surface::store::canonical_digest_hex(&narinfo.file_hash)?;
+            let file_size = narinfo.file_size;
+            let file_size =
+                i64::try_from(file_size).context("image NAR size exceeds database range")?;
+            let narinfo_hash = hex::encode(Sha256::digest(&narinfo_bytes));
+            let narinfo_size = i64::try_from(narinfo_bytes.len())
+                .context("image narinfo size exceeds database range")?;
 
-        if let Some((publication_id, placement_id)) = publication {
-            verify_published_system_image_object(
-                db,
-                fetch,
-                publication_id,
-                *placement_id,
-                narinfo_key,
-                narinfo_hash,
-                narinfo_size,
-            )
-            .await?;
-            verify_published_system_image_object(
-                db,
-                fetch,
-                publication_id,
-                *placement_id,
-                narinfo.url,
-                file_hash,
-                file_size,
-            )
-            .await?;
-        } else {
-            verify_system_image_object(
-                fetch,
-                narinfo_key,
-                narinfo_hash,
-                narinfo_size,
-                snapshot_leases,
-            )
-            .await?;
-            verify_system_image_object(fetch, narinfo.url, file_hash, file_size, snapshot_leases)
+            if let Some((publication_id, placement_id)) = publication {
+                verify_published_system_image_object(
+                    db,
+                    fetch,
+                    publication_id,
+                    *placement_id,
+                    narinfo_key,
+                    narinfo_hash,
+                    narinfo_size,
+                )
                 .await?;
+                verify_published_system_image_object(
+                    db,
+                    fetch,
+                    publication_id,
+                    *placement_id,
+                    narinfo.url,
+                    file_hash,
+                    file_size,
+                )
+                .await?;
+            } else {
+                verify_system_image_object(
+                    fetch,
+                    narinfo_key,
+                    narinfo_hash,
+                    narinfo_size,
+                    snapshot_leases,
+                )
+                .await?;
+                verify_system_image_object(
+                    fetch,
+                    narinfo.url,
+                    file_hash,
+                    file_size,
+                    snapshot_leases,
+                )
+                .await?;
+            }
         }
     }
     Ok(())

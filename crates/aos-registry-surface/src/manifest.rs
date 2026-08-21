@@ -481,7 +481,7 @@ impl ImageEntry {
     }
 }
 
-/// Immutable direct-delivery metadata signed inside an [`ImageEntry`].
+/// Immutable artifact-delivery metadata signed inside an [`ImageEntry`].
 ///
 /// The containing version and platform remain authoritative. The duplicated
 /// identity fields below make resolved API objects self-describing and are
@@ -504,17 +504,18 @@ pub struct ImageDelivery {
     pub logical_disk_sha256: String,
     /// SHA-256 of the root filesystem payload embedded in the logical disk.
     pub rootfs_sha256: String,
-    /// Exact useful filename returned by direct downloads.
+    /// Exact useful filename assigned when the restored store output is copied.
     pub filename: String,
-    /// Content-addressed immutable object key for the disk bytes.
+    /// Legacy content-addressed object key for direct disk bytes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub object_key: String,
-    /// Media type of the bytes at [`ImageDelivery::object_key`].
+    /// Media type of the encoded disk-image bytes.
     pub media_type: String,
     /// Compression applied to the disk-image encoding.
     pub compression: ImageCompression,
-    /// Exact number of bytes served by a complete download.
+    /// Exact number of encoded disk-image bytes.
     pub byte_size: u64,
-    /// Lowercase hexadecimal SHA-256 of the served disk-image bytes.
+    /// Lowercase hexadecimal SHA-256 of the encoded disk-image bytes.
     pub sha256: String,
     /// End-user targets compatible with this image encoding.
     pub compatible_targets: Vec<ImageTarget>,
@@ -528,7 +529,7 @@ impl ImageDelivery {
     /// Returns the internal marker used when reading pre-delivery catalogs.
     ///
     /// This value is never a valid direct-download contract and is omitted
-    /// again when serialized. Producers must emit schema v1 metadata.
+    /// again when serialized. Current producers must emit schema v2 metadata.
     #[must_use]
     pub fn store_only() -> Self {
         Self {
@@ -560,6 +561,9 @@ impl ImageDelivery {
             image_info: ImageInfoReference {
                 filename: String::new(),
                 object_key: String::new(),
+                store_path: String::new(),
+                nar_hash: String::new(),
+                nar_size: 0,
                 media_type: String::new(),
                 byte_size: 0,
                 sha256: String::new(),
@@ -571,6 +575,12 @@ impl ImageDelivery {
     #[must_use]
     pub fn is_store_only(&self) -> bool {
         self.schema_version == 0
+    }
+
+    /// Returns whether the artifact uses the unified Nix-cache data plane.
+    #[must_use]
+    pub fn is_store_backed(&self) -> bool {
+        self.schema_version == 2
     }
 }
 
@@ -585,7 +595,7 @@ impl ImageDelivery {
         use anyhow::{bail, ensure};
 
         ensure!(
-            self.schema_version == 1,
+            matches!(self.schema_version, 1 | 2),
             "unsupported image delivery schema"
         );
         ensure!(
@@ -611,10 +621,17 @@ impl ImageDelivery {
         validate_sha256(&self.rootfs_sha256, "root filesystem")?;
         validate_sha256(&self.sha256, "image")?;
         ensure!(self.byte_size > 0, "image byte size must be non-zero");
-        ensure!(
-            self.object_key == immutable_image_object_key(&self.sha256, &self.filename),
-            "image object key is not the canonical content-addressed key"
-        );
+        if self.schema_version == 1 {
+            ensure!(
+                self.object_key == immutable_image_object_key(&self.sha256, &self.filename),
+                "image object key is not the canonical content-addressed key"
+            );
+        } else {
+            ensure!(
+                self.object_key.is_empty(),
+                "store-backed image must not declare a direct object key"
+            );
+        }
         let (extension, media_type, targets): (&str, &str, &[ImageTarget]) = match format {
             "raw" => (
                 "img.zst",
@@ -658,7 +675,7 @@ impl ImageDelivery {
             "image compatible targets do not match format"
         );
         self.uki.validate()?;
-        self.image_info.validate(&self.sha256)
+        self.image_info.validate(self.schema_version, &self.sha256)
     }
 }
 
@@ -761,11 +778,11 @@ pub enum ImageVerificationState {
     PolicyVerified,
 }
 
-/// Compression applied to directly served disk-image bytes.
+/// Compression applied to encoded disk-image bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageCompression {
-    /// No outer compression; the object bytes are the named disk encoding.
+    /// No outer compression; the bytes are the named disk encoding.
     None,
     /// Zstandard compression of the complete named disk encoding.
     Zstd,
@@ -793,8 +810,18 @@ pub enum ImageTarget {
 pub struct ImageInfoReference {
     /// Exact metadata filename.
     pub filename: String,
-    /// Content-addressed immutable object key for the metadata bytes.
+    /// Legacy content-addressed object key for direct metadata bytes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub object_key: String,
+    /// Canonical Nix store path containing the metadata as one regular file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub store_path: String,
+    /// Signed NAR hash of [`ImageInfoReference::store_path`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nar_hash: String,
+    /// Exact uncompressed NAR size of [`ImageInfoReference::store_path`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub nar_size: u64,
     /// Media type of the metadata document.
     pub media_type: String,
     /// Exact metadata byte length.
@@ -804,7 +831,7 @@ pub struct ImageInfoReference {
 }
 
 impl ImageInfoReference {
-    fn validate(&self, image_sha256: &str) -> anyhow::Result<()> {
+    fn validate(&self, schema_version: u32, image_sha256: &str) -> anyhow::Result<()> {
         use anyhow::ensure;
 
         ensure!(
@@ -817,10 +844,26 @@ impl ImageInfoReference {
         );
         ensure!(self.byte_size > 0, "image-info byte size must be non-zero");
         validate_sha256(&self.sha256, "image-info")?;
-        ensure!(
-            self.object_key == immutable_image_info_object_key(image_sha256, &self.sha256),
-            "image-info object key is not the canonical content-addressed key"
-        );
+        if schema_version == 1 {
+            ensure!(
+                self.object_key == immutable_image_info_object_key(image_sha256, &self.sha256),
+                "image-info object key is not the canonical content-addressed key"
+            );
+            ensure!(
+                self.store_path.is_empty() && self.nar_hash.is_empty() && self.nar_size == 0,
+                "legacy direct image-info must not declare store delivery"
+            );
+        } else {
+            ensure!(
+                self.object_key.is_empty(),
+                "store-backed image-info must not declare a direct object key"
+            );
+            crate::store::store_path_hash(&self.store_path)
+                .context("validating image-info store path")?;
+            ensure!(self.nar_size > 0, "image-info NAR size must be non-zero");
+            crate::store::NarBytes::from_hash(&self.nar_hash, self.nar_size)
+                .context("validating image-info NAR identity")?;
+        }
         Ok(())
     }
 }
@@ -844,6 +887,10 @@ fn validate_sha256(value: &str, label: &str) -> anyhow::Result<()> {
         "{label} SHA-256 must be 64 lowercase hexadecimal characters"
     );
     Ok(())
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 fn validate_image_filename(filename: &str) -> anyhow::Result<()> {
@@ -990,6 +1037,9 @@ mod image_delivery_tests {
             image_info: ImageInfoReference {
                 filename: "image-info.json".to_string(),
                 object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
+                store_path: String::new(),
+                nar_hash: String::new(),
+                nar_size: 0,
                 media_type: "application/vnd.aos.image-info+json".to_string(),
                 byte_size: 512,
                 sha256: info_sha256,
@@ -1068,6 +1118,23 @@ nar_size = 1
         let encoded = toml::to_string(&original).unwrap();
         let decoded: ImageDelivery = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn store_backed_delivery_requires_metadata_nar_identity_and_no_direct_keys() {
+        let mut image = delivery("qcow2");
+        image.schema_version = 2;
+        image.object_key.clear();
+        image.image_info.object_key.clear();
+        image.image_info.store_path =
+            "/nix/store/11111111111111111111111111111111-image-info".to_string();
+        image.image_info.nar_hash =
+            "sha256:1111111111111111111111111111111111111111111111111111".to_string();
+        image.image_info.nar_size = 512;
+        image.validate("qcow2", "2026.08", "x86_64-linux").unwrap();
+
+        image.object_key = immutable_image_object_key(&image.sha256, &image.filename);
+        assert!(image.validate("qcow2", "2026.08", "x86_64-linux").is_err());
     }
 
     #[test]

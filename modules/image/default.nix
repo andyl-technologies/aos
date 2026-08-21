@@ -95,13 +95,12 @@
               --arg filename "$filename" \
               --arg mediaType "$IMAGE_MEDIA_TYPE" \
               --arg sha256 "$sha256" \
-              --arg objectKey "images/sha256/$sha256/$filename" \
               --argjson byteSize "$byte_size" \
               --argjson expectedVirtualSize "$expected_virtual_size" \
               --argjson compatibleTargets "$IMAGE_TARGETS_JSON" \
               '.format = $format
                | .filename = $filename
-               | .objectKey = $objectKey
+               | .schemaVersion = 2
                | .mediaType = $mediaType
                | .compression = "none"
                | .byteSize = $byteSize
