@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV12 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV13 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -31,8 +31,10 @@
 //!       24 (QueryCampaignFrontierRequestV1) |
 //!       25 (QueryCampaignFrontierResponseV1) |
 //!       26 (GetCampaignFrontierObjectRequestV1) |
-//!       27 (GetCampaignFrontierObjectResponseV1)
-//! magic = "CRUCCS12"
+//!       27 (GetCampaignFrontierObjectResponseV1) |
+//!       28 (PinCampaignRequestV1) |
+//!       29 (PinCampaignResponseV1)
+//! magic = "CRUCCS13"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -64,13 +66,14 @@ use crucible_campaign::{
     GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
     GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse, GetCampaignRequest,
     GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, SubmitCampaignBranchRequest,
-    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS12";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS13";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -99,6 +102,8 @@ const QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND: u8 = 24;
 const QUERY_CAMPAIGN_FRONTIER_RESPONSE_KIND: u8 = 25;
 const GET_CAMPAIGN_FRONTIER_OBJECT_REQUEST_KIND: u8 = 26;
 const GET_CAMPAIGN_FRONTIER_OBJECT_RESPONSE_KIND: u8 = 27;
+const PIN_CAMPAIGN_REQUEST_KIND: u8 = 28;
+const PIN_CAMPAIGN_RESPONSE_KIND: u8 = 29;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -467,6 +472,24 @@ impl CampaignService for LoopbackCampaignService {
             |failure| {
                 failure.validate_for_apply_campaign_command(request.command().expected_snapshot)
             },
+        )
+    }
+
+    fn pin_campaign(
+        &self,
+        request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, Self::Error> {
+        self.exchange(
+            PIN_CAMPAIGN_REQUEST_KIND,
+            PIN_CAMPAIGN_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = PinCampaignResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_pin_campaign(request.command().expected_snapshot),
         )
     }
 
@@ -1189,6 +1212,36 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) = failure
                         .validate_for_apply_campaign_command(request.command().expected_snapshot)
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        PIN_CAMPAIGN_REQUEST_KIND => {
+            let request = PinCampaignRequest::from_canonical_bytes(&body)?;
+            match service.pin_campaign(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (PIN_CAMPAIGN_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_pin_campaign(request.command().expected_snapshot)
                     {
                         return reject_invalid_service_response(
                             stream,

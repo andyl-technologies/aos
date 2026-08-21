@@ -22,6 +22,7 @@ use crate::{
 mod create;
 mod derive;
 mod get_snapshot;
+mod pin;
 mod query;
 mod watch;
 
@@ -31,6 +32,7 @@ pub use create::{
 };
 pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
+pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignGraphEntry,
     GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
@@ -152,6 +154,8 @@ pub enum CampaignServiceOperation {
     GetCampaignChoiceObject,
     /// Apply one idempotent lifecycle, budget, or policy command.
     ApplyCampaignCommand,
+    /// Apply one idempotent semantic configuration-pin command.
+    PinCampaign,
     /// Submit one additive operator branch request.
     SubmitBranchRequest,
 }
@@ -432,6 +436,34 @@ impl CampaignServiceFailure {
             Self::AlreadyExists => Err(CampaignCodecError::InvalidValue {
                 reason: "campaign service failure is invalid for apply campaign command",
             }),
+            Self::Stale { expected, current }
+                if expected != expected_snapshot || current == expected =>
+            {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service stale failure snapshot mismatch",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Validates a failure for one exact semantic pin request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or lifecycle-only failure,
+    /// or when a stale failure does not describe this request's exact
+    /// precondition.
+    pub fn validate_for_pin_campaign(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        match self {
+            Self::AlreadyExists | Self::InvalidTransition { .. } => {
+                Err(CampaignCodecError::InvalidValue {
+                    reason: "campaign service failure is invalid for pin campaign",
+                })
+            }
             Self::Stale { expected, current }
                 if expected != expected_snapshot || current == expected =>
             {
@@ -1425,6 +1457,17 @@ pub trait CampaignService {
         request: &ApplyCampaignCommandRequest,
     ) -> Result<ApplyCampaignCommandResponse, Self::Error>;
 
+    /// Applies one exact idempotent semantic pin command.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// graph membership, publication, or response construction fails.
+    fn pin_campaign(
+        &self,
+        request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, Self::Error>;
+
     /// Submits one exact additive operator branch request.
     ///
     /// # Errors
@@ -1764,6 +1807,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_apply_campaign_command(request.command.expected_snapshot)
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Applies one semantic pin command and validates exact response binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request.
+    pub fn pin_campaign(
+        &self,
+        request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, CampaignClientError> {
+        let response = match self.service.pin_campaign(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_pin_campaign(request.command().expected_snapshot)
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -2279,6 +2348,22 @@ where
         Ok(ApplyCampaignCommandResponse::new(request, result)?)
     }
 
+    fn pin_campaign(
+        &self,
+        request: &PinCampaignRequest,
+    ) -> Result<PinCampaignResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::PinCampaign,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let result = self
+            .repository
+            .apply_pin(request.campaign().as_str(), request.command())?;
+        Ok(PinCampaignResponse::new(request, result)?)
+    }
+
     fn submit_branch_request(
         &self,
         request: &SubmitCampaignBranchRequest,
@@ -2359,7 +2444,7 @@ mod tests {
     use crate::{
         BranchBudget, BranchPointId, BranchRequestCause, CampaignCommandId, CampaignControlAction,
         CandidateSource, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId,
-        StopCondition,
+        ConfigurationId, PinChange, PinRequest, PinRetention, StopCondition,
     };
 
     fn hash(label: &str) -> CampaignHash {
@@ -2630,6 +2715,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn pin_campaign(
+            &self,
+            _request: &PinCampaignRequest,
+        ) -> Result<PinCampaignResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn submit_branch_request(
             &self,
             _request: &SubmitCampaignBranchRequest,
@@ -2752,6 +2844,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn pin_campaign(
+            &self,
+            _request: &PinCampaignRequest,
+        ) -> Result<PinCampaignResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn submit_branch_request(
             &self,
             _request: &SubmitCampaignBranchRequest,
@@ -2847,6 +2946,13 @@ mod tests {
             Ok(self.response.clone())
         }
 
+        fn pin_campaign(
+            &self,
+            _request: &PinCampaignRequest,
+        ) -> Result<PinCampaignResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
         fn submit_branch_request(
             &self,
             _request: &SubmitCampaignBranchRequest,
@@ -2917,6 +3023,44 @@ mod tests {
             let client = CampaignClient::new(FixedFailureService(failure));
             assert!(matches!(
                 client.get_campaign(&get),
+                Err(CampaignClientError::Service(
+                    CampaignServiceFailure::ProtocolViolation
+                ))
+            ));
+        }
+
+        let pin = PinCampaignRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign name"),
+            PinRequest {
+                command: CampaignCommandId::from_hash(hash("pin")),
+                expected_snapshot: snapshot("expected"),
+                change: PinChange::new(
+                    ConfigurationId::from_hash(hash("configuration")),
+                    Some(PinRetention::Exact),
+                    "retain reproducer",
+                )
+                .expect("pin change"),
+            },
+        )
+        .expect("pin request");
+        for failure in [
+            CampaignServiceFailure::AlreadyExists,
+            CampaignServiceFailure::InvalidTransition {
+                state: CampaignState::Sealed,
+            },
+            CampaignServiceFailure::Stale {
+                expected: snapshot("wrong"),
+                current: snapshot("current"),
+            },
+            CampaignServiceFailure::Stale {
+                expected: snapshot("expected"),
+                current: snapshot("expected"),
+            },
+        ] {
+            let client = CampaignClient::new(FixedFailureService(failure));
+            assert!(matches!(
+                client.pin_campaign(&pin),
                 Err(CampaignClientError::Service(
                     CampaignServiceFailure::ProtocolViolation
                 ))
@@ -3028,6 +3172,73 @@ mod tests {
             [
                 String::from("5c95a74d12bd2e39db8e76627afe774e802511ad688a0a752bb126cf8a1979a6"),
                 String::from("05f8c12cdd340786b2fe4fd62fe7d7971884e2346a06011a489b3668bab15f73"),
+            ]
+        );
+    }
+
+    #[test]
+    fn pin_messages_are_canonical_and_bind_the_exact_request() {
+        let request = PinCampaignRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign name"),
+            PinRequest {
+                command: CampaignCommandId::from_hash(hash("pin")),
+                expected_snapshot: snapshot("prior"),
+                change: PinChange::new(
+                    ConfigurationId::from_hash(hash("configuration")),
+                    Some(PinRetention::Thin),
+                    "retain semantic replay",
+                )
+                .expect("pin change"),
+            },
+        )
+        .expect("pin request");
+        assert_eq!(
+            PinCampaignRequest::from_canonical_bytes(&request.canonical_bytes())
+                .expect("decode pin request"),
+            request
+        );
+
+        let response = PinCampaignResponse::new(
+            &request,
+            CampaignCommandResult {
+                prior_snapshot: snapshot("prior"),
+                new_snapshot: snapshot("next"),
+                replayed: false,
+            },
+        )
+        .expect("pin response");
+        assert_eq!(
+            PinCampaignResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("decode pin response"),
+            response
+        );
+        response.validate_for(&request).expect("request binding");
+
+        let changed = PinCampaignRequest::new(
+            request.principal().clone(),
+            request.campaign().clone(),
+            PinRequest {
+                command: request.command().command,
+                expected_snapshot: snapshot("other-prior"),
+                change: request.command().change.clone(),
+            },
+        )
+        .expect("changed pin request");
+        assert!(response.validate_for(&changed).is_err());
+
+        assert_eq!(
+            [
+                blake3::hash(&request.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+                blake3::hash(&response.canonical_bytes())
+                    .to_hex()
+                    .to_string(),
+            ],
+            [
+                String::from("f660144a465eda8be74584b363ac4c67ee327bd8afdb42704954910ad178431d"),
+                String::from("ca85fb59c75c094ed8077a411bc7dac9f5730c08bc858542ec8171d9c127c820"),
             ]
         );
     }
@@ -3166,6 +3377,28 @@ mod tests {
         let client = CampaignClient::new(RepositoryCampaignService::new(&repository, DenyAll));
         assert!(matches!(
             client.get_campaign(&get_request("absent")),
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::Unauthorized
+            ))
+        ));
+
+        let pin = PinCampaignRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("absent").expect("campaign name"),
+            PinRequest {
+                command: CampaignCommandId::from_hash(hash("pin")),
+                expected_snapshot: snapshot("absent"),
+                change: PinChange::new(
+                    ConfigurationId::from_hash(hash("configuration")),
+                    None,
+                    "remove stale pin",
+                )
+                .expect("pin change"),
+            },
+        )
+        .expect("pin request");
+        assert!(matches!(
+            client.pin_campaign(&pin),
             Err(CampaignClientError::Service(
                 CampaignServiceFailure::Unauthorized
             ))

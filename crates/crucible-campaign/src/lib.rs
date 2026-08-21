@@ -45,11 +45,11 @@ pub use campaign_service::{
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
     MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
-    MAX_CREATE_CAMPAIGN_GENERATORS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
-    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, RepositoryCampaignServiceError,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, WatchCampaignRequest,
-    WatchCampaignResponse,
+    MAX_CREATE_CAMPAIGN_GENERATORS, PinCampaignRequest, PinCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, RepositoryCampaignServiceError, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,

@@ -825,8 +825,8 @@ fn direct_campaign_service_uses_repository_owner_and_exact_replay() {
     );
 
     let request = crate::ApplyCampaignCommandRequest::new(
-        principal,
-        campaign,
+        principal.clone(),
+        campaign.clone(),
         command(
             "service-resume",
             genesis.snapshot_id(),
@@ -844,6 +844,31 @@ fn direct_campaign_service_uses_repository_owner_and_exact_replay() {
     assert!(replayed.replayed());
     assert_eq!(replayed.prior_snapshot(), accepted.prior_snapshot());
     assert_eq!(replayed.new_snapshot(), accepted.new_snapshot());
+
+    let pin = crate::PinCampaignRequest::new(
+        principal,
+        campaign,
+        crate::PinRequest {
+            command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+                "test",
+                b"service-pin",
+            )),
+            expected_snapshot: accepted.new_snapshot(),
+            change: crate::PinChange::new(
+                lineage.genesis(),
+                Some(crate::PinRetention::Thin),
+                "retain semantic replay",
+            )
+            .expect("pin change"),
+        },
+    )
+    .expect("pin request");
+    let pinned = client.pin_campaign(&pin).expect("pin campaign");
+    assert!(!pinned.replayed());
+    let replayed_pin = client.pin_campaign(&pin).expect("replay pin command");
+    assert!(replayed_pin.replayed());
+    assert_eq!(replayed_pin.prior_snapshot(), pinned.prior_snapshot());
+    assert_eq!(replayed_pin.new_snapshot(), pinned.new_snapshot());
 }
 
 #[test]

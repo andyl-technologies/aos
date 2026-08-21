@@ -190,7 +190,7 @@ the CLI, an in-process caller, and a future external coordinator implementation:
 CreateCampaign        GetCampaign          ApplyCampaignCommand
 GetSnapshot           QueryGraph           GetGraphObject
 QueryFrontier          GetFrontierObject    QueryChoices
-GetChoiceObject
+GetChoiceObject        PinCampaign
 SubmitBranchRequest    DeriveCampaign       QueryFindings
 ExplainObject          WatchCampaign
 ```
@@ -206,7 +206,7 @@ The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
 `QueryChoices`, `QueryFrontier`, `GetFrontierObject`, `GetChoiceObject`, and
-`SubmitBranchRequest` messages. All use
+`PinCampaign` and `SubmitBranchRequest` messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -300,6 +300,10 @@ ApplyCampaignCommandRequestV1 = version | principal | campaign |
 ApplyCampaignCommandResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | replayed
 
+PinCampaignRequestV1 = version | principal | campaign | PinRequestV1
+PinCampaignResponseV1 = version | request_digest | prior_snapshot |
+                        new_snapshot | replayed
+
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
                                 expected_snapshot | BranchRequestV1
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
@@ -360,8 +364,9 @@ permit 2;
 `QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
 `GetFrontierObject`, and `GetChoiceObject`
 additionally permit 2 and 4;
-`ApplyCampaignCommand` permits 4, 5, 6, and 7; and
-`SubmitCampaignBranch` permits 4, 5, and 6. For every snapshot-preconditioned
+`ApplyCampaignCommand` permits 2, 4, 5, 6, and 7; `PinCampaign` permits
+2, 4, 5, and 6; and `SubmitCampaignBranch` permits 2, 4, 5, and 6. For every
+snapshot-preconditioned
 operation,
 `Stale.expected_snapshot` MUST equal that exact request's snapshot precondition,
 and `Stale.current_snapshot` MUST differ from `Stale.expected_snapshot`. A tag
@@ -414,6 +419,8 @@ derive_request_digest =
 apply_request_digest =
   H("crucible.campaign-service.apply-campaign-command.v1",
     ApplyCampaignCommandRequestV1)
+pin_request_digest =
+  H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -626,7 +633,7 @@ still open. The strict local transport frames exactly one canonical request or
 response as:
 
 ```text
-CampaignLoopbackFrameV12 = "CRUCCS12" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV13 = "CRUCCS13" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -654,10 +661,12 @@ kind = 1 (GetCampaignRequestV1) |
       24 (QueryCampaignFrontierRequestV1) |
       25 (QueryCampaignFrontierResponseV1) |
       26 (GetCampaignFrontierObjectRequestV1) |
-      27 (GetCampaignFrontierObjectResponseV1)
+      27 (GetCampaignFrontierObjectResponseV1) |
+      28 (PinCampaignRequestV1) |
+      29 (PinCampaignResponseV1)
 ```
 
-Loopback frame versions 1 through 11 are rejected rather than reinterpreted
+Loopback frame versions 1 through 12 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
