@@ -33,6 +33,12 @@
     if system.options.aos.security.hardening ? kernelLockdown
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
+  verityDisablesGenericLuks = let
+    occurrences = builtins.length (builtins.filter (parameter: parameter == "rd.luks=0") system.config.aos.boot.kernelParams);
+  in
+    if occurrences != 1
+    then throw "the verity image must disable generic initrd LUKS discovery exactly once"
+    else "ok";
 
   mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
   activationImageOverride = let
@@ -1205,6 +1211,7 @@ in
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
         echo "base-lib ABI:    follows image module overrides (${baseLibFollowsImageAbi})"
         echo "kernelLockdown: removed (${noKernelLockdown})"
+        echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"

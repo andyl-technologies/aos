@@ -21,10 +21,13 @@
   # This is a test fixture, not the universal production image.
   aos.roles.server.enable = true;
 
-  # Keep secure/measured-boot VM iteration practical. Production server images
-  # retain the module default (zstd-19); this throwaway-key fixture trades only
-  # test artifact size for substantially faster compression.
-  aos.image.erofsCompressionLevel = 1;
+  # Signed normal and A/B recovery UKIs must coexist with the inactive-copy
+  # publication transaction. Keep this test fixture's larger storage and
+  # direct-download contracts scoped away from the production server image.
+  aos.image.budgets = {
+    maxEspMiB = 512;
+    maxDownloadMiB = 768;
+  };
 
   # The server profile sets the test fixtures to `bundle = mkDefault false`
   # to keep them out of the production image. This is a test-only fixture
