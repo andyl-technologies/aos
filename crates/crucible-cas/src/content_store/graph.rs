@@ -1,6 +1,7 @@
 //! Closed, bounded, introspectable store-graph admission and construction.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,9 +17,37 @@ use super::write_back::{
 };
 use super::*;
 
+mod format;
+
+use format::canonical_graph_configuration;
+
 const MAX_GRAPH_NODES: usize = 256;
 const MAX_GRAPH_DEPTH: usize = 64;
 const MAX_NODE_ID_BYTES: usize = 64;
+const MAX_ADMINISTRATIVE_PATH_BYTES: usize = 4_096;
+const GRAPH_CONFIGURATION_ID_DOMAIN: &[u8] = b"crucible.content-store.graph-configuration-id.v1";
+
+/// Content-derived identity of one exact admitted store-graph configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoreGraphConfigurationId([u8; 32]);
+
+impl StoreGraphConfigurationId {
+    /// Returns the exact 32-byte configuration identity.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    fn for_config(config: &StoreGraphConfig) -> Result<Self, StoreError> {
+        let canonical = canonical_graph_configuration(config)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&(GRAPH_CONFIGURATION_ID_DOMAIN.len() as u64).to_be_bytes());
+        hasher.update(GRAPH_CONFIGURATION_ID_DOMAIN);
+        hasher.update(&(canonical.len() as u64).to_be_bytes());
+        hasher.update(&canonical);
+        Ok(Self(*hasher.finalize().as_bytes()))
+    }
+}
 
 /// Validated operational identifier of one configured store node.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -252,8 +281,61 @@ impl StoreWriteBackFlushSummary {
     }
 }
 
+/// Separate physical-leaf administration returned during graph construction.
+///
+/// This capability is not retained by [`StoreGraph`]. A campaign repository
+/// that receives only the ordinary graph therefore cannot inventory or delete
+/// physical placements. The daemon maintenance owner may retain this value and
+/// lend individual leaf capabilities to a generation-bound GC operation.
+pub struct StoreGraphAdmin {
+    configuration: StoreGraphConfigurationId,
+    physical: BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
+}
+
+impl StoreGraphAdmin {
+    /// Returns the exact configuration identity shared with the admitted graph.
+    #[must_use]
+    pub const fn configuration_id(&self) -> StoreGraphConfigurationId {
+        self.configuration
+    }
+
+    /// Returns physical leaf capabilities in canonical node-ID order.
+    #[must_use]
+    pub fn physical(&self) -> Vec<StoreGraphPhysicalAdmin<'_>> {
+        self.physical
+            .iter()
+            .map(|(node, admin)| StoreGraphPhysicalAdmin {
+                node,
+                admin: admin.as_ref(),
+            })
+            .collect()
+    }
+}
+
+/// Borrowed administration capability for one exact admitted physical leaf.
+#[derive(Clone, Copy)]
+pub struct StoreGraphPhysicalAdmin<'a> {
+    node: &'a StoreNodeId,
+    admin: &'a dyn BlobStoreAdmin,
+}
+
+impl<'a> StoreGraphPhysicalAdmin<'a> {
+    /// Returns the physical leaf's exact graph node ID.
+    #[must_use]
+    pub const fn node(self) -> &'a StoreNodeId {
+        self.node
+    }
+
+    /// Returns the separately held physical inventory/delete authority.
+    #[must_use]
+    pub const fn admin(self) -> &'a dyn BlobStoreAdmin {
+        self.admin
+    }
+}
+
 /// Admitted immutable-store graph with one root service.
 pub struct StoreGraph {
+    configuration: StoreGraphConfigurationId,
     root_id: StoreNodeId,
     admitted_kinds: BTreeSet<ObjectKind>,
     root: Arc<dyn ImmutableBlobBackend>,
@@ -274,16 +356,37 @@ impl StoreGraph {
     /// Returns [`StoreError::InvalidGraph`] or [`StoreError::InvalidComposition`]
     /// when the declarative graph cannot safely implement the logical store.
     pub fn build(config: StoreGraphConfig) -> Result<Self, StoreError> {
+        let (graph, _admin) = Self::build_with_admin(config)?;
+        Ok(graph)
+    }
+
+    /// Validates a graph and separately returns physical maintenance authority.
+    ///
+    /// The graph value carries only ordinary immutable-object operations. The
+    /// second return value owns every physical leaf's inventory/delete
+    /// capability in canonical node-ID order and should be retained only by the
+    /// daemon maintenance owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidGraph`] or [`StoreError::InvalidComposition`]
+    /// when the declarative graph cannot safely implement the logical store.
+    pub fn build_with_admin(
+        config: StoreGraphConfig,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
+        let configuration = StoreGraphConfigurationId::for_config(&config)?;
 
         let mut built = BTreeMap::new();
+        let mut physical = BTreeMap::new();
         let mut metrics = BTreeMap::new();
         let mut write_back = BTreeMap::new();
         let root = instantiate(
             &config.root,
             &config.nodes,
             &mut built,
+            &mut physical,
             &mut metrics,
             &mut write_back,
         )?;
@@ -299,14 +402,27 @@ impl StoreGraph {
                 capabilities: backend.capabilities(),
             });
         }
-        Ok(Self {
-            root_id: config.root,
-            admitted_kinds: config.admitted_kinds,
-            root,
-            description,
-            metrics,
-            write_back,
-        })
+        Ok((
+            Self {
+                configuration,
+                root_id: config.root,
+                admitted_kinds: config.admitted_kinds,
+                root,
+                description,
+                metrics,
+                write_back,
+            },
+            StoreGraphAdmin {
+                configuration,
+                physical,
+            },
+        ))
+    }
+
+    /// Returns the exact canonical configuration identity admitted at build.
+    #[must_use]
+    pub const fn configuration_id(&self) -> StoreGraphConfigurationId {
+        self.configuration
     }
 
     /// Returns the admitted root node ID.
@@ -488,6 +604,19 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         })
         .collect::<Vec<_>>();
     for left in 0..persistent.len() {
+        let (node, path, _) = persistent[left];
+        if path.as_os_str().as_bytes().len() > MAX_ADMINISTRATIVE_PATH_BYTES {
+            return Err(invalid_graph(
+                node.as_str(),
+                GraphViolation::AdministrativePathTooLong,
+            ));
+        }
+        if !path.is_absolute() {
+            return Err(invalid_graph(
+                node.as_str(),
+                GraphViolation::RelativeAdministrativePath,
+            ));
+        }
         for right in left + 1..persistent.len() {
             let (left_id, left_path, left_journal) = persistent[left];
             let (right_id, right_path, right_journal) = persistent[right];
@@ -645,6 +774,7 @@ fn instantiate(
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     built: &mut BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
+    physical: &mut BTreeMap<StoreNodeId, Arc<dyn BlobStoreAdmin>>,
     metrics: &mut BTreeMap<StoreNodeId, Arc<MetricsState>>,
     write_back: &mut BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
@@ -656,22 +786,30 @@ fn instantiate(
         .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
     let backend: Arc<dyn ImmutableBlobBackend> = match node {
         StoreNodeSpec::Memory { max_logical_bytes } => {
-            Arc::new(MemoryBlobBackend::new(id.as_str(), *max_logical_bytes))
+            let leaf = Arc::new(MemoryBlobBackend::new(id.as_str(), *max_logical_bytes));
+            physical.insert(id.clone(), leaf.clone());
+            leaf
         }
         StoreNodeSpec::Directory { root } => {
-            Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()))
+            let leaf = Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()));
+            physical.insert(id.clone(), leaf.clone());
+            leaf
         }
         StoreNodeSpec::Packed {
             root,
             target_pack_bytes,
-        } => Arc::new(PackedBlobBackend::open(
-            id.as_str(),
-            root.clone(),
-            *target_pack_bytes,
-        )?),
+        } => {
+            let leaf = Arc::new(PackedBlobBackend::open(
+                id.as_str(),
+                root.clone(),
+                *target_pack_bytes,
+            )?);
+            physical.insert(id.clone(), leaf.clone());
+            leaf
+        }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(child, nodes, built, metrics, write_back)?,
+            instantiate(child, nodes, built, physical, metrics, write_back)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
@@ -679,7 +817,7 @@ fn instantiate(
                 .map(|(kind, child)| {
                     Ok((
                         *kind,
-                        instantiate(child, nodes, built, metrics, write_back)?,
+                        instantiate(child, nodes, built, physical, metrics, write_back)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
@@ -692,7 +830,7 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(child, nodes, built, metrics, write_back))
+                .map(|child| instantiate(child, nodes, built, physical, metrics, write_back))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -703,13 +841,13 @@ fn instantiate(
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
             id.as_str(),
-            instantiate(cache, nodes, built, metrics, write_back)?,
-            instantiate(source, nodes, built, metrics, write_back)?,
+            instantiate(cache, nodes, built, physical, metrics, write_back)?,
+            instantiate(source, nodes, built, physical, metrics, write_back)?,
         )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(child, nodes, built, metrics, write_back))
+                .map(|child| instantiate(child, nodes, built, physical, metrics, write_back))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
         }
@@ -722,8 +860,8 @@ fn instantiate(
         } => {
             let store = Arc::new(WriteBackStore::new(
                 id.as_str(),
-                instantiate(staging, nodes, built, metrics, write_back)?,
-                instantiate(destination, nodes, built, metrics, write_back)?,
+                instantiate(staging, nodes, built, physical, metrics, write_back)?,
+                instantiate(destination, nodes, built, physical, metrics, write_back)?,
                 journal_root.clone(),
                 *maximum_pending_objects,
                 *maximum_pending_bytes,
@@ -732,7 +870,7 @@ fn instantiate(
             store
         }
         StoreNodeSpec::Metrics { child } => {
-            let child = instantiate(child, nodes, built, metrics, write_back)?;
+            let child = instantiate(child, nodes, built, physical, metrics, write_back)?;
             let (backend, state) = MetricsStore::new(id.as_str(), child);
             metrics.insert(id.clone(), state);
             Arc::new(backend)

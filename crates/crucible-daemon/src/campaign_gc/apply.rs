@@ -3,9 +3,8 @@
 use std::collections::BTreeSet;
 use std::error::Error as StdError;
 
-use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::{
-    BlobInventoryFence, PlannedDeleteDisposition, RefStoreAdmin, StoreError,
+    BlobInventoryFence, PlannedDeleteDisposition, RefStoreAdmin, StoreError, StoreGraphAdmin,
     WriteBackRetentionAdmin,
 };
 use thiserror::Error;
@@ -69,6 +68,9 @@ impl CampaignGcApplyReport {
 /// against the same plan, and retained through its candidate deletions. This
 /// sequential second pass avoids deadlock if a misconfigured store graph aliases
 /// one physical lock.
+/// The construction-time `store_graph` capability supplies both the graph
+/// identity and every physical leaf; independently supplied graph hashes or
+/// deletion capabilities are not accepted by this public boundary.
 ///
 /// A journal reopened in `Applying` is intentionally not resumed because at
 /// least one backend generation may already have advanced. The operator must
@@ -84,7 +86,34 @@ pub fn apply_single_host_campaign_gc<L>(
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
     write_back: Option<&dyn WriteBackRetentionAdmin>,
-    store_graph: CampaignHash,
+    store_graph: &StoreGraphAdmin,
+) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    let borrowed = store_graph.physical();
+    let physical = borrowed
+        .iter()
+        .copied()
+        .map(CampaignGcPhysicalStore::from_graph_leaf)
+        .collect::<Result<Vec<_>, _>>()?;
+    apply_single_host_campaign_gc_with_physical(
+        journal,
+        refs,
+        ledger,
+        write_back,
+        crucible_campaign::CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
+        &physical,
+    )
+}
+
+pub(crate) fn apply_single_host_campaign_gc_with_physical<L>(
+    journal: &mut DirectoryCampaignGcJournal,
+    refs: &dyn RefStoreAdmin,
+    ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    store_graph: crucible_campaign::CampaignHash,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
 where

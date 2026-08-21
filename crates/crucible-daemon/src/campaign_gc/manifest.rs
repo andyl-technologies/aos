@@ -151,7 +151,7 @@ impl CampaignGcRootManifest {
     }
 }
 
-/// One exact physical loose-object placement approved for deletion.
+/// One exact physical logical-object placement approved for deletion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcCandidate {
     backend: String,

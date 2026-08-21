@@ -410,6 +410,11 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "identity",
         ),
         (
+            "crucible.content-store.graph-configuration",
+            "crucible-cas::content_store",
+            "administrative-record",
+        ),
+        (
             "crucible.directory-ref",
             "crucible-cas::content_store",
             "mutable-ref",

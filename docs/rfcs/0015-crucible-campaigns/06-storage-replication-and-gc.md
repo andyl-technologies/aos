@@ -151,10 +151,11 @@ comparison does not advance it. Delete-and-restore or change-and-restore ABA
 therefore cannot recreate an earlier generation.
 
 This primitive does not compute reachability or confer deletion authority on
-`ImmutableBlobBackend`. It is not yet the complete `plan_gc`/`apply_gc`
-contract: store-graph inventory composition, canonical root-set and graph
-generations, and an interruption-safe application journal remain mandatory
-before destructive campaign GC is wired.
+`ImmutableBlobBackend`. The single-host daemon composes it with authenticated
+root reachability, the canonical store-graph identity, ref and operational-root
+generations, and the interruption-safe external journal specified below.
+Policy-aware tier eviction, transform/S3 administration, and the complete
+operator flight remain mandatory before T-CAM-8.3 is complete.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
@@ -406,7 +407,7 @@ lock; malformed complete records fail closed. The journal's shared lifecycle
 fence spans staging publication through pending append and spans destination
 publication through completion append. Single-host GC acquires the exclusive
 side, adds every pending ID to its canonical root manifest, and holds that fence
-while reproducing roots and deleting planned loose placements. A changed
+while reproducing roots and deleting planned physical placements. A changed
 pending set therefore invalidates an old plan before deletion.
 
 The initial admitted graph is a flat `StoreNodeId -> StoreNodeSpec` map with an
@@ -415,7 +416,8 @@ enum over built-in leaves and layers; child fields contain node IDs, which lets
 multiple routes share a leaf without duplicating it. Startup performs a DFS and
 demand propagation before constructing the root:
 
-- at most 256 nodes, depth at most 64, and bounded ASCII node IDs;
+- at most 256 nodes, depth at most 64, bounded ASCII node IDs, and absolute
+  administrative paths of at most 4,096 opaque Unix bytes;
 - every child exists, the graph is acyclic, and every configured node is
   reachable;
 - a router covers exactly the kinds that can reach it, including the union of
@@ -449,6 +451,59 @@ logical storage code.
 Direct constructors for composition layers are private. Callers may use a leaf
 alone or an admitted `StoreGraph`, so arbitrary trait-object nesting cannot
 bypass these checks.
+
+`StoreGraph::build_with_admin` returns the ordinary immutable graph and a
+separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
+physical inventory/delete authority. The administrative value retains exactly
+one capability for every admitted memory, directory, or packed leaf and lends
+them in canonical node-ID order to the daemon maintenance owner. Shared graph
+paths therefore do not duplicate a leaf inventory, and a campaign repository
+that receives only `StoreGraph` cannot construct a deletion fence. Both values
+retain the same content-derived `StoreGraphConfigurationId`; GC accepts the
+administrative value itself and cannot pair independently supplied leaves with
+an unrelated graph hash.
+
+The registered `crucible.content-store.graph-configuration` schema v1 freezes
+that identity basis. Every persistent path is an absolute host-local Unix path;
+its opaque bytes, rather than a lossy Unicode rendering, enter the identity.
+Node IDs and counts use their bounds above, object-kind tags and routed entries
+are ordered by ascending ASCII tag, nodes by ascending node ID, and ordered
+child lists retain their configured order. The canonical body is:
+
+```text
+"crucible.content-store.graph-configuration.v1\0"
+root_node_id:string_u16
+admitted_kind_count:u16be
+repeated admitted_kind_count times: object_kind_tag:string_u16
+node_count:u16be
+repeated node_count times:
+    node_id:string_u16 || node_tag:u8 || node_fields
+
+string_u16 := length:u16be || ASCII_bytes[length]
+path_u32   := length:u32be || Unix_path_bytes[length]
+
+node tag 1  Memory:      maximum_logical_bytes:u64be
+node tag 2  Directory:   root:path_u32
+node tag 3  Packed:      root:path_u32 || target_pack_bytes:u64be
+node tag 4  Verified:    child:string_u16
+node tag 5  Routed:      route_count:u16be
+                         || repeated (kind:string_u16 || child:string_u16)
+node tag 6  Tiered:      child_count:u16be || repeated child:string_u16
+                         || write_tier:u16be || promote_reads:u8
+node tag 7  ReadThrough: cache:string_u16 || source:string_u16
+node tag 8  WriteThrough:child_count:u16be || repeated child:string_u16
+node tag 9  WriteBack:   staging:string_u16 || destination:string_u16
+                         || journal_root:path_u32
+                         || maximum_pending_objects:u64be
+                         || maximum_pending_bytes:u64be
+node tag 10 Metrics:     child:string_u16
+```
+
+Let `D` be `crucible.content-store.graph-configuration-id.v1` and `B` the
+complete body. The 32-byte configuration identity is
+`BLAKE3(BE64(len(D)) || D || BE64(len(B)) || B)`. Any layer, edge, route,
+limit, path, admitted kind, or root change therefore invalidates a prior GC
+plan even when the physical leaf names happen to be unchanged.
 
 Example:
 
@@ -873,12 +928,13 @@ repositories sharing a root compose the same rule through
 `.ref-admin/publication-lock`. This excludes the children-before-ref race before
 root inventory or apply begins.
 
-Single-host loose-leaf apply requires a `Planned` journal, the exact store-graph
-hash, and the same ordered physical backend list. It takes and retains the
-exclusive ref/publication, ledger, and pending-write-back fences, reproduces
-their terminal generations, counters, and exact deduplicated root manifest,
-then preflights every complete physical inventory and every candidate's exact
-observed length.
+Single-host physical-leaf apply requires a `Planned` journal and the exact
+construction-time `StoreGraphAdmin`. It derives and compares that capability's
+configuration hash and canonical physical-backend list before taking and
+retaining the exclusive ref/publication, ledger, and pending-write-back fences.
+It reproduces their terminal generations, counters, and exact deduplicated root
+manifest, then preflights every complete physical inventory and every
+candidate's exact observed length.
 Only after every basis matches does it durably publish `Applying`. It then
 reacquires each physical leaf in canonical order, revalidates that exact basis
 again, retains that leaf's fence through all of its deletions, and finally
@@ -889,8 +945,13 @@ misconfigured alias from deadlocking on the same physical lock. A complete
 journal replays idempotently. Any failure after `Applying`, including an
 indeterminate durable delete or final state write, retains the journal in the
 recovery-required phase and never authorizes reuse of its generations.
-Composed cache/durable/pack store fencing and policy-aware tier eviction remain
-open beyond this loose-leaf apply.
+Construction-time graph administration now supplies the exact memory,
+directory, and packed leaf capabilities without granting them to the campaign
+repository. Restart testing proves that two logical objects may share one pack,
+planning selects only the unreachable entry, and apply removes that entry while
+retaining the live object and shared physical pack. Transform/S3 leaf
+administration and policy-aware eviction of extra reachable cache copies remain
+open beyond this physical-leaf apply.
 
 The single-host daemon composes both sources into one streaming local retention
 inventory: semantic-pin records first, then durable observation and checkpoint
@@ -937,7 +998,7 @@ journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
 administrative capabilities, and no deletion is safe until durable external
 manifest ownership and every applicable root and physical generation have been
-revalidated. The implemented single-host loose-leaf apply satisfies that rule.
+revalidated. The implemented single-host physical-leaf apply satisfies that rule.
 The packed leaf separately provides generation-bound repack plan/apply and
 logical candidate deletion under its exclusive lifecycle fence; composed tiers
 and exact-materialization policy still require their additional fences before

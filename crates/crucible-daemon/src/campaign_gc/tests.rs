@@ -12,11 +12,15 @@ use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, MutableRefBackend, ObjectKind, PlannedDeleteDisposition, RefCasOutcome,
-    RefName, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+    MemoryRefBackend, MutableRefBackend, ObjectKind, PackedBlobBackend, PlannedDeleteDisposition,
+    RefCasOutcome, RefName, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 
 use super::*;
+use super::{
+    apply_single_host_campaign_gc_with_physical as apply_single_host_campaign_gc,
+    plan_single_host_campaign_gc_with_physical as plan_single_host_campaign_gc,
+};
 use crate::{
     AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
@@ -815,6 +819,145 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
     assert!(blobs.contains(live_id).expect("live placement"));
     assert!(!blobs.contains(orphan).expect("orphan placement"));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+}
+
+#[test]
+fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes() {
+    let temp = tempfile::TempDir::new().expect("temporary packed GC root");
+    let pack_root = temp.path().join("packs");
+    let ref_root = temp.path().join("refs");
+    let ledger_root = temp.path().join("ledger");
+    let journal_root = temp.path().join("journal");
+    let packed_node = StoreNodeId::new("packed-primary").expect("packed node");
+    let graph_config = || StoreGraphConfig {
+        root: packed_node.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            packed_node.clone(),
+            StoreNodeSpec::Packed {
+                root: pack_root.clone(),
+                target_pack_bytes: 64 * 1024,
+            },
+        )]),
+    };
+
+    let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("packed graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-packed-live",
+        1,
+        BTreeSet::new(),
+        b"live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_id = live.content_id(ObjectKind::Finding);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live.canonical_bytes()))
+        .expect("store live packed object");
+    refs.compare_exchange(
+        &RefName::new("campaigns/packed-gc").expect("packed ref"),
+        None,
+        live_id,
+    )
+    .expect("publish packed root");
+    let orphan_bytes = b"packed orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store packed orphan");
+
+    let packed = PackedBlobBackend::open("packed-primary", &pack_root, 64 * 1024)
+        .expect("packed maintenance leaf");
+    let repack = packed.plan_repack().expect("packed coalescing plan");
+    let repacked = packed
+        .apply_repack(&repack)
+        .expect("coalesce packed objects");
+    assert_eq!(repacked.after().packs(), 1);
+    assert_eq!(repacked.after().logical_objects(), 2);
+
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open packed ledger");
+    assert_eq!(admin.physical().len(), 1);
+    let prepared =
+        super::plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, &admin)
+            .expect("plan packed GC");
+    assert_eq!(
+        prepared.plan().store_graph(),
+        CampaignHash::from_bytes(admin.configuration_id().as_bytes())
+    );
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan
+    );
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+        .expect("create packed GC journal");
+    drop(journal);
+
+    let verified = StoreNodeId::new("verified-root").expect("verified root");
+    let (different_graph, different_admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: verified.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                verified,
+                StoreNodeSpec::Verified {
+                    child: packed_node.clone(),
+                },
+            ),
+            (
+                packed_node.clone(),
+                StoreNodeSpec::Packed {
+                    root: pack_root.clone(),
+                    target_pack_bytes: 64 * 1024,
+                },
+            ),
+        ]),
+    })
+    .expect("different composition over same packed leaf");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen planned journal");
+    assert!(matches!(
+        super::apply_single_host_campaign_gc(
+            &mut journal,
+            refs.as_ref(),
+            &mut ledger,
+            None,
+            &different_admin,
+        ),
+        Err(CampaignGcApplyError::StoreGraphChanged)
+    ));
+    assert!(graph.contains(orphan).expect("orphan retained on mismatch"));
+    drop(journal);
+    drop(different_admin);
+    drop(different_graph);
+
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+    drop(packed);
+
+    let (graph, admin) =
+        StoreGraph::build_with_admin(graph_config()).expect("restart packed graph");
+    let refs = DirectoryRefBackend::new(&ref_root);
+    let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen packed ledger");
+    let mut journal =
+        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen packed GC journal");
+    let report =
+        super::apply_single_host_campaign_gc(&mut journal, &refs, &mut ledger, None, &admin)
+            .expect("apply packed GC after restart");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(graph.contains(live_id).expect("live packed placement"));
+    assert!(!graph.contains(orphan).expect("orphan packed placement"));
+    let packed = PackedBlobBackend::open("packed-primary", &pack_root, 64 * 1024)
+        .expect("reopen packed accounting");
+    let accounting = packed.accounting().expect("packed post-GC accounting");
+    assert_eq!(accounting.logical_objects(), 1);
+    assert_eq!(accounting.packs(), 1);
     assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
 }
 
