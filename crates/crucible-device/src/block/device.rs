@@ -47,7 +47,7 @@ use super::fault::{
 use super::overlay::{BaseImage, CowOverlay};
 use super::service::BlockServiceCompletion;
 
-pub use snapshot::{BlockSnapshot, BlockSnapshotCodecError};
+pub use snapshot::{BlockSnapshot, BlockSnapshotCodecError, MAX_BLOCK_SNAPSHOT_BYTES};
 
 /// The largest read payload that fits one shmem frame alongside its header.
 ///

@@ -22,7 +22,7 @@ use super::bounded_cbor::{
 mod resource;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v3\0";
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v4\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 
@@ -188,8 +188,14 @@ impl QemuHostIoCheckpoint {
 
         let checkpoint = Self {
             execution_binding,
-            block: wire.block.map(decode_block).transpose()?,
-            ninep: wire.ninep.map(decode_ninep).transpose()?,
+            block: wire
+                .block
+                .map(|block| decode_block(block, maximum))
+                .transpose()?,
+            ninep: wire
+                .ninep
+                .map(|ninep| decode_ninep(ninep, maximum))
+                .transpose()?,
             #[cfg(target_os = "linux")]
             accelerator: wire
                 .accelerator
@@ -220,8 +226,16 @@ pub(super) fn encode_checkpoint(
 ) -> Result<Vec<u8>, QemuHostIoCheckpointCodecError> {
     let wire = HostIoWire {
         execution_binding: checkpoint.execution_binding.bytes,
-        block: checkpoint.block.as_ref().map(encode_block).transpose()?,
-        ninep: checkpoint.ninep.as_ref().map(encode_ninep).transpose()?,
+        block: checkpoint
+            .block
+            .as_ref()
+            .map(|block| encode_block(block, maximum))
+            .transpose()?,
+        ninep: checkpoint
+            .ninep
+            .as_ref()
+            .map(|ninep| encode_ninep(ninep, maximum))
+            .transpose()?,
         accelerator: encode_accelerator(checkpoint)?,
     };
     validate_bindings(&wire)?;
@@ -289,6 +303,7 @@ fn validate_bindings(wire: &HostIoWire) -> Result<(), QemuHostIoCheckpointCodecE
 
 fn encode_block(
     checkpoint: &QemuLiveBlockIoServicerCheckpoint,
+    maximum: u64,
 ) -> Result<BlockWire, QemuHostIoCheckpointCodecError> {
     validate_region_and_rings(
         checkpoint.region_header,
@@ -313,7 +328,7 @@ fn encode_block(
         device: bounded_bytes(
             checkpoint
                 .device
-                .to_canonical_bytes()
+                .to_canonical_bytes_with_limit(maximum)
                 .map_err(map_block_snapshot_error)?,
         )?,
         requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
@@ -337,6 +352,7 @@ fn encode_block(
 
 fn decode_block(
     wire: BlockWire,
+    maximum: u64,
 ) -> Result<QemuLiveBlockIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
@@ -348,7 +364,7 @@ fn decode_block(
         region_header,
         vm_slot: wire.vm_slot,
         size_bytes: wire.size_bytes,
-        device: BlockSnapshot::from_canonical_bytes(wire.device.as_slice())
+        device: BlockSnapshot::from_canonical_bytes_with_limit(wire.device.as_slice(), maximum)
             .map_err(map_block_snapshot_error)?,
         requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
@@ -364,12 +380,13 @@ fn decode_block(
         frames_processed: decode_counter(wire.frames_processed, "block frames processed")?,
         frames_delivered: decode_counter(wire.frames_delivered, "block frames delivered")?,
     };
-    encode_block(&checkpoint)?;
+    encode_block(&checkpoint, maximum)?;
     Ok(checkpoint)
 }
 
 fn encode_ninep(
     checkpoint: &QemuLive9pIoServicerCheckpoint,
+    maximum: u64,
 ) -> Result<NinepWire, QemuHostIoCheckpointCodecError> {
     validate_region_and_rings(
         checkpoint.region_header,
@@ -406,7 +423,7 @@ fn encode_ninep(
         device: bounded_bytes(
             checkpoint
                 .device
-                .to_canonical_bytes()
+                .to_canonical_bytes_with_limit(maximum)
                 .map_err(map_ninep_snapshot_error)?,
         )?,
         requests: bounded_bytes(checkpoint.requests.canonical_bytes().map_err(|error| {
@@ -434,6 +451,7 @@ fn encode_ninep(
 
 fn decode_ninep(
     wire: NinepWire,
+    maximum: u64,
 ) -> Result<QemuLive9pIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
@@ -444,7 +462,7 @@ fn decode_ninep(
         tree: ContentHash { bytes: wire.tree },
         region_header,
         vm_slot: wire.vm_slot,
-        device: NinepSnapshot::from_canonical_bytes(wire.device.as_slice())
+        device: NinepSnapshot::from_canonical_bytes_with_limit(wire.device.as_slice(), maximum)
             .map_err(map_ninep_snapshot_error)?,
         requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
             .map_err(|error| {
@@ -461,7 +479,7 @@ fn decode_ninep(
         frames_processed: decode_counter(wire.frames_processed, "9p frames processed")?,
         frames_delivered: decode_counter(wire.frames_delivered, "9p frames delivered")?,
     };
-    encode_ninep(&checkpoint)?;
+    encode_ninep(&checkpoint, maximum)?;
     Ok(checkpoint)
 }
 

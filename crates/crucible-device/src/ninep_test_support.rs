@@ -66,6 +66,19 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
 
+    let configured = u64::try_from(bytes.len() - 1)
+        .unwrap_or_else(|error| panic!("fixture length is representable: {error}"));
+    assert_eq!(
+        NinepSnapshot::from_canonical_bytes_with_limit(&bytes, configured),
+        Err(NinepSnapshotCodecError::ResourceLimit {
+            field: "9p snapshot bytes",
+            current: 0,
+            requested: bytes.len() as u64,
+            configured,
+            hard: MAX_NINEP_SNAPSHOT_BYTES,
+        })
+    );
+
     let mut prior_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
     assert_eq!(prior_version[version_index], b'2');

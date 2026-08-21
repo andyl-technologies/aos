@@ -35,7 +35,7 @@ pub use codec::{
     BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
 pub use device::{
-    BlockDevice, BlockLatency, BlockSnapshot, BlockSnapshotCodecError,
+    BlockDevice, BlockLatency, BlockSnapshot, BlockSnapshotCodecError, MAX_BLOCK_SNAPSHOT_BYTES,
     install_cross_device_misdirected_persistence,
 };
 pub use fault::*;
