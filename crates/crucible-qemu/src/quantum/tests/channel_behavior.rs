@@ -30,7 +30,7 @@ fn qemu_network_checkpoint_restores_backpressured_inbound_for_retry() {
             .unwrap_or_else(|error| panic!("delivery boundary should start: {error}"));
         slot.publish_reached_icount(5, 0)
             .unwrap_or_else(|error| panic!("delivery boundary should publish: {error}"));
-        plugin_mark_inbound_retained(&hot_path);
+        plugin_mark_inbound_retained(&hot_path, 5);
         let report = hot_path
             .finish_quantum(pending)
             .unwrap_or_else(|error| panic!("backpressured boundary should finish: {error}"));

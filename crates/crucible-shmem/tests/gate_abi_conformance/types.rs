@@ -112,6 +112,7 @@ pub(super) struct FrameEntryState {
     pub(super) seq: u32,
     pub(super) delivery_state: u8,
     pub(super) delivery_attempts: u32,
+    pub(super) last_delivery_attempt_icount: u64,
     pub(super) payload: Vec<u8>,
 }
 

@@ -212,6 +212,11 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
         GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
         3,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET,
+        777,
+    );
     bytes[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
         ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + 4]
         .copy_from_slice(b"PING");

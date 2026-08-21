@@ -9,6 +9,7 @@ fn deterministic_projection_anchors_the_network_trajectory_at_the_probe() {
     let mut hostile = outcome_at(2_001_481);
     hostile.acknowledgement_icount = Some(102_014_913);
     hostile.snapshot.tx_frames[1].emit_icount = 102_014_913;
+    hostile.backpressure_acknowledgement_icount = reference.backpressure_acknowledgement_icount;
 
     assert_ne!(probe_emit_icount(&reference), probe_emit_icount(&hostile));
     assert_ne!(
@@ -45,6 +46,9 @@ fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {
         boot_backpressure_retained: true,
         canonical_backpressure_retry_delivered: true,
         backpressure_acknowledgement_icount: Some(probe_icount - 1),
+        backpressure_delivery_attempts: 1,
+        backpressure_last_attempt_icount: 1,
+        backpressure_consumed_icount: Some(4_000_001),
         delayed_reply_applied: false,
         orderly_child_exit: true,
     }

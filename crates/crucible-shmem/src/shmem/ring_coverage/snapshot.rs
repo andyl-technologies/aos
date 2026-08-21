@@ -46,6 +46,7 @@ impl SpscRingSnapshot {
             )?;
             bytes.push(delivery_state as u8);
             bytes.extend_from_slice(&canonical.delivery_attempts().to_le_bytes());
+            bytes.extend_from_slice(&canonical.last_delivery_attempt_icount().to_le_bytes());
             bytes.extend_from_slice(&canonical.data[..payload_len]);
         }
         Ok(bytes)
@@ -67,12 +68,18 @@ impl SpscRingSnapshot {
     /// the encoded frame count cannot fit in memory on this target, or
     /// [`SpscRingError::SnapshotDecodeTrailingBytes`] when extra bytes remain
     /// after the declared frames.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, SpscRingError> {
+    pub fn from_canonical_bytes(bytes: &[u8], max_frames: usize) -> Result<Self, SpscRingError> {
         let mut cursor = SnapshotByteCursor::new(bytes);
         let frame_count = cursor.read_u64()?;
-        let _frame_count_fits_target = usize::try_from(frame_count)
+        let frame_count = usize::try_from(frame_count)
             .map_err(|_| SpscRingError::SnapshotFrameCountOverflow { count: frame_count })?;
-        let mut frames = Vec::new();
+        if frame_count > max_frames {
+            return Err(SpscRingError::SnapshotTooLarge {
+                len: frame_count,
+                capacity: max_frames as u64,
+            });
+        }
+        let mut frames = Vec::with_capacity(frame_count);
 
         for _ in 0..frame_count {
             let delivery_icount = cursor.read_u64()?;
@@ -81,6 +88,7 @@ impl SpscRingSnapshot {
             let len = usize::from(cursor.read_u16()?);
             let delivery_state = cursor.read_u8()?;
             let delivery_attempts = cursor.read_u32()?;
+            let last_delivery_attempt_icount = cursor.read_u64()?;
             if len > MAX_FRAME_DATA {
                 return Err(SpscRingError::InvalidFrameLength {
                     len,
@@ -102,7 +110,8 @@ impl SpscRingSnapshot {
                 )?,
                 state => return Err(SpscRingError::InvalidFrameDeliveryState { state }),
             }
-            frame.restore_delivery_attempts(delivery_attempts);
+            frame.restore_delivery_attempt(delivery_attempts, last_delivery_attempt_icount);
+            frame.canonicalized_for_snapshot()?;
             frames.push(frame);
         }
 

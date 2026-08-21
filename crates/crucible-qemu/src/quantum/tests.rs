@@ -5,7 +5,9 @@ use super::*;
 mod channel_behavior;
 mod completion;
 mod network_delivery;
+mod source_assertions;
 use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
+use source_assertions::{assert_source_order, function_source};
 
 const QUANTUM_SOURCE: &str = include_str!("../quantum.rs");
 static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
@@ -222,7 +224,7 @@ fn qemu_quantum_preserves_backpressured_due_frame_for_retry() {
         .unwrap_or_else(|error| panic!("delivery quantum should start: {error}"));
     slot.publish_reached_icount(5, 0)
         .unwrap_or_else(|error| panic!("plugin boundary should publish: {error}"));
-    plugin_mark_inbound_retained(&hot_path);
+    plugin_mark_inbound_retained(&hot_path, 5);
 
     let report = hot_path
         .finish_quantum(pending)
@@ -256,7 +258,7 @@ fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
         &outbound_ring,
         &mut outbound_entries,
     );
-    plugin_mark_inbound_retained(&hot_path);
+    plugin_mark_inbound_retained(&hot_path, 5);
 
     let pending = hot_path
         .start_quantum(horizon(5))
@@ -541,7 +543,7 @@ fn plugin_consume_inbound(
     frames
 }
 
-fn plugin_mark_inbound_retained(hot_path: &QemuQuantumShmemHotPath<'_>) {
+fn plugin_mark_inbound_retained(hot_path: &QemuQuantumShmemHotPath<'_>, current_icount: u64) {
     hot_path
         .view
         .inbound_ring
@@ -550,7 +552,11 @@ fn plugin_mark_inbound_retained(hot_path: &QemuQuantumShmemHotPath<'_>) {
         .unwrap_or_else(|| panic!("plugin retained peek should find a published frame"));
     let slot = (hot_path.view.inbound_ring.read_index()
         & (hot_path.view.inbound_entries.len() as u64 - 1)) as usize;
-    hot_path.view.inbound_entries[slot]
+    let entry = &hot_path.view.inbound_entries[slot];
+    entry
+        .record_delivery_attempt(current_icount, crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS)
+        .unwrap_or_else(|error| panic!("shared delivery attempt should succeed: {error}"));
+    entry
         .mark_delivery_retained()
         .unwrap_or_else(|error| panic!("shared retained mark should succeed: {error}"));
 }
@@ -583,41 +589,4 @@ fn node_id(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
     }
-}
-
-fn assert_source_order(source: &str, needles: &[&str], context: &str) {
-    let mut offset = 0;
-    for needle in needles {
-        let remaining = &source[offset..];
-        let Some(relative) = remaining.find(needle) else {
-            panic!("{context}: missing `{needle}` after byte offset {offset}");
-        };
-        offset += relative + needle.len();
-    }
-}
-
-fn function_source(signature: &str) -> &str {
-    let Some(start) = QUANTUM_SOURCE.find(signature) else {
-        panic!("missing source signature `{signature}`");
-    };
-    let after_signature = &QUANTUM_SOURCE[start..];
-    let Some(open_relative) = after_signature.find('{') else {
-        panic!("missing body for source signature `{signature}`");
-    };
-    let open = start + open_relative;
-    let mut depth = 0_i32;
-    for (relative, ch) in QUANTUM_SOURCE[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &QUANTUM_SOURCE[start..open + relative + ch.len_utf8()];
-                }
-            }
-            _ => {}
-        }
-    }
-
-    panic!("unterminated source body for `{signature}`");
 }

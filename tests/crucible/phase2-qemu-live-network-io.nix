@@ -133,6 +133,7 @@ in
           grep -Fxq 'canonical_backpressure_retry_delivered=true' "$report"
           grep -Fxq 'backpressure_guest_acknowledgement_seen=true' "$report"
           grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
+          grep -Fxq 'retained_frame_durable_envelope_restored=true' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"

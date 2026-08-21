@@ -23,6 +23,8 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         Ok(crate::QemuNetworkTransportCheckpoint {
             inbound,
             outbound,
+            queue_capacity: self.view.inbound_entries.len() as u32,
+            router_slot: self.config.router_slot,
             next_router_inbound_sequence: self.next_router_inbound_sequence,
             next_host_outbound_sequence: 0,
             next_plugin_outbound_sequence: 0,
@@ -33,6 +35,15 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         &mut self,
         checkpoint: &crate::QemuNetworkTransportCheckpoint,
     ) -> Result<(), QemuNodeChannelError> {
+        if checkpoint.queue_capacity as usize != self.view.inbound_entries.len()
+            || checkpoint.queue_capacity as usize != self.view.outbound_entries.len()
+            || checkpoint.router_slot != self.config.router_slot
+        {
+            return Err(QemuNodeChannelError::new(
+                "restore network transport",
+                "checkpoint network ring shape does not match mapped runtime",
+            ));
+        }
         let prior_inbound = self
             .view
             .inbound_ring

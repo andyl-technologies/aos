@@ -392,7 +392,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_SIZE 256u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u"));
-    assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4632u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u"));
 
     let magic = bytes_at(&fixture, 0, 8)?;
     assert_eq!(magic, b"CRUCSHM1");
@@ -404,7 +404,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 19_288);
+    assert_eq!(fixture.total_len, 19_296);
     Ok(())
 }
 
