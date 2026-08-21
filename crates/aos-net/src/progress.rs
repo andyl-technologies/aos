@@ -5,6 +5,83 @@
 //! defines the callback interface.
 
 use anyhow;
+use std::time::Duration;
+
+/// A structured lifecycle event emitted by one transfer.
+///
+/// Events are intentionally transport-neutral. Interactive callers can render
+/// them as progress bars, machine-readable callers can serialize an equivalent
+/// representation, and batch callers can aggregate them without changing the
+/// transfer implementation.
+#[derive(Debug, Clone, Copy)]
+pub enum TransferEvent<'a> {
+    /// The transfer has started.
+    Started {
+        /// Source or destination URL.
+        url: &'a str,
+        /// Complete object size when known.
+        total_bytes: Option<u64>,
+        /// Bytes already present in a validated partial transfer.
+        resumed_bytes: u64,
+    },
+    /// More bytes have been committed to the transfer destination.
+    Progress {
+        /// Source or destination URL.
+        url: &'a str,
+        /// Complete bytes committed, including a resumed prefix.
+        transferred_bytes: u64,
+        /// Complete object size when known.
+        total_bytes: Option<u64>,
+    },
+    /// A transient failure will be retried.
+    Retrying {
+        /// Source or destination URL.
+        url: &'a str,
+        /// One-based attempt about to start.
+        attempt: u32,
+        /// Delay before the next attempt.
+        delay: Duration,
+        /// Failure that caused the retry.
+        error: &'a anyhow::Error,
+    },
+    /// The transferred bytes are being verified.
+    Verifying {
+        /// Source or destination URL.
+        url: &'a str,
+    },
+    /// The transfer completed successfully.
+    Completed {
+        /// Source or destination URL.
+        url: &'a str,
+        /// Complete transferred byte count.
+        transferred_bytes: u64,
+    },
+    /// The transfer failed permanently.
+    Failed {
+        /// Source or destination URL.
+        url: &'a str,
+        /// Terminal failure.
+        error: &'a anyhow::Error,
+    },
+}
+
+/// Receives structured events for one or more transfers.
+///
+/// Observers are supplied per operation rather than installed globally on a
+/// manager. This lets concurrent CLI commands attach independent progress UIs
+/// while sharing the same connection pools and policy engine.
+pub trait TransferObserver: Send + Sync {
+    /// Observes one transfer lifecycle event.
+    fn observe(&self, event: TransferEvent<'_>);
+}
+
+/// An observer that discards every event.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopObserver;
+
+impl TransferObserver for NoopObserver {
+    fn observe(&self, _event: TransferEvent<'_>) {}
+}
 
 /// Callback trait for tracking progress of a single transfer.
 ///

@@ -9,12 +9,14 @@ Without it, SB is load-time only and `/var` (every generation, apm state, the
 /nix overlay upper, user data) sits in cleartext on disk
 ([`current-state.md`](current-state.md) disk-encryption section).
 
-> **Implementation status (PR #102): fully implemented and CI-green.** The TPM
+> **Implementation status: implemented and covered by the measured-boot fleet
+> test.** The TPM
 > stack is packaged, the kernel has TCG drivers, systemd is built
 > `-Dtpm2=enabled`, the UKI carries a signed PCR policy, OVMF is built
 > `TPM2_ENABLE`, the CI harness attaches a swtpm vTPM, and `aos-var-crypt`
 > LUKS2-formats `/var` and enrolls a TPM2 token sealed to the signed policy
-> (PCR 11) + pinned PCR 7 plus a recovery key. `checks.fleet.measured-boot`
+> (PCR 11) + pinned PCRs 7 and 12 plus a recovery key.
+> `checks.fleet.measured-boot`
 > verifies the **whole flow end to end**: Setup-mode first boot → enroll →
 > enforcing seal (LUKS2 `systemd-tpm2` + `systemd-recovery` tokens) → reboot →
 > **unattended TPM2 unlock of `/var`** (no passphrase), across three reboots.
@@ -80,13 +82,13 @@ work, a tampered/unsigned UKI does not.
 The "with SB state unchanged" qualifier is load-bearing and easy to miss.
 PCR 11 (the UKI measurement) is the *policy-covered, signature-flexible* PCR —
 that's what changes per UKI and what the policy signature blesses. If the seal
-*also* binds PCR 7 (SB state — see PCR selection below), that PCR is pinned
+*also* binds PCR 7 (SB state) and PCR 12 (boot inputs), those PCRs are pinned
 **by value**, not by the policy signature. So the OTA-survival guarantee
-covers *UKI changes only*; a legitimate firmware/KEK change that perturbs
-PCR 7 will fail to unseal and fall back to the recovery key. That's the
-intended security property (disabling SB or enrolling a foreign key must not
-silently unlock `/var`), but it means firmware updates need an operational
-runbook (re-seal after the change), and the recovery path is not optional.
+covers UKI changes only when the clean PCR-12 event stream remains compatible;
+a firmware/KEK or appended-input change fails to unseal and falls back to the
+recovery key. That is the intended security property, but it means firmware
+and measured-input changes need an authorized migration runbook and the
+recovery path is not optional.
 
 This is why the PCR-policy key is a release-time, offline key
 ([`key-custody.md`](key-custody.md)), and why it rides *inside* the UKI
@@ -154,10 +156,10 @@ The existing `cryptswap` (`filesystems.nix:272-327`) can fold into the same
 mechanism, or stay random-keyed (swap needs no persistence). Encrypting
 `/var` is the new, security-meaningful piece.
 
-PCR selection: bind to the SB-relevant PCRs (PCR 7 = SB state, PCR 11 = UKI
-phases via systemd-pcrphase). Binding PCR 7 means disabling SB or enrolling a
-foreign key changes the measurement and `/var` won't unseal — exactly the
-property we want.
+PCR selection: bind PCR 11 to the signed UKI phase policy, and pin PCR 7 for
+Secure Boot state plus PCR 12 for boot inputs. Disabling Secure Boot,
+enrolling a foreign key, or appending boot input changes a pinned measurement
+and `/var` will not unseal.
 
 ### 6. vTPM in CI
 
@@ -178,7 +180,7 @@ produces the inputs, not the attestation server.
 
 ## Ordering note
 
-Measured boot depends on SB being real: sealing to PCR 7 (SB state) is
-meaningless if SB isn't enforcing, and the PCR-policy key shares the
+Measured boot depends on SB being real: sealing to PCR 7 (SB state) and PCR 12
+(boot inputs) is meaningless if SB is not enforcing, and the PCR-policy key shares the
 release-time offline custody model that phase 1 establishes. Hence phase 3
 follows phases 1–2.

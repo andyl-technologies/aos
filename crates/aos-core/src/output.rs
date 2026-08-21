@@ -10,13 +10,17 @@
 //! - Quiet and JSON modes suppress decorative output; errors are always
 //!   surfaced (as a JSON object in JSON mode).
 //!
-//! The module also provides [`create_spinner`] and
-//! [`create_progress_bar`] helpers for long-running operations, built on
-//! `indicatif`.
+//! Long-running work is created through [`Printer::activity`] and
+//! [`Printer::transfer`] or [`Printer::items`], which apply the same
+//! output-mode contract.
 
 use console::Style;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const PLAIN_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+const PLAIN_PROGRESS_PERCENT_STEP: u64 = 10;
 
 /// Determines how the CLI renders output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +36,28 @@ pub enum OutputMode {
     Verbose,
 }
 
+/// Controls how long-running operation progress is rendered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProgressMode {
+    /// Uses an updating display on a terminal and stable lines elsewhere.
+    #[default]
+    Auto,
+    /// Always uses an updating terminal display.
+    Tty,
+    /// Always emits stable, newline-delimited progress updates.
+    Plain,
+    /// Suppresses progress while retaining final results and errors.
+    Off,
+}
+
 /// Central output handler that respects `--json`, `--quiet`, and `--verbose`
 /// flags.  All user-facing text should flow through a `Printer` so that the
 /// output mode is honoured consistently.
 #[derive(Clone)]
 pub struct Printer {
     mode: OutputMode,
+    progress_mode: ProgressMode,
+    progress: Arc<MultiProgress>,
     // Styles (only used in Normal / Verbose modes).
     style_info: Style,
     style_success: Style,
@@ -65,6 +85,8 @@ impl Printer {
 
         Self {
             mode,
+            progress_mode: ProgressMode::Auto,
+            progress: Arc::new(MultiProgress::new()),
             style_info: Style::new().cyan(),
             style_success: Style::new().green().bold(),
             style_warning: Style::new().yellow(),
@@ -74,9 +96,39 @@ impl Printer {
         }
     }
 
+    /// Overrides the progress renderer selected for long-running operations.
+    #[must_use]
+    pub fn with_progress_mode(mut self, progress_mode: ProgressMode) -> Self {
+        self.progress_mode = progress_mode;
+        self
+    }
+
     /// Returns the active [`OutputMode`].
     pub fn mode(&self) -> OutputMode {
         self.mode
+    }
+
+    /// Returns the configured long-running operation progress mode.
+    pub fn progress_mode(&self) -> ProgressMode {
+        self.progress_mode
+    }
+
+    /// Starts reporting a byte-oriented transfer.
+    ///
+    /// Human-readable progress is written to stderr. Quiet and JSON output
+    /// modes return a silent reporter so stdout remains stable for scripts.
+    pub fn transfer(&self, action: &str, total_bytes: u64) -> TransferProgress {
+        TransferProgress::new(self.clone(), action, total_bytes)
+    }
+
+    /// Starts reporting an operation whose total work is not measurable.
+    pub fn activity(&self, action: &str) -> ActivityProgress {
+        ActivityProgress::new(self.clone(), action)
+    }
+
+    /// Starts reporting an operation measured in completed items.
+    pub fn items(&self, action: &str, total_items: u64) -> ItemProgress {
+        ItemProgress::new(self.clone(), action, total_items)
     }
 
     // ------------------------------------------------------------------
@@ -199,41 +251,346 @@ impl Printer {
     }
 }
 
-// ------------------------------------------------------------------
-// Progress helpers
-// ------------------------------------------------------------------
-
-/// Creates an indeterminate spinner for long-running operations.
-///
-/// The spinner ticks automatically every 120 ms; call
-/// `finish_and_clear` (or another `ProgressBar` finisher) when the
-/// operation completes.
-pub fn create_spinner(msg: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .expect("valid spinner template")
-            .tick_chars("-\\|/ "),
-    );
-    pb.set_message(msg.to_string());
-    pb.enable_steady_tick(Duration::from_millis(120));
-    pb
+/// Reports an operation whose total work is not measurable in advance.
+pub struct ActivityProgress {
+    printer: Printer,
+    progress: ProgressBar,
+    started: Instant,
 }
 
-/// Creates a determinate progress bar for multi-item operations.
+impl ActivityProgress {
+    fn new(printer: Printer, action: &str) -> Self {
+        let renderer = progress_renderer(&printer);
+        let progress = printer.progress.add(ProgressBar::new_spinner());
+        match renderer {
+            ProgressRenderer::Tty => {
+                let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                    .unwrap_or_else(|_| ProgressStyle::default_spinner())
+                    .tick_chars("-\\|/ ");
+                progress.set_style(style);
+                progress.set_message(action.to_string());
+                progress.enable_steady_tick(Duration::from_millis(120));
+            }
+            ProgressRenderer::Plain => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                printer.info(action);
+            }
+            ProgressRenderer::Hidden => progress.set_draw_target(ProgressDrawTarget::hidden()),
+        }
+        Self {
+            printer,
+            progress,
+            started: Instant::now(),
+        }
+    }
+
+    /// Clears the activity after successful completion.
+    pub fn finish(self) {
+        self.progress.finish_and_clear();
+    }
+
+    /// Clears the activity after successful completion.
+    ///
+    /// This spelling matches `indicatif` and keeps call sites concise while
+    /// they migrate to the printer-owned renderer.
+    pub fn finish_and_clear(self) {
+        self.finish();
+    }
+
+    /// Emits a warning without corrupting an active terminal spinner.
+    pub fn warning(&self, message: &str) {
+        self.progress.suspend(|| self.printer.warning(message));
+    }
+
+    /// Returns the wall-clock duration since reporting began.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
+impl Drop for ActivityProgress {
+    fn drop(&mut self) {
+        self.progress.finish_and_clear();
+    }
+}
+
+/// Reports progress through a known number of discrete items.
+pub struct ItemProgress {
+    printer: Printer,
+    action: String,
+    total_items: u64,
+    progress: ProgressBar,
+    plain: Option<Mutex<u64>>,
+}
+
+impl ItemProgress {
+    fn new(printer: Printer, action: &str, total_items: u64) -> Self {
+        let renderer = progress_renderer(&printer);
+        let progress = printer.progress.add(ProgressBar::new(total_items));
+        let plain = match renderer {
+            ProgressRenderer::Tty => {
+                let style = ProgressStyle::with_template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
+                    .progress_chars("=> ");
+                progress.set_style(style);
+                progress.set_message(action.to_string());
+                None
+            }
+            ProgressRenderer::Plain => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                printer.info(&format!("{action} ({total_items} items)"));
+                Some(Mutex::new(0))
+            }
+            ProgressRenderer::Hidden => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                None
+            }
+        };
+        Self {
+            printer,
+            action: action.to_string(),
+            total_items,
+            progress,
+            plain,
+        }
+    }
+
+    /// Advances the operation by `items` completed items.
+    pub fn inc(&self, items: u64) {
+        self.progress.inc(items);
+        let Some(last_bucket) = &self.plain else {
+            return;
+        };
+        let Ok(mut last_bucket) = last_bucket.lock() else {
+            return;
+        };
+        let completed = self.progress.position().min(self.total_items);
+        let percent = if self.total_items == 0 {
+            100
+        } else {
+            completed.saturating_mul(100) / self.total_items
+        };
+        let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
+        if bucket <= *last_bucket {
+            return;
+        }
+        *last_bucket = bucket;
+        self.printer.info(&format!(
+            "{}: {}/{} ({}%)",
+            self.action,
+            completed,
+            self.total_items,
+            percent.min(100)
+        ));
+    }
+
+    /// Clears dynamic output after a successful operation.
+    pub fn finish(&self) {
+        self.progress.finish_and_clear();
+    }
+
+    /// Clears dynamic output after a successful operation.
+    pub fn finish_and_clear(&self) {
+        self.finish();
+    }
+}
+
+impl Drop for ItemProgress {
+    fn drop(&mut self) {
+        self.progress.finish_and_clear();
+    }
+}
+
+#[derive(Debug)]
+struct PlainProgressState {
+    last_emit: Instant,
+    last_percent_bucket: u64,
+}
+
+/// Reports the lifecycle of one byte-oriented transfer.
 ///
-/// `len` is the total number of items; advance the bar with
-/// `ProgressBar::inc` as items complete.
-#[allow(dead_code)] // public API
-pub fn create_progress_bar(len: u64, msg: &str) -> ProgressBar {
-    let pb = ProgressBar::new(len);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-            .expect("valid bar template")
-            .progress_chars("=> "),
-    );
-    pb.set_message(msg.to_string());
-    pb
+/// A reporter may render as an updating terminal line, stable log lines, or
+/// no output according to its parent [`Printer`]. Dropping it always clears an
+/// active terminal line; callers should still use [`finish`](Self::finish) or
+/// [`abandon`](Self::abandon) to communicate the terminal state explicitly.
+pub struct TransferProgress {
+    printer: Printer,
+    action: String,
+    total_bytes: u64,
+    progress: ProgressBar,
+    plain: Option<Mutex<PlainProgressState>>,
+    started: Instant,
+}
+
+impl TransferProgress {
+    fn new(printer: Printer, action: &str, total_bytes: u64) -> Self {
+        let renderer = progress_renderer(&printer);
+        let progress = printer.progress.add(ProgressBar::new(total_bytes));
+        let plain = match renderer {
+            ProgressRenderer::Tty => {
+                let style = ProgressStyle::with_template(
+                    "{spinner:.cyan} {msg}  {bytes}/{total_bytes}  {percent:>3}%  {binary_bytes_per_sec}  ETA {eta}",
+                )
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("=> ");
+                progress.set_style(style);
+                progress.set_message(action.to_string());
+                progress.enable_steady_tick(Duration::from_millis(120));
+                None
+            }
+            ProgressRenderer::Plain => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                if total_bytes == 0 {
+                    printer.info(action);
+                } else {
+                    printer.info(&format!("{action} ({})", format_bytes(total_bytes)));
+                }
+                Some(Mutex::new(PlainProgressState {
+                    last_emit: Instant::now(),
+                    last_percent_bucket: 0,
+                }))
+            }
+            ProgressRenderer::Hidden => {
+                progress.set_draw_target(ProgressDrawTarget::hidden());
+                None
+            }
+        };
+        Self {
+            printer,
+            action: action.to_string(),
+            total_bytes,
+            progress,
+            plain,
+            started: Instant::now(),
+        }
+    }
+
+    /// Changes the phase label without resetting byte progress.
+    pub fn phase(&mut self, action: &str) {
+        self.action.clear();
+        self.action.push_str(action);
+        self.progress.set_message(action.to_string());
+        if self.plain.is_some() {
+            self.printer.info(action);
+        }
+    }
+
+    /// Changes the expected byte total, including from initially unknown.
+    pub fn set_total(&mut self, total_bytes: u64) {
+        self.total_bytes = total_bytes;
+        self.progress.set_length(total_bytes);
+        if let Some(plain) = &self.plain {
+            if let Ok(mut state) = plain.lock() {
+                state.last_percent_bucket = 0;
+                state.last_emit = Instant::now();
+            }
+            if total_bytes > 0 {
+                self.printer
+                    .info(&format!("{} ({})", self.action, format_bytes(total_bytes)));
+            }
+        }
+    }
+
+    /// Sets the number of bytes already completed.
+    pub fn set_position(&self, bytes: u64) {
+        self.progress.set_position(bytes.min(self.total_bytes));
+        self.maybe_emit_plain(bytes);
+    }
+
+    /// Advances the operation by `bytes` bytes.
+    pub fn inc(&self, bytes: u64) {
+        self.progress.inc(bytes);
+        self.maybe_emit_plain(self.progress.position());
+    }
+
+    /// Emits a warning without corrupting an active terminal progress line.
+    pub fn warning(&self, message: &str) {
+        self.progress.suspend(|| self.printer.warning(message));
+    }
+
+    /// Clears dynamic output after a successful operation.
+    pub fn finish(self) {
+        self.progress.finish_and_clear();
+    }
+
+    /// Clears dynamic output and emits a stable interruption or failure note.
+    pub fn abandon(self, message: &str) {
+        self.progress.finish_and_clear();
+        self.printer.warning(message);
+    }
+
+    /// Returns the wall-clock duration since reporting began.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    fn maybe_emit_plain(&self, bytes: u64) {
+        let Some(plain) = &self.plain else {
+            return;
+        };
+        let Ok(mut state) = plain.lock() else {
+            return;
+        };
+        let percent = if self.total_bytes == 0 {
+            0
+        } else {
+            bytes.saturating_mul(100) / self.total_bytes
+        };
+        let bucket = percent / PLAIN_PROGRESS_PERCENT_STEP;
+        let now = Instant::now();
+        if bucket <= state.last_percent_bucket
+            && now.duration_since(state.last_emit) < PLAIN_PROGRESS_INTERVAL
+        {
+            return;
+        }
+        state.last_percent_bucket = bucket;
+        state.last_emit = now;
+        self.printer.info(&format!(
+            "{}: {}/{} ({}%)",
+            self.action,
+            format_bytes(bytes.min(self.total_bytes)),
+            format_bytes(self.total_bytes),
+            percent.min(100),
+        ));
+    }
+}
+
+impl Drop for TransferProgress {
+    fn drop(&mut self) {
+        self.progress.finish_and_clear();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProgressRenderer {
+    Tty,
+    Plain,
+    Hidden,
+}
+
+fn progress_renderer(printer: &Printer) -> ProgressRenderer {
+    match (printer.mode, printer.progress_mode) {
+        (OutputMode::Quiet | OutputMode::Json, _) | (_, ProgressMode::Off) => {
+            ProgressRenderer::Hidden
+        }
+        (_, ProgressMode::Tty) => ProgressRenderer::Tty,
+        (_, ProgressMode::Plain) => ProgressRenderer::Plain,
+        (_, ProgressMode::Auto) if atty::is(atty::Stream::Stderr) => ProgressRenderer::Tty,
+        _ => ProgressRenderer::Plain,
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }

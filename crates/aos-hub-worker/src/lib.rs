@@ -607,22 +607,19 @@ mod entry {
                 Arc::clone(&egress),
             ));
 
-        // The cross-isolate publish lease and the inline reindexer back the
+        // The cross-isolate publish lease and queued reindexer back the
         // shared facade-write handler on the Worker. The lease lives in the
         // Durable Object coordinator (one serialized instance owns the lease);
-        // the reindexer
-        // re-indexes the published registry inline (event-driven), so a publish
-        // is browse-visible the instant its final pointer write returns. The
-        // `*/15` Cron remains the backstop for non-publish surface changes.
+        // indexing runs through the durable job consumer so a large registry
+        // cannot extend an already-committed request beyond its client timeout.
+        // The periodic Cron remains the backstop if queue admission fails.
         let lease: Arc<dyn aos_hub_core::lease::PublishLease> = Arc::new(
             aos_hub_core::lease::CoordinatorLease::new(Arc::clone(&coordinator)),
         );
-        let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer::new(
-            env.bucket(crate::handlers::bindings::R2)?,
-            Arc::clone(&db),
-            Arc::clone(&secret_versions),
-            Arc::clone(&egress),
-        ));
+        let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> =
+            Arc::new(aos_hub_core::reindex::QueuedReindexer::new(Arc::new(
+                crate::workerqueue::WorkerQueue::from_env(env)?,
+            )));
 
         let service = Arc::new(
             RpcService::new(
@@ -777,9 +774,13 @@ mod entry {
         // `SqlDoBackend`. Pinned to WNAM (the hub's home) via a location hint so a
         // fresh instance lands near the readership; the package data plane
         // (NAR/narinfo on R2/CDN) is globally replicated independently.
+        let database_instance = env
+            .var("HUB_DATABASE_INSTANCE")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "hub".to_string());
         let stub = env
             .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name("hub")
+            .id_from_name(&database_instance)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let resp = stub.fetch_with_request(req).await?;
 
@@ -861,9 +862,13 @@ mod entry {
     /// DO cannot be reached, or it responds non-200.
     async fn forward_internal(env: &Env, path: &str, body: Option<String>) -> Result<()> {
         let seal = env.secret(HUB_SEAL_KEY)?.to_string();
+        let database_instance = env
+            .var("HUB_DATABASE_INSTANCE")
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "hub".to_string());
         let stub = env
             .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name("hub")
+            .id_from_name(&database_instance)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let headers = worker::Headers::new();
         headers.set("x-hub-seal", &seal)?;
@@ -1238,7 +1243,7 @@ mod entry {
         let route_http: Arc<dyn aos_hub_core::web::console::ports::HttpClient> =
             Arc::new(WorkerHttpClient::new(Arc::clone(&egress)));
         let mut controller = match aos_hub_core::topology_probe::DomainProbeController::new(
-            db,
+            Arc::clone(&db),
             Arc::clone(&route_http),
             tls_verifier,
             endpoint.to_string(),
@@ -1305,10 +1310,32 @@ mod entry {
             }
         };
         controller = controller.with_storage_credential_probe(Arc::new(
-            WorkerStorageCredentialProbeProvider::new(Arc::clone(&egress), secret_versions),
+            WorkerStorageCredentialProbeProvider::new(
+                Arc::clone(&egress),
+                Arc::clone(&secret_versions),
+            ),
         ));
         if let Err(error) = controller.run_due(25).await {
             worker::console_error!("domain probes: {error:#}");
+        }
+        match env.bucket(crate::handlers::bindings::R2) {
+            Ok(bucket) => {
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&db),
+                    Arc::new(crate::surface::R2SurfaceProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        Arc::clone(&egress),
+                    )),
+                );
+                if let Err(error) = placement_scans.run_due(5).await {
+                    worker::console_error!("placement scans: {error:#}");
+                }
+            }
+            Err(error) => {
+                worker::console_error!("placement scans: R2 binding missing: {error}");
+            }
         }
     }
 
@@ -1333,6 +1360,10 @@ mod entry {
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
+            // Durable Objects execute in an isolate distinct from the outer
+            // Worker, so they must install their own tracing subscriber.
+            crate::tracinglog::init();
+
             let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
             if let Err(err) = crate::sqldobackend::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);

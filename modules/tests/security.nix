@@ -11,11 +11,16 @@
     description = "Security configuration verification";
     checks = [
       {
-        name = "root-no-password";
-        description = "root account has no password set";
-        script = ''
-          vm.succeed("test -f /etc/shadow")
-        '';
+        name = "root-password-posture";
+        description = "root password state matches the selected security posture";
+        script =
+          if config.aos.profiles.debug.autologin
+          then ''
+            vm.succeed("grep -Eq '^root::' /etc/shadow")
+          ''
+          else ''
+            vm.succeed("grep -Eq '^root:[!*]' /etc/shadow")
+          '';
       }
       {
         name = "shadow-permissions";

@@ -109,6 +109,10 @@ until host policy selects their services.
 After the atomic `/etc` switch, activation applies the new `tmpfiles.d` rules
 before reconciling services. Runtime roles may therefore introduce required
 state directories in the same transaction that starts their daemons.
+Changes to generated service scripts replace the corresponding image unit as
+one activation artifact. Settings that disable an image-baked file or service
+create a generation-local overlay deletion, so the immutable lower copy does
+not remain active merely because it exists in the image.
 
 Image and configuration generations are independent. An image generation owns
 the kernel, initrd, base module library, evaluator, and A/B slot. A

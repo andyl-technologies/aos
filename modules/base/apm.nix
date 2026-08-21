@@ -55,7 +55,6 @@
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
-
   desiredSystemCredentialValues =
     lib.mapAttrs
     (_package: credentials:

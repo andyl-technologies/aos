@@ -17,6 +17,7 @@
   binutils,
   gcc-libs,
   dwarves,
+  patchelf,
   python3,
   zstd,
   # Optional: extra kernel config fragment text to merge after the base
@@ -49,7 +50,7 @@ in
     # anyway, so exposing it costs no extra build, and keeping it in its own
     # output means it never enters the production system closure (only a
     # test's closure, via lib/testing/vm.nix). See the install phase.
-    outputs = ["out" "vmlinux"];
+    outputs = ["out" "dev" "vmlinux"];
 
     buildDeps = [
       gnumake
@@ -64,6 +65,7 @@ in
       bc
       binutils
       dwarves
+      patchelf
       python3
       zstd
     ];
@@ -168,6 +170,25 @@ in
           mkdir -p $vmlinux/boot
           cp vmlinux $vmlinux/boot/vmlinux-${linuxSource.version}
 
+          # External modules must build against the exact configured kernel,
+          # including generated headers, symbol versions, BTF tools, and any
+          # deployment-specific signing policy. Keep that interface in a
+          # separate output so ordinary systems do not retain the large build
+          # tree merely to boot the runtime kernel.
+          kernel_build=$dev/lib/modules/${linuxSource.version}/build
+          mkdir -p "$kernel_build"
+          cp -a . "$kernel_build/"
+          rm -f "$kernel_build/${kernelArch.imgPath}"
+
+          # Kbuild's host helpers are part of the external-module interface.
+          # Give helpers that use libelf an immutable runtime search path so
+          # downstream module builds do not depend on ambient host libraries.
+          find "$kernel_build/tools" "$kernel_build/scripts" -type f -perm -0100 | while read -r helper; do
+            if patchelf --print-needed "$helper" 2>/dev/null | grep -qx libelf.so.1; then
+              patchelf --set-rpath ${elfutils}/lib "$helper"
+            fi
+          done
+
           # Install modules only when the final config supports loadable
           # modules. Strip their DWARF; BTF stays in the kernel image.
           if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
@@ -178,8 +199,9 @@ in
               ARCH=${kernelArch.karch}
           fi
 
-          # Remove build/source symlinks (they point to the build dir)
-          rm -f $out/lib/modules/*/build $out/lib/modules/*/source
+          # External-module builders consume the explicit `dev` output. Keep
+          # the runtime module tree independent so boot closures do not retain
+          # the configured source tree or deployment signing inputs.
         '';
       }
     ];

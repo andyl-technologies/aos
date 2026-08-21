@@ -152,23 +152,29 @@ manifest contains **no secret values** — credentials appear only as handles
 
 ### Stock C++ Nix
 
-Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. It is
-the production evaluator.
-Starting on stock Nix is not a compromise on the model: the module system is
-*our* Nix code (`lib/modules.nix`) and evaluates identically on either
-evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
+AOS packages stock C++ Nix 2.24.12 from source in `pkgs/tools/nix.nix`, with
+`nix-instantiate --eval` present and tested. It is the production evaluator.
+The module system remains *our* Nix code (`lib/modules.nix`) and evaluates
+identically on either evaluator. The seam is exactly
+`eval entry.nix → JSON manifest`.
 
 Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
-nix-instantiate --store dummy:// --eval --strict --json \
-  --option restrict-eval true \                  # read only /run/aos-eval + the store
+nix-instantiate --store dummy:// --eval --strict --json --pure-eval \
+  --option restrict-eval true \                  # fixed fetchTree inputs only
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
-  -I /run/aos-eval \
-  -A manifest /run/aos-eval/entry.nix
+  --option allowed-uris '' \                     # no evaluator network capability
+  --expr '<generated expression using fixed-NAR-hash fetchTree inputs>'
 ```
+
+The generated expression is delivered on standard input and addresses every
+base-library, host-module, facts, and package-config tree through
+`builtins.fetchTree { type = "path"; path = ...; narHash = ...; }`. Pure
+evaluation admits those trees only after their authenticated NAR identities
+match. No mutable evaluator source pathname, ambient `/run` tree, parent store
+directory, or URI is admitted.
 
 The driver supplies the capabilities needed around stock Nix:
 

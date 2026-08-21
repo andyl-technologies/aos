@@ -150,5 +150,8 @@ in
       };
     };
 
-    meta.description = "AOS exposed registry and binary cache server package";
+    meta = {
+      description = "AOS exposed registry and binary cache server package";
+      license = "Apache-2.0";
+    };
   }

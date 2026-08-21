@@ -52,7 +52,9 @@
   anchorA = systemA.config.environment.etc.${anchorPath}.text;
   anchorB = systemB.config.environment.etc.${anchorPath}.text;
 
-  hostFixture = builtins.toFile "config-eval-preflight-host.nix" ''
+  hostSource = pkgs.runCommand "source" {} ''
+    mkdir -p "$out"
+    cat > "$out/host.nix" <<'EOF'
     {
       aos.networking.hostName = "config-eval-preflight";
       environment.etc."config-eval/preflight" = {
@@ -61,7 +63,9 @@
       };
       aos.security.pki.certificates = [ "-----BEGIN CERTIFICATE-----\nMAgwADAAAwIAAA==\n-----END CERTIFICATE-----\n" ];
     }
+    EOF
   '';
+  hostFixture = "${hostSource}/host.nix";
   factsFixture = builtins.toFile "config-eval-preflight-facts.json" "{}\n";
   baseLib = systemA.config.aos.config.evalAtBoot.baseLib;
   moduleAbi = systemA.config.aos.system.moduleAbi;
@@ -144,7 +148,7 @@ in
     pname = "config-eval-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.jq];
+    buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.jq pkgs.nix];
     phases = [
       {
         name = "check";
@@ -166,10 +170,15 @@ in
             "$first_root" \
             "$second_root"
 
+          eval_store_root="$TMPDIR/nix-eval-store"
+          eval_store="local?root=$eval_store_root"
+
           export AOS_ROOT="$eval_state"
           export AOS_PROFILE_ROOT="$profile_root"
           export APM_SYSTEM_CONFIG_DIR="$config_root"
           export AOS_NIX_EVAL_CACHE_ROOT="$cache_root"
+          export AOS_NIX_EVAL_STORE="$eval_store"
+          export NIX_REMOTE="$eval_store"
 
           ${pkgs.aos}/bin/apm __eval \
             --host-nix ${hostFixture} \

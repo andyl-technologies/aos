@@ -43,13 +43,14 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 
 use aos_core::output::{OutputMode, Printer};
 use aos_systemd::{FailedUnitsReport, JobResult, SettleOutcome, SystemdClient};
@@ -67,7 +68,7 @@ use crate::store::{filter_missing, import_nar};
 use crate::types::{
     ConfigGeneration, ConfigGenerationState, CrossAbiReEvalInputs, ImageGeneration,
     ImageGenerationState, ImageSlot, PackageMeta, ProfileScope, ReactivationPlan,
-    SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+    RecoveryPublication, RecoveryUkiEntry, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
 };
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
@@ -110,6 +111,10 @@ const ROOT_B_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-b-hash";
 const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
 const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
 const RUNNING_CMDLINE: &str = "/proc/cmdline";
+const IMMUTABLE_SECURE_BOOT_DB: &str = "/aos-toplevel/etc-basedir/aos/trust/secure-boot-db.crt";
+const IMMUTABLE_CONFIGURED_DB_DIR: &str = "/aos-toplevel/etc-basedir/apm/trusted-sb-certs.d";
+const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
+const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -161,23 +166,79 @@ struct ImageTransitionIntent {
 }
 
 /// Filesystem locations used by the offline A/B writer.
-struct ImageSlotLayout<'a> {
-    boot_root: &'a Path,
-    root_a: &'a Path,
-    root_b: &'a Path,
-    root_a_hash: &'a Path,
-    root_b_hash: &'a Path,
+struct ImageSlotLayout {
+    boot_root: PathBuf,
+    esp_devices: Vec<PathBuf>,
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
 }
 
-impl Default for ImageSlotLayout<'static> {
+impl Default for ImageSlotLayout {
     fn default() -> Self {
         Self {
-            boot_root: Path::new(BOOT_ROOT),
-            root_a: Path::new(ROOT_A_DEVICE),
-            root_b: Path::new(ROOT_B_DEVICE),
-            root_a_hash: Path::new(ROOT_A_HASH_DEVICE),
-            root_b_hash: Path::new(ROOT_B_HASH_DEVICE),
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: vec![PathBuf::from("/dev/disk/by-partlabel/ESP")],
+            root_a: PathBuf::from(ROOT_A_DEVICE),
+            root_b: PathBuf::from(ROOT_B_DEVICE),
+            root_a_hash: PathBuf::from(ROOT_A_HASH_DEVICE),
+            root_b_hash: PathBuf::from(ROOT_B_HASH_DEVICE),
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageMetadata {
+    esp_devices: Vec<PathBuf>,
+    devices: BootStorageDevices,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootStorageDevices {
+    root_a: PathBuf,
+    root_b: PathBuf,
+    root_a_hash: PathBuf,
+    root_b_hash: PathBuf,
+}
+
+impl ImageSlotLayout {
+    fn from_running_toplevel() -> Result<Self> {
+        Self::from_toplevel(Path::new(RUNNING_TOPLEVEL_LINK))
+    }
+
+    fn from_toplevel(toplevel: &Path) -> Result<Self> {
+        let path = toplevel.join("meta/boot-storage.json");
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("reading boot-storage metadata {}", path.display()))?;
+        let metadata: BootStorageMetadata = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing boot-storage metadata {}", path.display()))?;
+        if metadata.esp_devices.is_empty() {
+            bail!("boot-storage metadata has no EFI System Partition devices");
+        }
+        for device in metadata.esp_devices.iter().chain([
+            &metadata.devices.root_a,
+            &metadata.devices.root_b,
+            &metadata.devices.root_a_hash,
+            &metadata.devices.root_b_hash,
+        ]) {
+            if !device.is_absolute() || !device.starts_with("/dev") {
+                bail!(
+                    "boot-storage metadata contains unsafe device {}",
+                    device.display()
+                );
+            }
+        }
+        Ok(Self {
+            boot_root: PathBuf::from(BOOT_ROOT),
+            esp_devices: metadata.esp_devices,
+            root_a: metadata.devices.root_a,
+            root_b: metadata.devices.root_b,
+            root_a_hash: metadata.devices.root_a_hash,
+            root_b_hash: metadata.devices.root_b_hash,
+        })
     }
 }
 
@@ -217,6 +278,25 @@ fn load_running_image_generation_from(
     toplevel_link: &Path,
     cmdline: &Path,
 ) -> Result<ImageGeneration> {
+    load_running_image_generation_with_device_identity(
+        image_profile,
+        os_release,
+        toplevel_link,
+        cmdline,
+        block_device_identity,
+    )
+}
+
+fn load_running_image_generation_with_device_identity<F>(
+    image_profile: &Path,
+    os_release: &Path,
+    toplevel_link: &Path,
+    cmdline: &Path,
+    device_identity: F,
+) -> Result<ImageGeneration>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
     let state_path = image_profile.join(IMAGE_STATE_FILE);
     let state_bytes = std::fs::read(&state_path)
         .with_context(|| format!("reading image generation state {}", state_path.display()))?;
@@ -298,12 +378,9 @@ fn load_running_image_generation_from(
         .get("systemd.verity_root_data")
         .or_else(|| cmdline_fields.get("root"))
     {
-        let booted_slot = match root.as_str() {
-            ROOT_A_DEVICE => Some(ImageSlot::A),
-            ROOT_B_DEVICE => Some(ImageSlot::B),
-            _ => None,
-        };
-        if booted_slot.is_some() && booted_slot != Some(running.slot) {
+        let layout = ImageSlotLayout::from_toplevel(toplevel_link)?;
+        let booted_slot = image_slot_for_root(Path::new(root), &layout, device_identity)?;
+        if booted_slot != running.slot {
             bail!(
                 "running root slot disagrees with image generation {}",
                 running.number
@@ -311,6 +388,42 @@ fn load_running_image_generation_from(
         }
     }
     Ok(running)
+}
+
+/// Returns the kernel identity of an opened block device.
+fn block_device_identity(path: &Path) -> Result<u64> {
+    let device = std::fs::File::open(path)
+        .with_context(|| format!("opening image-slot device {}", path.display()))?;
+    let metadata = device.metadata()?;
+    if !metadata.file_type().is_block_device() {
+        bail!("image-slot path is not a block device: {}", path.display());
+    }
+    Ok(metadata.rdev())
+}
+
+/// Resolves a running root device to one distinct declared image slot.
+fn image_slot_for_root<F>(
+    root: &Path,
+    layout: &ImageSlotLayout,
+    device_identity: F,
+) -> Result<ImageSlot>
+where
+    F: Fn(&Path) -> Result<u64>,
+{
+    let root_identity = device_identity(root)?;
+    let root_a_identity = device_identity(&layout.root_a)?;
+    let root_b_identity = device_identity(&layout.root_b)?;
+    if root_a_identity == root_b_identity {
+        bail!("declared image slots resolve to the same block device");
+    }
+
+    if root_identity == root_a_identity {
+        Ok(ImageSlot::A)
+    } else if root_identity == root_b_identity {
+        Ok(ImageSlot::B)
+    } else {
+        bail!("running kernel root device is not a declared image slot");
+    }
 }
 
 fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
@@ -574,12 +687,13 @@ pub async fn install_system(
             crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
         let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
         printer.step(8, 8, "Staging inactive A/B image slot...");
+        let layout = ImageSlotLayout::from_running_toplevel()?;
         let staged = with_writable_boot(|| {
             stage_pending_image_generation_with(
                 image_profile,
                 &ProfileScope::System.profile_path(),
                 Path::new(NIX_OVERLAY_UPPER_STORE),
-                &ImageSlotLayout::default(),
+                &layout,
                 toplevel_meta,
                 &closure.registry_name,
                 image,
@@ -1304,8 +1418,8 @@ fn image_artifact_path(
 
 fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
     let source_len = std::fs::metadata(source)?.len();
-    let production_partlabel = destination.starts_with("/dev/disk/by-partlabel");
-    if production_partlabel {
+    let production_device = destination.starts_with("/dev");
+    if production_device {
         let resolved = std::fs::canonicalize(destination)
             .with_context(|| format!("resolving inactive image slot {}", destination.display()))?;
         if !resolved.starts_with("/dev") {
@@ -1323,8 +1437,8 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
         .open(destination)
         .with_context(|| format!("opening inactive image slot {}", destination.display()))?;
     let destination_metadata = output.metadata()?;
-    if (production_partlabel && !destination_metadata.file_type().is_block_device())
-        || (!production_partlabel
+    if (production_device && !destination_metadata.file_type().is_block_device())
+        || (!production_device
             && !(destination_metadata.file_type().is_block_device()
                 || destination_metadata.is_file()))
     {
@@ -1360,20 +1474,11 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
 /// rename UKIs, so they use this narrow bracket and restore read-only state on
 /// both success and failure.
 fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
-    let expected_device = PathBuf::from(read_toplevel_meta(
-        Path::new(RUNNING_TOPLEVEL_LINK),
-        "esp-device",
-    )?);
-    if !expected_device.is_absolute() || !expected_device.starts_with("/dev") {
-        bail!(
-            "running image records an unsafe EFI System Partition device: {}",
-            expected_device.display()
-        );
-    }
+    let layout = ImageSlotLayout::from_running_toplevel()?;
     validate_boot_esp_mount(
         Path::new(BOOT_ROOT),
         Path::new("/proc/self/mountinfo"),
-        &expected_device,
+        &layout.esp_devices,
         true,
     )?;
     with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
@@ -1382,17 +1487,14 @@ fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
 fn validate_boot_esp_mount(
     boot_root: &Path,
     mountinfo: &Path,
-    expected_device: &Path,
+    expected_devices: &[PathBuf],
     require_block_devices: bool,
 ) -> Result<()> {
     let boot_root = std::fs::canonicalize(boot_root)
         .with_context(|| format!("resolving EFI mount point {}", boot_root.display()))?;
-    let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
-        format!(
-            "resolving expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
+    if expected_devices.is_empty() {
+        bail!("no EFI System Partition devices are configured");
+    }
     let contents = std::fs::read_to_string(mountinfo)
         .with_context(|| format!("reading mount table {}", mountinfo.display()))?;
     let (mounted_root, filesystem_type, source) = contents
@@ -1430,37 +1532,45 @@ fn validate_boot_esp_mount(
     }
     // Open both paths before inspecting them so a symlink replacement cannot
     // change the device identity between validation and comparison.
-    let expected_file = std::fs::File::open(&expected_device).with_context(|| {
-        format!(
-            "opening expected EFI System Partition {}",
-            expected_device.display()
-        )
-    })?;
     let mounted_file = std::fs::File::open(source)
         .with_context(|| format!("opening mounted EFI device {source}"))?;
-    let expected_metadata = expected_file.metadata()?;
     let mounted_metadata = mounted_file.metadata()?;
-    if require_block_devices
-        && (!expected_metadata.file_type().is_block_device()
-            || !mounted_metadata.file_type().is_block_device())
-    {
+    if require_block_devices && !mounted_metadata.file_type().is_block_device() {
         bail!("EFI System Partition paths must both be block devices");
     }
     let mounted_device = std::fs::canonicalize(source)
         .with_context(|| format!("resolving mounted EFI device {source}"))?;
-    let same_device = if expected_metadata.file_type().is_block_device()
-        && mounted_metadata.file_type().is_block_device()
-    {
-        expected_metadata.rdev() == mounted_metadata.rdev()
-    } else {
-        mounted_device == expected_device
-    };
-    if !same_device {
+    let mut matched = false;
+    for expected_device in expected_devices {
+        // A failed replica must not prevent validating the ESP that firmware
+        // actually selected. Replication still reports the failed member when
+        // the transaction attempts to synchronize every configured ESP.
+        let Ok(expected_device) = std::fs::canonicalize(expected_device) else {
+            continue;
+        };
+        let Ok(expected_file) = std::fs::File::open(&expected_device) else {
+            continue;
+        };
+        let expected_metadata = expected_file.metadata()?;
+        if require_block_devices && !expected_metadata.file_type().is_block_device() {
+            bail!("EFI System Partition paths must both be block devices");
+        }
+        matched = if expected_metadata.file_type().is_block_device()
+            && mounted_metadata.file_type().is_block_device()
+        {
+            expected_metadata.rdev() == mounted_metadata.rdev()
+        } else {
+            mounted_device == expected_device
+        };
+        if matched {
+            break;
+        }
+    }
+    if !matched {
         bail!(
-            "{} is mounted from {}, expected {}",
+            "{} is mounted from {}, not a configured EFI System Partition",
             boot_root.display(),
-            mounted_device.display(),
-            expected_device.display()
+            mounted_device.display()
         );
     }
     Ok(())
@@ -1507,16 +1617,54 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
 }
 
 fn stage_slot_artifacts(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     target_slot: ImageSlot,
     image_store: &Path,
     image: &SysrootImageEntry,
     uki_entry: &str,
-    reusable_uki: Option<&Path>,
+    reusable_ukis: &[PathBuf],
+    recovery: Option<&crate::types::RecoveryGeneration>,
 ) -> Result<()> {
+    stage_slot_artifacts_with(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        uki_entry,
+        reusable_ukis,
+        recovery,
+        |_| Ok(()),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StageCheckpoint {
+    InactiveEntryDisarmed,
+    RootWritten,
+    VerityWritten,
+    NormalUkiStaged,
+    RecoveryUkiPublished,
+    RecoveryEntryPublished,
+    NormalUkiPublished,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_slot_artifacts_with<F>(
+    layout: &ImageSlotLayout,
+    target_slot: ImageSlot,
+    image_store: &Path,
+    image: &SysrootImageEntry,
+    uki_entry: &str,
+    reusable_ukis: &[PathBuf],
+    recovery: Option<&crate::types::RecoveryGeneration>,
+    mut checkpoint: F,
+) -> Result<()>
+where
+    F: FnMut(StageCheckpoint) -> Result<()>,
+{
     let (root_device, hash_device, legacy_uki_name) = match target_slot {
-        ImageSlot::A => (layout.root_a, layout.root_a_hash, "uki-a.efi"),
-        ImageSlot::B => (layout.root_b, layout.root_b_hash, "uki-b.efi"),
+        ImageSlot::A => (&layout.root_a, &layout.root_a_hash, "uki-a.efi"),
+        ImageSlot::B => (&layout.root_b, &layout.root_b_hash, "uki-b.efi"),
     };
     let root = image_artifact_path(image_store, image.root_image.as_deref(), "root.img")?;
     let verity = image
@@ -1555,26 +1703,67 @@ fn stage_slot_artifacts(
         ImageSlot::A => "a",
         ImageSlot::B => "b",
     };
-    let temp = staging_dir.join(format!("slot-{slot_name}.efi"));
-    if !temp.exists() {
-        if let Some(reusable) = reusable_uki.filter(|path| path.is_file()) {
-            // Disarm the prior inactive-slot UKI before touching its root.
-            // A crash from this point until candidate publication leaves no
-            // firmware-discoverable entry pointing at a partial slot.
-            std::fs::rename(reusable, &temp)?;
-            if let Some(reusable_parent) = reusable.parent() {
-                sync_directory(reusable_parent)?;
-            }
+    let disabled_prefix = format!("disabled-{slot_name}-");
+    let existing_disabled = std::fs::read_dir(&staging_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&disabled_prefix)
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    if !reusable_ukis.is_empty() && !existing_disabled.is_empty() {
+        // A power loss can occur after the replacement candidate is renamed
+        // into EFI/Linux but before the old disabled files are removed. The
+        // only safe mixed state is that exact final destination. Disarm it
+        // again and replay the whole root/hash/UKI transaction; any other
+        // discoverable file is ambiguous and remains fail-closed.
+        if reusable_ukis.len() != 1 || reusable_ukis[0] != destination {
+            bail!("inactive slot has ambiguous discoverable and previously disabled UKIs");
+        }
+        let replay = staging_dir.join(format!("slot-{slot_name}.efi"));
+        std::fs::rename(&destination, &replay)?;
+        sync_directory(parent)?;
+        sync_directory(&staging_dir)?;
+    }
+    if existing_disabled.iter().any(|path| {
+        std::fs::symlink_metadata(path)
+            .map(|metadata| !metadata.file_type().is_file())
+            .unwrap_or(true)
+    }) {
+        bail!("inactive-slot staging contains a non-regular disabled UKI");
+    }
+    if existing_disabled.is_empty() {
+        for (index, reusable) in reusable_ukis.iter().enumerate() {
+            // Disarm every discoverable inactive-slot UKI before touching its
+            // root. Unknown UKIs are rejected by discovery before this point.
+            let name = reusable
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("inactive UKI has no UTF-8 filename")?;
+            std::fs::rename(
+                reusable,
+                staging_dir.join(format!("{disabled_prefix}{index}-{name}")),
+            )?;
+        }
+        if !reusable_ukis.is_empty() {
+            sync_directory(&layout.boot_root.join("EFI/Linux"))?;
             sync_directory(&staging_dir)?;
+            checkpoint(StageCheckpoint::InactiveEntryDisarmed)?;
         }
     }
+    let temp = staging_dir.join(format!("slot-{slot_name}.efi"));
 
     // The replacement UKI is published last: at every earlier crash point
     // sd-boot can see only the still-running slot, never a UKI that targets a
     // partial root.
     copy_payload_to_slot(&root, root_device)?;
+    checkpoint(StageCheckpoint::RootWritten)?;
     if let Some(verity) = verity {
         copy_payload_to_slot(&verity, hash_device)?;
+        checkpoint(StageCheckpoint::VerityWritten)?;
     }
     let mut input = OpenOptions::new().read(true).open(&uki)?;
     let mut output = OpenOptions::new()
@@ -1583,35 +1772,450 @@ fn stage_slot_artifacts(
         .truncate(true)
         .mode(0o644)
         .open(&temp)?;
-    std::io::copy(&mut input, &mut output)?;
+    let mut normal_hasher = Sha256::new();
+    let mut normal_size = 0_u64;
+    let mut normal_buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = input.read(&mut normal_buffer)?;
+        if read == 0 {
+            break;
+        }
+        normal_hasher.update(&normal_buffer[..read]);
+        output.write_all(&normal_buffer[..read])?;
+        normal_size = normal_size
+            .checked_add(u64::try_from(read)?)
+            .context("normal UKI size overflow")?;
+    }
+    let normal_digest = hex::encode(normal_hasher.finalize());
     output.sync_all()?;
+    checkpoint(StageCheckpoint::NormalUkiStaged)?;
+
+    if let Some(recovery) = recovery {
+        let recovery_source =
+            image_artifact_path(image_store, Some(&recovery.source_path), "recovery UKI")?;
+        let recovery_entry_source = image_artifact_path(
+            image_store,
+            Some(match target_slot {
+                ImageSlot::A => "recovery-a.conf",
+                ImageSlot::B => "recovery-b.conf",
+            }),
+            "recovery loader entry",
+        )?;
+        let recovery_temp = staging_dir.join(format!("recovery-{slot_name}.efi"));
+        let entry_temp = staging_dir.join(format!("recovery-{slot_name}.conf"));
+        copy_recovery_file(
+            &recovery_source,
+            &recovery_temp,
+            recovery.byte_size,
+            &recovery.sha256,
+        )?;
+        let entry_bytes = std::fs::read(&recovery_entry_source)?;
+        if entry_bytes.len() > 4096 {
+            bail!("recovery loader entry exceeds its size bound");
+        }
+        let mut entry_output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o644)
+            .open(&entry_temp)?;
+        entry_output.write_all(&entry_bytes)?;
+        entry_output.sync_all()?;
+        sync_directory(&staging_dir)?;
+
+        let recovery_destination = layout.boot_root.join(&recovery.uki_path);
+        let recovery_parent = recovery_destination
+            .parent()
+            .context("recovery UKI destination has no parent")?;
+        std::fs::create_dir_all(recovery_parent)?;
+        std::fs::rename(&recovery_temp, &recovery_destination)?;
+        sync_directory(recovery_parent)?;
+        verify_regular_file(
+            &recovery_destination,
+            recovery.byte_size,
+            &recovery.sha256,
+            "installed recovery UKI",
+        )?;
+        checkpoint(StageCheckpoint::RecoveryUkiPublished)?;
+
+        let entry_destination = layout.boot_root.join(&recovery.entry_path);
+        let entry_parent = entry_destination
+            .parent()
+            .context("recovery loader entry destination has no parent")?;
+        std::fs::create_dir_all(entry_parent)?;
+        std::fs::rename(&entry_temp, &entry_destination)?;
+        sync_directory(entry_parent)?;
+        if std::fs::read(&entry_destination)? != entry_bytes {
+            bail!("installed recovery loader entry failed read-back verification");
+        }
+        checkpoint(StageCheckpoint::RecoveryEntryPublished)?;
+    }
+
+    // Candidate discoverability is the final publication boundary. Recovery
+    // is replaced first so a bootloader can never select a normal candidate
+    // whose matching recovery copy is still missing or stale.
     std::fs::rename(&temp, &destination)?;
     sync_directory(parent)?;
+    verify_regular_file(
+        &destination,
+        normal_size,
+        &normal_digest,
+        "installed normal UKI",
+    )?;
+    checkpoint(StageCheckpoint::NormalUkiPublished)?;
+    for entry in std::fs::read_dir(&staging_dir)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&disabled_prefix)
+        {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
     sync_directory(&staging_dir)
 }
 
-fn reusable_slot_uki_path(
-    layout: &ImageSlotLayout<'_>,
+fn copy_recovery_file(source: &Path, destination: &Path, size: u64, digest: &str) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if !metadata.file_type().is_file() || metadata.len() != size {
+        bail!("recovery source is not the cataloged regular file size");
+    }
+    let mut input = std::fs::File::open(source)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .open(destination)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        output.write_all(&buffer[..read])?;
+    }
+    output.sync_all()?;
+    let actual = hex::encode(hasher.finalize());
+    if actual != digest {
+        bail!("recovery source digest does not match the signed catalog");
+    }
+    Ok(())
+}
+
+fn verify_regular_file(path: &Path, size: u64, digest: &str, label: &str) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() != size {
+        bail!("{label} failed type or size read-back verification");
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if hex::encode(hasher.finalize()) != digest {
+        bail!("{label} failed digest read-back verification");
+    }
+    Ok(())
+}
+
+fn recovery_generation_for_slot(
+    image_store: &Path,
+    image: &SysrootImageEntry,
+    target_slot: ImageSlot,
+) -> Result<Option<crate::types::RecoveryGeneration>> {
+    if image.recovery_ukis.is_empty() {
+        return Ok(None);
+    }
+    let copy = match target_slot {
+        ImageSlot::A => UkiSlot::A,
+        ImageSlot::B => UkiSlot::B,
+    };
+    let entry = image
+        .recovery_ukis
+        .iter()
+        .find(|entry| entry.copy == copy)
+        .with_context(|| format!("image records no recovery copy for slot {target_slot:?}"))?;
+    let (source_path, source_entry, uki_path, entry_path) = match target_slot {
+        ImageSlot::A => (
+            "recovery-a.efi",
+            "recovery-a.conf",
+            "EFI/AOS/recovery-a.efi",
+            "loader/entries/recovery-a.conf",
+        ),
+        ImageSlot::B => (
+            "recovery-b.efi",
+            "recovery-b.conf",
+            "EFI/AOS/recovery-b.efi",
+            "loader/entries/recovery-b.conf",
+        ),
+    };
+    if entry.path != source_path || entry.entry_path != source_entry {
+        bail!("recovery catalog paths are not canonical for slot {target_slot:?}");
+    }
+    let source = image_artifact_path(image_store, Some(source_path), "recovery UKI")?;
+    let metadata = std::fs::symlink_metadata(&source)?;
+    if !metadata.file_type().is_file() || metadata.len() != entry.byte_size {
+        bail!("recovery source size changed after catalog verification");
+    }
+    let mut file = std::fs::File::open(&source)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if hex::encode(hasher.finalize()) != entry.sha256 {
+        bail!("recovery source digest changed after catalog verification");
+    }
+    Ok(Some(crate::types::RecoveryGeneration {
+        copy: target_slot,
+        uki_path: uki_path.to_string(),
+        entry_path: entry_path.to_string(),
+        source_path: source_path.to_string(),
+        sha256: entry.sha256.clone(),
+        byte_size: entry.byte_size,
+        release: entry.release.clone(),
+        recovery_abi: entry.recovery_abi,
+    }))
+}
+
+fn discover_installed_slot_ukis(
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
-) -> Option<PathBuf> {
-    let previous = state
-        .generations
-        .iter()
-        .rev()
-        .find(|generation| generation.slot == slot)?;
-    let entry = resolve_installed_uki_entry_with(
-        layout.boot_root,
-        &previous.uki_path,
-        ExhaustedEntry::Allow,
-    )
-    .ok()?;
-    let parent = Path::new(&previous.uki_path).parent().map_or_else(
-        || layout.boot_root.to_path_buf(),
-        |path| layout.boot_root.join(path),
+    intended_uki: &str,
+    authenticate_slot: bool,
+) -> Result<Vec<PathBuf>> {
+    let linux = layout.boot_root.join("EFI/Linux");
+    let mut recorded = std::collections::BTreeMap::new();
+    for generation in &state.generations {
+        let path = Path::new(&generation.uki_path);
+        if path.parent() != Some(Path::new("EFI/Linux")) {
+            bail!("image state records a UKI outside EFI/Linux");
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("recorded UKI has no UTF-8 filename")?;
+        let stable = stable_uki_entry_id(name)?;
+        if recorded
+            .insert(stable.clone(), generation.slot)
+            .is_some_and(|found| found != generation.slot)
+        {
+            bail!("image state assigns UKI {stable} to both slots");
+        }
+    }
+    let intended_name = Path::new(intended_uki)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("intended UKI has no UTF-8 filename")?;
+    let intended_stable = stable_uki_entry_id(intended_name)?;
+    if recorded
+        .insert(intended_stable.clone(), slot)
+        .is_some_and(|found| found != slot)
+    {
+        bail!("intended UKI {intended_stable} conflicts with recorded slot state");
+    }
+
+    let mut discovered = Vec::new();
+    if !linux.is_dir() {
+        bail!("ESP has no EFI/Linux directory");
+    }
+    let mut count = 0_usize;
+    for entry in std::fs::read_dir(&linux)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("ESP UKI filename is not UTF-8"))?;
+        if !name.ends_with(".efi") {
+            continue;
+        }
+        count += 1;
+        if count > 128 {
+            bail!("ESP contains more than 128 normal UKIs");
+        }
+        if !entry.file_type()?.is_file() {
+            bail!("ESP normal UKI is not a regular file: {name}");
+        }
+        let stable = stable_uki_entry_id(&name)?;
+        let recorded_slot = recorded
+            .get(&stable)
+            .with_context(|| format!("ESP contains unrecorded normal UKI {name}"))?;
+        let authoritative_slot = if authenticate_slot {
+            reverify_installed_uki(&entry.path())?;
+            let cmdline = read_uki_section_text(&entry.path(), ".cmdline")?;
+            let signed_slot = match aos_boot_identity::parse_normal(&cmdline)
+                .with_context(|| {
+                    format!("installed UKI {name} has an invalid signed command line")
+                })?
+                .slot
+            {
+                aos_boot_identity::BootSlot::A => ImageSlot::A,
+                aos_boot_identity::BootSlot::B => ImageSlot::B,
+            };
+            if *recorded_slot != signed_slot {
+                bail!(
+                    "image state assigns UKI {name} to slot {recorded_slot:?}, but its authenticated command line selects {signed_slot:?}"
+                );
+            }
+            signed_slot
+        } else {
+            *recorded_slot
+        };
+        if authoritative_slot == slot {
+            discovered.push(entry.path());
+        }
+    }
+    Ok(discovered)
+}
+
+fn validate_known_good_recovery(
+    layout: &ImageSlotLayout,
+    state: &ImageGenerationState,
+    running: &ImageGeneration,
+) -> Result<()> {
+    if state.recovery_known_good != Some(running.slot) {
+        bail!("recovery known-good evidence does not identify the running slot");
+    }
+    let recovery = running
+        .recovery
+        .as_ref()
+        .context("running generation has no recovery-copy evidence")?;
+    if recovery.copy != running.slot {
+        bail!("running generation recovery evidence names the wrong slot");
+    }
+    if recovery.release != running.version {
+        bail!("running recovery evidence disagrees with the authenticated image release");
+    }
+    if recovery.recovery_abi != SUPPORTED_RECOVERY_ABI {
+        bail!("running recovery evidence names an unsupported recovery ABI");
+    }
+    let (uki_path, entry_path, suffix) = match running.slot {
+        ImageSlot::A => (
+            "EFI/AOS/recovery-a.efi",
+            "loader/entries/recovery-a.conf",
+            "A",
+        ),
+        ImageSlot::B => (
+            "EFI/AOS/recovery-b.efi",
+            "loader/entries/recovery-b.conf",
+            "B",
+        ),
+    };
+    if recovery.uki_path != uki_path || recovery.entry_path != entry_path {
+        bail!("running recovery evidence has noncanonical ESP paths");
+    }
+    verify_regular_file(
+        &layout.boot_root.join(uki_path),
+        recovery.byte_size,
+        &recovery.sha256,
+        "known-good recovery UKI",
+    )?;
+    let recovery_path = layout.boot_root.join(uki_path);
+    reverify_installed_uki(&recovery_path)?;
+    aos_boot_identity::parse_recovery(&read_uki_section_text(&recovery_path, ".cmdline")?)
+        .context("known-good recovery UKI has a noncanonical signed command line")?;
+    let os_release = parse_uki_os_release(&recovery_path)?;
+    require_uki_os_release(&os_release, "VERSION_ID", &recovery.release)?;
+    require_uki_os_release(&os_release, "AOS_RECOVERY_COPY", suffix)?;
+    require_uki_os_release(
+        &os_release,
+        "AOS_RECOVERY_ABI",
+        &SUPPORTED_RECOVERY_ABI.to_string(),
+    )?;
+    let expected_entry = format!(
+        "title AOS Recovery {suffix} ({})\nefi /EFI/AOS/recovery-{}.efi\n",
+        recovery.release,
+        suffix.to_ascii_lowercase()
     );
-    let path = parent.join(entry);
-    path.is_file().then_some(path)
+    let installed_entry = std::fs::read(layout.boot_root.join(entry_path))?;
+    if installed_entry != expected_entry.as_bytes() {
+        bail!("known-good recovery loader entry failed exact verification");
+    }
+    Ok(())
+}
+
+/// Reads a required PE section as UTF-8 text after removing section padding.
+fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
+    let temporary = tempfile::Builder::new()
+        .prefix("aos-installed-uki-section-")
+        .tempfile()
+        .context("creating temporary UKI section file")?;
+    let output = std::process::Command::new("objcopy")
+        .arg("-O")
+        .arg("binary")
+        .arg(format!("--only-section={section}"))
+        .arg(uki)
+        .arg(temporary.path())
+        .output()
+        .with_context(|| format!("extracting {section} from {}", uki.display()))?;
+    if !output.status.success() {
+        bail!(
+            "extracting {section} from {} failed: {}",
+            uki.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let bytes = std::fs::read(temporary.path())?;
+    if bytes.is_empty() {
+        bail!("UKI {} has no {section} section", uki.display());
+    }
+    let content_end = bytes
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map_or(0, |index| index + 1);
+    let text = std::str::from_utf8(&bytes[..content_end])
+        .with_context(|| format!("{section} in {} is not UTF-8", uki.display()))?;
+    Ok(text.to_string())
+}
+
+fn parse_uki_os_release(uki: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let text = read_uki_section_text(uki, ".osrel")?;
+    let mut fields = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, raw) = line
+            .split_once('=')
+            .with_context(|| format!("malformed signed os-release line in {}", uki.display()))?;
+        let value = raw
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(raw);
+        if fields.insert(key.to_string(), value.to_string()).is_some() {
+            bail!("signed os-release in {} repeats {key}", uki.display());
+        }
+    }
+    Ok(fields)
+}
+
+fn require_uki_os_release(
+    fields: &std::collections::BTreeMap<String, String>,
+    key: &str,
+    expected: &str,
+) -> Result<()> {
+    let actual = fields
+        .get(key)
+        .with_context(|| format!("recovery UKI signed os-release has no {key}"))?;
+    if actual != expected {
+        bail!("recovery UKI signed {key} is {actual:?}, expected {expected:?}");
+    }
+    Ok(())
 }
 
 fn image_uki_for_slot<'a>(
@@ -1648,7 +2252,7 @@ fn image_uki_for_slot<'a>(
 }
 
 fn cleanup_replaced_slot_ukis(
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     state: &ImageGenerationState,
     slot: ImageSlot,
     keep_recorded: &str,
@@ -1665,7 +2269,7 @@ fn cleanup_replaced_slot_ukis(
         .iter()
         .filter(|generation| generation.slot == slot)
     {
-        let Ok(entry) = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path) else {
+        let Ok(entry) = resolve_installed_uki_entry(&layout.boot_root, &previous.uki_path) else {
             continue;
         };
         if stable_uki_entry_id(&entry)? == keep_entry {
@@ -1713,7 +2317,7 @@ fn stage_pending_image_generation_with<F>(
     profile: &Path,
     system_profile: &Path,
     upper_store: &Path,
-    layout: &ImageSlotLayout<'_>,
+    layout: &ImageSlotLayout,
     package: &PackageMeta,
     registry: &str,
     image: &SysrootImageEntry,
@@ -1754,16 +2358,26 @@ where
             .find(|generation| generation.number == number)
             .cloned()
     }) {
-        if pending.toplevel != package.store_path {
-            bail!(
-                "image generation {} is already pending; refusing to replace it",
-                pending.number
-            );
+        // A crash may occur after the authenticated pending record is durable
+        // but before its UKI is published. In that case, fall through and
+        // reconstruct the same slot transaction instead of requiring an entry
+        // that deliberately does not exist yet.
+        if let Ok(pending_entry) = resolve_installed_uki_entry(&layout.boot_root, &pending.uki_path)
+        {
+            if pending.toplevel != package.store_path {
+                bail!(
+                    "image generation {} is already published and pending; refusing to replace it",
+                    pending.number
+                );
+            }
+            select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
+            cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
+            replicate_boot_partitions(layout)?;
+            return Ok(pending);
         }
-        let pending_entry = resolve_installed_uki_entry(layout.boot_root, &pending.uki_path)?;
-        select_image_default_with(profile, &mut state, pending.number, &pending_entry, select)?;
-        cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
-        return Ok(pending);
+        if pending.toplevel != package.store_path {
+            abort_unpublished_image_selection(profile, &mut state, pending.number)?;
+        }
     }
 
     // Allocate the persistent image number before naming the ESP entry. The
@@ -1790,21 +2404,48 @@ where
     let installed_uki = generation_uki_path(&recorded_uki, number)?;
     let entry_id = validate_staged_uki_path(&installed_uki)?;
 
+    let recovery = recovery_generation_for_slot(image_store, image, target_slot)?;
+    if recovery.is_some() {
+        validate_known_good_recovery(layout, &state, &running)?;
+    } else if state.recovery_known_good.is_some() || running.recovery.is_some() {
+        bail!("recovery-enabled image state cannot stage an image without recovery metadata");
+    }
+    let reusable_ukis = discover_installed_slot_ukis(
+        layout,
+        &state,
+        target_slot,
+        &installed_uki,
+        recovery.is_some(),
+    )?;
+
     // Copy the lower-backed running evaluator before the inactive slot is
     // overwritten. The target closure arrived through Nix and is copied too,
     // making both baselib roots physical `/var` retention rather than dangling
     // symlinks into whichever immutable root happens to be mounted.
     persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
     persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
-    let reusable_uki = reusable_slot_uki_path(layout, &state, target_slot);
-    stage_slot_artifacts(
-        layout,
-        target_slot,
-        image_store,
-        image,
-        &installed_uki,
-        reusable_uki.as_deref(),
-    )?;
+    if let Some(artifact) = &recovery {
+        let publication = RecoveryPublication {
+            target: target_slot,
+            artifact: artifact.clone(),
+        };
+        if let Some(existing) = &state.recovery_pending {
+            if existing != &publication {
+                bail!(
+                    "unfinished recovery publication targets slot {:?}; refusing slot {target_slot:?}",
+                    existing.target
+                );
+            }
+        } else {
+            state.recovery_pending = Some(publication);
+            write_atomic_durable(
+                &profile.join(IMAGE_STATE_FILE),
+                &serde_json::to_vec_pretty(&state)?,
+            )?;
+        }
+    } else if state.recovery_pending.is_some() {
+        bail!("unfinished recovery publication cannot resume without catalog metadata");
+    }
 
     // A failed counted-boot attempt leaves an authenticated generation record
     // behind after fallback. Re-arm that record instead of appending a second
@@ -1832,6 +2473,7 @@ where
             .and_then(|uki| uki.expected_pcr11.clone())
             .or_else(|| image.expected_pcr11.clone()),
         initrd_pcr11: None,
+        recovery: recovery.clone(),
         created_at,
     };
     if let Some(index) = existing {
@@ -1839,6 +2481,26 @@ where
     } else {
         state.generations.push(generation.clone());
     }
+    // Authenticate and mark the generation pending before any
+    // firmware-discoverable UKI is published. A crash may leave a pending
+    // record without an entry, which is safe and retryable; the inverse would
+    // let firmware select a candidate that boot assessment refuses to bless.
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&state)?,
+    )?;
+    prepare_image_selection(profile, &mut state, number, &entry_id)?;
+    stage_slot_artifacts(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        &installed_uki,
+        &reusable_ukis,
+        recovery.as_ref(),
+    )?;
+    replicate_boot_partitions(layout)?;
+    state.recovery_pending = None;
     crate::store::create_baselib_gc_root(
         &profile.join(format!("image-gen-{number}")),
         module_abi,
@@ -1848,7 +2510,42 @@ where
     crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
     select_image_default_with(profile, &mut state, number, &entry_id, select)?;
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
+    replicate_boot_partitions(layout)?;
     Ok(generation)
+}
+
+/// Clears a durable selection intent whose UKI was never published.
+fn abort_unpublished_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+) -> Result<()> {
+    if state.pending != Some(target) {
+        bail!("cannot abort image generation {target}: it is not pending");
+    }
+    // Removing the intent first is crash-safe: the authenticated pending
+    // record still prevents an unknown image from being blessed, while a
+    // retry can repeat this cleanup. This path is called only after proving
+    // that no firmware-discoverable candidate exists.
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    state.pending = None;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(state)?,
+    )
+}
+
+fn replicate_boot_partitions(layout: &ImageSlotLayout) -> Result<()> {
+    if layout.esp_devices.len() <= 1 {
+        return Ok(());
+    }
+    let status = std::process::Command::new("aos-sync-esps")
+        .status()
+        .context("replicating EFI System Partitions")?;
+    if !status.success() {
+        bail!("EFI System Partition replication failed with {status}");
+    }
+    Ok(())
 }
 
 /// Selects an older A/B image generation durably with `bootctl set-default`.
@@ -2117,7 +2814,33 @@ fn select_image_default_with<F>(
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    prepare_image_selection(profile, state, target, entry_id)?;
     let stable_entry_id = stable_uki_entry_id(entry_id)?;
+
+    // sd-boot renames counted entries before launching them (for example,
+    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
+    // stable entry ID even when the caller clears an older exact override and
+    // lets the image-owned pattern choose the newest live generation.
+    select(&stable_entry_id)?;
+    let mut committed = state.clone();
+    committed.default = target;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&committed)?,
+    )?;
+    remove_file_durable(&profile.join(IMAGE_TRANSITION_INTENT))?;
+    *state = committed;
+    Ok(())
+}
+
+/// Durably authenticates a candidate and records selection intent.
+fn prepare_image_selection(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+    entry_id: &str,
+) -> Result<()> {
+    stable_uki_entry_id(entry_id)?;
     let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
     if intent_path.is_file() {
         let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
@@ -2149,20 +2872,6 @@ where
         &serde_json::to_vec_pretty(&prepared)?,
     )?;
     *state = prepared;
-
-    // sd-boot renames counted entries before launching them (for example,
-    // `image+3.efi` becomes `image+2-1.efi`). Selection therefore receives the
-    // stable entry ID even when the caller clears an older exact override and
-    // lets the image-owned pattern choose the newest live generation.
-    select(&stable_entry_id)?;
-    let mut committed = state.clone();
-    committed.default = target;
-    write_atomic_durable(
-        &profile.join(IMAGE_STATE_FILE),
-        &serde_json::to_vec_pretty(&committed)?,
-    )?;
-    remove_file_durable(&intent_path)?;
-    *state = committed;
     Ok(())
 }
 
@@ -3907,6 +4616,8 @@ fn validate_sysroot_secure_boot_in(
                         || !uki.sbat.is_empty()
                         || uki.expected_pcr11.is_some()
                 })
+                || !img.recovery_ukis.is_empty()
+                || img.recovery_bundle.is_some()
         })
         .collect();
     if signed_images.is_empty() {
@@ -3949,10 +4660,17 @@ fn validate_image_secure_boot(
     catalog: &SbCertsToml,
     db_cert: Option<&Path>,
 ) -> Result<()> {
+    if !img.recovery_ukis.is_empty() && img.ukis.is_empty() {
+        bail!("recovery UKI metadata requires slot-specific normal UKI metadata");
+    }
     if !img.ukis.is_empty() {
         for uki in &img.ukis {
             validate_uki_secure_boot(img, uki, catalog, db_cert)?;
         }
+        for recovery in &img.recovery_ukis {
+            validate_recovery_uki_secure_boot(img, recovery, catalog, db_cert)?;
+        }
+        validate_recovery_bundle_files(img, db_cert)?;
         return Ok(());
     }
     // 1. Signer cert must be active and not revoked.
@@ -3996,6 +4714,116 @@ fn validate_image_secure_boot(
         }
     }
 
+    Ok(())
+}
+
+fn validate_recovery_bundle_files(
+    image: &crate::types::SysrootImageEntry,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    let Some(bundle) = &image.recovery_bundle else {
+        if !image.recovery_ukis.is_empty() {
+            bail!("recovery UKIs have no authenticated recovery bundle manifest");
+        }
+        return Ok(());
+    };
+    for component in &bundle.components {
+        let artifact = image_artifact_path(
+            Path::new(&image.store_path),
+            Some(&component.path),
+            "recovery bundle component",
+        )?;
+        verify_regular_file(
+            &artifact,
+            component.byte_size,
+            &component.sha256,
+            "recovery bundle component",
+        )?;
+    }
+    let store = Path::new(&image.store_path);
+    let manifest = image_artifact_path(store, Some("recovery-bundle.json"), "recovery bundle")?;
+    let signature = image_artifact_path(
+        store,
+        Some("recovery-bundle.json.sig"),
+        "recovery bundle signature",
+    )?;
+    if std::fs::metadata(&manifest)?.len() > 256 * 1024
+        || std::fs::metadata(&signature)?.len() > 16 * 1024
+    {
+        bail!("recovery bundle manifest or signature exceeds its size bound");
+    }
+    let external: crate::types::RecoveryBundleManifest =
+        serde_json::from_slice(&std::fs::read(&manifest)?)?;
+    if &external != bundle {
+        bail!("external recovery bundle manifest disagrees with the signed catalog");
+    }
+    if let Some(db_cert) = db_cert {
+        crate::registry_ops::verify_detached_db_signature(&manifest, &signature, db_cert)?;
+    }
+    Ok(())
+}
+
+fn validate_recovery_uki_secure_boot(
+    image: &crate::types::SysrootImageEntry,
+    recovery: &RecoveryUkiEntry,
+    catalog: &SbCertsToml,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    if !catalog.accepts_signer(&recovery.sb_signer_cert_sha256) {
+        bail!(
+            "Secure Boot validation failed for image '{}' recovery {:?}: signer cert {} is not active",
+            image.format,
+            recovery.copy,
+            recovery.sb_signer_cert_sha256
+        );
+    }
+    if let Some((component, found, floor)) = catalog.first_below_floor(&recovery.sbat) {
+        bail!(
+            "Secure Boot validation failed for image '{}' recovery {:?}: SBAT component '{component}' generation {found} is below floor {floor}",
+            image.format,
+            recovery.copy
+        );
+    }
+    let artifact = image_artifact_path(
+        Path::new(&image.store_path),
+        Some(&recovery.path),
+        "recovery UKI",
+    )?;
+    let metadata = std::fs::symlink_metadata(&artifact)?;
+    if !metadata.file_type().is_file() || metadata.len() != recovery.byte_size {
+        bail!(
+            "downloaded recovery UKI for image '{}' copy {:?} has the wrong type or size",
+            image.format,
+            recovery.copy
+        );
+    }
+    let mut file = std::fs::File::open(&artifact)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hex::encode(hasher.finalize());
+    if digest != recovery.sha256 {
+        bail!(
+            "downloaded recovery UKI for image '{}' copy {:?} has digest {digest}, expected {}",
+            image.format,
+            recovery.copy,
+            recovery.sha256
+        );
+    }
+    if let Some(db_cert) = db_cert {
+        reverify_uki(&artifact, db_cert).with_context(|| {
+            format!(
+                "re-verifying downloaded recovery UKI for image '{}' copy {:?}",
+                image.format, recovery.copy
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -4107,6 +4935,123 @@ fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
             "legacy image artifact {store_path} contains {count} UKIs; deterministic selection requires slot metadata"
         ),
     }
+}
+
+/// Re-verifies an installed UKI against the immutable configured db snapshot.
+fn reverify_installed_uki(uki: &Path) -> Result<()> {
+    let certificates = immutable_active_db_certificates()?;
+    let mut temporary_certificates = Vec::new();
+    for certificate in certificates {
+        let mut temporary = tempfile::Builder::new()
+            .prefix("aos-configured-db-")
+            .suffix(".crt")
+            .tempfile()
+            .context("creating temporary configured db certificate")?;
+        temporary
+            .write_all(certificate.as_bytes())
+            .context("writing temporary configured db certificate")?;
+        let validation = std::process::Command::new("openssl")
+            .args(["x509", "-noout", "-in"])
+            .arg(temporary.path())
+            .output()
+            .context("validating immutable configured db certificate")?;
+        if !validation.status.success() {
+            bail!("immutable configured db snapshot contains an invalid X.509 certificate");
+        }
+        temporary_certificates.push(temporary);
+    }
+
+    let mut failures = Vec::new();
+    for temporary in &temporary_certificates {
+        match reverify_uki(uki, temporary.path()) {
+            Ok(()) => return Ok(()),
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    bail!(
+        "installed UKI {} is not authorized by the immutable configured db snapshot: {}",
+        uki.display(),
+        failures.join("; ")
+    )
+}
+
+fn immutable_active_db_certificates() -> Result<Vec<String>> {
+    let mut sources = vec![PathBuf::from(IMMUTABLE_SECURE_BOOT_DB)];
+    let configured_dir = Path::new(IMMUTABLE_CONFIGURED_DB_DIR);
+    if configured_dir.exists() {
+        if !configured_dir.is_dir() {
+            bail!("immutable configured db certificate path is not a directory");
+        }
+        let mut registry_sources = std::fs::read_dir(configured_dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        registry_sources.sort();
+        sources.extend(registry_sources);
+    }
+
+    let mut certificates = Vec::new();
+    for source in sources {
+        let metadata = std::fs::metadata(&source).with_context(|| {
+            format!(
+                "inspecting configured db certificate source {}",
+                source.display()
+            )
+        })?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1024 * 1024 {
+            bail!(
+                "configured db certificate source {} is empty, oversized, or not a regular file",
+                source.display()
+            );
+        }
+        let bundle = std::fs::read_to_string(&source).with_context(|| {
+            format!(
+                "reading configured db certificate source {}",
+                source.display()
+            )
+        })?;
+        certificates.extend(parse_pem_certificates(&bundle).with_context(|| {
+            format!(
+                "parsing configured db certificate source {}",
+                source.display()
+            )
+        })?);
+        if certificates.len() > MAX_CONFIGURED_DB_CERTIFICATES {
+            bail!(
+                "immutable configured db snapshot contains more than {MAX_CONFIGURED_DB_CERTIFICATES} certificates"
+            );
+        }
+    }
+    if certificates.is_empty() {
+        bail!("immutable configured db snapshot contains no certificates");
+    }
+    Ok(certificates)
+}
+
+fn parse_pem_certificates(bundle: &str) -> Result<Vec<String>> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+
+    let mut remaining = bundle;
+    let mut certificates = Vec::new();
+    loop {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+        if !remaining.starts_with(BEGIN) {
+            bail!("certificate bundle contains data outside a PEM certificate");
+        }
+        let end = remaining
+            .find(END)
+            .context("certificate bundle contains an unterminated PEM certificate")?
+            + END.len();
+        certificates.push(format!("{}\n", &remaining[..end]));
+        remaining = &remaining[end..];
+    }
+    if certificates.is_empty() {
+        bail!("certificate bundle contains no PEM certificates");
+    }
+    Ok(certificates)
 }
 
 /// Re-verify a downloaded UKI's Authenticode signature against a db cert.
@@ -4303,6 +5248,15 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_complete_pem_certificate_sets() {
+        let certificate = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n";
+        let pair = format!("{certificate}\n{certificate}");
+        assert_eq!(parse_pem_certificates(&pair).unwrap().len(), 2);
+        assert!(parse_pem_certificates(&format!("{certificate}junk")).is_err());
+        assert!(parse_pem_certificates("-----BEGIN CERTIFICATE-----\n").is_err());
+    }
     use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
     use crate::types::{SbatEntry, SysrootImageEntry};
     use tempfile::TempDir;
@@ -4331,11 +5285,38 @@ mod tests {
             sbat: sb_sbat(sbat),
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,
             root_hash_sig: None,
         }
+    }
+
+    #[test]
+    fn image_slot_layout_uses_declared_boot_storage_devices() {
+        let tmp = TempDir::new().unwrap();
+        let metadata_dir = tmp.path().join("meta");
+        std::fs::create_dir_all(&metadata_dir).unwrap();
+        std::fs::write(
+            metadata_dir.join("boot-storage.json"),
+            br#"{
+              "backend": "zfs-zvol",
+              "espDevices": ["/dev/disk/by-partlabel/aos-esp-1", "/dev/disk/by-partlabel/aos-esp-2"],
+              "devices": {
+                "rootA": "/dev/zvol/rpool/aos/slots/root-a",
+                "rootAHash": "/dev/zvol/rpool/aos/slots/root-a-hash",
+                "rootB": "/dev/zvol/rpool/aos/slots/root-b",
+                "rootBHash": "/dev/zvol/rpool/aos/slots/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let layout = ImageSlotLayout::from_toplevel(tmp.path()).unwrap();
+        assert_eq!(layout.esp_devices.len(), 2);
+        assert_eq!(layout.root_b, Path::new("/dev/zvol/rpool/aos/slots/root-b"));
     }
 
     fn active_catalog() -> SbCertsToml {
@@ -4366,6 +5347,20 @@ mod tests {
         .unwrap();
         std::fs::write(toplevel.join("meta/package-name"), "server").unwrap();
         std::fs::write(toplevel.join("meta/version"), "1").unwrap();
+        std::fs::write(
+            toplevel.join("meta/boot-storage.json"),
+            br#"{
+              "backend": "gpt-partitions",
+              "espDevices": ["/dev/disk/by-partlabel/esp"],
+              "devices": {
+                "rootA": "/dev/disk/by-partlabel/root-a",
+                "rootAHash": "/dev/disk/by-partlabel/root-a-hash",
+                "rootB": "/dev/disk/by-partlabel/root-b",
+                "rootBHash": "/dev/disk/by-partlabel/root-b-hash"
+              }
+            }"#,
+        )
+        .unwrap();
         std::os::unix::fs::symlink("/nix/store/base-lib", toplevel.join("base-lib")).unwrap();
         std::fs::write(
             toplevel.join("os-release"),
@@ -4382,6 +5377,8 @@ mod tests {
             running: 1,
             default: 1,
             pending: Some(1),
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![ImageGeneration {
                 number: 1,
                 slot: ImageSlot::A,
@@ -4398,6 +5395,7 @@ mod tests {
                 root_verity_roothash: Some("deadbeef".into()),
                 expected_pcr11: Some("abcd".into()),
                 initrd_pcr11: None,
+                recovery: None,
                 created_at: "2026-08-04T00:00:00Z".into(),
             }],
         };
@@ -4410,10 +5408,56 @@ mod tests {
         (tmp, image_profile, toplevel_link, os_release, cmdline)
     }
 
+    fn fixture_device_identity(path: &Path) -> Result<u64> {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("root-a" | "vda2") => Ok(1),
+            Some("root-b" | "vda3") => Ok(2),
+            _ => bail!("fixture has no device identity for {}", path.display()),
+        }
+    }
+
+    fn load_running_image_generation_fixture(
+        image_profile: &Path,
+        os_release: &Path,
+        toplevel_link: &Path,
+        cmdline: &Path,
+    ) -> Result<ImageGeneration> {
+        load_running_image_generation_with_device_identity(
+            image_profile,
+            os_release,
+            toplevel_link,
+            cmdline,
+            fixture_device_identity,
+        )
+    }
+
+    #[test]
+    fn running_root_matches_the_resolved_block_device_identity() {
+        let layout = ImageSlotLayout::default();
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda2"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::A
+        );
+        assert_eq!(
+            image_slot_for_root(Path::new("/dev/vda3"), &layout, fixture_device_identity).unwrap(),
+            ImageSlot::B
+        );
+    }
+
+    #[test]
+    fn running_root_rejects_aliased_image_slots() {
+        let layout = ImageSlotLayout::default();
+        let error = image_slot_for_root(Path::new("/dev/vda2"), &layout, |path| {
+            fixture_device_identity(path).map(|_| 1)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("same block device"));
+    }
+
     #[test]
     fn running_image_rejects_tampered_var_index_metadata() {
         let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4427,7 +5471,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
         state.generations[0].uki_path = "EFI/Linux/attacker.efi".into();
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4447,7 +5491,7 @@ mod tests {
         state.generations[0].uki_source_path = Some("EFI/Linux/aos-server-1+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
 
-        let loaded = load_running_image_generation_from(
+        let loaded = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4458,7 +5502,7 @@ mod tests {
 
         state.generations[0].uki_source_path = Some("EFI/Linux/attacker+3.efi".into());
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4476,7 +5520,7 @@ mod tests {
             "root=/dev/disk/by-partlabel/root-b roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4490,7 +5534,7 @@ mod tests {
             "root=/dev/mapper/root systemd.verity_root_data=/dev/disk/by-partlabel/root-b roothash=deadbeef\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4508,15 +5552,20 @@ mod tests {
             "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
         )
         .unwrap();
-        load_running_image_generation_from(&image_profile, &os_release, &toplevel_link, &cmdline)
-            .unwrap();
+        load_running_image_generation_fixture(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
 
         std::fs::write(
             &cmdline,
             "root=/dev/disk/by-partlabel/root-a roothash=deadbeef roothash=bad\n",
         )
         .unwrap();
-        let error = load_running_image_generation_from(
+        let error = load_running_image_generation_fixture(
             &image_profile,
             &os_release,
             &toplevel_link,
@@ -4546,11 +5595,12 @@ mod tests {
         std::fs::write(image_store.join("uki-a.efi"), b"uki-a").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a: root_a.clone(),
+            root_b: root_b.clone(),
+            root_a_hash: hash_a.clone(),
+            root_b_hash: hash_b.clone(),
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;
@@ -4581,6 +5631,7 @@ mod tests {
             &image_store,
             &image,
             "EFI/Linux/aos-next+3.efi",
+            &[],
             None,
         )
         .unwrap();
@@ -4593,6 +5644,174 @@ mod tests {
             std::fs::read(boot.join("EFI/Linux/aos-next+3.efi")).unwrap(),
             b"uki-b"
         );
+    }
+
+    #[test]
+    fn every_publication_cut_retains_the_opposite_recovery_copy() {
+        let checkpoints = [
+            StageCheckpoint::InactiveEntryDisarmed,
+            StageCheckpoint::RootWritten,
+            StageCheckpoint::VerityWritten,
+            StageCheckpoint::NormalUkiStaged,
+            StageCheckpoint::RecoveryUkiPublished,
+            StageCheckpoint::RecoveryEntryPublished,
+            StageCheckpoint::NormalUkiPublished,
+        ];
+        for (target_slot, target_name, opposite_name) in
+            [(ImageSlot::A, "a", "b"), (ImageSlot::B, "b", "a")]
+        {
+            for cut in checkpoints {
+                let tmp = TempDir::new().unwrap();
+                let boot = tmp.path().join("boot");
+                let image_store = tmp.path().join("image");
+                let linux = boot.join("EFI/Linux");
+                let recovery_dir = boot.join("EFI/AOS");
+                let entry_dir = boot.join("loader/entries");
+                std::fs::create_dir_all(&image_store).unwrap();
+                std::fs::create_dir_all(&linux).unwrap();
+                std::fs::create_dir_all(&recovery_dir).unwrap();
+                std::fs::create_dir_all(&entry_dir).unwrap();
+
+                let root_a = tmp.path().join("root-a");
+                let root_b = tmp.path().join("root-b");
+                let hash_a = tmp.path().join("root-a-hash");
+                let hash_b = tmp.path().join("root-b-hash");
+                for path in [&root_a, &root_b, &hash_a, &hash_b] {
+                    std::fs::write(path, vec![0_u8; 128]).unwrap();
+                }
+                std::fs::write(image_store.join("root.img"), b"new-root").unwrap();
+                std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
+                std::fs::write(image_store.join("root.roothash"), b"deadbeef\n").unwrap();
+                std::fs::write(image_store.join("uki-a.efi"), b"normal-a").unwrap();
+                std::fs::write(image_store.join("uki-b.efi"), b"normal-b").unwrap();
+                let recovery_bytes = format!("new-recovery-{target_name}").into_bytes();
+                std::fs::write(
+                    image_store.join(format!("recovery-{target_name}.efi")),
+                    &recovery_bytes,
+                )
+                .unwrap();
+                std::fs::write(
+                image_store.join(format!("recovery-{target_name}.conf")),
+                format!(
+                    "title AOS Recovery {target_name}\nefi /EFI/AOS/recovery-{target_name}.efi\n"
+                ),
+            )
+            .unwrap();
+                let known_good = format!("known-good-recovery-{opposite_name}").into_bytes();
+                std::fs::write(
+                    recovery_dir.join(format!("recovery-{opposite_name}.efi")),
+                    &known_good,
+                )
+                .unwrap();
+                std::fs::write(
+                    recovery_dir.join(format!("recovery-{target_name}.efi")),
+                    format!("old-recovery-{target_name}"),
+                )
+                .unwrap();
+                let reusable = linux.join(format!("old-{target_name}+3.efi"));
+                std::fs::write(&reusable, format!("old-normal-{target_name}")).unwrap();
+
+                let layout = ImageSlotLayout {
+                    boot_root: boot.clone(),
+                    esp_devices: vec![boot.clone()],
+                    root_a: root_a.clone(),
+                    root_b: root_b.clone(),
+                    root_a_hash: hash_a.clone(),
+                    root_b_hash: hash_b.clone(),
+                };
+                let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+                image.root_image = Some("root.img".into());
+                image.root_verity = Some("root.verity".into());
+                image.root_hash = Some("deadbeef".into());
+                image.ukis = vec![
+                    SysrootUkiEntry {
+                        slot: UkiSlot::A,
+                        path: "uki-a.efi".into(),
+                        sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                        sbat: sb_sbat(&[("aos", 2)]),
+                        expected_pcr11: Some("a".repeat(64)),
+                    },
+                    SysrootUkiEntry {
+                        slot: UkiSlot::B,
+                        path: "uki-b.efi".into(),
+                        sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                        sbat: sb_sbat(&[("aos", 2)]),
+                        expected_pcr11: Some("b".repeat(64)),
+                    },
+                ];
+                let recovery = crate::types::RecoveryGeneration {
+                    copy: target_slot,
+                    uki_path: format!("EFI/AOS/recovery-{target_name}.efi"),
+                    entry_path: format!("loader/entries/recovery-{target_name}.conf"),
+                    source_path: format!("recovery-{target_name}.efi"),
+                    sha256: hex::encode(Sha256::digest(&recovery_bytes)),
+                    byte_size: recovery_bytes.len() as u64,
+                    release: "2".into(),
+                    recovery_abi: 1,
+                };
+
+                let error = stage_slot_artifacts_with(
+                    &layout,
+                    target_slot,
+                    &image_store,
+                    &image,
+                    &format!("EFI/Linux/aos-next-{target_name}+3.efi"),
+                    std::slice::from_ref(&reusable),
+                    Some(&recovery),
+                    |checkpoint| {
+                        if checkpoint == cut {
+                            bail!("injected power cut at {checkpoint:?}");
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("injected power cut"));
+                assert_eq!(
+                    std::fs::read(recovery_dir.join(format!("recovery-{opposite_name}.efi")))
+                        .unwrap(),
+                    known_good,
+                    "{target_name} update cut {cut:?} changed the opposite recovery copy"
+                );
+                let candidate = linux.join(format!("aos-next-{target_name}+3.efi"));
+                assert_eq!(
+                    candidate.exists(),
+                    cut == StageCheckpoint::NormalUkiPublished,
+                    "{target_name} update cut {cut:?} exposed the candidate at the wrong boundary"
+                );
+
+                let replay_visible = if candidate.exists() {
+                    vec![candidate.clone()]
+                } else {
+                    Vec::new()
+                };
+                stage_slot_artifacts_with(
+                    &layout,
+                    target_slot,
+                    &image_store,
+                    &image,
+                    &format!("EFI/Linux/aos-next-{target_name}+3.efi"),
+                    &replay_visible,
+                    Some(&recovery),
+                    |_| Ok(()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{target_name} retry after {cut:?} failed: {error:#}")
+                });
+                assert!(candidate.is_file());
+                let disabled_prefix = format!("disabled-{target_name}-");
+                assert!(
+                    std::fs::read_dir(boot.join("EFI/.aos-staging"))
+                        .unwrap()
+                        .all(|entry| !entry
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(&disabled_prefix)),
+                    "{target_name} retry after {cut:?} left a disabled UKI"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4656,7 +5875,10 @@ mod tests {
         )
         .unwrap();
 
-        validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap();
+        validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false).unwrap();
+
+        let missing = devices.join("missing-replica");
+        validate_boot_esp_mount(&boot, &mountinfo, &[missing, expected.clone()], false).unwrap();
 
         std::fs::write(
             &mountinfo,
@@ -4667,8 +5889,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
-        assert!(error.to_string().contains("expected"));
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
+        assert!(error.to_string().contains("not a configured"));
 
         std::fs::write(
             &mountinfo,
@@ -4679,7 +5903,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("bind/subtree"));
 
         std::fs::write(
@@ -4691,7 +5917,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), false)
+                .unwrap_err();
         assert!(error.to_string().contains("expected vfat"));
 
         std::fs::write(
@@ -4703,7 +5931,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, true).unwrap_err();
+        let error =
+            validate_boot_esp_mount(&boot, &mountinfo, std::slice::from_ref(&expected), true)
+                .unwrap_err();
         assert!(error.to_string().contains("block devices"));
     }
 
@@ -4735,12 +5965,15 @@ mod tests {
             root_verity_roothash: Some(format!("root-{number}")),
             expected_pcr11: Some(format!("pcr-{number}")),
             initrd_pcr11: None,
+            recovery: None,
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let state = ImageGenerationState {
             running: 1,
             default: 3,
             pending: Some(3),
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![
                 generation(1, "aos-old-1+3.efi"),
                 generation(2, "aos-old-2+3.efi"),
@@ -4752,11 +5985,12 @@ mod tests {
         let hash_a = tmp.path().join("root-a-hash");
         let hash_b = tmp.path().join("root-b-hash");
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot,
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b,
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
 
         cleanup_replaced_slot_ukis(&layout, &state, ImageSlot::B, "EFI/Linux/aos-new+3.efi")
@@ -4785,11 +6019,12 @@ mod tests {
         std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
         std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
         let layout = ImageSlotLayout {
-            boot_root: &boot,
-            root_a: &root_a,
-            root_b: &root_b,
-            root_a_hash: &hash_a,
-            root_b_hash: &hash_b,
+            boot_root: boot.clone(),
+            esp_devices: vec![tmp.path().join("esp")],
+            root_a,
+            root_b: root_b.clone(),
+            root_a_hash: hash_a,
+            root_b_hash: hash_b,
         };
         let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
         image.sb_signer_cert_sha256 = None;
@@ -4819,6 +6054,7 @@ mod tests {
             &image_store,
             &image,
             "EFI/Linux/aos-next+3.efi",
+            &[],
             None,
         )
         .unwrap_err();
@@ -4958,6 +6194,8 @@ mod tests {
             sbat: vec![],
             expected_pcr11: None,
             ukis: Vec::new(),
+            recovery_ukis: Vec::new(),
+            recovery_bundle: None,
             root_image: None,
             root_verity: None,
             root_hash: None,
@@ -5080,6 +6318,8 @@ mod tests {
             running: 4,
             default: 4,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: vec![ImageGeneration {
                 number: 4,
                 slot: ImageSlot::A,
@@ -5096,6 +6336,7 @@ mod tests {
                 root_verity_roothash: None,
                 expected_pcr11: None,
                 initrd_pcr11: None,
+                recovery: None,
                 created_at: "2026-01-01T00:00:00Z".into(),
             }],
         };
@@ -5438,6 +6679,8 @@ mod tests {
             running: 1,
             default: 1,
             pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
             generations: Vec::new(),
         };
         let error = select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |_| {
@@ -5471,6 +6714,57 @@ mod tests {
         assert_eq!(state.default, 2);
         assert_eq!(state.pending, Some(2));
         assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+    }
+
+    #[test]
+    fn image_selection_preparation_precedes_candidate_publication() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
+            generations: Vec::new(),
+        };
+
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, Some(2));
+        assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
+        assert!(!tmp.path().join("aos-2+3.efi").exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, Some(2));
+    }
+
+    #[test]
+    fn unpublished_image_selection_can_be_aborted_for_a_corrected_retry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
+            generations: Vec::new(),
+        };
+        prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi").unwrap();
+
+        abort_unpublished_image_selection(tmp.path(), &mut state, 2).unwrap();
+
+        assert_eq!(state.default, 1);
+        assert_eq!(state.pending, None);
+        assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+        let durable: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(durable.pending, None);
+
+        prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi").unwrap();
+        assert_eq!(state.pending, Some(3));
     }
 
     #[test]

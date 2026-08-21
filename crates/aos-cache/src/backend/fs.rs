@@ -46,6 +46,10 @@ impl FsBackend {
 
 #[async_trait]
 impl CacheBackend for FsBackend {
+    fn transfer_manager(&self) -> Option<&TransferEngine> {
+        Some(self.engine.as_ref())
+    }
+
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         Ok(self.root.join(relative_path).exists())
     }

@@ -53,6 +53,12 @@ impl Oid {
         hex::encode(self.0)
     }
 
+    /// Returns the raw 32-byte object id.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// The loose-object path relative to the surface root:
     /// `objects/<first two hex chars>/<remaining 62>`.
     pub fn loose_path(&self) -> String {
@@ -156,6 +162,12 @@ pub fn encode_loose(kind: ObjectKind, content: &[u8]) -> Result<Vec<u8>> {
 /// loose object inflating past this cap is treated as hostile (a zlib
 /// bomb) rather than read into memory.
 pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Maximum encoded size of a loose object accepted by registry publication.
+///
+/// Loose objects require semantic verification before any placement write, so
+/// they use the bounded whole-object request instead of multipart upload.
+pub const MAX_PUBLISHED_LOOSE_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Decode a zlib-compressed loose object into its kind and content.
 ///

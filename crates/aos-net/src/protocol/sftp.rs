@@ -519,6 +519,30 @@ impl Protocol for SftpProtocol {
                             resumed: false,
                         })
                     }
+                    TransferOutput::Sink(sink) => {
+                        let session_clone = Arc::clone(&session);
+                        let path = remote_path.clone();
+                        let data = tokio::task::spawn_blocking(move || {
+                            Self::sftp_read_to_memory(&session_clone, &path)
+                        })
+                        .await
+                        .context("SFTP read task panicked")??;
+
+                        let bytes_transferred = data.len() as u64;
+                        for chunk in data.chunks(SFTP_CHUNK_SIZE) {
+                            sink.write(chunk)?;
+                        }
+                        sink.flush()?;
+                        Ok(TransferResult {
+                            status: 200,
+                            headers: Vec::new(),
+                            bytes_transferred,
+                            content_length: Some(bytes_transferred),
+                            body: None,
+                            hash: None,
+                            resumed: false,
+                        })
+                    }
                 }
             }
             Method::Put => match &request.body {

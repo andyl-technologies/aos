@@ -63,6 +63,41 @@
   };
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
+  imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
+
+  # Image budgets are both release ceilings and storage geometry. Reject an
+  # ESP contract that cannot hold two maximum-sized UKIs before any image or
+  # installer derivation is realized.
+  undersizedEspSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.image.budgets.maxEspMiB = lib.mkForce 351;}
+    ];
+  };
+  undersizedEspRejected =
+    !(
+      builtins.tryEval undersizedEspSystem.config.system.build.toplevel.name
+    )
+    .success;
+
+  # A ZFS installer must not allocate zvols smaller than payloads admitted by
+  # the image contract.
+  undersizedZfsSlotSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {
+        aos.boot.storage = {
+          backend = "zfs-zvol";
+          zfs.rootSlotSizeMiB = lib.mkForce 511;
+        };
+      }
+    ];
+  };
+  undersizedZfsSlotRejected =
+    !(
+      builtins.tryEval undersizedZfsSlotSystem.config.system.build.toplevel.name
+    )
+    .success;
 
   # --- mkEnableOption -------------------------------------------------
   enableExplicitlySet =
@@ -163,22 +198,41 @@
     (builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls)).typeSig;
 
   packageDiagnosticsEval = lib.evalModules {
-    modules = [({lib, ...}: {
-      options.assertions = lib.mkOption {type = lib.types.listOf lib.types.attrs; default = [];};
-      options.warnings = lib.mkOption {type = lib.types.listOf lib.types.str; default = [];};
-    })];
-    packageModules = [{
-      name = "diagnostic-fixture";
-      authorization = {owns = []; contributes = {};};
-      module.config = {
-        assertions = [{assertion = true; message = "package assertion";}];
-        warnings = ["package warning"];
-      };
-    }];
+    modules = [
+      ({lib, ...}: {
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.attrs;
+          default = [];
+        };
+        options.warnings = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+        };
+      })
+    ];
+    packageModules = [
+      {
+        name = "diagnostic-fixture";
+        authorization = {
+          owns = [];
+          contributes = {};
+        };
+        module.config = {
+          assertions = [
+            {
+              assertion = true;
+              message = "package assertion";
+            }
+          ];
+          warnings = ["package warning"];
+        };
+      }
+    ];
     lib = lib;
   };
   packageEngineDiagnosticsAccepted =
-    builtins.length packageDiagnosticsEval.config.assertions == 1
+    builtins.length packageDiagnosticsEval.config.assertions
+    == 1
     && packageDiagnosticsEval.config.warnings == ["package warning"];
 
   # --- Operator priority-75 band --------------------------------------
@@ -236,23 +290,25 @@
   # Forge guard (M-forgeable-file): provenance is a reserved engine field.
   # Reject a module-authored stamp rather than merely ignoring it, so an
   # ownership audit can never mistake the attempted identity for metadata.
-  forgedProvenanceRejected = !(
-    builtins.tryEval ((lib.evalModules {
-      modules = [
-        opDecl
-        {
-          _file = "host.nix";
-          _provenance = "operator";
-          config.svc.x = "forged-by-package";
-        }
-      ];
-      operatorModules = [{config.svc.x = "true-operator";}];
-      lib = lib;
-    })
-    .config
-    .svc
-    .x)
-  ).success;
+  forgedProvenanceRejected =
+    !(
+      builtins.tryEval ((lib.evalModules {
+          modules = [
+            opDecl
+            {
+              _file = "host.nix";
+              _provenance = "operator";
+              config.svc.x = "forged-by-package";
+            }
+          ];
+          operatorModules = [{config.svc.x = "true-operator";}];
+          lib = lib;
+        })
+        .config
+        .svc
+        .x)
+    )
+    .success;
 
   resolverPackageOwner =
     (lib.evalModules {
@@ -270,16 +326,20 @@
           config.observedOwner = provenance.ownerOfAttr ["artifacts"] "pkg.conf";
         })
       ];
-      packageModules = [{
-        name = "redis";
-        authorization = {
-          owns = ["artifacts"];
-          contributes = {};
-        };
-        module = {config.artifacts."pkg.conf" = "value";};
-      }];
+      packageModules = [
+        {
+          name = "redis";
+          authorization = {
+            owns = ["artifacts"];
+            contributes = {};
+          };
+          module = {config.artifacts."pkg.conf" = "value";};
+        }
+      ];
       lib = lib;
-    }).config.observedOwner
+    })
+    .config
+    .observedOwner
     == "redis";
 
   nestedDecl = {lib, ...}: {
@@ -291,8 +351,14 @@
           nested = lib.mkOption {
             type = lib.types.submodule {
               options = {
-                left = lib.mkOption {type = lib.types.str; default = "default-left";};
-                right = lib.mkOption {type = lib.types.str; default = "default-right";};
+                left = lib.mkOption {
+                  type = lib.types.str;
+                  default = "default-left";
+                };
+                right = lib.mkOption {
+                  type = lib.types.str;
+                  default = "default-right";
+                };
               };
             };
             default = {};
@@ -312,21 +378,37 @@
   };
   nestedPriorityEval = lib.evalModules {
     modules = [nestedDecl];
-    packageModules = [(packageRecord {config.tree.main = {left = "package"; right = "preserved";};})];
+    packageModules = [
+      (packageRecord {
+        config.tree.main = {
+          left = "package";
+          right = "preserved";
+        };
+      })
+    ];
     operatorModules = [{config.tree.main.left = "host";}];
     inherit lib;
   };
   nestedHostPriorityIsLeafScoped =
-    nestedPriorityEval.config.tree.main.left == "host"
+    nestedPriorityEval.config.tree.main.left
+    == "host"
     && nestedPriorityEval.config.tree.main.right == "preserved";
   nestedSubmodulePriorityEval = lib.evalModules {
-      modules = [nestedDecl];
-      packageModules = [(packageRecord {config.tree.main.nested = {left = "package-left"; right = "package-right";};})];
-      operatorModules = [{config.tree.main.nested.left = "host-left";}];
-      inherit lib;
-    };
+    modules = [nestedDecl];
+    packageModules = [
+      (packageRecord {
+        config.tree.main.nested = {
+          left = "package-left";
+          right = "package-right";
+        };
+      })
+    ];
+    operatorModules = [{config.tree.main.nested.left = "host-left";}];
+    inherit lib;
+  };
   nestedSubmoduleHostPriorityIsLeafScoped =
-    nestedSubmodulePriorityEval.config.tree.main.nested.left == "host-left"
+    nestedSubmodulePriorityEval.config.tree.main.nested.left
+    == "host-left"
     && nestedSubmodulePriorityEval.config.tree.main.nested.right == "package-right";
   nestedForceBeatsHost =
     (lib.evalModules {
@@ -334,81 +416,174 @@
       packageModules = [(packageRecord {config.tree.main.left = lib.mkForce "forced";})];
       operatorModules = [{config.tree.main.left = "host";}];
       inherit lib;
-    }).config.tree.main.left
+    })
+    .config
+    .tree
+    .main
+    .left
     == "forced";
   importedForgedFileStaysPackageOwned =
     (lib.evalModules {
       modules = [
         ({lib, ...}: {
-          options.artifacts = lib.mkOption {type = lib.types.attrsOf lib.types.str; default = {};};
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "imported";})
       ];
-      packageModules = [(packageRecord {
-        imports = [{_file = "host.nix"; config.artifacts.imported = "value";}];
-      })];
+      packageModules = [
+        (packageRecord {
+          imports = [
+            {
+              _file = "host.nix";
+              config.artifacts.imported = "value";
+            }
+          ];
+        })
+      ];
       inherit lib;
-    }).config.observed
+    })
+    .config
+    .observed
     == "redis";
-  foreignEnableRejected = !(builtins.tryEval (
-    (lib.evalModules {
-      modules = [({lib, ...}: {options.nginx.enable = lib.mkOption {type = lib.types.bool; default = false;};})];
-      packageModules = [(packageRecord {config.nginx.enable = true;})];
-      inherit lib;
-    }).config.nginx.enable
-  )).success;
-  nestedForeignEnableRejected = !(builtins.tryEval (
-    (lib.evalModules {
-      modules = [({lib, ...}: {options.systemd.services = lib.mkOption {type = lib.types.attrsOf (lib.types.submodule {
-        options.enable = lib.mkOption {type = lib.types.bool; default = false;};
-      }); default = {};};})];
-      packageModules = [{
-        name = "redis";
-        authorization = {owns = []; contributes.systemd = ["services"];};
-        module.config.systemd.services.victim.enable = true;
-      }];
-      inherit lib;
-    }).config.systemd.services.victim.enable
-  )).success;
-  packageModuleArgsRejected = !(builtins.tryEval (
-    (lib.evalModules {
-      modules = [nestedDecl];
-      packageModules = [(packageRecord {config = {
-        _module.args.laundered = "value";
-        tree.main.left = "package";
-      };})];
-      inherit lib;
-    }).config.tree.main.left
-  )).success;
-  foreignPackageDeclarationRejected = !(builtins.tryEval (
-    (lib.evalModules {
-      modules = [({lib, ...}: {options.nginx.enable = lib.mkOption {type = lib.types.bool; default = false;};})];
-      packageModules = [(packageRecord ({lib, ...}: {
-        options.nginx.foreignDefault = lib.mkOption {type = lib.types.str; default = "laundered";};
-      }))];
-      inherit lib;
-    }).config.nginx.enable
-  )).success;
+  foreignEnableRejected =
+    !(builtins.tryEval (
+      (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.nginx.enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+            };
+          })
+        ];
+        packageModules = [(packageRecord {config.nginx.enable = true;})];
+        inherit lib;
+      })
+      .config
+      .nginx
+      .enable
+    ))
+    .success;
+  nestedForeignEnableRejected =
+    !(builtins.tryEval (
+      (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.systemd.services = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule {
+                options.enable = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+              });
+              default = {};
+            };
+          })
+        ];
+        packageModules = [
+          {
+            name = "redis";
+            authorization = {
+              owns = [];
+              contributes.systemd = ["services"];
+            };
+            module.config.systemd.services.victim.enable = true;
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .systemd
+      .services
+      .victim
+      .enable
+    ))
+    .success;
+  packageModuleArgsRejected =
+    !(builtins.tryEval (
+      (lib.evalModules {
+        modules = [nestedDecl];
+        packageModules = [
+          (packageRecord {
+            config = {
+              _module.args.laundered = "value";
+              tree.main.left = "package";
+            };
+          })
+        ];
+        inherit lib;
+      })
+      .config
+      .tree
+      .main
+      .left
+    ))
+    .success;
+  foreignPackageDeclarationRejected =
+    !(builtins.tryEval (
+      (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.nginx.enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+            };
+          })
+        ];
+        packageModules = [
+          (packageRecord ({lib, ...}: {
+            options.nginx.foreignDefault = lib.mkOption {
+              type = lib.types.str;
+              default = "laundered";
+            };
+          }))
+        ];
+        inherit lib;
+      })
+      .config
+      .nginx
+      .enable
+    ))
+    .success;
   allowedContributionAccepted =
     (lib.evalModules {
-      modules = [({lib, ...}: {options.nginx.virtualHosts = lib.mkOption {type = lib.types.attrsOf lib.types.str; default = {};};})];
+      modules = [
+        ({lib, ...}: {
+          options.nginx.virtualHosts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
       packageModules = [(packageRecord {config.nginx.virtualHosts.demo = "ok";})];
       inherit lib;
-    }).config.nginx.virtualHosts.demo
+    })
+    .config
+    .nginx
+    .virtualHosts
+    .demo
     == "ok";
   mkOrderOwnershipPeeled =
     (lib.evalModules {
       modules = [
         ({lib, ...}: {
-          options.rules = lib.mkOption {type = lib.types.listOf lib.types.str; default = [];};
+          options.rules = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [];
+          };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfListString ["rules"] "ordered";})
       ];
       packageModules = [(packageRecord {config.rules = lib.mkAfter ["ordered"];})];
       inherit lib;
-    }).config.observed
+    })
+    .config
+    .observed
     == "redis";
   mixedDependencyOwnersDetected =
     (lib.evalModules {
@@ -416,8 +591,14 @@
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf (lib.types.submodule {
-              options.left = lib.mkOption {type = lib.types.str; default = "";};
-              options.right = lib.mkOption {type = lib.types.str; default = "";};
+              options.left = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+              };
+              options.right = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+              };
             });
             default = {};
           };
@@ -429,12 +610,17 @@
         (packageRecord {config.artifacts.mixed.left = "left";})
         {
           name = "other";
-          authorization = {owns = ["artifacts"]; contributes = {};};
+          authorization = {
+            owns = ["artifacts"];
+            contributes = {};
+          };
           module.config.artifacts.mixed.right = "right";
         }
       ];
       inherit lib;
-    }).config.observedOwners
+    })
+    .config
+    .observedOwners
     == ["redis" "other"];
 
   packageDefaultDependencyOwner =
@@ -442,76 +628,124 @@
       modules = [
         ({lib, ...}: {
           options = {
-            artifacts = lib.mkOption {type = lib.types.attrsOf lib.types.str; default = {};};
+            artifacts = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+            };
             observed = lib.mkOption {type = lib.types.str;};
           };
         })
         ({config, ...}: {config.artifacts.defaulted = config.provider.value;})
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "defaulted";})
       ];
-      packageModules = [{
-        name = "provider";
-        authorization = {owns = []; contributes = {};};
-        module = {lib, ...}: {
-          options.provider.value = lib.mkOption {type = lib.types.str; default = "package default";};
-        };
-      }];
-      inherit lib;
-    }).config.observed
-    == "provider";
-
-  undeclaredCrossPackageReadRejected = !(builtins.tryEval (builtins.toJSON (
-    (lib.evalModules {
-      modules = [];
       packageModules = [
         {
           name = "provider";
-          authorization = {owns = []; contributes = {};};
-          module = {lib, ...}: {
-            options.provider.value = lib.mkOption {type = lib.types.str;};
-            config.provider.value = "private";
+          authorization = {
+            owns = [];
+            contributes = {};
           };
-        }
-        {
-          name = "consumer";
-          authorization = {owns = []; contributes = {};};
-          module = {lib, config, ...}: {
-            options.consumer.observed = lib.mkOption {type = lib.types.str;};
-            config.consumer.observed = config.provider.value;
+          module = {lib, ...}: {
+            options.provider.value = lib.mkOption {
+              type = lib.types.str;
+              default = "package default";
+            };
           };
         }
       ];
       inherit lib;
-    }).config.consumer.observed
-  ))).success;
+    })
+    .config
+    .observed
+    == "provider";
+
+  undeclaredCrossPackageReadRejected =
+    !(builtins.tryEval (builtins.toJSON (
+      (lib.evalModules {
+        modules = [];
+        packageModules = [
+          {
+            name = "provider";
+            authorization = {
+              owns = [];
+              contributes = {};
+            };
+            module = {lib, ...}: {
+              options.provider.value = lib.mkOption {type = lib.types.str;};
+              config.provider.value = "private";
+            };
+          }
+          {
+            name = "consumer";
+            authorization = {
+              owns = [];
+              contributes = {};
+            };
+            module = {
+              lib,
+              config,
+              ...
+            }: {
+              options.consumer.observed = lib.mkOption {type = lib.types.str;};
+              config.consumer.observed = config.provider.value;
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .consumer
+      .observed
+    )))
+    .success;
 
   hostImportedOwner =
     (lib.evalModules {
       modules = [
         ({lib, ...}: {
-          options.artifacts = lib.mkOption {type = lib.types.attrsOf lib.types.str; default = {};};
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "imported";})
       ];
       operatorModules = [{imports = [{config.artifacts.imported = "host";}];}];
       inherit lib;
-    }).config.observed
+    })
+    .config
+    .observed
     == "@host";
   hostImportedNestedValue =
     (lib.evalModules {
       modules = [nestedDecl];
       operatorModules = [{imports = [{config.tree.main.nested.left = "host imported nested";}];}];
       inherit lib;
-    }).config.tree.main.nested.left
+    })
+    .config
+    .tree
+    .main
+    .nested
+    .left
     == "host imported nested";
   hostImportKeepsNormalPriority =
     (lib.evalModules {
-      modules = [({lib, ...}: {options.artifacts = lib.mkOption {type = lib.types.attrsOf lib.types.str; default = {};};})];
+      modules = [
+        ({lib, ...}: {
+          options.artifacts = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = {};
+          };
+        })
+      ];
       packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
       operatorModules = [{imports = [{config.artifacts.priority = "host import";}];}];
       inherit lib;
-    }).config.artifacts.priority
+    })
+    .config
+    .artifacts
+    .priority
     == "package";
 
   # --- types.uniqEnum (owned shared scalar) ---------------------------
@@ -531,37 +765,37 @@
     == "a";
   uniqEnumRejectsConflict =
     !(builtins.tryEval (
-        (lib.evalModules {
-          modules = [
-            ({lib, ...}: {
-              options.p = lib.mkOption {type = lib.types.uniqEnum ["a" "b"];};
-            })
-            {config.p = "a";}
-            {config.p = "b";}
-          ];
-          lib = lib;
-        })
-        .config
-        .p
-      ))
+      (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.p = lib.mkOption {type = lib.types.uniqEnum ["a" "b"];};
+          })
+          {config.p = "a";}
+          {config.p = "b";}
+        ];
+        lib = lib;
+      })
+      .config
+      .p
+    ))
     .success;
 
   # uniq must NOT bypass the element type's constraint: an out-of-set value is
   # rejected even with no conflict (the inner `enum` check fires via delegation).
   uniqEnumRejectsBadValue =
     !(builtins.tryEval (
-        (lib.evalModules {
-          modules = [
-            ({lib, ...}: {
-              options.p = lib.mkOption {type = lib.types.uniqEnum ["a" "b"];};
-            })
-            {config.p = "z";}
-          ];
-          lib = lib;
-        })
-        .config
-        .p
-      ))
+      (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.p = lib.mkOption {type = lib.types.uniqEnum ["a" "b"];};
+          })
+          {config.p = "z";}
+        ];
+        lib = lib;
+      })
+      .config
+      .p
+    ))
     .success;
 
   # --- mkPackageRoot ({pkg}.* mount) ----------------------------------
@@ -592,115 +826,256 @@
   confinedPackageImport =
     (lib.evalModules {
       modules = [];
-      packageModules = [{
-        name = "import-fixture";
-        authorization = {owns = ["importConfinement"]; contributes = {};};
-        configRoot = ./fixtures/package-import-confined;
-        module = ./fixtures/package-import-confined/module.nix;
-        outputs = {
-          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-          dependencies = {};
-        };
-      }];
+      packageModules = [
+        {
+          name = "import-fixture";
+          authorization = {
+            owns = ["importConfinement"];
+            contributes = {};
+          };
+          configRoot = ./fixtures/package-import-confined;
+          module = ./fixtures/package-import-confined/module.nix;
+          outputs = {
+            self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+            dependencies = {};
+          };
+        }
+      ];
       lib = lib;
-    }).config.importConfinement.value
+    })
+    .config
+    .importConfinement
+    .value
     == "confined";
-  escapedPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
+  escapedPackageImportRejected =
+    !(builtins.tryEval (builtins.deepSeq (
+        (lib.evalModules {
+          modules = [];
+          packageModules = [
+            {
+              name = "import-fixture";
+              authorization = {
+                owns = ["importConfinement"];
+                contributes = {};
+              };
+              configRoot = ./fixtures/package-import-escaped;
+              module = ./fixtures/package-import-escaped/module.nix;
+              outputs = {
+                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+                dependencies = {};
+              };
+            }
+          ];
+          lib = lib;
+        })
+        .config
+        .importConfinement
+        .value
+      )
+      true))
+    .success;
+  evaluatedPackageImportRejected =
+    !(builtins.tryEval (builtins.deepSeq (
+        (lib.evalModules {
+          modules = [];
+          packageModules = [
+            {
+              name = "import-fixture";
+              authorization = {
+                owns = ["importConfinement"];
+                contributes = {};
+              };
+              configRoot = ./fixtures/package-import-evaluated;
+              module = ./fixtures/package-import-evaluated/module.nix;
+              outputs = {
+                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+                dependencies = {};
+              };
+            }
+          ];
+          lib = lib;
+        })
+        .config
+        .importConfinement
+        .value
+      )
+      true))
+    .success;
+  lexicalStringPackageImportRejected =
+    !(builtins.tryEval (builtins.deepSeq (
+        (lib.evalModules {
+          modules = [];
+          packageModules = [
+            {
+              name = "import-fixture";
+              authorization = {
+                owns = ["importConfinement"];
+                contributes = {};
+              };
+              configRoot = ./fixtures/package-import-string-escape;
+              module = ./fixtures/package-import-string-escape/module.nix;
+              outputs = {
+                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+                dependencies = {};
+              };
+            }
+          ];
+          lib = lib;
+        })
+        .config
+        .importConfinement
+        .value
+      )
+      true))
+    .success;
+  unlistedPackageOutputRejected =
+    !(
       (lib.evalModules {
-      modules = [];
-      packageModules = [{
-        name = "import-fixture";
-        authorization = {owns = ["importConfinement"]; contributes = {};};
-        configRoot = ./fixtures/package-import-escaped;
-        module = ./fixtures/package-import-escaped/module.nix;
-        outputs = {
-          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-          dependencies = {};
-        };
-      }];
-      lib = lib;
-      }).config.importConfinement.value
-    ) true)).success;
-  evaluatedPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
-      (lib.evalModules {
-      modules = [];
-      packageModules = [{
-        name = "import-fixture";
-        authorization = {owns = ["importConfinement"]; contributes = {};};
-        configRoot = ./fixtures/package-import-evaluated;
-        module = ./fixtures/package-import-evaluated/module.nix;
-        outputs = {
-          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-          dependencies = {};
-        };
-      }];
-      lib = lib;
-      }).config.importConfinement.value
-    ) true)).success;
-  lexicalStringPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
-      (lib.evalModules {
-      modules = [];
-      packageModules = [{
-        name = "import-fixture";
-        authorization = {owns = ["importConfinement"]; contributes = {};};
-        configRoot = ./fixtures/package-import-string-escape;
-        module = ./fixtures/package-import-string-escape/module.nix;
-        outputs = {
-          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-          dependencies = {};
-        };
-      }];
-      lib = lib;
-      }).config.importConfinement.value
-    ) true)).success;
-  unlistedPackageOutputRejected = !(
-    (lib.evalModules {
-      modules = [];
-      packageModules = [{
-        name = "output-fixture";
-        authorization = {owns = ["outputConfinement"]; contributes = {};};
-        configRoot = ./fixtures/package-output-unlisted;
-        module = ./fixtures/package-output-unlisted/module.nix;
-        outputs = {
-          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output-fixture";
-          dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
-        };
-      }];
-      lib = lib;
-    }).config.outputConfinement.hasForbidden
-  );
+        modules = [];
+        packageModules = [
+          {
+            name = "output-fixture";
+            authorization = {
+              owns = ["outputConfinement"];
+              contributes = {};
+            };
+            configRoot = ./fixtures/package-output-unlisted;
+            module = ./fixtures/package-output-unlisted/module.nix;
+            outputs = {
+              self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output-fixture";
+              dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
+            };
+          }
+        ];
+        lib = lib;
+      })
+      .config
+      .outputConfinement
+      .hasForbidden
+    );
 
   # --- Eval-time assertions for the test itself -----------------------
-  evalAssertions = builtins.foldl' (result: check:
-    lib.throwIfNot check.ok check.message result)
-  true [
-    {ok = brokenConfigStillReadable; message = "broken config should remain inspectable";}
-    {ok = brokenBuildThrows; message = "broken build must throw";}
-    {ok = healthyBuildSucceeds; message = "healthy build must succeed";}
-    {ok = enableExplicitlySet; message = "mkEnableOption explicit value";}
-    {ok = enableDefaultsFalse == false; message = "mkEnableOption default";}
-    {ok = packageOptDefaultName == "coreutils"; message = "mkPackageOption default";}
-    {ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber; message = "pathInStore validation";}
-    {ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean"; message = "contributable typed surface";}
-    {ok = packageEngineDiagnosticsAccepted; message = "package module engine diagnostics";}
-    {ok = operatorWins && noOperatorNoLift && forceBeatsOperator; message = "operator priority bands";}
-    {ok = forgedProvenanceRejected; message = "reserved provenance stamp";}
-    {ok = resolverPackageOwner; message = "resolver package owner";}
-    {ok = nestedHostPriorityIsLeafScoped && nestedSubmoduleHostPriorityIsLeafScoped && nestedForceBeatsHost; message = "nested provenance priority";}
-    {ok = importedForgedFileStaysPackageOwned; message = "imported forged _file provenance";}
-    {ok = foreignEnableRejected && nestedForeignEnableRejected && allowedContributionAccepted; message = "actual package write authorization";}
-    {ok = packageModuleArgsRejected; message = "package _module.args authorization";}
-    {ok = foreignPackageDeclarationRejected; message = "package option declaration authorization";}
-    {ok = mkOrderOwnershipPeeled; message = "mkOrder ownership";}
-    {ok = mixedDependencyOwnersDetected; message = "mixed artifact dependency owners";}
-    {ok = packageDefaultDependencyOwner; message = "package option-default dependency owner";}
-    {ok = undeclaredCrossPackageReadRejected; message = "undeclared cross-package read";}
-    {ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority; message = "host import ownership and priority";}
-    {ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue; message = "uniqEnum semantics";}
-    {ok = pkgRootNameInjected && pkgRootConfigurable; message = "package root mount";}
-    {ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected; message = "authenticated package import-root confinement";}
-    {ok = unlistedPackageOutputRejected; message = "authenticated package output-map confinement";}
-  ];
+  evalAssertions =
+    builtins.foldl' (result: check:
+      lib.throwIfNot check.ok check.message result)
+    true [
+      {
+        ok = brokenConfigStillReadable;
+        message = "broken config should remain inspectable";
+      }
+      {
+        ok = brokenBuildThrows;
+        message = "broken build must throw";
+      }
+      {
+        ok = healthyBuildSucceeds;
+        message = "healthy build must succeed";
+      }
+      {
+        ok = imageBudgetCheckWired;
+        message = "per-image budget check must be exposed";
+      }
+      {
+        ok = undersizedEspRejected;
+        message = "undersized image ESP contract must throw";
+      }
+      {
+        ok = undersizedZfsSlotRejected;
+        message = "undersized ZFS image slot must throw";
+      }
+      {
+        ok = enableExplicitlySet;
+        message = "mkEnableOption explicit value";
+      }
+      {
+        ok = enableDefaultsFalse == false;
+        message = "mkEnableOption default";
+      }
+      {
+        ok = packageOptDefaultName == "coreutils";
+        message = "mkPackageOption default";
+      }
+      {
+        ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
+        message = "pathInStore validation";
+      }
+      {
+        ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean";
+        message = "contributable typed surface";
+      }
+      {
+        ok = packageEngineDiagnosticsAccepted;
+        message = "package module engine diagnostics";
+      }
+      {
+        ok = operatorWins && noOperatorNoLift && forceBeatsOperator;
+        message = "operator priority bands";
+      }
+      {
+        ok = forgedProvenanceRejected;
+        message = "reserved provenance stamp";
+      }
+      {
+        ok = resolverPackageOwner;
+        message = "resolver package owner";
+      }
+      {
+        ok = nestedHostPriorityIsLeafScoped && nestedSubmoduleHostPriorityIsLeafScoped && nestedForceBeatsHost;
+        message = "nested provenance priority";
+      }
+      {
+        ok = importedForgedFileStaysPackageOwned;
+        message = "imported forged _file provenance";
+      }
+      {
+        ok = foreignEnableRejected && nestedForeignEnableRejected && allowedContributionAccepted;
+        message = "actual package write authorization";
+      }
+      {
+        ok = packageModuleArgsRejected;
+        message = "package _module.args authorization";
+      }
+      {
+        ok = foreignPackageDeclarationRejected;
+        message = "package option declaration authorization";
+      }
+      {
+        ok = mkOrderOwnershipPeeled;
+        message = "mkOrder ownership";
+      }
+      {
+        ok = mixedDependencyOwnersDetected;
+        message = "mixed artifact dependency owners";
+      }
+      {
+        ok = packageDefaultDependencyOwner;
+        message = "package option-default dependency owner";
+      }
+      {
+        ok = undeclaredCrossPackageReadRejected;
+        message = "undeclared cross-package read";
+      }
+      {
+        ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority;
+        message = "host import ownership and priority";
+      }
+      {
+        ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue;
+        message = "uniqEnum semantics";
+      }
+      {
+        ok = pkgRootNameInjected && pkgRootConfigurable;
+        message = "package root mount";
+      }
+      {
+        ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
+        message = "authenticated package import-root confinement";
+      }
+      {
+        ok = unlistedPackageOutputRejected;
+        message = "authenticated package output-map confinement";
+      }
+    ];
 in
   pkgs.mkDerivation {
     pname = "module-enforcement-check";

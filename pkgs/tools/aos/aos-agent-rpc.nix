@@ -17,5 +17,6 @@ mkDerivation {
 
   meta = {
     description = "Single-shot RPC client for the AOS VM test agent";
+    license = "Apache-2.0";
   };
 }

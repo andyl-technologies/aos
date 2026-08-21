@@ -91,8 +91,13 @@ authorizes a private registry and is rejected over cleartext HTTP.
 
 Downloads resume an existing hidden partial file with an HTTP range request.
 The command enforces the signed size and SHA-256 before atomically installing
-the final file; verification cannot be disabled. `--no-resume` restarts the
-partial download. With no `--output`, the signed useful filename is used.
+the final file; verification cannot be disabled. A partial identity file binds
+resume state to its release, architecture, format, size, and hash so reusing an
+output name for another image fails before additional bytes transfer.
+`--no-resume` restarts the partial download. With no `--output`, the signed
+useful filename is used. Transient failures retry three times by default; use
+`--retries` to change that limit. An interrupted download reports the retained
+partial path and exits with status 130.
 
 All three subcommands support the global JSON output mode:
 
@@ -105,6 +110,44 @@ aos --json image show --registry andyl/main --release 2026.3.0 \
 `apm install PACKAGE --system --image FORMAT --output FILE` remains available
 for package-oriented installation flows. Prefer `aos image` when choosing by
 end-user target, release channel, or direct disk encoding.
+
+## Run a downloaded image locally
+
+`aos vm run` prepares a persistent writable disk from a downloaded raw or
+QCOW2 image and boots it through UEFI. The verified download remains unchanged.
+The command enlarges the working disk, relocates its backup GPT, retains a
+per-VM OVMF variable store, and can deliver literal `host.nix` through QEMU's
+native metadata channel:
+
+```sh
+nix-build -A pkgs.aos-vm -o result-aos-vm
+```
+
+```sh
+./result-aos-vm/bin/aos vm run ./aos.qcow2 \
+  --host-config ./host.nix \
+  --disk-size-gib 16 \
+  --ssh-port 2222
+```
+
+Signed configuration deployments can add
+`--host-config-signature ./host.nix.sig`; the command exposes both files under
+their documented QEMU `fw_cfg` names.
+
+The opt-in `pkgs.aos-vm` host package carries the AOS-built QEMU, OVMF,
+`qemu-img`, and `sgdisk` without adding emulator tooling to guest images. When
+running the base package or a development binary, pass `--firmware-code` and
+`--firmware-vars`, or set `AOS_OVMF_CODE` and `AOS_OVMF_VARS`, if firmware is
+not installed at a conventional system path.
+
+KVM is selected only when `/dev/kvm` is accessible; automatic selection falls
+back to slower TCG emulation with a warning. Use `--accel kvm` to require
+hardware acceleration. Inspect paths, resources, firmware, forwarding, and
+acceleration without changing state by adding `--dry-run`. VM state lives under
+`$XDG_STATE_HOME/aos/vms/<name>` (or `$HOME/.local/state/aos/vms/<name>`) unless
+`--state-dir` is supplied. Its metadata binds the persistent disk to the base
+image hash and requested capacity so a reused name cannot silently boot the
+wrong disk.
 
 ## Run checks and maintenance commands
 
@@ -143,6 +186,13 @@ Global output modes are explicit:
 | `--json` | Compact JSON on standard output |
 | `--quiet` | Suppress non-error printer output |
 | `-v` | Verbose output |
+| `--progress auto` | Use a terminal display interactively and stable lines in logs |
+| `--progress tty` | Force an updating terminal display |
+| `--progress plain` | Emit stable newline-delimited progress updates |
+| `--progress off` | Suppress progress while retaining final results and errors |
+| `--color auto` | Use color on an interactive terminal and honor `NO_COLOR` |
+| `--color always` | Force terminal colors |
+| `--color never` | Disable terminal colors |
 | `-vv` | Also stream Nix subprocess standard error |
 | `-vvv` | Also print the Nix command line |
 
@@ -191,14 +241,17 @@ apm attest verify --system \
   --rederived-manifest verifier/rederived-manifest.json
 ```
 
-The policy is strict JSON. PCR and root values come from the verifier's image
-catalog, not from the host being checked:
+The policy is strict JSON. Version 2 requires an operator-authorized PCR-12
+boot-input value; version 1 is rejected because it cannot express that check.
+PCR and root values come from verifier-controlled policy and catalog data, not
+from the host being checked:
 
 ```json
 {
-  "schema": "aos.gen-attestation-policy/v1",
+  "schema": "aos.gen-attestation-policy/v2",
   "expected_pcr7": "<64 lowercase hex>",
   "expected_pcr11": "sha256:<64 lowercase hex>",
+  "expected_pcr12": "<64 lowercase hex>",
   "expected_root_roothash": "<64 lowercase hex>",
   "expected_facts_hash": "sha256:<64 lowercase hex>",
   "trusted_config_keys": ["<8-hex fingerprint>"],
@@ -207,7 +260,7 @@ catalog, not from the host being checked:
 ```
 
 The command verifies the quote against an enrolled AK/EK identity, binds the
-record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11,
+record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11, PCR 12,
 dm-verity, facts, and host-input authorization, and reconstructs config-module
 membership and realization from the signed release commit. It rejects missing,
 revoked, or mismatched release receipts. `--rederived-manifest` supplies an

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{Printer, create_spinner};
+use aos_core::output::Printer;
 use aos_profile::target::{Target, resolve};
 use aos_profile::{ClosureGraph, report, scan};
 
@@ -50,7 +50,7 @@ fn resolve_target(nix: &NixRunner, printer: &Printer, spec: &str) -> Result<Stri
         Target::StorePath(p) => Ok(p),
         Target::Attr(attr) => {
             printer.info(&format!("Building '{attr}' to realise the closure..."));
-            let spinner = create_spinner(&format!("building {attr}"));
+            let spinner = printer.activity(&format!("building {attr}"));
             let path = nix
                 .build(&attr, None)
                 .with_context(|| format!("building '{attr}'"));
@@ -72,7 +72,7 @@ fn closure(
     let path = resolve_target(nix, printer, target)?;
 
     let cli = aos_core::nix::NixCli::new(0);
-    let spinner = create_spinner("enumerating closure");
+    let spinner = printer.activity("enumerating closure");
     let graph = ClosureGraph::build(&cli, &path)?;
     spinner.finish_and_clear();
 
@@ -81,7 +81,7 @@ fn closure(
         graph.paths.len(),
         if deep { " (deep)" } else { "" }
     ));
-    let spinner = create_spinner("classifying references");
+    let spinner = printer.activity("classifying references");
     let mut analysis = report::analyze(&graph, top, deep)?;
     spinner.finish_and_clear();
 
@@ -109,7 +109,7 @@ fn refs(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) -> 
     let mut targets = HashMap::new();
     targets.insert(dep_hash.to_string(), dep_path.clone());
 
-    let spinner = create_spinner("scanning referrer content");
+    let spinner = printer.activity("scanning referrer content");
     let found = scan::scan_path(&pkg_path, &targets)?;
     spinner.finish_and_clear();
 

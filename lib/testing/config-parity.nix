@@ -33,7 +33,8 @@
     inherit lib;
   };
   moduleProjection = {
-    artifacts = builtins.map
+    artifacts =
+      builtins.map
       (artifact: builtins.removeAttrs artifact ["_module"])
       evaluated.config.packageExpose.config.artifacts;
     desired = evaluated.config.parityDesired;
@@ -44,12 +45,14 @@
     pname = "config-parity-web";
     version = "0";
     src = null;
-    phases = [{
-      name = "install";
-      script = ''
-        mkdir -p "$out"
-      '';
-    }];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+        '';
+      }
+    ];
     expose = {
       units."web.service" = {
         serviceConfig = {
@@ -79,7 +82,8 @@
   flatActions = actionsFor flatArtifacts;
   moduleActions = actionsFor moduleProjection.artifacts;
 
-  tamperedArtifacts = builtins.map
+  tamperedArtifacts =
+    builtins.map
     (artifact:
       if artifact.name == "env"
       then artifact // {reload = "restart";}
@@ -90,15 +94,17 @@
   # A mixed generation contains a migrated package and a non-migrated flat
   # package.  Their final namespaces and action sets are disjoint, so union is
   # deterministic regardless of evaluation/input order.
-  flatOnlyArtifacts = [{
-    name = "legacy";
-    path = "/etc/aos/packages/legacy/legacy.env";
-    format = "env";
-    required = [];
-    optional = ["VALUE"];
-    units = ["legacy.service"];
-    reload = "restart";
-  }];
+  flatOnlyArtifacts = [
+    {
+      name = "legacy";
+      path = "/etc/aos/packages/legacy/legacy.env";
+      format = "env";
+      required = [];
+      optional = ["VALUE"];
+      units = ["legacy.service"];
+      reload = "restart";
+    }
+  ];
   mixedPaths = lib.sort builtins.lessThan (
     (builtins.map (artifact: artifact.path) moduleProjection.artifacts)
     ++ (builtins.map (artifact: artifact.path) flatOnlyArtifacts)
@@ -129,8 +135,10 @@
         (lib.throwIfNot tamperDetected
           "config-parity: policy tampering did not make the parity oracle fail"
           (lib.throwIfNot
-            (mixedPaths == reversedMixedPaths
-              && mixedActions == {
+            (mixedPaths
+              == reversedMixedPaths
+              && mixedActions
+              == {
                 reload = ["web.service"];
                 restart = ["legacy.service"];
               })

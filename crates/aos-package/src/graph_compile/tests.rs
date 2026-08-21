@@ -720,6 +720,23 @@ fn degraded_projection_rejects_unowned_aggregate_artifacts() {
 }
 
 #[test]
+fn degraded_projection_rejects_unowned_etc_removals() {
+    let full = json!({
+        "packages": ["firewall", "web"],
+        "removedEtc": ["systemd/system/nftables.service"],
+    });
+    let error = reproject_manifest(
+        &full,
+        &ConfigGraph::default(),
+        &pkgset(&["web"]),
+        &pkgset(&["web"]),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("removedEtc"));
+}
+
+#[test]
 fn staged_render_bytes_and_credential_handles_enter_generation_manifest() {
     let graph = ConfigGraph::default();
     let mut manifest = strict_manifest(&["web"], &graph);

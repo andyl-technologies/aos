@@ -81,5 +81,8 @@ mkDerivation {
     };
   };
 
-  meta.description = "AOS exposed test HTTP server package";
+  meta = {
+    description = "AOS exposed test HTTP server package";
+    license = "Apache-2.0";
+  };
 }
