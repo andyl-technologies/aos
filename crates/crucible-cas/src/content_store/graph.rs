@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::composition::{RoutedStore, TieredStore, VerifiedStore, WriteThroughStore};
+use super::composition::{
+    MetricsState, MetricsStore, ReadThroughStore, RoutedStore, TieredStore, VerifiedStore,
+    WriteThroughStore,
+};
 use super::directory::DirectoryBlobBackend;
 use super::memory::MemoryBlobBackend;
 use super::*;
@@ -76,10 +79,22 @@ pub enum StoreNodeSpec {
         /// Whether verified lower-tier reads promote into preceding tiers.
         promote_reads: bool,
     },
+    /// Reads through a cache and writes only to the authoritative source.
+    ReadThrough {
+        /// Faster optional cache receiving verified source reads.
+        cache: StoreNodeId,
+        /// Authoritative child receiving logical writes.
+        source: StoreNodeId,
+    },
     /// Requires every child placement before a write succeeds.
     WriteThrough {
         /// Mirrored children.
         children: Vec<StoreNodeId>,
+    },
+    /// Emits bounded operational counters around one child.
+    Metrics {
+        /// Child node whose synchronous operations are observed.
+        child: StoreNodeId,
     },
 }
 
@@ -90,7 +105,9 @@ impl StoreNodeSpec {
             Self::Verified { child } => vec![child],
             Self::Routed { routes } => routes.values().collect(),
             Self::Tiered { tiers, .. } => tiers.iter().collect(),
+            Self::ReadThrough { cache, source } => vec![cache, source],
             Self::WriteThrough { children } => children.iter().collect(),
+            Self::Metrics { child } => vec![child],
         }
     }
 
@@ -101,7 +118,9 @@ impl StoreNodeSpec {
             Self::Verified { .. } => StoreNodeKind::Verified,
             Self::Routed { .. } => StoreNodeKind::Routed,
             Self::Tiered { .. } => StoreNodeKind::Tiered,
+            Self::ReadThrough { .. } => StoreNodeKind::ReadThrough,
             Self::WriteThrough { .. } => StoreNodeKind::WriteThrough,
+            Self::Metrics { .. } => StoreNodeKind::Metrics,
         }
     }
 }
@@ -130,8 +149,12 @@ pub enum StoreNodeKind {
     Routed,
     /// Ordered tiers.
     Tiered,
+    /// Two-child read-through cache.
+    ReadThrough,
     /// Write-through mirror.
     WriteThrough,
+    /// Operational metrics facade.
+    Metrics,
 }
 
 /// Non-sensitive operational description of one admitted graph node.
@@ -145,12 +168,41 @@ pub struct StoreNodeDescription {
     pub capabilities: BackendCapabilities,
 }
 
+/// Saturating operational counters for one metrics node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreNodeMetrics {
+    /// `contains` operations attempted.
+    pub contains_calls: u64,
+    /// `contains` operations that found the requested object.
+    pub contains_hits: u64,
+    /// Logical read handles requested.
+    pub read_calls: u64,
+    /// Declared logical bytes made available by successful read calls.
+    pub read_logical_bytes: u64,
+    /// Logical immutable puts attempted.
+    pub put_calls: u64,
+    /// Declared logical bytes accepted by successful put calls.
+    pub put_logical_bytes: u64,
+    /// Synchronous child operations that returned an error.
+    pub failures: u64,
+}
+
+/// Metrics snapshot associated with one admitted graph node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreNodeMetricsDescription {
+    /// Metrics node ID.
+    pub id: StoreNodeId,
+    /// Current saturating operational counters.
+    pub metrics: StoreNodeMetrics,
+}
+
 /// Admitted immutable-store graph with one root service.
 pub struct StoreGraph {
     root_id: StoreNodeId,
     admitted_kinds: BTreeSet<ObjectKind>,
     root: Arc<dyn ImmutableBlobBackend>,
     description: Vec<StoreNodeDescription>,
+    metrics: BTreeMap<StoreNodeId, Arc<MetricsState>>,
 }
 
 impl StoreGraph {
@@ -169,7 +221,8 @@ impl StoreGraph {
         validate_demands(&config)?;
 
         let mut built = BTreeMap::new();
-        let root = instantiate(&config.root, &config.nodes, &mut built)?;
+        let mut metrics = BTreeMap::new();
+        let root = instantiate(&config.root, &config.nodes, &mut built, &mut metrics)?;
         validate_capability_edges(&config.nodes, &built)?;
         let mut description = Vec::with_capacity(config.nodes.len());
         for (id, spec) in &config.nodes {
@@ -187,6 +240,7 @@ impl StoreGraph {
             admitted_kinds: config.admitted_kinds,
             root,
             description,
+            metrics,
         })
     }
 
@@ -206,6 +260,33 @@ impl StoreGraph {
     #[must_use]
     pub fn describe(&self) -> &[StoreNodeDescription] {
         &self.description
+    }
+
+    /// Returns a deterministic snapshot of every admitted metrics node.
+    ///
+    /// Counters describe synchronous store-method outcomes. Deferred stream
+    /// consumption and authentication after a read handle is returned are not
+    /// included in this initial operational view.
+    #[must_use]
+    pub fn metrics(&self) -> Vec<StoreNodeMetricsDescription> {
+        self.metrics
+            .iter()
+            .map(|(id, state)| {
+                let snapshot = state.snapshot();
+                StoreNodeMetricsDescription {
+                    id: id.clone(),
+                    metrics: StoreNodeMetrics {
+                        contains_calls: snapshot.contains_calls,
+                        contains_hits: snapshot.contains_hits,
+                        read_calls: snapshot.read_calls,
+                        read_logical_bytes: snapshot.read_logical_bytes,
+                        put_calls: snapshot.put_calls,
+                        put_logical_bytes: snapshot.put_logical_bytes,
+                        failures: snapshot.failures,
+                    },
+                }
+            })
+            .collect()
     }
 }
 
@@ -357,10 +438,17 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
                     extend_demand(child, &kinds, &mut demands, &mut queue);
                 }
             }
+            StoreNodeSpec::ReadThrough { cache, source } => {
+                extend_demand(cache, &kinds, &mut demands, &mut queue);
+                extend_demand(source, &kinds, &mut demands, &mut queue);
+            }
             StoreNodeSpec::WriteThrough { children } => {
                 for child in children {
                     extend_demand(child, &kinds, &mut demands, &mut queue);
                 }
+            }
+            StoreNodeSpec::Metrics { child } => {
+                extend_demand(child, &kinds, &mut demands, &mut queue);
             }
         }
     }
@@ -393,6 +481,7 @@ fn instantiate(
     id: &StoreNodeId,
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     built: &mut BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
+    metrics: &mut BTreeMap<StoreNodeId, Arc<MetricsState>>,
 ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
     if let Some(backend) = built.get(id) {
         return Ok(backend.clone());
@@ -409,12 +498,12 @@ fn instantiate(
         }
         StoreNodeSpec::Verified { child } => Arc::new(VerifiedStore::new(
             id.as_str(),
-            instantiate(child, nodes, built)?,
+            instantiate(child, nodes, built, metrics)?,
         )),
         StoreNodeSpec::Routed { routes } => {
             let routes = routes
                 .iter()
-                .map(|(kind, child)| Ok((*kind, instantiate(child, nodes, built)?)))
+                .map(|(kind, child)| Ok((*kind, instantiate(child, nodes, built, metrics)?)))
                 .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
             Arc::new(RoutedStore::new(id.as_str(), routes)?)
         }
@@ -425,7 +514,7 @@ fn instantiate(
         } => {
             let tiers = tiers
                 .iter()
-                .map(|child| instantiate(child, nodes, built))
+                .map(|child| instantiate(child, nodes, built, metrics))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(TieredStore::new(
                 id.as_str(),
@@ -434,12 +523,23 @@ fn instantiate(
                 *promote_reads,
             )?)
         }
+        StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
+            id.as_str(),
+            instantiate(cache, nodes, built, metrics)?,
+            instantiate(source, nodes, built, metrics)?,
+        )),
         StoreNodeSpec::WriteThrough { children } => {
             let children = children
                 .iter()
-                .map(|child| instantiate(child, nodes, built))
+                .map(|child| instantiate(child, nodes, built, metrics))
                 .collect::<Result<Vec<_>, _>>()?;
             Arc::new(WriteThroughStore::new(id.as_str(), children)?)
+        }
+        StoreNodeSpec::Metrics { child } => {
+            let child = instantiate(child, nodes, built, metrics)?;
+            let (backend, state) = MetricsStore::new(id.as_str(), child);
+            metrics.insert(id.clone(), state);
+            Arc::new(backend)
         }
     };
     built.insert(id.clone(), backend.clone());
@@ -457,6 +557,7 @@ fn validate_capability_edges(
                 promote_reads: true,
                 ..
             } => tiers.as_slice(),
+            StoreNodeSpec::ReadThrough { cache, .. } => std::slice::from_ref(cache),
             StoreNodeSpec::WriteThrough { children } => children.as_slice(),
             _ => continue,
         };

@@ -296,6 +296,23 @@ demand propagation before constructing the root:
 - public introspection returns only node ID, built-in kind, and derived
   capabilities, never a directory root, endpoint, or credential.
 
+`ReadThroughStore(cache, source)` reads the cache first and falls through only
+on exact `NotFound`. Corruption, authorization, and availability failures from
+the cache remain visible. A source hit is streamed through authenticated
+conditional creation into the cache before the caller's requested logical range
+is sliced; a quota or availability failure during that optional promotion does
+not hide the authenticated source object. Ordinary puts go only to `source`, so
+cache durability is never reported as source durability.
+
+`MetricsStore(child)` retains saturating `u64` counters for synchronous
+`contains`, `read`, and `put_if_absent` calls, successful declared logical bytes,
+and failures. Graph introspection returns those counters by bounded node ID
+without returning child paths or credentials. This initial deterministic counter
+view deliberately ends when a read handle is returned: latency plus errors and
+bytes observed later while consuming its deferred authenticated stream remain
+open for a host-side observer boundary rather than introducing host time into
+logical storage code.
+
 Direct constructors for composition layers are private. Callers may use a leaf
 alone or an admitted `StoreGraph`, so arbitrary trait-object nesting cannot
 bypass these checks.

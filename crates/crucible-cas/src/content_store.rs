@@ -25,7 +25,8 @@ mod memory;
 
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
-    StoreGraph, StoreGraphConfig, StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeSpec,
+    StoreGraph, StoreGraphConfig, StoreNodeDescription, StoreNodeId, StoreNodeKind,
+    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 

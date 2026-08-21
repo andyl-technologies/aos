@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 
@@ -222,6 +223,200 @@ impl ImmutableBlobBackend for TieredStore {
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.tiers[self.write_tier].put_if_absent(id, source)
+    }
+}
+
+/// Two-child read-through cache for immutable logical objects.
+pub struct ReadThroughStore {
+    name: String,
+    cache: Arc<dyn ImmutableBlobBackend>,
+    source: Arc<dyn ImmutableBlobBackend>,
+}
+
+impl ReadThroughStore {
+    /// Builds a read-through cache over one authoritative source child.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        cache: Arc<dyn ImmutableBlobBackend>,
+        source: Arc<dyn ImmutableBlobBackend>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            cache,
+            source,
+        }
+    }
+
+    fn read_full(&self, id: ContentId) -> Result<BlobHandle, StoreError> {
+        match self.cache.read(id, None) {
+            Ok(blob) => Ok(blob),
+            Err(StoreError::NotFound { .. }) => {
+                let blob = self.source.read(id, None)?;
+                // Promotion is an operational cache optimization. A cache
+                // outage or quota limit cannot make an authenticated source
+                // object unavailable to the logical caller.
+                let _promotion = self.cache.put_if_absent(id, &blob);
+                Ok(blob)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl ImmutableBlobBackend for ReadThroughStore {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        let cache = self.cache.capabilities();
+        let mut capabilities = self.source.capabilities();
+        capabilities.range_read &= cache.range_read;
+        capabilities.streaming_read &= cache.streaming_read && cache.streaming_put;
+        capabilities
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        match self.read_full(id) {
+            Ok(_) => Ok(true),
+            Err(StoreError::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.read_full(id)?.slice(range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.source.put_if_absent(id, source)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct MetricsState {
+    contains_calls: AtomicU64,
+    contains_hits: AtomicU64,
+    read_calls: AtomicU64,
+    read_logical_bytes: AtomicU64,
+    put_calls: AtomicU64,
+    put_logical_bytes: AtomicU64,
+    failures: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MetricsSnapshot {
+    pub contains_calls: u64,
+    pub contains_hits: u64,
+    pub read_calls: u64,
+    pub read_logical_bytes: u64,
+    pub put_calls: u64,
+    pub put_logical_bytes: u64,
+    pub failures: u64,
+}
+
+impl MetricsState {
+    fn increment(counter: &AtomicU64, amount: u64) {
+        let _prior = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_add(amount))
+        });
+    }
+
+    pub(crate) fn snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            contains_calls: self.contains_calls.load(Ordering::Relaxed),
+            contains_hits: self.contains_hits.load(Ordering::Relaxed),
+            read_calls: self.read_calls.load(Ordering::Relaxed),
+            read_logical_bytes: self.read_logical_bytes.load(Ordering::Relaxed),
+            put_calls: self.put_calls.load(Ordering::Relaxed),
+            put_logical_bytes: self.put_logical_bytes.load(Ordering::Relaxed),
+            failures: self.failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Operational counters around one immutable child store.
+pub struct MetricsStore {
+    name: String,
+    child: Arc<dyn ImmutableBlobBackend>,
+    state: Arc<MetricsState>,
+}
+
+impl MetricsStore {
+    /// Wraps `child` and returns the shared counter state used by graph
+    /// introspection.
+    #[must_use]
+    pub(crate) fn new(
+        name: impl Into<String>,
+        child: Arc<dyn ImmutableBlobBackend>,
+    ) -> (Self, Arc<MetricsState>) {
+        let state = Arc::new(MetricsState::default());
+        (
+            Self {
+                name: name.into(),
+                child,
+                state: state.clone(),
+            },
+            state,
+        )
+    }
+}
+
+impl ImmutableBlobBackend for MetricsStore {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        MetricsState::increment(&self.state.contains_calls, 1);
+        let result = self.child.contains(id);
+        match result {
+            Ok(present) => {
+                if present {
+                    MetricsState::increment(&self.state.contains_hits, 1);
+                }
+                Ok(present)
+            }
+            Err(error) => {
+                MetricsState::increment(&self.state.failures, 1);
+                Err(error)
+            }
+        }
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        MetricsState::increment(&self.state.read_calls, 1);
+        let result = self.child.read(id, range);
+        match result {
+            Ok(blob) => {
+                MetricsState::increment(&self.state.read_logical_bytes, blob.logical_length());
+                Ok(blob)
+            }
+            Err(error) => {
+                MetricsState::increment(&self.state.failures, 1);
+                Err(error)
+            }
+        }
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        MetricsState::increment(&self.state.put_calls, 1);
+        let result = self.child.put_if_absent(id, source);
+        match result {
+            Ok(receipt) => {
+                MetricsState::increment(&self.state.put_logical_bytes, source.logical_length());
+                Ok(receipt)
+            }
+            Err(error) => {
+                MetricsState::increment(&self.state.failures, 1);
+                Err(error)
+            }
+        }
     }
 }
 
