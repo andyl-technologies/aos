@@ -274,6 +274,7 @@ pub(crate) fn search_materialization_budget(max_states: u64) -> usize {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn search_failure_reproduction_artifact_bytes(
     backend_plan: &BackendSelectionPlan,
     plan: &SearchDriverPlan,
@@ -302,6 +303,7 @@ pub(crate) fn search_failure_reproduction_artifact_bytes(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn search_extra_artifact_payloads(
     plan: &SearchDriverPlan,
     canonical_log: &mut Vec<CanonicalLogEntry>,
@@ -350,6 +352,7 @@ pub(crate) fn search_extra_artifact_payloads(
     payloads
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn canonical_log_entries_from_search_failure(
     failure: &SearchDiscoveredFailure,
 ) -> Vec<CanonicalLogEntry> {

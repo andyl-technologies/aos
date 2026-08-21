@@ -1,8 +1,10 @@
 //! `crucible` is the CLI entry point for the Crucible control plane.
 //! Spec index: RFC-0010 files 23.
-//! This L4 binary crate will remain a thin client over `crucible-api` and `crucible-session` as specified by RFC-0010 file 23.
+//! This L4 binary crate remains a thin client over the control, session, and
+//! campaign-service APIs specified by RFC-0010 and RFC-0015.
 //!
-//! Module map: the binary root owns argument dispatch only; future command modules will remain transport clients over the session and API crates.
+//! Module map: the binary root owns argument dispatch, while command modules
+//! remain transport clients over the session, API, and campaign-service crates.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -41,6 +43,8 @@ use crucible_api::{
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
 use crucible_session::engine::QuantumLoop as EngineLoop;
+#[cfg(any(test, feature = "test-double"))]
+use crucible_session::engine::SearchDiscoveredFailure;
 use crucible_session::validation::{
     ValidationDag, ValidationDagStoreError, recorded_checkpoint_for_configuration,
     validation_dag_with_baked_genesis,
@@ -52,7 +56,7 @@ use crucible_session::{
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
-        OverrideDecision, RecordedAssertionLog, Schedule, SchedulingPoint, SearchDiscoveredFailure,
+        OverrideDecision, RecordedAssertionLog, Schedule, SchedulingPoint,
         SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
@@ -85,9 +89,11 @@ const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
+#[cfg(any(test, feature = "test-double"))]
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-schedule-named-truths+toml";
 const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
+#[cfg(any(test, feature = "test-double"))]
 const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.search-retained-evidence+toml";
 const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
@@ -278,8 +284,47 @@ enum Commands {
     Debug(DebugArgs),
     /// Run the daemon hosting the API (21).
     Serve(ServeArgs),
+    /// Inspect and control a lazy campaign through the local daemon.
+    Campaign(CampaignArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArgs {
+    /// Connected daemon campaign-service Unix socket.
+    #[arg(long, value_name = "path", required = true)]
+    socket: PathBuf,
+    /// Principal expected from the daemon's authenticated peer policy.
+    #[arg(long, value_name = "principal", required = true)]
+    principal: String,
+    #[command(subcommand)]
+    command: CampaignCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignCommand {
+    /// Print the current authenticated campaign head and lifecycle state.
+    Status(CampaignStatusArgs),
+    /// Return the latest coalesced head after an optional snapshot cursor.
+    Watch(CampaignWatchArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStatusArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignWatchArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Last observed campaign snapshot cursor.
+    #[arg(long, value_name = "SNAPSHOT")]
+    after: Option<String>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -891,6 +936,7 @@ enum CliSubcommand {
     Triage,
     Debug,
     Serve,
+    Campaign,
     Completions,
 }
 
@@ -909,6 +955,7 @@ impl CliSubcommand {
             Commands::Triage(_) => Self::Triage,
             Commands::Debug(_) => Self::Debug,
             Commands::Serve(_) => Self::Serve,
+            Commands::Campaign(_) => Self::Campaign,
             Commands::Completions(_) => Self::Completions,
         }
     }
@@ -927,6 +974,7 @@ impl CliSubcommand {
             Self::Triage => "triage",
             Self::Debug => "debug",
             Self::Serve => "serve",
+            Self::Campaign => "campaign",
             Self::Completions => "completions",
         }
     }
@@ -986,6 +1034,7 @@ enum CliDelegatedDriver {
     TriageEngine,
     TimeTravelDebugger,
     DaemonHost,
+    CampaignService,
     ShellCompletionGenerator,
 }
 
@@ -1059,7 +1108,7 @@ impl CliThinWrapperPlan {
             || !self.api_calls.is_empty()
             || matches!(
                 self.subcommand,
-                CliSubcommand::Triage | CliSubcommand::Completions
+                CliSubcommand::Triage | CliSubcommand::Campaign | CliSubcommand::Completions
             )
     }
 }
@@ -1334,6 +1383,19 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             implements_fork_logic: false,
             extra_control_capabilities: Vec::new(),
         },
+        Commands::Campaign(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::CampaignService],
+            state_references: vec![CliStateReferenceKind::DaemonConnection],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            implements_fork_logic: false,
+            extra_control_capabilities: Vec::new(),
+        },
         Commands::Completions(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: Vec::new(),
@@ -1372,6 +1434,8 @@ trait CliOperationRecorder {
 mod cli_artifact;
 #[path = "cli/backend.rs"]
 mod cli_backend;
+#[path = "cli/campaign.rs"]
+mod cli_campaign;
 #[path = "cli/control.rs"]
 mod cli_control;
 #[path = "cli/dispatch.rs"]
@@ -1395,6 +1459,7 @@ mod cli_verify_serve;
 
 use cli_artifact::*;
 use cli_backend::*;
+use cli_campaign::*;
 use cli_control::*;
 use cli_dispatch::*;
 use cli_exploration::*;

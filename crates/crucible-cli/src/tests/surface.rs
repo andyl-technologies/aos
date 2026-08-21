@@ -1186,6 +1186,7 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
     assert_eq!(
         names,
         [
+            "campaign",
             "completions",
             "debug",
             "fork",

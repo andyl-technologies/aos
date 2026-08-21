@@ -550,6 +550,7 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         | Commands::Triage(_)
         | Commands::Debug(_)
         | Commands::Serve(_)
+        | Commands::Campaign(_)
         | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
     }
 }
