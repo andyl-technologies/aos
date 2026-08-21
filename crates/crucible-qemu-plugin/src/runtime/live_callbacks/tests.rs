@@ -481,7 +481,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
     assert_eq!(crucible_qemu_plugin_live_max_advance_icount_cb(userdata), 0);
     crucible_qemu_plugin_live_time_advance_completion_cb(0, 0, userdata);
     assert_eq!(
-        crucible_qemu_plugin_live_network_tx_cb(std::ptr::null(), 0, userdata),
+        crucible_qemu_plugin_live_network_tx_cb(std::ptr::null(), 0, 0, userdata),
         -1
     );
     assert_eq!(
@@ -1110,7 +1110,7 @@ extern "C" fn test_reentrant_net_flush() -> std::os::raw::c_int {
     crucible_qemu_plugin_live_publish_icount_cb(0, state.cast());
     let payload = b"flush-tx";
     let status =
-        crucible_qemu_plugin_live_network_tx_cb(payload.as_ptr(), payload.len(), state.cast());
+        crucible_qemu_plugin_live_network_tx_cb(payload.as_ptr(), payload.len(), 0, state.cast());
     if status != 0 {
         return status;
     }

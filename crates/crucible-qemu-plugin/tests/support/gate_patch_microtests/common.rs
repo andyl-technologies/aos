@@ -121,6 +121,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0105-crucible-selector-control-plane-fixtures.patch",
     "0106-crucible-defer-active-slice-host-wakes.patch",
     "0107-crucible-anchor-rr-cursor-genesis.patch",
+    "0108-crucible-deterministic-network-kick.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -66,6 +66,12 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             ));
         }
         self.next_router_inbound_sequence = checkpoint.next_router_inbound_sequence;
+        *self.inbound_delivery_ledger.get_mut() = checkpoint
+            .inbound
+            .frames
+            .iter()
+            .map(crucible_shmem::FrameEntry::delivery_key)
+            .collect();
         Ok(())
     }
 
@@ -181,6 +187,9 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             .map_err(QemuNodeChannelError::from)?;
         self.publish_inbound_entry_and_wake(&entry)
             .map_err(QemuNodeChannelError::from)?;
+        self.inbound_delivery_ledger
+            .get_mut()
+            .push_back(entry.delivery_key());
         self.commit_router_inbound_sequence()
             .map_err(QemuNodeChannelError::from)
     }

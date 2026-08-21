@@ -9,9 +9,9 @@
 use std::os::fd::BorrowedFd;
 
 use crucible_shmem::{
-    FrameEntry, FrameEntryError, FutexError, LookaheadGateError, MappedDirectedRingMut,
-    MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError, NodeSlotError,
-    NodeSlotSnapshot, SLOT_NET_ROUTER, SetupRegionMapError, SpscRingError,
+    FrameEntry, FrameEntryError, LookaheadGateError, MappedDirectedRingMut, MappedNodeRingPairMut,
+    MappedSetupRegion, MappedSetupRegionAccessError, NodeSlotError, NodeSlotSnapshot,
+    SLOT_NET_ROUTER, SchedulerWakePublicationError, SetupRegionMapError, SpscRingError,
     authorize_advance_ceiling, mmap_setup_region,
 };
 use thiserror::Error;
@@ -196,17 +196,32 @@ impl QemuLiveNetworkIoServicer {
                 if let Some(before_reply) = before_reply.take() {
                     before_reply();
                 }
-                inbound_header
-                    .enqueue(inbound_entries, &reply)
-                    .map_err(|source| QemuLiveNetworkIoServicerError::Ring { source })?;
+                let slot_snapshot = node_slot.snapshot();
+                let delivery_ceiling = slot_snapshot.max_advance_icount.min(delivery_icount);
+                let ceiling =
+                    authorize_advance_ceiling(slot_snapshot.current_icount, delivery_ceiling, None)
+                        .map_err(
+                            |source| QemuLiveNetworkIoServicerError::CeilingAuthorization {
+                                source,
+                            },
+                        )?;
+                node_slot
+                    .publish_scheduler_inbox_and_ceiling(
+                        self.vm_slot,
+                        router_slot,
+                        inbound_header,
+                        inbound_entries,
+                        std::slice::from_ref(&reply),
+                        ceiling,
+                    )
+                    .map_err(|source| QemuLiveNetworkIoServicerError::ReplyPublication {
+                        source,
+                    })?;
                 self.reply_sequence = self
                     .reply_sequence
                     .checked_add(1)
                     .ok_or(QemuLiveNetworkIoServicerError::ReplySequenceOverflow)?;
                 self.snapshot.reply_delivery_icount = Some(delivery_icount);
-                node_slot
-                    .wake_for_frame_delivery()
-                    .map_err(|source| QemuLiveNetworkIoServicerError::Wake { source })?;
                 step.reply_enqueued = true;
             }
             self.snapshot.tx_frames.push(observation);
@@ -342,12 +357,12 @@ pub enum QemuLiveNetworkIoServicerError {
         /// Observed frame length.
         length: usize,
     },
-    /// Waking the parked plugin after frame publication failed.
-    #[error("could not wake live network guest after reply publication")]
-    Wake {
-        /// Typed futex failure.
+    /// Ordered reply, ceiling, and wake publication failed.
+    #[error("could not publish live network reply, ceiling, and wake atomically")]
+    ReplyPublication {
+        /// Typed ordered scheduler-wake failure.
         #[source]
-        source: FutexError,
+        source: SchedulerWakePublicationError,
     },
     /// The requested event-boundary ceiling was invalid.
     #[error("live network scheduler ceiling authorization failed")]

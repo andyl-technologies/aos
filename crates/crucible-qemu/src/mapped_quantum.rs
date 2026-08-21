@@ -1,5 +1,7 @@
 //! Owned mapped shared-memory adapter for QEMU quantum channels.
 
+use std::collections::VecDeque;
+
 use crucible::{
     AppRandomDecision, BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount,
     ObservableEvent, RngStreamId, SchedulerSendAuthorizer,
@@ -16,8 +18,8 @@ use crucible_protocol::{
     PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
 };
 use crucible_shmem::{
-    FingerprintSample, GuestIntrospectionEntry, MappedDirectedRingMut, MappedNodeRingPairMut,
-    MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE,
+    FingerprintSample, FrameDeliveryKey, GuestIntrospectionEntry, MappedDirectedRingMut,
+    MappedNodeRingPairMut, MappedSetupRegion, SLOT_NET_ROUTER, STATUS_DONE,
 };
 
 use crate::{
@@ -41,6 +43,7 @@ pub struct QemuMappedQuantumShmemHotPath {
     config: QemuQuantumShmemConfig,
     region: MappedSetupRegion,
     next_router_inbound_sequence: u64,
+    inbound_delivery_ledger: VecDeque<FrameDeliveryKey>,
     coverage_bridge: Option<QemuBasicBlockCoverageBridge>,
     next_coverage_sequence: u64,
     last_coverage_icount: Option<u64>,
@@ -265,6 +268,7 @@ impl QemuMappedQuantumShmemHotPath {
             config,
             region,
             next_router_inbound_sequence: 0,
+            inbound_delivery_ledger: VecDeque::new(),
             coverage_bridge,
             next_coverage_sequence,
             last_coverage_icount: None,
@@ -287,14 +291,19 @@ impl QemuMappedQuantumShmemHotPath {
         let Self {
             config,
             region,
+            inbound_delivery_ledger,
             send_authorizer,
             ..
         } = self;
         let view =
             mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
-        let mut hot_path =
-            QemuQuantumShmemHotPath::new(config.clone(), view, send_authorizer.as_ref())
-                .map_err(QemuNodeChannelError::from)?;
+        let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
+            config.clone(),
+            view,
+            inbound_delivery_ledger,
+            send_authorizer.as_ref(),
+        )
+        .map_err(QemuNodeChannelError::from)?;
         run(&mut hot_path)
     }
 
@@ -616,6 +625,12 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             ));
         }
         self.next_router_inbound_sequence = checkpoint.next_router_inbound_sequence;
+        self.inbound_delivery_ledger = checkpoint
+            .inbound
+            .frames
+            .iter()
+            .map(crucible_shmem::FrameEntry::delivery_key)
+            .collect();
         Ok(())
     }
 

@@ -94,7 +94,10 @@ fn run() -> Result<(), String> {
     println!("completed_icount={}", report.completed_icount);
     println!(
         "execution_fingerprint={}",
-        report.execution_fingerprint.hash.to_hex()
+        report
+            .execution_fingerprint
+            .as_ref()
+            .map_or_else(|| "not-observed".to_owned(), |value| value.hash.to_hex())
     );
     println!("run_control_silent={}", report.run_control_silent);
     println!("plugin_quit_consumed={}", report.plugin_quit_consumed);
