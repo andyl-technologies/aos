@@ -6,6 +6,7 @@ use std::error::Error as StdError;
 use crucible_campaign::{CampaignHash, CampaignRepository, CampaignRepositoryError};
 use crucible_cas::content_store::{
     BlobStoreAdmin, ContentId, RefInventorySummary, RefStoreAdmin, StoreError,
+    WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -102,7 +103,8 @@ impl CampaignGcPreparedPlan {
 /// This operation deliberately does not delete. A later apply must reacquire
 /// every fence, reproduce the root and physical generations, and additionally
 /// exclude an in-flight campaign transaction across its children-before-ref
-/// publication window.
+/// publication window and every pending write-back transfer through its
+/// children-before-journal window.
 ///
 /// # Errors
 ///
@@ -115,6 +117,7 @@ pub fn plan_single_host_campaign_gc<L>(
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
     store_graph: CampaignHash,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<CampaignGcPreparedPlan, CampaignGcPlanningError<L::Error>>
@@ -127,6 +130,7 @@ where
     let mut roots = RootAccumulator::default();
     let ref_summary = inventory_refs(refs, &mut roots)?;
     let ledger_summary = inventory_ledger(ledger, &mut roots)?;
+    inventory_write_back(write_back, &mut roots)?;
     let root_manifest = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
 
     let reachable = repository
@@ -208,6 +212,9 @@ where
     /// The assignment-ledger root visitor exhausted the manifest bound.
     #[error("campaign GC assignment-retention root limit exceeded")]
     LedgerVisitor,
+    /// A pending write-back root set could not be fenced or enumerated.
+    #[error("campaign GC write-back retention inventory failed")]
+    WriteBack(#[source] StoreError),
     /// A physical blob leaf could not be fenced or enumerated.
     #[error("campaign GC physical inventory failed for backend {backend}")]
     Blob {
@@ -282,6 +289,25 @@ where
             }
             AssignmentRetentionInventoryError::Visitor(_) => CampaignGcPlanningError::LedgerVisitor,
         })
+}
+
+fn inventory_write_back<E>(
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    roots: &mut RootAccumulator,
+) -> Result<(), CampaignGcPlanningError<E>>
+where
+    E: StdError + 'static,
+{
+    let Some(write_back) = write_back else {
+        return Ok(());
+    };
+    let mut fence = write_back
+        .acquire_write_back_retention_fence()
+        .map_err(CampaignGcPlanningError::WriteBack)?;
+    fence
+        .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
+        .map_err(CampaignGcPlanningError::WriteBack)?;
+    Ok(())
 }
 
 #[derive(Default)]

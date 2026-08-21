@@ -94,6 +94,7 @@ impl ImmutableBlobBackend for RoutedStore {
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = BackendCapabilities {
             durable: true,
+            deferred_write: false,
             range_read: true,
             streaming_read: true,
             conditional_create: true,
@@ -104,6 +105,7 @@ impl ImmutableBlobBackend for RoutedStore {
         for child in self.routes.values() {
             let child = child.capabilities();
             capabilities.durable &= child.durable;
+            capabilities.deferred_write |= child.deferred_write;
             capabilities.range_read &= child.range_read;
             capabilities.streaming_read &= child.streaming_read;
             capabilities.conditional_create &= child.conditional_create;
@@ -458,6 +460,7 @@ impl ImmutableBlobBackend for WriteThroughStore {
         for child in &self.children[1..] {
             let child = child.capabilities();
             capabilities.durable |= child.durable;
+            capabilities.deferred_write |= child.deferred_write;
             capabilities.range_read &= child.range_read;
             capabilities.streaming_read &= child.streaming_read;
             capabilities.conditional_create &= child.conditional_create;

@@ -6,6 +6,7 @@ use std::error::Error as StdError;
 use crucible_campaign::CampaignHash;
 use crucible_cas::content_store::{
     BlobInventoryFence, PlannedDeleteDisposition, RefStoreAdmin, StoreError,
+    WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -61,12 +62,13 @@ impl CampaignGcApplyReport {
 /// Revalidates and destructively applies one exact journaled single-host plan.
 ///
 /// Apply acquires fences in the fixed order ref publication/namespace, ledger,
-/// then physical leaves in canonical backend order. It reproduces the exact
-/// ref, ledger, root-manifest, and every physical-inventory basis before durably
-/// entering `Applying`. Ref and ledger fences remain held throughout. Each
-/// physical leaf is then reacquired, revalidated against the same plan, and
-/// retained through its candidate deletions. This sequential second pass avoids
-/// deadlock if a misconfigured store graph aliases one physical lock.
+/// pending write-back transfers, then physical leaves in canonical backend
+/// order. It reproduces the exact ref, ledger, root-manifest, and every
+/// physical-inventory basis before durably entering `Applying`. Root fences
+/// remain held throughout. Each physical leaf is then reacquired, revalidated
+/// against the same plan, and retained through its candidate deletions. This
+/// sequential second pass avoids deadlock if a misconfigured store graph aliases
+/// one physical lock.
 ///
 /// A journal reopened in `Applying` is intentionally not resumed because at
 /// least one backend generation may already have advanced. The operator must
@@ -81,6 +83,7 @@ pub fn apply_single_host_campaign_gc<L>(
     journal: &mut DirectoryCampaignGcJournal,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
+    write_back: Option<&dyn WriteBackRetentionAdmin>,
     store_graph: CampaignHash,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
@@ -110,6 +113,10 @@ where
     let mut ledger_fence = ledger
         .acquire_retention_fence()
         .map_err(CampaignGcApplyError::Ledger)?;
+    let mut write_back_fence = write_back
+        .map(WriteBackRetentionAdmin::acquire_write_back_retention_fence)
+        .transpose()
+        .map_err(CampaignGcApplyError::WriteBack)?;
 
     let mut roots = RootAccumulator::default();
     let ref_summary = ref_fence
@@ -147,6 +154,11 @@ where
         || ledger_summary.checkpoint_roots() != journal.plan().checkpoint_roots()
     {
         return Err(CampaignGcApplyError::LedgerBasisChanged);
+    }
+    if let Some(fence) = write_back_fence.as_mut() {
+        fence
+            .visit_roots(&mut |root| roots.insert(root.id()).map_err(|()| StoreError::Quota))
+            .map_err(CampaignGcApplyError::WriteBack)?;
     }
     let current_roots = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
     if current_roots != *journal.roots() {
@@ -241,6 +253,9 @@ where
     /// The assignment-ledger root visitor exhausted the manifest bound.
     #[error("campaign GC assignment-retention root limit exceeded")]
     LedgerVisitor,
+    /// Pending write-back roots could not be fenced or enumerated.
+    #[error("campaign GC write-back retention revalidation failed")]
+    WriteBack(#[source] StoreError),
     /// A physical blob leaf could not be fenced, enumerated, or mutated.
     #[error("campaign GC physical apply failed for backend {backend}")]
     Blob {

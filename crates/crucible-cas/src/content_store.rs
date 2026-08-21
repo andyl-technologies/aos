@@ -25,6 +25,7 @@ mod composition;
 mod directory;
 mod graph;
 mod memory;
+mod write_back;
 
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
@@ -34,9 +35,13 @@ pub use admin::{
 pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
 pub use graph::{
     StoreGraph, StoreGraphConfig, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
+    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
+pub use write_back::{
+    WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
+    WriteBackRetentionRoot, WriteBackRetentionSummary,
+};
 
 #[cfg(test)]
 mod tests;
@@ -512,6 +517,8 @@ impl Read for RangeReader {
 pub struct BackendCapabilities {
     /// The store persists data across process restart.
     pub durable: bool,
+    /// A successful put may still require a journaled downstream transfer.
+    pub deferred_write: bool,
     /// The store admits bounded logical range reads.
     pub range_read: bool,
     /// The store returns bounded readers without full-size buffering.
@@ -748,6 +755,10 @@ pub enum GraphViolation {
     InvalidWriteTier,
     /// A child lacks a capability required by its parent layer.
     UnsupportedChild,
+    /// A write-back node has invalid pending-transfer bounds.
+    InvalidWriteBackBounds,
+    /// A journal and another persistent graph path overlap lexically.
+    OverlappingAdministrativePath,
 }
 
 impl fmt::Display for GraphViolation {
@@ -765,6 +776,8 @@ impl fmt::Display for GraphViolation {
             Self::RouteCoverage => "incomplete or extraneous route coverage",
             Self::InvalidWriteTier => "invalid write tier",
             Self::UnsupportedChild => "unsupported child capability",
+            Self::InvalidWriteBackBounds => "invalid write-back bounds",
+            Self::OverlappingAdministrativePath => "overlapping administrative path",
         })
     }
 }

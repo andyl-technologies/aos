@@ -212,6 +212,7 @@ conditional create       bounded range read       streaming read/put
 durable flush semantics  multipart/resume         atomic conditional ref
 delete support           repair enumeration       maximum object/part sizes
 physical encryption      sparse-file support      pack-index durability
+deferred downstream transfer
 ```
 
 Layers declare both requirements of their children and capabilities they
@@ -358,6 +359,56 @@ routes but must define unambiguous read, write, durability, promotion, and
 eviction behavior for every admitted object kind. A write-back layer is valid
 only with a durable transfer journal whose protected roots participate in GC.
 
+The first write-back layer requires durable streaming staging and destination
+children. A put authenticates its complete source, publishes the staging child,
+and appends a checksummed pending record to the durable
+`crucible.content-store.write-back-transfer-journal` v1 log before returning.
+The returned placement receipt names only staging; an owner requiring the
+destination's durability waits for explicit transfer completion rather than
+treating the queue as an archival receipt. Reads prefer staging and fall back
+to the destination only on exact absence. A bounded flush visits node and
+`ContentId` order, idempotently publishes the destination, and durably appends
+completion before the pending root disappears.
+
+The journal has fixed pending-object and aggregate logical-byte ceilings, a
+64-MiB physical log ceiling, checksummed records, durable append, and atomic
+bounded compaction. Pending capacity is reserved under the journal state lock
+before staging, so a quota rejection cannot publish unjournaled staging debris;
+successful staging still precedes the durable pending append. Restart replays
+the exact pending set and rejects a header whose BLAKE3 binding does not match
+the exact node ID, staging child ID, destination child ID, and configured count
+and byte limits. Node IDs are stable configured-instance identities; changing a
+child's physical configuration requires a new child ID or a new journal root.
+
+The registered v1 journal encoding is:
+
+```text
+"crucible.content-store.write-back-transfer.v1\0"
+binding[32]
+repeated {
+  payload_length_u32_be
+  operation_u8                 # 0 Pending, 1 Complete
+  content_id_length_u16_be
+  content_id_ascii[content_id_length]
+  logical_length_u64_be
+  checksum[32]
+}
+```
+
+`binding = BLAKE3("crucible.content-store.write-back-transfer-binding.v1" ||
+len_u64_be(node) || node || len_u64_be(staging) || staging ||
+len_u64_be(destination) || destination || maximum_pending_objects_u64_be ||
+maximum_pending_bytes_u64_be)`. `checksum` is
+`BLAKE3("crucible.content-store.write-back-transfer-record.v1" || record bytes
+before checksum)`. Each payload is at most 256 bytes. A torn final record that
+was never durably acknowledged is truncated while holding the journal state
+lock; malformed complete records fail closed. The journal's shared lifecycle
+fence spans staging publication through pending append and spans destination
+publication through completion append. Single-host GC acquires the exclusive
+side, adds every pending ID to its canonical root manifest, and holds that fence
+while reproducing roots and deleting planned loose placements. A changed
+pending set therefore invalidates an old plan before deletion.
+
 The initial admitted graph is a flat `StoreNodeId -> StoreNodeSpec` map with an
 explicit root and exact admitted `ObjectKind` set. `StoreNodeSpec` is a closed
 enum over built-in leaves and layers; child fields contain node IDs, which lets
@@ -371,6 +422,10 @@ demand propagation before constructing the root:
   demands when the router is shared;
 - tiers and mirrors are nonempty, the write-tier index is valid, and promotion
   or mirroring children support conditional immutable creation;
+- write-back staging and destination children are durable, conditional,
+  streaming stores that do not themselves defer transfer, pending count/byte
+  bounds are nonzero and bounded, and journal directories do not lexically
+  overlap a blob directory or another journal directory;
 - public introspection returns only node ID, built-in kind, and derived
   capabilities, never a directory root, endpoint, or credential.
 
@@ -546,6 +601,13 @@ transfer roots, and durable write-back journals. A pin declares
 metadata, thin, or exact retention plus a durability requirement. Hot-hub
 preference and placement receipts are operational.
 
+Pending write-back IDs enter the same single-host GC root manifest as refs and
+assignment-ledger roots. Planning inventories them under the transfer fence;
+apply reacquires that fence, requires the exact manifest identity, and retains
+the fence through candidate deletion. No separate generation field is needed
+in the v1 GC plan header because the exact root-manifest identity binds the
+complete active set and the held fence excludes changes during apply.
+
 Within a campaign snapshot, the semantic pin projection is keyed by the exact
 `ConfigurationId`. Its value is the latest authenticated schema-v5
 `PinCommandAccepted` fact. `Thin` and `Exact` select the required logical
@@ -714,9 +776,10 @@ root inventory or apply begins.
 
 Single-host loose-leaf apply requires a `Planned` journal, the exact store-graph
 hash, and the same ordered physical backend list. It takes and retains the
-exclusive ref/publication and ledger fences, reproduces their terminal
-generations, counters, and exact deduplicated root manifest, then preflights
-every complete physical inventory and every candidate's exact observed length.
+exclusive ref/publication, ledger, and pending-write-back fences, reproduces
+their terminal generations, counters, and exact deduplicated root manifest,
+then preflights every complete physical inventory and every candidate's exact
+observed length.
 Only after every basis matches does it durably publish `Applying`. It then
 reacquires each physical leaf in canonical order, revalidates that exact basis
 again, retains that leaf's fence through all of its deletions, and finally

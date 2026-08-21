@@ -192,6 +192,7 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             durable: true,
+            deferred_write: false,
             range_read: true,
             streaming_read: true,
             conditional_create: true,
@@ -981,7 +982,7 @@ fn sync_directory(path: &Path) -> Result<(), StoreError> {
     })
 }
 
-fn create_dir_all_durable(path: &Path) -> Result<(), StoreError> {
+pub(super) fn create_dir_all_durable(path: &Path) -> Result<(), StoreError> {
     let mut missing = Vec::new();
     let mut existing = path;
     loop {

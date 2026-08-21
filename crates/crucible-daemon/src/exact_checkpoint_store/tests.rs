@@ -54,6 +54,7 @@ impl ImmutableBlobBackend for TestDurableBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             durable: true,
+            deferred_write: false,
             range_read: true,
             streaming_read: true,
             conditional_create: true,
