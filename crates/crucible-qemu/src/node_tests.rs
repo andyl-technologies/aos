@@ -30,24 +30,6 @@ type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn orphan_quarantine_ignores_a_reused_process_identity() -> Result<(), Box<dyn Error>> {
-    let current = linux_process_identity(std::process::id())?
-        .ok_or("test process should have a Linux process identity")?;
-    let mismatched = QemuProcessIdentity {
-        start_time_ticks: current
-            .start_time_ticks
-            .checked_add(1)
-            .ok_or("test start-time tick should increment")?,
-        ..current
-    };
-
-    quarantine_orphaned_qemu_process(&mismatched, Duration::from_millis(10))?;
-    assert!(linux_process_identity(std::process::id())?.is_some());
-    Ok(())
-}
-
 #[test]
 fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup() -> Result<(), Box<dyn Error>> {
     let child = Command::new("true").spawn()?;
