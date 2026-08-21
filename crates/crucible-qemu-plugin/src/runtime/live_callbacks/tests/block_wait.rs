@@ -174,9 +174,12 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         header: &inbound_header,
         entries: &mut inbound_entries,
     };
-    let rx_queue =
-        QemuLosslessNetworkRxQueue::require(Some(test_net_send), Some(test_reentrant_net_flush))
-            .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let rx_queue = QemuLosslessNetworkRxQueue::require(
+        Some(test_net_send),
+        Some(test_reentrant_net_flush),
+        Some(test_net_can_receive),
+    )
+    .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
         test_live_state(49, 1, 0, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
@@ -278,9 +281,12 @@ fn busy_boundary_injects_and_commits_inbound_before_reached_publication() {
         header: &inbound_header,
         entries: &mut inbound_entries,
     };
-    let rx_queue =
-        QemuLosslessNetworkRxQueue::require(Some(test_net_send), Some(test_reentrant_net_flush))
-            .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let rx_queue = QemuLosslessNetworkRxQueue::require(
+        Some(test_net_send),
+        Some(test_reentrant_net_flush),
+        Some(test_net_can_receive),
+    )
+    .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
         test_live_state(50, 1, 0, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))

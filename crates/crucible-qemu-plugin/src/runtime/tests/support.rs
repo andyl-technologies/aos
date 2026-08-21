@@ -240,6 +240,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         register_net_tx: Some(test_register_net_tx),
         net_send: Some(test_net_send),
         net_flush: Some(test_net_flush),
+        net_can_receive: Some(test_net_can_receive),
         register_block: Some(test_register_block),
         register_block_event: Some(test_register_block_event),
         register_block_wait: Some(test_register_block_wait),
@@ -414,6 +415,10 @@ extern "C" fn test_net_send(_payload: *const u8, _payload_len: usize) -> std::os
 
 extern "C" fn test_net_flush() -> std::os::raw::c_int {
     0
+}
+
+extern "C" fn test_net_can_receive() -> std::os::raw::c_int {
+    1
 }
 
 extern "C" fn test_register_block(

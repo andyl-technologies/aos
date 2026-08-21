@@ -80,6 +80,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_net_tx: Option<QemuRegisterNetTxCbFn>,
     pub(crate) net_send: Option<QemuPluginNetSendFn>,
     pub(crate) net_flush: Option<QemuPluginNetFlushFn>,
+    pub(crate) net_can_receive: Option<crate::QemuPluginNetCanReceiveFn>,
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
     pub(crate) register_block_event: Option<QemuRegisterBlkEventCbFn>,
     pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
@@ -156,6 +157,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         let network_rx = QemuLosslessNetworkRxQueue::require(
             self.capabilities.net_send,
             self.capabilities.net_flush,
+            self.capabilities.net_can_receive,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
         let register_block = self.capabilities.register_block.ok_or(
