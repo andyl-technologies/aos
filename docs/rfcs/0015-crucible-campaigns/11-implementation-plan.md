@@ -245,6 +245,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   queued work without launching it, and releases capacity only after worker
   exit. Blocked-guest, blocked-admission, queued-shutdown, retry, and caught-
   panic regressions exercise the responsive bounded owner.
+  A bounded `CampaignSupervisor` now composes one planner driver and one
+  executor driver over the same repository, reloads exact lifecycle intent on
+  every step, and performs at most one component operation. Running execution
+  drains before one planner invocation is enabled; paused campaigns issue no
+  new work. Drain polls only held reservations, cancel-and-retry cancels one
+  exact execution or releases one unaccepted lease per step, and exact-
+  checkpoint fails closed until the concrete checkpoint owner is composed.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -305,7 +312,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   child/cgroup/watcher process quarantine, aggregate
   filesystem quota, execution-quantum counter composition, exclusive run-
   directory namespace ownership through artifact open, the modeled attempt
-  driver, concrete session wiring, and responsive multi-slot scheduling remain
+  driver, concrete session wiring, and exact-checkpoint pause composition remain
   open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
@@ -322,10 +329,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   retention, exact root deltas, imported recomputation, and final-CAS safety;
   Executor restart recovery now uses direct-by-ID, bounded, checksummed,
   single-writer directory records and preserves exact responses, completed
-  observations, and cancellation races without loading history. Full campaign-
-  supervisor scheduling and pause-policy cancellation/checkpoint orchestration
-  remain open; the fixed worker pool and its linear publication/reconciliation
-  path are implemented.
+  observations, and cancellation races without loading history. Bounded
+  campaign-supervisor scheduling plus drain and cancel-and-retry pause policies
+  are implemented; exact-checkpoint pause composition remains open. The fixed
+  worker pool and its linear publication/reconciliation path are implemented.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

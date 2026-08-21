@@ -13,10 +13,11 @@ use std::sync::{
 };
 
 use crucible_campaign::{
-    AttemptResourceLimits, CampaignCodecError, DaemonEpoch, ExecutionId, ExecutorRejection,
-    ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    AttemptResourceLimits, CampaignCodecError, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, DaemonEpoch, ExecutionId,
+    ExecutorControlService, ExecutorRejection, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    ObservationId, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 use crate::{
@@ -1636,6 +1637,43 @@ where
             Some(_) | None => GetAttemptExecutionDisposition::NotCurrent,
         };
         GetAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+    }
+}
+
+impl<L, V> ExecutorControlService for LocalExecutorSupervisor<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let exact = state.as_ref().is_some_and(|state| {
+            state.daemon_epoch() == request.daemon_epoch()
+                && state.execution() == request.execution()
+                && state.execution_basis() == request.execution_basis()
+        });
+        let disposition = if exact {
+            match self.cancel_execution(key, request.execution())? {
+                CancellationOutcome::Canceled => CancelAttemptExecutionDisposition::Canceled,
+                CancellationOutcome::AlreadyCanceled => {
+                    CancelAttemptExecutionDisposition::AlreadyCanceled
+                }
+                CancellationOutcome::AlreadyCompleted { observation } => {
+                    CancelAttemptExecutionDisposition::AlreadyCompleted { observation }
+                }
+                CancellationOutcome::NotCurrent => CancelAttemptExecutionDisposition::NotCurrent,
+            }
+        } else {
+            CancelAttemptExecutionDisposition::NotCurrent
+        };
+        CancelAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
     }
 }
 

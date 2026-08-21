@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::{
-    ExecutorClient, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, ExecutorClient, ExecutorControlService, ExecutorService,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -103,6 +105,49 @@ impl ExecutorStatusService for RejectingExecutor {
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
         GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
+struct CancellableExecutor {
+    execution: ExecutionId,
+    cancel_requests: Vec<CancelAttemptExecutionRequest>,
+}
+
+impl ExecutorService for CancellableExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::Accepted {
+                execution: self.execution,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for CancellableExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::Running)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorControlService for CancellableExecutor {
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.cancel_requests.push(request.clone());
+        CancelAttemptExecutionResponse::new(request, CancelAttemptExecutionDisposition::Canceled)
             .map_err(|_| "response encoding")
     }
 }
@@ -1122,6 +1167,102 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
         }
     }
     assert_eq!(restarted.reservation_count(), 0);
+}
+
+#[test]
+fn campaign_executor_driver_cancels_exact_execution_and_releases_retryable_attempt() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "executor-driver-cancellation",
+    );
+    let running = repository
+        .apply_control(
+            "executor-driver-cancellation",
+            &command(
+                "executor-driver-cancellation-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume campaign");
+    let repository = Arc::new(repository);
+    let execution = ExecutionId::from_bytes([0x95; 16]).expect("execution");
+    let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 0, 10_000).expect("resources");
+    let mut driver = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(CancellableExecutor {
+            execution,
+            cancel_requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0x96; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("executor driver");
+    assert!(matches!(
+        driver
+            .step("executor-driver-cancellation", WorkerSlotId::new(0))
+            .expect("accept execution"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            execution: accepted,
+            newly_accepted: true,
+        } if attempt == admitted.attempt && accepted == execution
+    ));
+
+    let paused = repository
+        .apply_control(
+            "executor-driver-cancellation",
+            &command(
+                "executor-driver-cancellation-pause",
+                running.new_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::CancelAndRetry),
+            ),
+        )
+        .expect("pause campaign");
+    let (_, lifecycle) = repository
+        .head_with_lifecycle("executor-driver-cancellation")
+        .expect("paused lifecycle");
+    assert_eq!(lifecycle.state(), CampaignState::Paused);
+    assert_eq!(
+        lifecycle.active_attempt_policy(),
+        Some(crate::ActiveAttemptPolicy::CancelAndRetry)
+    );
+
+    assert_eq!(
+        driver
+            .cancel_one("executor-driver-cancellation")
+            .expect("cancel exact execution"),
+        CampaignExecutorCancelOutcome::Canceled {
+            attempt: admitted.attempt,
+            execution,
+            already_canceled: false,
+        }
+    );
+    assert_eq!(driver.reservation_count(), 0);
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.cancel_requests.len(), 1);
+    assert_eq!(service.cancel_requests[0].execution(), execution);
+    assert_eq!(service.cancel_requests[0].attempt(), admitted.attempt);
+    assert_eq!(
+        repository
+            .project_claimable_attempts("executor-driver-cancellation", None, 10_000)
+            .expect("canceled attempt remains claimable")
+            .attempts(),
+        &[admitted.attempt]
+    );
+    assert_eq!(
+        repository
+            .head("executor-driver-cancellation")
+            .expect("unchanged paused head")
+            .snapshot_id(),
+        paused.new_snapshot
+    );
 }
 
 #[test]

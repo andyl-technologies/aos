@@ -109,6 +109,21 @@ impl AttemptQueue {
         self.by_attempt.len()
     }
 
+    /// Returns the fixed maximum number of simultaneous reservations.
+    #[must_use]
+    pub const fn maximum_reservations(&self) -> usize {
+        self.maximum_reservations
+    }
+
+    /// Returns the reservation with the lowest worker-slot identity.
+    #[must_use]
+    pub fn first_reservation(&self) -> Option<AttemptReservation> {
+        self.by_slot
+            .first_key_value()
+            .and_then(|(_, attempt)| self.by_attempt.get(attempt))
+            .copied()
+    }
+
     /// Returns the exact reservation currently held by one worker slot.
     #[must_use]
     pub fn reservation_for_slot(&self, worker_slot: WorkerSlotId) -> Option<AttemptReservation> {

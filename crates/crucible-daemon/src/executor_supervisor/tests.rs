@@ -162,6 +162,64 @@ fn execution_status_is_read_only_and_requires_the_exact_runtime_basis() {
 }
 
 #[test]
+fn cancellation_requires_the_exact_runtime_basis_before_signaling() {
+    let epoch = daemon_epoch(0x25);
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    let request = request(0x16, 0x35, epoch, resources(1, 2048, 4096));
+    let execution = accepted_execution(
+        &supervisor
+            .submit_attempt(&request)
+            .expect("accept assignment"),
+    );
+    let queued = supervisor.next_queued().expect("queued execution");
+    assert!(!queued.cancellation().is_canceled());
+
+    let changed_basis = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x17; 16]).expect("assignment"),
+        epoch,
+        request.lineage(),
+        request.attempt(),
+        resources(2, 2048, 4096),
+        request.retention(),
+    )
+    .expect("changed execution basis");
+    let foreign = CancelAttemptExecutionRequest::new(&changed_basis, execution)
+        .expect("foreign cancellation request");
+    assert_eq!(
+        supervisor
+            .cancel_attempt_execution(&foreign)
+            .expect("foreign cancellation response")
+            .disposition(),
+        CancelAttemptExecutionDisposition::NotCurrent
+    );
+    assert!(!queued.cancellation().is_canceled());
+
+    let exact = CancelAttemptExecutionRequest::new(&request, execution)
+        .expect("exact cancellation request");
+    assert_eq!(
+        supervisor
+            .cancel_attempt_execution(&exact)
+            .expect("exact cancellation response")
+            .disposition(),
+        CancelAttemptExecutionDisposition::Canceled
+    );
+    assert!(queued.cancellation().is_canceled());
+    assert_eq!(supervisor.active_count(), 1);
+    assert_eq!(
+        supervisor
+            .stage_and_reconcile_cancellation(&queued)
+            .expect("worker exit acknowledgment"),
+        CancellationOutcome::AlreadyCanceled
+    );
+    assert_eq!(supervisor.active_count(), 0);
+}
+
+#[test]
 fn runtime_dedup_is_lineage_scoped_and_requires_an_exact_execution_basis() {
     let epoch = daemon_epoch(0x28);
     let mut supervisor = LocalExecutorSupervisor::new(

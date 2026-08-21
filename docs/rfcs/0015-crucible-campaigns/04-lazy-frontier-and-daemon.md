@@ -256,6 +256,18 @@ its thread exits. These fixed threads keep capacity reporting, submission, and
 cancellation responsive while another worker is blocked in a bounded guest or
 storage operation.
 
+The coordinator's bounded `CampaignSupervisor` composes the planner and
+executor drivers over the same repository capability. Each step reloads one
+exact lifecycle projection and performs at most one component operation.
+Running campaigns give already-admitted executor work priority; one empty
+executor scan enables at most one planner invocation on the following step, so
+the ready buffer remains bounded. Paused campaigns never page new work or invoke
+the planner. `drain` polls only already-held reservations,
+`cancel-and-retry` cancels or releases one exact reservation per step, and
+`exact-checkpoint` fails closed with an explicit checkpoint-required outcome
+while any reservation remains. Resume reconstructs the frontier from semantic
+roots, so canceled attempts become claimable without a modeled state change.
+
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or
   finding identity. Reservations MUST NOT be required to recover the frontier.

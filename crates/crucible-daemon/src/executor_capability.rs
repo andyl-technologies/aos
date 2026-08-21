@@ -7,7 +7,8 @@
 use std::collections::BTreeSet;
 
 use crucible_campaign::{
-    CampaignCodecError, ExecutorCapabilityService, ExecutorCapacityReport, ExecutorDescription,
+    CampaignCodecError, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
     ExecutorMaterializationLocality, ExecutorService, ExecutorStatusService,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, SubmitAttemptRequest,
     SubmitAttemptResponse, WatchExecutorCapacityRequest,
@@ -123,6 +124,19 @@ where
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
         self.supervisor.get_attempt_execution(request)
+    }
+}
+
+impl<L, V> ExecutorControlService for LocalExecutorCapabilityService<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn cancel_attempt_execution(
+        &mut self,
+        request: &CancelAttemptExecutionRequest,
+    ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.supervisor.cancel_attempt_execution(request)
     }
 }
 

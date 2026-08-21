@@ -240,6 +240,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.submit-attempt-response",
         "crucible.campaign.get-attempt-execution-request",
         "crucible.campaign.get-attempt-execution-response",
+        "crucible.campaign.cancel-attempt-execution-request",
+        "crucible.campaign.cancel-attempt-execution-response",
     ] {
         let message = rows
             .get(schema)
@@ -314,7 +316,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
-    assert_eq!(loopback[1], "2");
+    assert_eq!(loopback[1], "3");
     assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
     assert_eq!(loopback[3], "component-message");
     let planner_loopback = rows
