@@ -634,9 +634,12 @@ state records and advance durably before cooperating mutation. Tests cover
 restart, object and ref ABA, early visitor failure, malformed/oversized input,
 valid staging-prefix names, and mutation exclusion while fenced. Store-graph
 administrative composition, the now-implemented fenced operational-ledger root
-snapshot, complete reachability planning, an immutable plan identity,
-interruption-safe apply/recovery, and production maintenance ownership remain
-open, so no Phase 5 task is checked by this checkpoint.
+snapshot, and a strict registered v1 plan header now compose store-graph,
+root-manifest, candidate-manifest, blob, ref, and ledger hashes/generations into
+one immutable identity. Complete manifest/reachability planning,
+interruption-safe apply/recovery, store-graph administration, and production
+maintenance ownership remain open, so no Phase 5 task is checked by this
+checkpoint.
 
 The production exact-closure checkpoint now holds every running QEMU node
 paused while it authenticates and streams the live generation's overlay and
@@ -743,8 +746,9 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory and
   directory loose-leaf inventory/delete, authoritative-ref inventory, and
-  operational-ledger inventory primitives are implemented; exact-pin
-  materialization selection, composed-store fencing, and destructive physical
+  operational-ledger inventory primitives plus the canonical bounded plan
+  identity are implemented; exact-pin materialization selection, root/candidate
+  manifest construction, composed-store fencing, and destructive physical
   plan/apply remain open. Implement
   replay/debug, export/import, push/pull/sync, and plan/apply GC.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage

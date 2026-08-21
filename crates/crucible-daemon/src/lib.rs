@@ -40,6 +40,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_policy;
 pub mod campaign_retention;
@@ -64,6 +65,12 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
     DirectoryAssignmentLedger, MemoryAssignmentLedger,
+};
+pub use campaign_gc::{
+    CampaignGcBlobInventoryBasis, CampaignGcCandidateSetId, CampaignGcCandidateSetSummary,
+    CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId, CampaignGcRootSetId,
+    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
