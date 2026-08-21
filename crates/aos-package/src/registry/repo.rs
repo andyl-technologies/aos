@@ -728,10 +728,18 @@ pub(crate) fn set_reference(repo_dir: &Path, refname: &str, oid_hex: &str) -> Re
     Ok(())
 }
 
-/// The on-disk path holding the object database, for callers that write loose
-/// objects directly (the dumb-HTTP reader).
-pub(crate) fn objects_dir(repo_dir: &Path) -> PathBuf {
-    repo_dir.join("objects")
+/// Returns the on-disk object database used by the repository.
+///
+/// Resolving the path through libgit2 is required because bare repositories
+/// store objects below `<repo>/objects`, while authoring worktrees store them
+/// below `<repo>/.git/objects`.
+///
+/// # Errors
+///
+/// Returns an error when `repo_dir` is not an accessible Git repository.
+pub(crate) fn objects_dir(repo_dir: &Path) -> Result<PathBuf> {
+    let repo = open(repo_dir)?;
+    Ok(repo.path().join("objects"))
 }
 
 /// Index downloaded packfiles into the repository's object store.

@@ -70,6 +70,13 @@ printed seal key through `HUB_SEAL_KEY`, and supply the root password again with
 | Scheduled trigger | Fifteen-minute maintenance and indexing backstop |
 | Worker assets | Web interface static files |
 
+The generated Worker configuration grants maintenance and Queue invocations
+up to five minutes of CPU time and 100,000 subrequests. Full registry indexing
+verifies the signed object graph and can exceed Cloudflare's conservative
+30-second default for a production-sized package surface. These are hard
+per-invocation ceilings, not reservations; monitor invocation CPU and
+subrequest use as the published surface grows.
+
 The default R2 bucket is `<name>-surfaces`, the default KV title is
 `<name>-sessions`, and the default Queue is `<name>-jobs`. Override them with
 `--bucket`, `--kv-title`, and `--queue` when names must fit an existing account
@@ -119,6 +126,12 @@ external deployment controller needs to verify rollout. The Worker exposes the
 value at `/.well-known/aos-deployment` with `Cache-Control: no-store`; a
 controller should reject redirects and compare the response exactly before
 declaring the deployment healthy.
+
+The colocated database uses the stable Durable Object name `hub` by default.
+Routine updates must keep that name. `--database-instance <name>` explicitly
+selects a different, initially empty database for a restore or cutover; after a
+cutover, pass the same name on every subsequent deployment. Switching the name
+does not migrate accounts, tokens, topology, or publication state.
 
 Worker state is administered through the web console and API. Local
 `aos-hub --root ...` commands do not open the Durable Object database.

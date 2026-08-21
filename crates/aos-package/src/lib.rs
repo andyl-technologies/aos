@@ -557,7 +557,8 @@ pub enum PackageCommand {
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
     /// `--generation-dir` atomically publishes and validates the retained
     /// EROFS artifact used by activation. `--etc-root` is the unmounted-tree
-    /// test and compatibility seam. Exactly one mode must be selected.
+    /// test seam; `--overlay-root` applies declared image-path removals to a
+    /// mounted candidate overlay. Exactly one mode must be selected.
     #[command(name = "__materialize", hide = true)]
     Materialize {
         /// The converged manifest (`aos.config-manifest/v1` JSON).
@@ -566,6 +567,9 @@ pub enum PackageCommand {
         /// An unmounted `/etc` tree to write directly (test/compatibility mode).
         #[arg(long = "etc-root")]
         etc_root: Option<PathBuf>,
+        /// Mounted candidate `/etc` overlay where image removals become whiteouts.
+        #[arg(long = "overlay-root")]
+        overlay_root: Option<PathBuf>,
         /// The durable config-generation directory that owns `config-lower/`.
         #[arg(long = "generation-dir")]
         generation_dir: Option<PathBuf>,
@@ -1087,16 +1091,16 @@ pub enum RegistryCommand {
         #[arg(long)]
         platform: Option<String>,
         /// Package description
-        #[arg(long)]
+        #[arg(long, required = true)]
         description: Option<String>,
         /// Package homepage
         #[arg(long)]
         homepage: Option<String>,
         /// Package license
-        #[arg(long)]
+        #[arg(long, required = true)]
         license: Option<String>,
         /// Package maintainer
-        #[arg(long)]
+        #[arg(long, required = true)]
         maintainer: Option<String>,
         /// Mark this package as a system toplevel (sysroot)
         #[arg(long)]
@@ -1375,6 +1379,9 @@ pub enum RegistryCommand {
         /// Package name override when --store-path is used
         #[arg(long)]
         name: Option<String>,
+        /// Package version override when --store-path is used
+        #[arg(long)]
+        version: Option<String>,
         /// Platform override when --store-path is used
         #[arg(long)]
         platform: Option<String>,
@@ -2415,19 +2422,31 @@ pub async fn run(
     if let PackageCommand::Materialize {
         manifest,
         etc_root,
+        overlay_root,
         generation_dir,
         mkfs_erofs,
         fsck_erofs,
         job_scripts_runtime_dir,
     } = command
     {
-        return match (etc_root, generation_dir, mkfs_erofs, fsck_erofs) {
-            (Some(etc_root), None, None, None) => config_eval::materialize::materialize_manifest(
-                manifest,
-                etc_root,
-                job_scripts_runtime_dir,
-            ),
-            (None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
+        return match (
+            etc_root,
+            overlay_root,
+            generation_dir,
+            mkfs_erofs,
+            fsck_erofs,
+        ) {
+            (Some(etc_root), None, None, None, None) => {
+                config_eval::materialize::materialize_manifest(
+                    manifest,
+                    etc_root,
+                    job_scripts_runtime_dir,
+                )
+            }
+            (None, Some(overlay_root), None, None, None) => {
+                config_eval::materialize::apply_manifest_removals(&manifest, &overlay_root)
+            }
+            (None, None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
                 config_eval::materialize::materialize_generation_lower(
                     manifest,
                     generation_dir,
@@ -2438,7 +2457,7 @@ pub async fn run(
                 .map(|_| ())
             }
             _ => bail!(
-                "__materialize requires either --etc-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
+                "__materialize requires --etc-root alone, --overlay-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
             ),
         };
     }
@@ -3058,7 +3077,7 @@ enum AttestationQuoteTrust {
     IdentityPinned { anchor: String, ak_ek_trusted: bool },
 }
 
-const GENERATION_VERIFIER_POLICY_SCHEMA: &str = "aos.gen-attestation-policy/v1";
+const GENERATION_VERIFIER_POLICY_SCHEMA: &str = "aos.gen-attestation-policy/v2";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3066,6 +3085,7 @@ struct GenerationVerifierPolicyFile {
     schema: String,
     expected_pcr7: String,
     expected_pcr11: String,
+    expected_pcr12: String,
     expected_root_roothash: String,
     #[serde(default)]
     expected_facts_hash: Option<String>,
@@ -3189,6 +3209,7 @@ fn run_verify_package_attestation(
             let pcrs = attestation::QuotedPcrs {
                 pcr7: quote.quoted_pcr7,
                 pcr11: quote.quoted_pcr11,
+                pcr12: quote.quoted_pcr12,
                 pcr15: quote.quoted_pcr15.clone(),
             };
             let checker = PreverifiedGenerationQuote {
@@ -3392,6 +3413,7 @@ where
     let verifier_policy = attestation::VerifierPolicy {
         expected_pcr7: policy_file.expected_pcr7,
         expected_pcr11: policy_file.expected_pcr11,
+        expected_pcr12: policy_file.expected_pcr12,
         expected_root_roothash: policy_file.expected_root_roothash,
         expected_facts_hash: policy_file.expected_facts_hash,
         pcr15_baseline: cel.pcr15_baseline.clone(),
@@ -3489,14 +3511,18 @@ fn verify_local_boot_commit(
     }
     let live_pcr7 = package_attestation::current_pcr7()?;
     let live_pcr11 = package_attestation::current_pcr11()?;
+    let live_pcr12 = package_attestation::current_pcr12()?;
     if !verified
         .quoted_pcr7
         .eq_ignore_ascii_case(live_pcr7.trim_start_matches("sha256:"))
         || !verified
             .quoted_pcr11
             .eq_ignore_ascii_case(live_pcr11.trim_start_matches("sha256:"))
+        || !verified
+            .quoted_pcr12
+            .eq_ignore_ascii_case(live_pcr12.trim_start_matches("sha256:"))
     {
-        bail!("generation quote does not bind the live PCR 7/11 state");
+        bail!("generation quote does not bind the live PCR 7/11/12 state");
     }
     Ok(())
 }
@@ -4311,6 +4337,7 @@ async fn run_registry(
             semver,
             store_path,
             name,
+            version,
             platform,
             description,
             homepage,
@@ -4347,6 +4374,7 @@ async fn run_registry(
                 semver,
                 store_path.as_deref(),
                 name.as_deref(),
+                version.as_deref(),
                 platform.as_deref(),
                 description.as_deref(),
                 homepage.as_deref(),
@@ -4891,8 +4919,7 @@ fn clone_authoring_registry(
     if url.starts_with("http://") || url.starts_with("https://") {
         // libgit2 cannot read the static dumb-HTTP object tree; init locally
         // and fetch through the pure-Rust reader.
-        let repo = git2::Repository::init(clone_dir)
-            .with_context(|| format!("initializing {}", clone_dir.display()))?;
+        let repo = init_sha256_authoring_repository(clone_dir)?;
         repo.remote("origin", url).context("adding origin remote")?;
         let refspecs = vec![
             "+refs/heads/*:refs/remotes/origin/*".to_string(),
@@ -4932,6 +4959,14 @@ fn clone_authoring_registry(
         .clone(url, clone_dir)
         .with_context(|| format!("cloning {url}"))?;
     checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Initializes the non-bare SHA-256 repository used by a producer clone.
+fn init_sha256_authoring_repository(clone_dir: &Path) -> Result<git2::Repository> {
+    let mut options = git2::RepositoryInitOptions::new();
+    options.object_format(git2::ObjectFormat::Sha256);
+    git2::Repository::init_opts(clone_dir, &options)
+        .with_context(|| format!("initializing {}", clone_dir.display()))
 }
 
 /// Resolve the origin's default branch (the branch its `HEAD` points at) from
@@ -5328,6 +5363,7 @@ mod tests {
                 pcrs: attestation::QuotedPcrs {
                     pcr7: "11".repeat(32),
                     pcr11: "22".repeat(32),
+                    pcr12: "00".repeat(32),
                     pcr15: "33".repeat(32),
                 },
                 bundle: package_attestation::PackageQuoteBundleBinding {
@@ -5377,6 +5413,7 @@ mod tests {
             pcrs: attestation::QuotedPcrs {
                 pcr7: "11".repeat(32),
                 pcr11: "22".repeat(32),
+                pcr12: "00".repeat(32),
                 pcr15,
             },
             bundle: package_attestation::PackageQuoteBundleBinding {
@@ -5418,6 +5455,16 @@ mod tests {
             )]),
         };
         (record_path, checker, cel)
+    }
+
+    #[test]
+    fn authoring_repository_uses_sha256_object_format() {
+        let clone_dir = TempDir::new().unwrap();
+        let repo = init_sha256_authoring_repository(clone_dir.path()).unwrap();
+
+        assert!(!repo.is_bare());
+        assert_eq!(repo.object_format(), git2::ObjectFormat::Sha256);
+        assert_eq!(repo.path(), clone_dir.path().join(".git"));
     }
 
     #[test]
@@ -5921,6 +5968,7 @@ contributable = ["allowedTCPPorts"]
                 "schema": GENERATION_VERIFIER_POLICY_SCHEMA,
                 "expected_pcr7": "11".repeat(32),
                 "expected_pcr11": format!("sha256:{}", "22".repeat(32)),
+                "expected_pcr12": "00".repeat(32),
                 "expected_root_roothash": "55".repeat(32),
                 "trusted_platforms": ["aws"]
             }))

@@ -16,13 +16,17 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use futures::stream::{StreamExt, TryStreamExt};
-use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::HumanBytes;
 use sha2::{Digest, Sha256};
 
 use aos_core::nar::info as narinfo;
 use aos_core::nar::pack::{self, PackPath};
 use aos_core::nix::{NixCli, PathInfo};
 use aos_core::output::Printer;
+use aos_net::{
+    MultipartAdmission, MultipartBackend, MultipartSessionState, MultipartSource,
+    MultipartUploadRequest, TransferEngine, TransferEngineConfig,
+};
 
 use crate::backend::CacheBackend;
 use crate::bandwidth;
@@ -142,15 +146,7 @@ pub async fn run_push(
             .unwrap_or(0),
     );
 
-    let mp = MultiProgress::new();
-    let overall = mp.add(ProgressBar::new(missing_hashes.len() as u64));
-    overall.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-            .expect("valid template")
-            .progress_chars("=> "),
-    );
-    overall.set_message("Uploading");
+    let overall = printer.items("Uploading cache paths", missing_hashes.len() as u64);
 
     let effective_jobs = if jobs == 0 { 1 } else { jobs };
     let mut total_bytes: u64 = 0;
@@ -281,6 +277,11 @@ fn build_narinfo(
     narinfo::format(&ni)
 }
 
+/// Returns whether an admission refusal should switch to typed multipart.
+fn use_multipart_after_admission(admitted_url: Option<&str>, supported: bool) -> bool {
+    admitted_url.is_none() && supported
+}
+
 /// Compresses and uploads one missing path's NAR + narinfo.
 ///
 /// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
@@ -304,9 +305,6 @@ async fn upload_one(
     compression_level: i32,
     limiter: &bandwidth::BandwidthLimiter,
 ) -> Result<u64> {
-    /// Compressed NARs larger than this upload through typed multipart.
-    const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
-
     let hash = narinfo::store_hash(&info.path).to_string();
     let path = info.path.clone();
     let comp = compression.to_string();
@@ -328,184 +326,124 @@ async fn upload_one(
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
     let nar_url = format!("nar/{nar_filename}");
 
-    match backend.create_object_upload(&nar_url, file_size).await? {
+    let admitted_url = backend.create_object_upload(&nar_url, file_size).await?;
+    let use_multipart =
+        use_multipart_after_admission(admitted_url.as_deref(), backend.supports_multipart());
+    match admitted_url {
         Some(upload_url) => {
             backend
                 .upload_to_admitted_url(&upload_url, &compressed)
                 .await?
         }
-        None => {
-            if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
-                upload_nar_multipart(backend, &nar_filename, &compressed).await?;
-            } else {
-                backend.put_nar(&nar_filename, &compressed).await?;
-            }
+        None if use_multipart => {
+            // Admission is authoritative for Hub proxy limits. A Worker may
+            // require multipart below the client's normal in-memory threshold.
+            upload_nar_multipart(backend, &nar_filename, compressed).await?;
         }
+        None => backend.put_nar(&nar_filename, &compressed).await?,
     }
     backend.put_narinfo(&hash, &narinfo_text).await?;
     Ok(file_size)
 }
 
-/// Concurrent multipart parts in flight per NAR.
-///
-/// Parts of one NAR upload in parallel (in addition to the path-level `--jobs`
-/// concurrency), so a single large NAR saturates the link instead of trickling
-/// one part at a time. Total in-flight requests are roughly `jobs * this`.
 const PART_CONCURRENCY: usize = 8;
-/// S3's minimum non-final part size.
 const MIN_MULTIPART_PART_SIZE: usize = 5 * 1024 * 1024;
-/// Largest part the AOS multipart v1 capability permits.
 const MAX_MULTIPART_PART_SIZE: usize = 16 * 1024 * 1024;
-/// Maximum duplicate request-body memory held by one multipart window.
 const MAX_MULTIPART_WINDOW_BYTES: usize = 64 * 1024 * 1024;
-/// S3-compatible multipart protocols permit at most 10,000 parts.
 const MAX_MULTIPART_PARTS: usize = 10_000;
 
-/// Validated client-side multipart geometry.
-struct MultipartGeometry {
-    part_size: usize,
-    part_count: usize,
-    window_parts: usize,
+struct CacheMultipartAdapter<'a> {
+    backend: &'a dyn CacheBackend,
+    path: &'a str,
+    sha256: Option<&'a str>,
 }
 
-/// Validates every server-negotiated value before slicing an upload body.
-fn validate_multipart_geometry(part_size: u64, payload_len: usize) -> Result<MultipartGeometry> {
-    let part_size =
-        usize::try_from(part_size).context("multipart part size does not fit this client")?;
-    anyhow::ensure!(
-        (MIN_MULTIPART_PART_SIZE..=MAX_MULTIPART_PART_SIZE).contains(&part_size),
-        "server negotiated an unsupported multipart part size"
-    );
-    let part_count = payload_len
-        .checked_add(part_size - 1)
-        .context("multipart part count overflow")?
-        / part_size;
-    anyhow::ensure!(
-        (1..=MAX_MULTIPART_PARTS).contains(&part_count),
-        "multipart upload requires an unsupported number of parts"
-    );
-    let window_parts = PART_CONCURRENCY
-        .min(MAX_MULTIPART_WINDOW_BYTES / part_size)
-        .max(1);
-    Ok(MultipartGeometry {
-        part_size,
-        part_count,
-        window_parts,
-    })
-}
+#[async_trait::async_trait]
+impl MultipartBackend for CacheMultipartAdapter<'_> {
+    type Session = String;
+    type Part = (u32, String);
 
-/// Applies the mandatory abort side effect to any post-initiation failure.
-async fn settle_multipart_outcome<F, Fut>(outcome: Result<()>, abort: F) -> Result<()>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    let Err(error) = outcome else {
-        return Ok(());
-    };
-    if let Err(cleanup) = abort().await {
-        return Err(error).context(format!(
-            "multipart upload failed and abort cleanup also failed: {cleanup:#}"
-        ));
-    }
-    Err(error).context("multipart upload failed; staged upload was aborted")
-}
-
-/// Initiates multipart and validates the untrusted negotiated geometry.
-///
-/// Once an upload id exists, validation failure is settled through the same
-/// mandatory abort path as a failed part or completion request.
-async fn initiate_validated_multipart(
-    backend: &dyn CacheBackend,
-    nar_path: &str,
-    payload_len: usize,
-) -> Result<(String, MultipartGeometry)> {
-    let declared_size = u64::try_from(payload_len).context("multipart payload is too large")?;
-    let (upload_id, part_size) = backend
-        .initiate_multipart(nar_path, declared_size, None)
-        .await?;
-    match validate_multipart_geometry(part_size, payload_len) {
-        Ok(geometry) => Ok((upload_id, geometry)),
-        Err(error) => {
-            let settled = settle_multipart_outcome(Err(error), || {
-                backend.abort_multipart(nar_path, &upload_id)
-            })
-            .await;
-            match settled {
-                Err(error) => Err(error),
-                Ok(()) => anyhow::bail!("failed multipart geometry lost its error"),
-            }
-        }
-    }
-}
-
-/// Upload one compressed NAR to a multipart-capable backend, parts in parallel.
-///
-/// Initiates the upload, pushes parts of the backend's suggested size (at least
-/// the R2/S3 5 MiB floor) in concurrent batches of [`PART_CONCURRENCY`], then
-/// completes — so a NAR far larger than a single request body uploads as several
-/// sub-cap parts, the server holds only one part per request, and the parts
-/// stream concurrently rather than serially.
-///
-/// # Errors
-///
-/// Returns an error if initiate, any part, completion, or the mandatory
-/// best-effort cleanup after a failed multipart operation fails.
-async fn upload_nar_multipart(
-    backend: &dyn CacheBackend,
-    nar_filename: &str,
-    compressed: &[u8],
-) -> Result<()> {
-    let nar_path = format!("nar/{nar_filename}");
-    let (upload_id, geometry) =
-        initiate_validated_multipart(backend, &nar_path, compressed.len()).await?;
-    // Receiving a validated upload id still means the backend owns staged
-    // state. Every subsequent range calculation, part request, and completion
-    // remains inside the cleanup funnel below.
-    let outcome = async {
-        let MultipartGeometry {
+    async fn begin(&self, size: u64) -> Result<MultipartAdmission<Self::Session>> {
+        let (session, part_size) = self
+            .backend
+            .initiate_multipart(self.path, size, self.sha256)
+            .await?;
+        Ok(MultipartAdmission {
+            session,
             part_size,
-            part_count,
-            window_parts,
-        } = geometry;
-        let mut parts: Vec<(u32, String)> = Vec::with_capacity(part_count);
-        // Materialize only one dynamically bounded concurrency window.
-        for window_start in (0..part_count).step_by(window_parts) {
-            let window_end = window_start
-                .checked_add(window_parts)
-                .context("multipart window offset overflow")?
-                .min(part_count);
-            let nar_path_ref = nar_path.as_str();
-            let upload_id_ref = upload_id.as_str();
-            let uploads = (window_start..window_end).map(|index| {
-                let part_number = u32::try_from(index + 1)
-                    .map_err(|_| anyhow::anyhow!("multipart part number overflow"));
-                async move {
-                    let offset = index
-                        .checked_mul(part_size)
-                        .context("multipart part offset overflow")?;
-                    let end = offset
-                        .checked_add(part_size)
-                        .context("multipart part end overflow")?
-                        .min(compressed.len());
-                    backend
-                        .upload_part(
-                            nar_path_ref,
-                            upload_id_ref,
-                            part_number?,
-                            &compressed[offset..end],
-                        )
-                        .await
-                }
-            });
-            parts.extend(futures::future::try_join_all(uploads).await?);
-        }
-        backend
-            .complete_multipart(&nar_path, &upload_id, &parts)
+            next_part_number: 1,
+            state: MultipartSessionState::Active,
+        })
+    }
+
+    async fn upload_part(
+        &self,
+        session: &Self::Session,
+        part_number: u32,
+        _offset: u64,
+        bytes: aos_net::Bytes,
+    ) -> Result<Self::Part> {
+        let part = self
+            .backend
+            .upload_part(self.path, session, part_number, &bytes)
+            .await?;
+        anyhow::ensure!(
+            part.0 == part_number,
+            "backend returned a mismatched multipart part number"
+        );
+        Ok(part)
+    }
+
+    async fn complete(&self, session: &Self::Session, parts: &[Self::Part]) -> Result<()> {
+        self.backend
+            .complete_multipart(self.path, session, parts)
             .await
     }
-    .await;
-    settle_multipart_outcome(outcome, || backend.abort_multipart(&nar_path, &upload_id)).await
+
+    async fn abort(&self, session: &Self::Session) -> Result<()> {
+        self.backend.abort_multipart(self.path, session).await
+    }
+}
+
+/// Uploads any rewindable source through the cache backend's typed multipart API.
+pub(crate) async fn upload_multipart_source(
+    backend: &dyn CacheBackend,
+    path: &str,
+    source: MultipartSource,
+    sha256: Option<&str>,
+) -> Result<()> {
+    let fallback;
+    let manager = match backend.transfer_manager() {
+        Some(manager) => manager,
+        None => {
+            fallback = TransferEngine::new(TransferEngineConfig::default());
+            &fallback
+        }
+    };
+    let adapter = CacheMultipartAdapter {
+        backend,
+        path,
+        sha256,
+    };
+    let request = MultipartUploadRequest::new(format!("cache:{path}"), source)
+        .with_concurrency(PART_CONCURRENCY)
+        .with_maximum_in_flight_bytes(MAX_MULTIPART_WINDOW_BYTES as u64)
+        .with_part_limits(
+            MIN_MULTIPART_PART_SIZE as u64,
+            MAX_MULTIPART_PART_SIZE as u64,
+            MAX_MULTIPART_PARTS as u32,
+        );
+    manager.upload_multipart(request, &adapter).await?;
+    Ok(())
+}
+
+pub(crate) async fn upload_nar_multipart(
+    backend: &dyn CacheBackend,
+    nar_filename: &str,
+    compressed: Vec<u8>,
+) -> Result<()> {
+    let nar_path = format!("nar/{nar_filename}");
+    upload_multipart_source(backend, &nar_path, MultipartSource::bytes(compressed), None).await
 }
 
 /// Uploads a batch of pack entries and registers their narinfos.
@@ -603,8 +541,7 @@ mod tests {
 
     use super::{
         MAX_MULTIPART_PART_SIZE, MAX_MULTIPART_PARTS, MIN_MULTIPART_PART_SIZE,
-        initiate_validated_multipart, order_path_infos_for_import, settle_multipart_outcome,
-        validate_multipart_geometry,
+        order_path_infos_for_import, upload_multipart_source, use_multipart_after_admission,
     };
 
     struct MaliciousNegotiationBackend {
@@ -745,6 +682,13 @@ mod tests {
     }
 
     #[test]
+    fn multipart_follows_admission_instead_of_a_local_size_threshold() {
+        assert!(use_multipart_after_admission(None, true));
+        assert!(!use_multipart_after_admission(Some("https://upload"), true));
+        assert!(!use_multipart_after_admission(None, false));
+    }
+
+    #[test]
     fn import_order_handles_transitive_references() {
         let leaf = "/nix/store/cccccccccccccccccccccccccccccccc-leaf";
         let middle = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-middle";
@@ -761,41 +705,6 @@ mod tests {
         assert_eq!(paths, vec![leaf, middle, root]);
     }
 
-    #[test]
-    fn multipart_negotiation_rejects_malicious_sizes_before_slicing() {
-        for part_size in [0, 1, (MIN_MULTIPART_PART_SIZE - 1) as u64, u64::MAX] {
-            assert!(validate_multipart_geometry(part_size, 32 * 1024 * 1024).is_err());
-        }
-        assert!(
-            validate_multipart_geometry((MAX_MULTIPART_PART_SIZE + 1) as u64, 32 * 1024 * 1024,)
-                .is_err()
-        );
-        assert!(validate_multipart_geometry(MIN_MULTIPART_PART_SIZE as u64, 0).is_err());
-
-        let geometry = validate_multipart_geometry(
-            MIN_MULTIPART_PART_SIZE as u64,
-            MIN_MULTIPART_PART_SIZE + 1,
-        )
-        .unwrap();
-        assert_eq!(geometry.part_count, 2);
-        assert!(geometry.window_parts > 0);
-    }
-
-    #[tokio::test]
-    async fn post_init_negotiation_failure_always_attempts_abort() {
-        let aborted = std::sync::atomic::AtomicBool::new(false);
-        let outcome = validate_multipart_geometry(0, 32 * 1024 * 1024).map(|_| ());
-        assert!(
-            settle_multipart_outcome(outcome, || async {
-                aborted.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
-            .await
-            .is_err()
-        );
-        assert!(aborted.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
     #[tokio::test]
     async fn malicious_backend_geometry_aborts_without_parts_or_completion() {
         let excessive_part_count = MIN_MULTIPART_PART_SIZE
@@ -810,10 +719,17 @@ mod tests {
             (MIN_MULTIPART_PART_SIZE as u64, excessive_part_count),
         ] {
             let backend = MaliciousNegotiationBackend::new(part_size);
+            let source = tempfile::NamedTempFile::new().unwrap();
+            source.as_file().set_len(payload_len as u64).unwrap();
             assert!(
-                initiate_validated_multipart(&backend, "nar/malicious.nar", payload_len,)
-                    .await
-                    .is_err()
+                upload_multipart_source(
+                    &backend,
+                    "nar/malicious.nar",
+                    aos_net::MultipartSource::File(source.path().to_path_buf()),
+                    None,
+                )
+                .await
+                .is_err()
             );
             assert_eq!(
                 backend.initiated.load(std::sync::atomic::Ordering::SeqCst),

@@ -1260,6 +1260,16 @@ pub(crate) fn current_pcr11() -> Result<String> {
     current_pcr_value(11)
 }
 
+/// Reads the live SHA-256 PCR 12 boot-input value.
+///
+/// # Errors
+///
+/// Returns an error when the trusted TPM reader cannot run or its output does
+/// not contain a canonical PCR 12 value.
+pub(crate) fn current_pcr12() -> Result<String> {
+    current_pcr_value(12)
+}
+
 /// Reads the live SHA-256 PCR 7 Secure Boot policy value.
 ///
 /// # Errors
@@ -2752,6 +2762,8 @@ mod tests {
                         sbat: Vec::new(),
                         expected_pcr11: None,
                         ukis: Vec::new(),
+                        recovery_ukis: Vec::new(),
+                        recovery_bundle: None,
                         root_image: Some("root.img".into()),
                         root_verity: Some("root.verity".into()),
                         root_hash: Some(

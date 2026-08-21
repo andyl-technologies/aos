@@ -156,19 +156,20 @@ mod tests {
         // Cold projection reads as None.
         assert_eq!(read(&kv).await.unwrap(), None);
         // Create a public registry, rebuild, and read it back.
-        db.register_registry("andyl-main", &[], false)
+        let org_id = db.create_org("andyl", "Andyl").await.unwrap();
+        db.create_managed_registry(org_id, "", "main", "public", &[], false)
             .await
             .unwrap();
         let built = rebuild(&db, &kv).await.unwrap();
         assert_eq!(built.len(), 1);
-        assert_eq!(built[0].slug, "andyl-main");
+        assert_eq!(built[0].slug, "andyl/main");
         // A freshly-registered registry has an "empty" index-status record.
         assert_eq!(built[0].state, "empty");
         let read_back = read(&kv).await.unwrap().unwrap();
         assert_eq!(read_back, built);
         // The reconstructed row carries the slug the home renders.
         let (record, status) = built[0].to_row();
-        assert_eq!(record.slug, "andyl-main");
+        assert_eq!(record.slug, "andyl/main");
         assert_eq!(status.unwrap().state, "empty");
     }
 }

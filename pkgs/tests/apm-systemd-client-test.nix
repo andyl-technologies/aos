@@ -138,5 +138,8 @@ in
       };
     };
 
-    meta.description = "AOS exposed package for apm systemd-client integration tests";
+    meta = {
+      description = "AOS exposed package for apm systemd-client integration tests";
+      license = "Apache-2.0";
+    };
   }

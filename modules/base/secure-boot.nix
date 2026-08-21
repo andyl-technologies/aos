@@ -209,13 +209,13 @@ in {
 
       pinnedPcrs = lib.mkOption {
         type = lib.types.str;
-        default = "7";
+        default = "7+12";
         description = ''
-          PCRs bound by *value* (not the signature). PCR 7 is the Secure
-          Boot state: pinning it means disabling SB or enrolling a foreign
-          key changes the measurement and `/var` will not unseal — the
-          intended security property. Such a change then needs the
-          recovery key (and a re-seal).
+          PCRs bound by *value* (not the signature), in systemd's
+          plus-separated PCR syntax. PCR 7 records Secure Boot state and PCR
+          12 records boot inputs outside the embedded UKI command line.
+          Changing either denies unattended `/var` unlock and requires the
+          recovery key to replace the TPM enrollment.
         '';
       };
 
@@ -258,6 +258,20 @@ in {
       ];
 
       environment.systemPackages = [pkgs.efitools enrollScript];
+
+      # Keep the public firmware db authority available to stage 2 through
+      # /etc. The initrd recovery-retention check references cfg.dbCert
+      # directly, which retains that immutable store object in the initrd
+      # closure without creating a toplevel/initrd dependency cycle.
+      environment.etc."aos/trust/secure-boot-db.crt".source = cfg.dbCert;
+
+      # First-boot recovery seeding authenticates the ESP copy before it
+      # records any retention evidence. The initrd copies an explicit package
+      # closure, so both PE verification tools must be named here.
+      aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
+        pkgs.binutils
+        pkgs.sbsigntools
+      ];
     })
 
     (lib.mkIf cfg.lockdown.enable {
@@ -324,17 +338,21 @@ in {
 
       # Ship the PCR public key into the initrd for first-boot sealing.
       aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
+      environment.systemPackages = [pkgs.aos-var-policy-migrate];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
 
       # First boot: LUKS2-format /var and enroll a TPM2 token sealed to
-      # the signed PCR policy (PCR 11, signature-flexible) plus PCR 7
-      # pinned by value, and a recovery key escrowed off the volume.
+      # the signed PCR policy (PCR 11, signature-flexible) plus PCRs 7 and
+      # 12 pinned by value, and a recovery key escrowed off the volume.
       # Later boots: unlock via the TPM2 token, no passphrase. Ordered
       # after aos-repart (which creates the partition) and before
       # mount-var (which mounts /dev/mapper/var).
-      boot.initrd.systemd.services."aos-var-crypt" = {
+      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!config.aos.filesystems.zfs.enable) {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         requiredBy = ["initrd-fs.target"];
+        requires =
+          ["aos-boot-identity-guard.service"]
+          ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service";
         before = ["mount-var.service" "initrd-fs.target"];
         # Only ORDER after the disk carver (aos-repart), don't Require it: on a
         # reboot (var already provisioned) repart is a no-op. No
@@ -342,7 +360,14 @@ in {
         # partition udev surfaces /dev/disk/by-partlabel/var late, which would
         # condition-skip this whole unit on the unlock boot; the script waits
         # for it instead.
-        after = ["aos-repart.service" "systemd-udev-settle.service"];
+        after =
+          [
+            "aos-boot-identity-guard.service"
+            "aos-repart.service"
+            "systemd-udev-settle.service"
+          ]
+          ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service";
+        unitConfig.ConditionKernelCommandLine = "!aos.recovery=1";
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"
@@ -397,8 +422,8 @@ in {
             # (public-key) policy needs the PCR *signature* at unlock time;
             # sd-stub materializes the UKI's .pcrsig at
             # /run/systemd/tpm2-pcr-signature.json — pass it explicitly. If
-            # the unseal fails (SB-state change → PCR 7 mismatch, or an
-            # unsigned UKI), /var stays locked and recovery is required —
+            # the unseal fails (SB-state or appended-input PCR mismatch, or
+            # an unsigned UKI), /var stays locked and recovery is required —
             # the intended security property. `headless` makes
             # systemd-cryptsetup FAIL rather than fall back to an
             # interactive passphrase prompt (which would wedge the boot);
@@ -422,11 +447,10 @@ in {
             exit 0
           fi
 
-          # Not yet LUKS. Sealing binds PCR 7 (Secure Boot state) by value,
-          # so it must happen while SB is *enforcing* — otherwise the seal
-          # captures the Setup-Mode PCR 7 and breaks the moment keys are
-          # enrolled. Read SecureBoot from efivarfs (mount it if the initrd
-          # has not yet).
+          # Not yet LUKS. Sealing binds PCR 7 (Secure Boot state) and PCR 12
+          # (boot inputs) by value, so it must happen during a clean boot with
+          # SB *enforcing* — otherwise the seal captures an unusable state.
+          # Read SecureBoot from efivarfs (mount it if the initrd has not yet).
           mount -t efivarfs none /sys/firmware/efi/efivars 2>/dev/null || true
           sb=0
           if [ -r "$sbvar" ]; then
@@ -461,8 +485,8 @@ in {
           fi
 
           # First enforcing boot: format with a throwaway key, seal to the
-          # signed PCR policy (PCR 11) + pinned PCR 7, add a recovery key,
-          # then drop the bootstrap keyslot so only the TPM/recovery paths
+          # signed PCR policy (PCR 11) + pinned PCRs 7 and 12, add a recovery
+          # key, then drop the bootstrap keyslot so only the TPM/recovery paths
           # remain.
           keyf=$(mktemp)
           dd if=/dev/urandom of="$keyf" bs=512 count=1 status=none
@@ -479,10 +503,15 @@ in {
           # decision); written to the /run tmpfs, never to /var. This is
           # NOT masked: if recovery enrollment fails we must abort BEFORE
           # wiping the bootstrap slot, otherwise a later TPM unseal failure
-          # (legit firmware/SB change → PCR 7 mismatch) would brick /var
+          # (legit firmware/SB or boot-input change → pinned PCR mismatch) would brick /var
           # with no way in. `set -e` propagates a failure here.
-          "$enroll" --unlock-key-file="$keyf" --recovery-key "$dev" \
-            > ${cfg.measuredBoot.recoveryKeyPath}
+          # Command substitution removes systemd-cryptenroll's presentation
+          # newline. cryptsetup treats every byte in a key file as key
+          # material, so retaining that newline would make direct exact-slot
+          # recovery verification disagree with systemd's password reader.
+          recovery_key=$("$enroll" --unlock-key-file="$keyf" --recovery-key "$dev")
+          printf '%s' "$recovery_key" > ${cfg.measuredBoot.recoveryKeyPath}
+          unset recovery_key
           chmod 600 ${cfg.measuredBoot.recoveryKeyPath}
           # Drop the throwaway bootstrap keyslot by TYPE (a plain
           # passphrase/keyfile slot), not by a guessed slot number — the

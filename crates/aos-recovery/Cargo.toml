@@ -1,0 +1,15 @@
+[package]
+name = "aos-recovery"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-boot-identity = { path = "../aos-boot-identity" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "aos-recovery"
+path = "src/main.rs"

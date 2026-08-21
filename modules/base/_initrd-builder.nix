@@ -34,17 +34,23 @@
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
+##!   keepBinutils — retain current binutils for signed UKI section inspection
+##!                  in recovery-enabled normal initrds.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
   pkgs,
   lib,
   kernel,
+  kernelModulePackages ? [],
+  firmwarePackages ? [],
   loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
   maskedUnits ? [],
+  validateBootIdentity ? false,
+  keepBinutils ? false,
 }: let
   inherit
     (pkgs)
@@ -63,6 +69,7 @@
     util-linux
     zstd
     ;
+  bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
@@ -80,6 +87,7 @@
       systemd
       util-linux
     ]
+    ++ bootIdentityPackages
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
     ++ initrdExtraPackages;
@@ -300,8 +308,6 @@
   initrdGenerators = [
     "systemd-fstab-generator"
     "systemd-gpt-auto-generator"
-    "systemd-run-generator"
-    "systemd-debug-generator"
   ];
 
   # Render the (pkg, binary, src) triples into `ln -sfn` invocations.
@@ -309,11 +315,10 @@
     lib.concatMapStringsSep "\n" (e: "ln -sfn ${e.pkg}/${e.src}/${e.bin} root/bin/${e.bin}")
     initrdBinaries;
 
-  # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/)
-  # so that systemd.mask= on the kernel cmdline can override them.
-  # Generators write masks to /run/systemd/generator/ which sits
-  # between /etc/ (highest) and /lib/ (lowest) in systemd's unit
-  # search priority.
+  # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/) so AOS's
+  # explicit /etc masks and drop-ins retain higher priority. Production
+  # initrds deliberately omit systemd-debug-generator, so command-line masks
+  # cannot rewrite the stage-1 unit graph.
   unitSymlinks =
     lib.concatMapStringsSep "\n" (u: ''
       if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
@@ -447,10 +452,41 @@ in
           # ── 4. Kernel modules ──────────────────────────────────────────
           if [ -d ${kernel}/lib/modules ]; then
             cp -a ${kernel}/lib/modules/. root/lib/modules/
+            chmod -R u+w root/lib/modules
           else
             echo "initrd-builder: ${kernel}/lib/modules not found" >&2
             exit 1
           fi
+          ${lib.concatMapStringsSep "\n" (package: ''
+              if [ ! -d ${package}/lib/modules ]; then
+                echo "initrd-builder: external module package ${package} has no module tree" >&2
+                exit 1
+              fi
+              chmod -R u+w root/lib/modules
+              cp -a ${package}/lib/modules/. root/lib/modules/
+            '')
+            kernelModulePackages}
+          for module_dir in root/lib/modules/*; do
+            # External module packages may restore the copied release
+            # directory's read-only store mode after the kernel tree was
+            # made writable. Only the parent directory needs write access
+            # to unlink the build/source symlinks; recursively chmodding does
+            # not follow those symlinks and therefore cannot repair it.
+            chmod u+w root/lib/modules "$module_dir"
+            rm -f "$module_dir/build" "$module_dir/source"
+            ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
+          done
+
+          # Firmware selected specifically for early storage, network, and TPM drivers.
+          mkdir -p root/lib/firmware
+          ${lib.concatMapStringsSep "\n" (package: ''
+              if [ ! -d ${package}/lib/firmware ]; then
+                echo "initrd-builder: firmware package ${package} has no firmware tree" >&2
+                exit 1
+              fi
+              cp -a ${package}/lib/firmware/. root/lib/firmware/
+            '')
+            firmwarePackages}
 
           # ── 5. /etc skeleton ───────────────────────────────────────────
           cat > root/etc/modules-load.d/initrd.conf <<MODULES
@@ -523,7 +559,7 @@ in
           HOSTS
 
           cat > root/etc/shadow <<'SHADOW'
-          root:::0:99999:7:::
+          root:!*::0:99999:7:::
           SHADOW
           # The traditional 0000 shadow permission works because root (uid 0)
           # bypasses the check; but we cannot read back the file during cpio
@@ -537,6 +573,16 @@ in
           # ── 6. Upstream systemd units and generators ───────────────────
           ${unitSymlinks}
           ${generatorSymlinks}
+
+          ${lib.optionalString validateBootIdentity ''
+            # Keep the upstream verity implementation under a private,
+            # non-generator name. A runtime service invokes it only after
+            # procfs and /run are authoritative, validates its exact root-unit
+            # output, and makes that unit actionable behind the identity guard.
+            cp ${systemd}/lib/systemd/system-generators/systemd-veritysetup-generator \
+              root/lib/systemd/aos-systemd-veritysetup-generator
+            chmod 0755 root/lib/systemd/aos-systemd-veritysetup-generator
+          ''}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────
           # Matches generateUnits output — a directory whose entries are
@@ -667,7 +713,22 @@ in
                   rm -f "{}/bin/$tool" "{}/lib/systemd/$tool" \
                         "{}/lib/systemd/system-generators/$tool"
                 done
+                # PID 1 also searches its compiled-in store directory. Merely
+                # omitting these names from /lib would therefore leave an
+                # attacker-controlled duplicate path active. The retained
+                # /lib copy is the sole verity generator authority.
+                rm -f "{}/lib/systemd/system-generators/systemd-debug-generator" \
+                      "{}/lib/systemd/system-generators/systemd-run-generator" \
+                      "{}/lib/systemd/system-generators/systemd-veritysetup-generator"
               ' _
+
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-debug-generator
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
+          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
+          ${lib.optionalString validateBootIdentity ''
+            test ! -e root/lib/systemd/system-generators/systemd-veritysetup-generator
+            test -x root/lib/systemd/aos-systemd-veritysetup-generator
+          ''}
 
           # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
           # c_rehash is a perl script, cmake/pkgconfig are dev metadata.
@@ -713,13 +774,16 @@ in
                  root/nix/store/*-binutils-2.20* \
                  root/nix/store/*-binutils-2.25* \
                  root/nix/store/*-binutils-2.30* \
-                 root/nix/store/*-binutils-2.41* \
                  root/nix/store/*-glibc-2.12 \
                  root/nix/store/*-glibc-2.2.5 \
                  root/nix/store/*-coreutils-8.32 \
                  root/nix/store/*-bash-4.2 \
                  root/nix/store/*-linux-headers-2.6.* \
+                 root/nix/store/*-linux-*-dev \
                  root/nix/store/*-source
+          ${lib.optionalString (!keepBinutils) ''
+            rm -rf root/nix/store/*-binutils-2.41*
+          ''}
 
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \

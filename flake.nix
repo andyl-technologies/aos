@@ -102,6 +102,7 @@
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
+          aos.pkgs.sbsigntools
           aos.pkgs.systemd
           aos.pkgs.tar
           aos.pkgs.zstd

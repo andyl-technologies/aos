@@ -260,6 +260,15 @@ upperdir="$upper_root/dir",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
+# Omitting an image-authored path from the converged manifest must hide the
+# immutable lower copy. Apply those deletions through the mounted overlay so
+# overlayfs records generation-local whiteouts in this generation's upper.
+if [ -f "$generation_manifest" ]; then
+  @apm@/bin/.apm-unwrapped __materialize \
+    --manifest "$generation_manifest" \
+    --overlay-root "$tmpEtc"
+fi
+
 # Validate package-authored sealed credential sources against the fully
 # composed candidate view before the pre-swap reconciler can stop a live unit.
 # Failure or EOF here leaves /etc, credential files, and consumer states

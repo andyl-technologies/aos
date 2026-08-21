@@ -27,7 +27,8 @@
     {
       "x86_64-linux" = "qemu-system-x86_64";
       "aarch64-linux" = "qemu-system-aarch64";
-    }.${
+    }
+    .${
       stdenv.hostPlatform.system
     }
     or (throw "crucible: unsupported native QEMU system '${stdenv.hostPlatform.system}'");

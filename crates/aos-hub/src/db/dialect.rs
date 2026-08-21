@@ -266,15 +266,16 @@ mod tests {
 
     #[test]
     fn ddl_keytext_is_bounded_and_binary_collated_on_every_dialect() {
-        let capacities = [32, 64, 128, 255, 512];
+        let capacities = [32, 64, 128, 255, 512, 1024];
         let src = "CREATE TABLE t (k32 KEYTEXT32, k64 KEYTEXT64, \
-                   k128 KEYTEXT128, k255 KEYTEXT255, k512 KEYTEXT512)";
+                   k128 KEYTEXT128, k255 KEYTEXT255, k512 KEYTEXT512, \
+                   k1024 KEYTEXT1024)";
 
         let sqlite = Dialect::Sqlite.translate(src).unwrap().sql;
         let postgres = Dialect::Postgres.translate(src).unwrap().sql;
         let mysql = Dialect::Mysql.translate(src).unwrap().sql;
 
-        for (column, capacity) in ["k32", "k64", "k128", "k255", "k512"]
+        for (column, capacity) in ["k32", "k64", "k128", "k255", "k512", "k1024"]
             .into_iter()
             .zip(capacities)
         {

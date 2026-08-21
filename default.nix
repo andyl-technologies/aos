@@ -1043,8 +1043,9 @@ in {
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
+      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in {
-      inherit critical-pkgs hardening-probe kernel-config package-root-image systemd-verity;
+      inherit critical-pkgs hardening-probe kernel-config package-root-image systemd-verity golden-image-budgets;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
@@ -1052,7 +1053,8 @@ in {
         src = null;
         buildDeps =
           [critical-pkgs kernel-config package-root-image systemd-verity]
-          ++ builtins.attrValues hardening-probe;
+          ++ builtins.attrValues hardening-probe
+          ++ builtins.attrValues golden-image-budgets;
         phases = [
           {
             name = "check";

@@ -148,5 +148,8 @@ in
         };
       };
 
-      meta.description = "AOS exposed ${description} package";
+      meta = {
+        description = "AOS exposed ${description} package";
+        license = "Apache-2.0";
+      };
     }

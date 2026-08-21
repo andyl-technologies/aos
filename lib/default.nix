@@ -84,13 +84,15 @@
         _value = value;
       };
     defModule = d: {
-        _file = d.file or "<anonymous submodule definition>";
-        config = applyInheritedPriority (
+      _file = d.file or "<anonymous submodule definition>";
+      config =
+        applyInheritedPriority (
           if (d.provenance or "@base") == "@host" && (d._priority or 100) == 75
           then 100
           else d._priority or 100
-        ) d.value;
-      };
+        )
+        d.value;
+    };
     baseDefModules = builtins.map defModule (builtins.filter
       (d: (d.provenance or "@base") == "@base")
       defs);
@@ -100,13 +102,14 @@
         (d.provenance or "@base")
         ["@host" "@host-import"])
       defs);
-    packageDefRecords = builtins.map (d: {
-      name = strings.removePrefix "package:" d.provenance;
-      module = defModule d;
-      authorization = d.authorization;
-    }) (builtins.filter
-      (d: strings.hasPrefix "package:" (d.provenance or "@base"))
-      defs);
+    packageDefRecords =
+      builtins.map (d: {
+        name = strings.removePrefix "package:" d.provenance;
+        module = defModule d;
+        authorization = d.authorization;
+      }) (builtins.filter
+        (d: strings.hasPrefix "package:" (d.provenance or "@base"))
+        defs);
 
     # For `attrsOf (submodule ...)` and `listOf (submodule ...)`, the
     # last element of `loc` is the attribute name / list index. Nixpkgs-

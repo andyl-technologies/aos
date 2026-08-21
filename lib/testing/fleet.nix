@@ -277,6 +277,16 @@
         # Every machine bakes per-VM identity into its image /etc. A test may
         # independently attach provisioning input through the metadata channel.
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
+        compressedImage = effectiveSystem.config.system.build.image.raw;
+        compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
+        imageDisk = pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
+          buildDeps = [pkgs.zstd];
+        } ''
+          mkdir -p "$out"
+          zstd -d --sparse --no-progress \
+            ${compressedImage}/${compressedImageName} \
+            -o "$out/disk.img"
+        '';
         metadataNames = builtins.attrNames m.metadata;
         invalidMetadataNames =
           builtins.filter
@@ -318,9 +328,21 @@
                 -o "$out/metadata.iso" \
                 "$out/tree"
             '';
+        resolvedExtraDisks =
+          builtins.map
+          (disk:
+            disk
+            // {
+              source =
+                if builtins.isFunction disk.source
+                then disk.source effectiveSystem
+                else disk.source;
+            })
+          m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB extraDisks expectAgent;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent;
+          extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
         }
@@ -328,8 +350,8 @@
           if m.bootMode == "image"
           then {
             inherit (m) imageDiskMiB;
-            image = effectiveSystem.config.system.build.image.raw;
-            imageName = "aos-${effectiveSystem.config.aos.system.name}.img";
+            image = imageDisk;
+            imageName = "disk.img";
           }
           else {
             kernel = effectiveSystem.config.system.build.kernel;

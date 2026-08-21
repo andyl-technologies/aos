@@ -280,12 +280,22 @@ async fn narinfo_handler(
     // Update access metadata (best-effort, don't fail the request).
     let _ = access::update_access(&state.views, &view, hash);
 
-    let body = narinfo::format_narinfo(
+    let body = match narinfo::format_narinfo(
         &info,
         &state.store_dir,
         &state.config.compression,
         Some(&state.signer),
-    );
+    ) {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::error!(view = %view, hash = %hash, %error, "narinfo rendering failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narinfo rendering failed",
+            )
+                .into_response();
+        }
+    };
 
     tracing::info!(view = %view, hash = %hash, "narinfo served");
 

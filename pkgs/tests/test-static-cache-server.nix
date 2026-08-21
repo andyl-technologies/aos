@@ -87,5 +87,8 @@ mkDerivation {
     };
   };
 
-  meta.description = "AOS exposed static cache test HTTP server package";
+  meta = {
+    description = "AOS exposed static cache test HTTP server package";
+    license = "Apache-2.0";
+  };
 }

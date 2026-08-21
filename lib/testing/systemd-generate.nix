@@ -26,31 +26,32 @@
   # generateUnits walker handled: plain units, a source symlink, a drop-in,
   # and a pre-existing .wants link. The inventory is authored as derivation
   # metadata, so evaluating the system manifest never reads this output.
-  packagedUnits = pkgs.runCommand "systemd-package-inventory-fixture" {
-    passthru.systemdUnitInventory.system = [
-      "lib/systemd/system/vendor.service"
-      "lib/systemd/system/linked.service"
-      "lib/systemd/system/vendor.service.d/10-vendor.conf"
-      "lib/systemd/system/multi-user.target.wants/linked.service"
-      "lib/systemd/system/alias.service"
-      "lib/systemd/system/multi-user.target.wants/replacement.service"
-    ];
-  } ''
-    mkdir -p \
-      "$out/lib/systemd/system/vendor.service.d" \
-      "$out/lib/systemd/system/multi-user.target.wants"
-    printf '%s\n' '[Unit]' 'Description=Vendor unit' '[Service]' 'ExecStart=/bin/true' \
-      > "$out/lib/systemd/system/vendor.service"
-    ln -s vendor.service "$out/lib/systemd/system/linked.service"
-    printf '%s\n' '[Service]' 'Environment=VENDOR_DROPIN=1' \
-      > "$out/lib/systemd/system/vendor.service.d/10-vendor.conf"
-    ln -s ../linked.service \
-      "$out/lib/systemd/system/multi-user.target.wants/linked.service"
-    printf '%s\n' '[Service]' 'ExecStart=/bin/false' \
-      > "$out/lib/systemd/system/alias.service"
-    ln -s ../linked.service \
-      "$out/lib/systemd/system/multi-user.target.wants/replacement.service"
-  '';
+  packagedUnits =
+    pkgs.runCommand "systemd-package-inventory-fixture" {
+      passthru.systemdUnitInventory.system = [
+        "lib/systemd/system/vendor.service"
+        "lib/systemd/system/linked.service"
+        "lib/systemd/system/vendor.service.d/10-vendor.conf"
+        "lib/systemd/system/multi-user.target.wants/linked.service"
+        "lib/systemd/system/alias.service"
+        "lib/systemd/system/multi-user.target.wants/replacement.service"
+      ];
+    } ''
+      mkdir -p \
+        "$out/lib/systemd/system/vendor.service.d" \
+        "$out/lib/systemd/system/multi-user.target.wants"
+      printf '%s\n' '[Unit]' 'Description=Vendor unit' '[Service]' 'ExecStart=/bin/true' \
+        > "$out/lib/systemd/system/vendor.service"
+      ln -s vendor.service "$out/lib/systemd/system/linked.service"
+      printf '%s\n' '[Service]' 'Environment=VENDOR_DROPIN=1' \
+        > "$out/lib/systemd/system/vendor.service.d/10-vendor.conf"
+      ln -s ../linked.service \
+        "$out/lib/systemd/system/multi-user.target.wants/linked.service"
+      printf '%s\n' '[Service]' 'ExecStart=/bin/false' \
+        > "$out/lib/systemd/system/alias.service"
+      ln -s ../linked.service \
+        "$out/lib/systemd/system/multi-user.target.wants/replacement.service"
+    '';
 
   # Minimal module set: just system.nix plus a synthetic config module
   # that declares a handful of services covering the patterns we care
@@ -142,45 +143,68 @@
     inherit pkgs lib;
   };
 
-  rawTypedCrossOwnerRejected = !(builtins.tryEval (
-    builtins.toJSON ((lib.evalModules {
-      modules = [systemdModule];
-      packageModules = [
-        {
-          name = "typed-owner";
-          authorization = {owns = ["systemd"]; contributes = {};};
-          module.config.systemd.services.collision = {
-            description = "typed";
-            serviceConfig.ExecStart = "/bin/true";
-          };
-        }
-        {
-          name = "raw-owner";
-          authorization = {owns = ["systemd"]; contributes = {};};
-          module.config.systemd.units."collision.service".text = "[Service]\nExecStart=/bin/false\n";
-        }
-      ];
-      inherit pkgs lib;
-    }).config.system.build.systemdUnitOwners)
-  )).success;
+  rawTypedCrossOwnerRejected =
+    !(builtins.tryEval (
+      builtins.toJSON ((lib.evalModules {
+          modules = [systemdModule];
+          packageModules = [
+            {
+              name = "typed-owner";
+              authorization = {
+                owns = ["systemd"];
+                contributes = {};
+              };
+              module.config.systemd.services.collision = {
+                description = "typed";
+                serviceConfig.ExecStart = "/bin/true";
+              };
+            }
+            {
+              name = "raw-owner";
+              authorization = {
+                owns = ["systemd"];
+                contributes = {};
+              };
+              module.config.systemd.units."collision.service".text = "[Service]\nExecStart=/bin/false\n";
+            }
+          ];
+          inherit pkgs lib;
+        })
+        .config
+        .system
+        .build
+        .systemdUnitOwners)
+    ))
+    .success;
 
-  baseRawTypedPackageRejected = !(builtins.tryEval (
-    builtins.toJSON ((lib.evalModules {
-      modules = [
-        systemdModule
-        {config.systemd.units."base-collision.service".text = "[Service]\nExecStart=/bin/false\n";}
-      ];
-      packageModules = [{
-        name = "typed-owner";
-        authorization = {owns = ["systemd"]; contributes = {};};
-        module.config.systemd.services.base-collision = {
-          description = "typed";
-          serviceConfig.ExecStart = "/bin/true";
-        };
-      }];
-      inherit pkgs lib;
-    }).config.system.build.systemdUnitOwners)
-  )).success;
+  baseRawTypedPackageRejected =
+    !(builtins.tryEval (
+      builtins.toJSON ((lib.evalModules {
+          modules = [
+            systemdModule
+            {config.systemd.units."base-collision.service".text = "[Service]\nExecStart=/bin/false\n";}
+          ];
+          packageModules = [
+            {
+              name = "typed-owner";
+              authorization = {
+                owns = ["systemd"];
+                contributes = {};
+              };
+              module.config.systemd.services.base-collision = {
+                description = "typed";
+                serviceConfig.ExecStart = "/bin/true";
+              };
+            }
+          ];
+          inherit pkgs lib;
+        })
+        .config
+        .system
+        .build
+        .systemdUnitOwners)
+    ))
+    .success;
 
   systemUnits = result.config.system.build.systemdSystemUnits;
   pureUnits = result.config.system.build.systemdUnitBodies;
@@ -220,14 +244,21 @@
       msg = "systemd-generate: asDropin unit did not flatten to overrides.conf in the manifest";
     }
     {
-      cond = manifest.etc."systemd/system/masked.service" == {kind = "symlink"; target = "/dev/null";};
+      cond =
+        manifest.etc."systemd/system/masked.service"
+        == {
+          kind = "symlink";
+          target = "/dev/null";
+        };
       msg = "systemd-generate: disabled unit did not flatten to a /dev/null manifest symlink";
     }
     {
-      cond = manifest.etc."systemd/system/vendor.service" == {
-        kind = "symlink";
-        target = "${packagedUnits}/lib/systemd/system/vendor.service";
-      };
+      cond =
+        manifest.etc."systemd/system/vendor.service"
+        == {
+          kind = "symlink";
+          target = "${packagedUnits}/lib/systemd/system/vendor.service";
+        };
       msg = "systemd-generate: package unit was not preserved by asDropinIfExists";
     }
     {
@@ -235,21 +266,30 @@
       msg = "systemd-generate: asDropinIfExists did not render overrides.conf";
     }
     {
-      cond = manifest.etc."systemd/system/vendor.service.d/10-vendor.conf" == {
-        kind = "symlink";
-        target = "${packagedUnits}/lib/systemd/system/vendor.service.d/10-vendor.conf";
-      };
+      cond =
+        manifest.etc."systemd/system/vendor.service.d/10-vendor.conf"
+        == {
+          kind = "symlink";
+          target = "${packagedUnits}/lib/systemd/system/vendor.service.d/10-vendor.conf";
+        };
       msg = "systemd-generate: package drop-in was not merged";
     }
     {
-      cond = manifest.etc."systemd/system/alias.service" == {kind = "symlink"; target = "primary.service";};
+      cond =
+        manifest.etc."systemd/system/alias.service"
+        == {
+          kind = "symlink";
+          target = "primary.service";
+        };
       msg = "systemd-generate: generated alias did not replace package leaf";
     }
     {
-      cond = manifest.etc."systemd/system/multi-user.target.wants/replacement.service" == {
-        kind = "symlink";
-        target = "../replacement.service";
-      };
+      cond =
+        manifest.etc."systemd/system/multi-user.target.wants/replacement.service"
+        == {
+          kind = "symlink";
+          target = "../replacement.service";
+        };
       msg = "systemd-generate: generated wantedBy did not replace package leaf";
     }
     {
@@ -289,9 +329,13 @@
       msg = "systemd-generate: my-target.target missing Wants=hello-world.service";
     }
   ];
-  evalAssertions = builtins.foldl' (ok: check:
-    lib.throwIfNot check.cond check.msg ok
-  ) true evalChecks;
+  evalAssertions =
+    builtins.foldl' (
+      ok: check:
+        lib.throwIfNot check.cond check.msg ok
+    )
+    true
+    evalChecks;
 
   # Adversarial parity oracle: reconstruct the pre-split imperative symlink
   # farm for this same evaluated unit set. The final check canonicalizes
@@ -299,18 +343,25 @@
   # a differently named one-file derivation) while retaining relative link
   # targets verbatim. This pins the historical package merge semantics rather
   # than merely checking a few expected filenames.
-  legacyUnitDrvs = lib.mapAttrs (name: unit:
-    systemdLib.makeUnit name unit
-  ) result.config.systemd.units;
+  legacyUnitDrvs =
+    lib.mapAttrs (
+      name: unit:
+        systemdLib.makeUnit name unit
+    )
+    result.config.systemd.units;
   autoUnitDrvs = lib.mapAttrsToList (name: _unit: legacyUnitDrvs.${name}) (
-    lib.filterAttrs (_name: unit:
-      (unit.overrideStrategy or "asDropinIfExists") == "asDropinIfExists"
-    ) result.config.systemd.units
+    lib.filterAttrs (
+      _name: unit:
+        (unit.overrideStrategy or "asDropinIfExists") == "asDropinIfExists"
+    )
+    result.config.systemd.units
   );
   dropinUnitDrvs = lib.mapAttrsToList (name: _unit: legacyUnitDrvs.${name}) (
-    lib.filterAttrs (_name: unit:
-      (unit.overrideStrategy or "asDropinIfExists") == "asDropin"
-    ) result.config.systemd.units
+    lib.filterAttrs (
+      _name: unit:
+        (unit.overrideStrategy or "asDropinIfExists") == "asDropin"
+    )
+    result.config.systemd.units
   );
   legacyUnits = pkgs.runCommand "legacy-system-units-parity-oracle" {} ''
     mkdir -p "$out"
@@ -354,29 +405,37 @@
       ln -s "$unit_dir/$fn" "$out/$fn.d/overrides.conf"
     done
 
-    ${lib.concatStrings (lib.mapAttrsToList (name: unit:
-      lib.concatMapStrings (alias: ''
-        ln -sfn ${lib.escapeShellArg name} "$out/${alias}"
-      '') (unit.aliases or [])
-    ) result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (name: unit:
-      lib.concatMapStrings (target: ''
-        mkdir -p "$out/${target}.wants"
-        ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.wants/"
-      '') (unit.wantedBy or [])
-    ) result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (name: unit:
-      lib.concatMapStrings (target: ''
-        mkdir -p "$out/${target}.requires"
-        ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.requires/"
-      '') (unit.requiredBy or [])
-    ) result.config.systemd.units)}
-    ${lib.concatStrings (lib.mapAttrsToList (name: unit:
-      lib.concatMapStrings (target: ''
-        mkdir -p "$out/${target}.upholds"
-        ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.upholds/"
-      '') (unit.upheldBy or [])
-    ) result.config.systemd.units)}
+    ${lib.concatStrings (lib.mapAttrsToList (
+        name: unit:
+          lib.concatMapStrings (alias: ''
+            ln -sfn ${lib.escapeShellArg name} "$out/${alias}"
+          '') (unit.aliases or [])
+      )
+      result.config.systemd.units)}
+    ${lib.concatStrings (lib.mapAttrsToList (
+        name: unit:
+          lib.concatMapStrings (target: ''
+            mkdir -p "$out/${target}.wants"
+            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.wants/"
+          '') (unit.wantedBy or [])
+      )
+      result.config.systemd.units)}
+    ${lib.concatStrings (lib.mapAttrsToList (
+        name: unit:
+          lib.concatMapStrings (target: ''
+            mkdir -p "$out/${target}.requires"
+            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.requires/"
+          '') (unit.requiredBy or [])
+      )
+      result.config.systemd.units)}
+    ${lib.concatStrings (lib.mapAttrsToList (
+        name: unit:
+          lib.concatMapStrings (target: ''
+            mkdir -p "$out/${target}.upholds"
+            ln -sfn ${lib.escapeShellArg "../${name}"} "$out/${target}.upholds/"
+          '') (unit.upheldBy or [])
+      )
+      result.config.systemd.units)}
   '';
 in
   pkgs.mkDerivation {

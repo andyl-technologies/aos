@@ -29,6 +29,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
@@ -90,40 +91,13 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 /// Accepts the AOS internal `sha256:<hex>` form, Nix's base32
 /// `sha256:<52-char-nix32>` form (used by the `store/` graph and Nix
 /// signing fingerprints), and the Nix SRI `sha256-<base64>` form emitted
-/// by `nix path-info --json`. A bare value with neither prefix is assumed
-/// to already be hex and is lowercased unchecked.
+/// by `nix path-info --json`.
 ///
 /// # Errors
 ///
-/// Returns an error if an SRI hash's base64 payload does not decode or does
-/// not decode to exactly 32 bytes, or a 52-char `sha256:` payload is not
-/// valid nixbase32.
+/// Returns an error if the value is not a supported, well-formed SHA-256 hash.
 pub fn sha256_digest_hex(hash: &str) -> Result<String> {
-    let hash = hash.trim();
-
-    if let Some(payload) = hash.strip_prefix("sha256:") {
-        if payload.len() == 52 {
-            let digest = aos_core::nar::cache::decode_nix_base32(payload)
-                .ok_or_else(|| anyhow::anyhow!("invalid nixbase32 SHA-256 hash '{hash}'"))?;
-            return Ok(hex::encode(digest));
-        }
-        return Ok(payload.to_ascii_lowercase());
-    }
-
-    if let Some(b64) = hash.strip_prefix("sha256-") {
-        let digest = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .with_context(|| format!("decoding SRI SHA-256 hash '{hash}'"))?;
-        if digest.len() != 32 {
-            bail!(
-                "SRI SHA-256 hash '{hash}' decoded to {} bytes, expected 32",
-                digest.len(),
-            );
-        }
-        return Ok(hex::encode(digest));
-    }
-
-    Ok(hash.to_ascii_lowercase())
+    aos_core::nar::cache::canonical_sha256_hex(hash)
 }
 
 /// Return whether two SHA-256 hashes identify the same digest.

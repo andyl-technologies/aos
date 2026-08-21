@@ -97,13 +97,12 @@
       then true
       else if actual == []
       then false
-      else
-        let
-          expectedSegment = builtins.head expected;
-          actualSegment = builtins.head actual;
-        in
-          (expectedSegment == "*" || expectedSegment == actualSegment)
-          && go (builtins.tail expected) (builtins.tail actual);
+      else let
+        expectedSegment = builtins.head expected;
+        actualSegment = builtins.head actual;
+      in
+        (expectedSegment == "*" || expectedSegment == actualSegment)
+        && go (builtins.tail expected) (builtins.tail actual);
   in
     go (lib.splitString "." surface) (lib.splitString "." concrete);
 
@@ -140,7 +139,8 @@
       source;
     modulePath = checkedSource + "/module.nix";
     abiCompat =
-      checkedModule.moduleAbiCompat or {
+      checkedModule.moduleAbiCompat
+      or {
         min = 1;
         max = 1;
       };
@@ -207,7 +207,8 @@
         path: let
           root = builtins.head (lib.splitString "." path);
         in
-          root != packageName
+          root
+          != packageName
           && !(builtins.elem root ownedRootNames)
           && !(builtins.any (contributionAuthorizes path) contributes)
       )
@@ -238,8 +239,8 @@
     throwIfNot
     (extraKeys == [])
     "mkDerivation configModule for package '${packageName}' contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
-      (throwIfNot
-        (builtins.isAttrs abiCompat
+    (throwIfNot
+      (builtins.isAttrs abiCompat
         && builtins.attrNames abiCompat == ["max" "min"]
         && builtins.isInt abiMin
         && builtins.isInt abiMax)

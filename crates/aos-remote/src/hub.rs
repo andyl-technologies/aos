@@ -32,7 +32,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
-use std::path::Path;
 use std::str::FromStr;
 
 use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
@@ -41,6 +40,8 @@ use crate::client::validate_base_url;
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
+/// Deadline for one bounded multipart publication part.
+const PUBLICATION_PART_TIMEOUT_SECS: u64 = 120;
 
 /// A Connect-JSON client for an `aos-hub`'s services.
 ///
@@ -591,6 +592,10 @@ enum HubTopologyMethod {
     ResolveImage,
     /// Selects placement-aware publication admission.
     BeginRegistryPublication,
+    /// Selects multipart admission for one large registry publication object.
+    BeginRegistryPublicationMultipartUpload,
+    /// Selects multipart abort for one registry publication object.
+    AbortRegistryPublicationMultipartUpload,
     /// Selects paginated registry publication history.
     ListRegistryPublications,
     /// Selects publication status inspection.
@@ -1112,6 +1117,12 @@ impl HubTopologyMethod {
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            BeginRegistryPublicationMultipartUpload => {
+                "aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload"
+            }
+            AbortRegistryPublicationMultipartUpload => {
+                "aos.hub.v1.PublishService/AbortRegistryPublicationMultipartUpload"
+            }
             ListRegistryPublications => "aos.hub.v1.PublishService/ListRegistryPublications",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
@@ -1490,6 +1501,8 @@ pub mod hub_rpc {
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        BeginRegistryPublicationMultipartUpload: BeginRegistryPublicationMultipartUploadRequest => BeginRegistryPublicationMultipartUploadResponse;
+        AbortRegistryPublicationMultipartUpload: AbortRegistryPublicationMultipartUploadRequest => RegistryPublicationMultipartUploadResponse;
         ListRegistryPublications: ListRegistryPublicationsRequest => ListRegistryPublicationsResponse;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
@@ -1646,6 +1659,50 @@ impl HubClient {
         self.call(M::method(), request).await
     }
 
+    /// Completes one publication multipart upload without a unary RPC deadline.
+    ///
+    /// Completion performs exact streaming read-after-write verification of the
+    /// assembled object. Large release artifacts can legitimately take longer
+    /// than the ordinary control-plane deadline, so this operation uses the
+    /// same connect-only timeout as streaming uploads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Hub is unreachable, rejects completion, or
+    /// returns a response that cannot be decoded.
+    pub async fn complete_registry_publication_multipart_upload(
+        &self,
+        request: &aos_proto_types::CompleteRegistryPublicationMultipartUploadRequest,
+    ) -> Result<aos_proto_types::RegistryPublicationMultipartUploadResponse> {
+        let method = "aos.hub.v1.PublishService/CompleteRegistryPublicationMultipartUpload";
+        let url = format!("{}{method}", self.base);
+        let mut request_builder = self
+            .upload_http
+            .post(&url)
+            .header(CONNECT_PROTOCOL_VERSION_HEADER, CONNECT_PROTOCOL_VERSION)
+            .json(request);
+        if let Some(token) = &self.token {
+            request_builder = request_builder.bearer_auth(token);
+        }
+        let response = request_builder
+            .send()
+            .await
+            .with_context(|| format!("contacting the hub at {url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .with_context(|| format!("reading the hub response from {url}"))?;
+        if !status.is_success() {
+            if let Ok(envelope) = serde_json::from_slice::<ConnectError>(&body) {
+                anyhow::bail!("hub error [{}]: {}", envelope.code, envelope.message);
+            }
+            anyhow::bail!("hub request to {url} failed ({status})");
+        }
+        serde_json::from_slice(&body)
+            .with_context(|| format!("decoding the hub response from {url}"))
+    }
+
     /// Streams one declared publication object to its exact Hub upload URL.
     ///
     /// The URL must share the configured Hub origin and use the typed
@@ -1656,7 +1713,14 @@ impl HubClient {
     ///
     /// Returns an error for a non-Hub URL, unreadable input, transport failure,
     /// or a non-success response from the Hub.
-    pub async fn upload_publication_object(&self, upload_url: &str, path: &Path) -> Result<()> {
+    pub async fn upload_publication_object(
+        &self,
+        upload_url: &str,
+        mut file: std::fs::File,
+        label: &str,
+    ) -> Result<()> {
+        use std::io::{Seek as _, SeekFrom};
+
         let base = url::Url::parse(&self.base).context("parsing configured Hub URL")?;
         let target = url::Url::parse(upload_url).context("parsing publication upload URL")?;
         anyhow::ensure!(
@@ -1670,13 +1734,13 @@ impl HubClient {
                     .starts_with("/aos.hub.v1.PublishService/UploadObject/"),
             "publication upload URL is outside the configured Hub origin"
         );
-        let file = tokio::fs::File::open(path)
-            .await
-            .with_context(|| format!("opening publication object {}", path.display()))?;
+        file.seek(SeekFrom::Start(0))
+            .with_context(|| format!("rewinding publication object {label}"))?;
+        let file = tokio::fs::File::from_std(file);
         let size = file
             .metadata()
             .await
-            .with_context(|| format!("reading publication object metadata {}", path.display()))?
+            .with_context(|| format!("reading publication object metadata {label}"))?
             .len();
         let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
         let mut request = self
@@ -1704,6 +1768,73 @@ impl HubClient {
             );
         }
         Ok(())
+    }
+
+    /// Uploads one bounded part to an admitted publication multipart URL.
+    ///
+    /// The URL is constrained to this client's Hub origin and exact typed
+    /// publication-part namespace before the bearer credential is attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid URL, transport failure, Hub rejection,
+    /// or malformed part response.
+    pub async fn upload_publication_part(
+        &self,
+        part_upload_url: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: Vec<u8>,
+    ) -> Result<aos_proto_types::RegistryPublicationMultipartPart> {
+        anyhow::ensure!(part_number > 0, "multipart part numbers are 1-based");
+        let base = url::Url::parse(&self.base).context("parsing configured Hub URL")?;
+        let mut target =
+            url::Url::parse(part_upload_url).context("parsing publication part upload URL")?;
+        anyhow::ensure!(
+            target.scheme() == base.scheme()
+                && target.host_str() == base.host_str()
+                && target.port_or_known_default() == base.port_or_known_default()
+                && target.query().is_none()
+                && target.fragment().is_none()
+                && target.path() == format!("/aos.hub.v1.PublishService/UploadPart/{upload_id}"),
+            "publication part upload URL is outside the configured Hub origin"
+        );
+        target
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("publication part upload URL cannot accept a part"))?
+            .push(&part_number.to_string());
+        let size = bytes.len();
+        let mut request = self
+            .upload_http
+            .put(target.clone())
+            .timeout(std::time::Duration::from_secs(
+                PUBLICATION_PART_TIMEOUT_SECS,
+            ))
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(bytes);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("uploading publication part to {target}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "publication part upload to {target} failed ({status}){}",
+                if detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", detail.trim())
+                }
+            );
+        }
+        response
+            .json()
+            .await
+            .context("decoding publication multipart part response")
     }
 
     /// Connects to a hub for **unauthenticated** public reads.

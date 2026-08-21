@@ -70,4 +70,7 @@ pub struct ImageDownloadArgs {
     /// Restart rather than resume an existing partial file.
     #[arg(long)]
     pub no_resume: bool,
+    /// Retry transient transfer failures before preserving the partial download.
+    #[arg(long, default_value_t = 3)]
+    pub retries: u32,
 }

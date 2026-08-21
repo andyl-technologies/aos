@@ -1,15 +1,17 @@
 """QemuMachine — virtio-serial transport (fleet/multi-VM mode).
 
 argv is a 1:1 port of the bash driver this replaces; the load-bearing
-workarounds (mcast localaddr pin, SCSI CD-ROM for the metadata ISO,
-serial drain via socat) survive verbatim — see comments in start().
+workarounds (mcast localaddr pin and SCSI CD-ROM for the metadata ISO)
+survive verbatim — see comments in start().
 """
 
 import glob
 import logging
 import os
 import shutil
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import IO, ClassVar, override
@@ -102,6 +104,8 @@ class QemuMachine(Machine):
     qemu_proc: subprocess.Popen[bytes] | None
     drain_proc: subprocess.Popen[bytes] | None
     swtpm_proc: subprocess.Popen[bytes] | None
+    smbios_oem_strings: list[str]
+    _smbios_tpm_snapshot: Path
 
     def __init__(
         self,
@@ -158,9 +162,16 @@ class QemuMachine(Machine):
         self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
         self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
+        self.smbios_oem_strings = []
+        self._smbios_tpm_snapshot = self.tmpdir / f"{name}-tpm-smbios-snapshot"
 
         self.qemu_proc = None
         self.drain_proc = None
+        self._serial_listener: socket.socket | None = None
+        self._serial_connection: socket.socket | None = None
+        self._serial_thread: threading.Thread | None = None
+        self._serial_stop: threading.Event | None = None
+        self._serial_lock = threading.Lock()
         self.swtpm_proc = None
         self._qemu_log_fd: IO[bytes] | None = None
 
@@ -213,8 +224,24 @@ class QemuMachine(Machine):
                     f"[{self.name}] extra disk {index} has invalid sizeMiB"
                 )
             path = str(self.tmpdir / f"{self.name}-extra-{index}.img")
-            with open(path, "wb") as extra:
-                extra.truncate(size_mib * 1024 * 1024)
+            source = disk.get("source")
+            if source is None:
+                with open(path, "wb") as extra:
+                    extra.truncate(size_mib * 1024 * 1024)
+            elif isinstance(source, str) and source:
+                clone_or_copy(source, path)
+                expected_size = size_mib * 1024 * 1024
+                actual_size = os.path.getsize(path)
+                if actual_size > expected_size:
+                    raise RuntimeError(
+                        f"[{self.name}] extra disk {index} source exceeds sizeMiB"
+                    )
+                if actual_size < expected_size:
+                    os.truncate(path, expected_size)
+            else:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid source"
+                )
             self.extra_disk_copies.append(path)
         copy_method = "reflink" if reflinked else "copy"
         if self.metadata_src is not None:
@@ -287,28 +314,6 @@ class QemuMachine(Machine):
                 log.info("  Disk:     %s (%s)", self.disk_copy, copy_method)
             if self.metadata_src is not None:
                 log.info("  Metadata: %s", self.metadata_copy)
-
-        # Serial drain — unidirectional listener appending to
-        # <name>-serial.log. Must be up before QEMU connects; the wait
-        # loop guards against early-boot output being lost. -u +
-        # OPEN-with-creat,append matches the bash driver this replaces.
-        self.drain_proc = subprocess.Popen(
-            [
-                "socat",
-                "-u",
-                f"UNIX-LISTEN:{self.serial_socket},reuseaddr,fork",
-                f"OPEN:{self.serial_log_path},creat,append",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(self.serial_socket):
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"[{self.name}] serial drain socket did not appear within 5s"
-                )
-            time.sleep(0.05)
 
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
         # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
@@ -404,6 +409,10 @@ class QemuMachine(Machine):
         # vTPM must be up before QEMU connects to its socket — on the reboot
         # leg swtpm died with the previous QEMU, so (re)launch it here.
         self._ensure_swtpm()
+        # Every QEMU process opens a fresh serial connection. Recreate the
+        # bridge on every launch so relaunch-based recovery and rejected-input
+        # tests retain both their transcript and interactive console.
+        self._start_serial_bridge()
 
         # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
         # machine. Kernel boot keeps the plain machine.
@@ -460,6 +469,9 @@ class QemuMachine(Machine):
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
 
+        for value in self.smbios_oem_strings:
+            argv += ["-smbios", f"type=11,value={value}"]
+
         for index, (disk, path) in enumerate(
             zip(self.extra_disks, self.extra_disk_copies, strict=True)
         ):
@@ -471,6 +483,8 @@ class QemuMachine(Machine):
             drive_id = f"extra{index}"
             interface = disk.get("interface", "virtio")
             argv += ["-drive", f"id={drive_id},file={path},format=raw,if=none"]
+            if disk.get("readOnly", False):
+                argv[-1] += ",readonly=on"
             if interface == "virtio":
                 argv += [
                     "-device",
@@ -486,6 +500,24 @@ class QemuMachine(Machine):
                     f"virtio-scsi-pci,id={controller_id}",
                     "-device",
                     scsi_device,
+                ]
+            elif interface == "usb":
+                removable = disk.get("removable", False)
+                if not isinstance(removable, bool):
+                    raise RuntimeError(
+                        f"[{self.name}] extra disk {index} has invalid removable flag"
+                    )
+                controller_id = f"extra_usb{index}"
+                storage_device = (
+                    f"usb-storage,drive={drive_id},bus={controller_id}.0,serial={serial}"
+                )
+                if removable:
+                    storage_device += ",removable=on"
+                argv += [
+                    "-device",
+                    f"qemu-xhci,id={controller_id}",
+                    "-device",
+                    storage_device,
                 ]
             else:
                 raise RuntimeError(
@@ -504,9 +536,14 @@ class QemuMachine(Machine):
 
         # vTPM device — connects QEMU's emulated tpm-tis to the swtpm
         # control socket launched in start(). Present on every (re)launch
-        # so the guest keeps its TPM across the reboot leg.
+        # so the guest keeps its TPM across the reboot leg. Give TPM guests a
+        # virtio entropy source as well: first-boot filesystem/key generation
+        # must not monopolize the slow software TPM's 64-byte GetRandom path.
+        # Real machines obtain entropy from their platform hardware; this
+        # keeps the emulator faithful without making swtpm a boot scheduler.
         if self.tpm:
             argv += [
+                "-device", "virtio-rng-pci",
                 "-chardev", f"socket,id=chrtpm,path={self.tpm_socket}",
                 "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
                 "-device", "tpm-tis,tpmdev=tpm0",
@@ -549,6 +586,96 @@ class QemuMachine(Machine):
                 f"[{self.name}] QEMU exited immediately"
                 f" (code {self.qemu_proc.returncode})"
             )
+
+    def _start_serial_bridge(self) -> None:
+        """Starts one bidirectional serial bridge and append-only drain."""
+        self._stop_serial_bridge()
+        try:
+            os.unlink(self.serial_socket)
+        except FileNotFoundError:
+            pass
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(self.serial_socket)
+        listener.listen(1)
+        listener.settimeout(0.2)
+        self._serial_listener = listener
+        stop = threading.Event()
+        self._serial_stop = stop
+
+        def drain() -> None:
+            try:
+                while True:
+                    try:
+                        connection, _ = listener.accept()
+                        break
+                    except TimeoutError:
+                        if stop.is_set():
+                            return
+                connection.settimeout(0.2)
+                with self._serial_lock:
+                    self._serial_connection = connection
+                with connection, open(self.serial_log_path, "ab") as serial_log:
+                    while not stop.is_set():
+                        try:
+                            data = connection.recv(64 * 1024)
+                        except TimeoutError:
+                            continue
+                        if not data:
+                            break
+                        serial_log.write(data)
+                        serial_log.flush()
+            except OSError:
+                pass
+            finally:
+                with self._serial_lock:
+                    self._serial_connection = None
+
+        self._serial_thread = threading.Thread(
+            target=drain,
+            name=f"{self.name}-serial-drain",
+            daemon=True,
+        )
+        self._serial_thread.start()
+
+    def _stop_serial_bridge(self) -> None:
+        """Stops the current serial bridge, if any."""
+        with self._serial_lock:
+            connection = self._serial_connection
+            self._serial_connection = None
+        if connection is not None:
+            connection.close()
+        if self._serial_stop is not None:
+            self._serial_stop.set()
+            self._serial_stop = None
+        if self._serial_listener is not None:
+            self._serial_listener.close()
+            self._serial_listener = None
+        if self._serial_thread is not None:
+            self._serial_thread.join(timeout=2)
+            self._serial_thread = None
+
+    def send_serial(self, text: str, timeout: float = 30.0) -> None:
+        """Writes UTF-8 input to the guest's serial console.
+
+        Raises:
+            RuntimeError: If QEMU has not connected its serial port before the
+                deadline or the connection closes while sending.
+        """
+        payload = text.encode()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._serial_lock:
+                connection = self._serial_connection
+            if connection is not None:
+                try:
+                    connection.sendall(payload)
+                    return
+                except OSError as error:
+                    raise RuntimeError(
+                        f"[{self.name}] serial console write failed: {error}"
+                    ) from error
+            time.sleep(0.05)
+        raise RuntimeError(f"[{self.name}] serial console did not connect")
 
     # ------------------------------------------------------------------
     def reboot(self, timeout: float = 600.0) -> None:
@@ -621,6 +748,104 @@ class QemuMachine(Machine):
         """
         self.metadata_src = None
         self.reboot(timeout=timeout)
+
+    def relaunch_with_smbios_oem_strings(
+        self,
+        values: list[str],
+        *,
+        expect_agent: bool = True,
+        timeout: float = 600.0,
+        settle: float = 60.0,
+    ) -> str:
+        """Relaunch an image boot with an exact SMBIOS Type-11 string set.
+
+        The writable disk, firmware variables, and vTPM state are preserved.
+        This is intended for boot-input tests where QEMU must be restarted to
+        change firmware-provided data. When ``expect_agent`` is false, the
+        method requires the guest agent to remain unavailable for ``settle``
+        seconds and returns the serial-log tail.
+
+        Raises:
+            RuntimeError: If a value is unsafe for QEMU's Type-11 syntax, the
+                current VM cannot be stopped, or the relaunched VM has the
+                opposite agent outcome from ``expect_agent``.
+        """
+        if any(not value or "\x00" in value or "\n" in value or "," in value for value in values):
+            raise RuntimeError(
+                f"[{self.name}] SMBIOS OEM strings must be nonempty and contain no NUL, newline, or comma"
+            )
+
+        self._stop_runtime_for_relaunch(timeout)
+        if self.tpm:
+            assert self.tpm_state_dir is not None
+            state_dir = Path(self.tpm_state_dir)
+            if expect_agent and self._smbios_tpm_snapshot.exists():
+                shutil.rmtree(state_dir)
+                shutil.copytree(self._smbios_tpm_snapshot, state_dir)
+                shutil.rmtree(self._smbios_tpm_snapshot)
+            elif not expect_agent:
+                if self._smbios_tpm_snapshot.exists():
+                    raise RuntimeError(
+                        f"[{self.name}] an earlier rejected-input TPM snapshot is unresolved"
+                    )
+                shutil.copytree(state_dir, self._smbios_tpm_snapshot)
+
+        self.smbios_oem_strings = list(values)
+        try:
+            serial_offset = os.path.getsize(self.serial_log_path)
+        except OSError:
+            serial_offset = 0
+        self._launch()
+
+        if expect_agent:
+            self.agent.wait_ready(time.monotonic() + timeout)
+            return ""
+
+        try:
+            self.agent.wait_ready(time.monotonic() + settle)
+        except RuntimeError:
+            try:
+                with open(self.serial_log_path, "rb") as serial:
+                    serial.seek(serial_offset)
+                    return serial.read().decode("utf-8", errors="replace")
+            except OSError:
+                return ""
+        raise RuntimeError(
+            f"[{self.name}] guest agent became ready after rejected SMBIOS boot input"
+        )
+
+    def _stop_runtime_for_relaunch(self, timeout: float) -> None:
+        """Stops QEMU and swtpm without recreating per-run disk artifacts."""
+        if self.qemu_proc is not None and self.qemu_proc.poll() is None:
+            try:
+                self.execute(
+                    "(sleep 1; systemctl poweroff) >/dev/null 2>&1 &", timeout=30
+                )
+                self.agent.close()
+                self.qemu_proc.wait(timeout=min(timeout, 120.0))
+            except Exception:
+                self.agent.close()
+                self.qemu_proc.terminate()
+                try:
+                    self.qemu_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.qemu_proc.kill()
+                    self.qemu_proc.wait()
+
+        if self.swtpm_proc is not None and self.swtpm_proc.poll() is None:
+            try:
+                self.swtpm_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.swtpm_proc.terminate()
+                try:
+                    self.swtpm_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.swtpm_proc.kill()
+                    self.swtpm_proc.wait()
+
+        if self._qemu_log_fd is not None:
+            self._qemu_log_fd.close()
+            self._qemu_log_fd = None
 
     # ------------------------------------------------------------------
     def reboot_expect_rejected(
@@ -707,6 +932,7 @@ class QemuMachine(Machine):
             except subprocess.TimeoutExpired:
                 self.qemu_proc.kill()
                 self.qemu_proc.wait()
+        self._stop_serial_bridge()
         if self.drain_proc is not None and self.drain_proc.poll() is None:
             self.drain_proc.terminate()
             try:

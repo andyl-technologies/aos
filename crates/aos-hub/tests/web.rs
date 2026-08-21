@@ -310,14 +310,14 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
 
-    // One app, two registries indexed from the same surface: a flat slug and a
-    // nested (org-scoped) slug that reaches the browser through the nested
-    // resolver rather than the flat route.
+    // One app, two registries indexed from the same surface: an instance-scoped
+    // flat slug and an org-scoped registry that reaches the browser through
+    // the nested resolver rather than the flat route.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
         .await
         .unwrap();
-    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    let org = db.create_org("acme", "Acme").await.unwrap();
     db.create_managed_registry(
         org,
         "",
@@ -328,7 +328,6 @@ async fn anonymous_browse_is_rate_limited_on_flat_and_nested_paths() {
     )
     .await
     .unwrap();
-
     for slug in ["demo", "acme/infra"] {
         let registry = db.registry_by_slug(slug).await.unwrap().unwrap();
         index_and_record(&db, &LocalFsFetch::new(&surface), &registry)

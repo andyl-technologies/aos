@@ -11,6 +11,19 @@
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
+  defaultMaintainers = ["Andyl, Inc."];
+
+  withDistributionMeta = extra: drv:
+    drv
+    // {
+      meta =
+        (drv.meta or {})
+        // {
+          maintainers = drv.meta.maintainers or defaultMaintainers;
+        }
+        // extra;
+    };
+  withDefaultMaintainers = withDistributionMeta {};
 
   exposeRenderer = import ./build-support/_expose-renderer.nix {
     inherit lib;
@@ -65,14 +78,16 @@
           pname = "${packageName}-generated-config-source";
           version = args.version or "0";
           src = null;
-          phases = [{
-            name = "install";
-            script = ''
-              mkdir -p "$out"
-              cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
-              cp ${generatedExposeConfigFile} "$out/expose-config.json"
-            '';
-          }];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$out"
+                cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
+                cp ${generatedExposeConfigFile} "$out/expose-config.json"
+              '';
+            }
+          ];
           preferLocalBuild = true;
           allowSubstitutes = false;
         }
@@ -105,15 +120,17 @@
           pname = "${packageName}-composed-config-source";
           version = args.version or "0";
           src = null;
-          phases = [{
-            name = "install";
-            script = ''
-              mkdir -p "$out/authored" "$out/generated"
-              cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
-              cp -R ${generatedConfigSource}/. "$out/generated/"
-              cp ${composedModuleFile} "$out/module.nix"
-            '';
-          }];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                mkdir -p "$out/authored" "$out/generated"
+                cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
+                cp -R ${generatedConfigSource}/. "$out/generated/"
+                cp ${composedModuleFile} "$out/module.nix"
+              '';
+            }
+          ];
           preferLocalBuild = true;
           allowSubstitutes = false;
         }
@@ -124,7 +141,10 @@
       else if hasGeneratedExposeConfig
       then {
         src = generatedConfigSource;
-        moduleAbiCompat = {min = 1; max = 1;};
+        moduleAbiCompat = {
+          min = 1;
+          max = 1;
+        };
         declares = generatedExposeDeclares;
       }
       else null;
@@ -133,9 +153,10 @@
       if authoredConfigModule != null && hasGeneratedExposeConfig
       then {
         src = composedConfigSource;
-        metaJson = builtins.toJSON (authoredConfigMeta // {
-          declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
-        });
+        metaJson = builtins.toJSON (authoredConfigMeta
+          // {
+            declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
+          });
         dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
       }
       else if hasGeneratedExposeConfig
@@ -143,7 +164,10 @@
         src = generatedConfigSource;
         metaJson = builtins.toJSON {
           schema = "aos.config-module-meta/v1";
-          module_abi_compat = {min = 1; max = 1;};
+          module_abi_compat = {
+            min = 1;
+            max = 1;
+          };
           declares = effectiveConfigModule.declares;
           owns_roots = [];
           contributes = [];
@@ -244,6 +268,11 @@
       # down to the raw builder (mirrors how `expose` is handled).
       (builtins.removeAttrs args ["configModule"])
       // {
+        meta =
+          (args.meta or {})
+          // {
+            maintainers = args.meta.maintainers or defaultMaintainers;
+          };
         buildDeps =
           (args.buildDeps or [])
           ++ [self.nuke-references];
@@ -280,7 +309,12 @@
     addBuilderOverrides mkDerivation args result;
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
-  bootstrapTools = stdenv.cc;
+  bootstrapTools =
+    withDistributionMeta {
+      description = "AOS bootstrap compiler and core build tools";
+      license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+    }
+    stdenv.cc;
 
   # Import phase generators from stdenv/phases.nix
   phases = import ../stdenv/phases.nix;
@@ -689,7 +723,8 @@
       # depend on itself. Every other package gets nuke-references injected
       # into buildDeps automatically via the wrapped mkDerivation above.
       nuke-references = import ../lib/build-support/nuke-references {
-        mkDerivation = rawMkDerivation;
+        mkDerivation = args:
+          withDefaultMaintainers (rawMkDerivation args);
         inherit (self) bash gawk sed;
       };
     }
@@ -705,6 +740,10 @@
       linuxWith = extraConfig:
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
+      zfsForKernel = kernel:
+        callPackage ./filesystem/zfs.nix {inherit kernel;};
+      nvidiaOpenForKernel = kernel:
+        callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
       qemu-crucible = callPackage ./emulation/qemu.nix {
         pname = "qemu-crucible";
@@ -746,27 +785,40 @@
       edgecore = callPackage ./kubernetes/edgecore.nix {inherit kubeedgeSource;};
 
       # --- stdenv packages (linked, not rebuilt) ---
-      gcc = stdenv.gcc;
-      glibc = stdenv.glibc;
-      binutils = stdenv.binutils;
-      cc = stdenv.cc;
+      gcc =
+        withDistributionMeta {
+          description = "GNU Compiler Collection with AOS target and runtime defaults";
+          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+        }
+        stdenv.gcc;
+      glibc = withDefaultMaintainers stdenv.glibc;
+      binutils = withDefaultMaintainers stdenv.binutils;
+      cc =
+        withDistributionMeta {
+          description = "AOS C and C++ compiler wrapper toolchain";
+          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+        }
+        stdenv.cc;
       # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
       # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
-      gccUnwrapped = stdenv.gccStage2;
-      getent = lib.getOutput "getent" stdenv.glibc;
-      bash = stdenv.bash;
-      coreutils = stdenv.coreutils;
-      gnumake = stdenv.gnumake;
-      sed = stdenv.sed;
-      grep = stdenv.grep;
-      findutils = stdenv.findutils;
-      gawk = stdenv.gawk;
-      diffutils = stdenv.diffutils;
-      tar = stdenv.tar;
-      gzip = stdenv.gzip;
-      patch = stdenv.patch;
+      gccUnwrapped = withDefaultMaintainers stdenv.gccStage2;
+      getent = withDistributionMeta {
+        description = "Name service database lookup utility from GNU C Library";
+        license = "LGPL-2.1-or-later";
+      } (lib.getOutput "getent" stdenv.glibc);
+      bash = withDefaultMaintainers stdenv.bash;
+      coreutils = withDefaultMaintainers stdenv.coreutils;
+      gnumake = withDefaultMaintainers stdenv.gnumake;
+      sed = withDefaultMaintainers stdenv.sed;
+      grep = withDefaultMaintainers stdenv.grep;
+      findutils = withDefaultMaintainers stdenv.findutils;
+      gawk = withDefaultMaintainers stdenv.gawk;
+      diffutils = withDefaultMaintainers stdenv.diffutils;
+      tar = withDefaultMaintainers stdenv.tar;
+      gzip = withDefaultMaintainers stdenv.gzip;
+      patch = withDefaultMaintainers stdenv.patch;
     }
     # --- Trivial builders, exposed flat on the package set ---
     # The file at pkgs/build-support/trivial-builders.nix is also picked up

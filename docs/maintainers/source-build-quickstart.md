@@ -38,9 +38,10 @@ nix-build -A pkgs.qemu -o result-aos-qemu
 nix-build -A pkgs.edk2 -o result-aos-edk2
 nix-build -A pkgs.gptfdisk -o result-aos-gptfdisk
 nix-build -A pkgs.libisoburn -o result-aos-libisoburn
+nix-build -A pkgs.zstd -o result-aos-zstd
 ```
 
-The image is `result-aos-image/aos-aos.img`. It contains a UEFI system
+The image is `result-aos-image/aos-aos.img.zst`. It contains a zstd-compressed UEFI system
 partition and the immutable `root-a` filesystem. Swap and `/var` are created in
 free space on first boot.
 
@@ -61,9 +62,12 @@ Create `host.nix` in the repository root:
 }
 ```
 
-`host.nix` is literal Nix, not JSON or cloud-config. Storage is its supported
-operational use today. The layout is committed once; changing this file after
-the first successful boot does not resize or repartition the machine.
+`host.nix` is literal Nix, not JSON or cloud-config. This example focuses on
+first-boot storage; the same policy can manage runtime hostname, networking,
+firewall, service, and package configuration as described in the
+[`host.nix` guide](../users/aos/host-nix.md). The storage layout is committed
+once; changing this file after the first successful boot does not resize or
+repartition the machine.
 
 Put the file on an AOS metadata ISO:
 
@@ -86,7 +90,7 @@ Copy the immutable build result, grow the copy to 16 GiB, and move the backup
 GPT header to the new end of the disk:
 
 ```sh
-cp result-aos-image/aos-aos.img aos-demo.img
+./result-aos-zstd/bin/zstd -d result-aos-image/aos-aos.img.zst -o aos-demo.img
 chmod u+w aos-demo.img
 truncate -s 16G aos-demo.img
 ./result-aos-gptfdisk/sbin/sgdisk -e aos-demo.img
