@@ -45,6 +45,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use aos_core::output::TransferProgress;
 use futures_util::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 
@@ -76,9 +77,25 @@ const MAX_CONCURRENCY: usize = 24;
 /// `info/refs`, serves an object whose content does not match its OID, or a
 /// requested ref cannot be resolved.
 pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) -> Result<()> {
+    fetch_with_progress(repo_dir, base_url, refspecs, None).await
+}
+
+/// Fetches a static registry while reporting aggregate received bytes.
+///
+/// # Errors
+///
+/// Returns an error under the same transport, validation, and ref-resolution
+/// conditions as [`fetch`].
+pub(crate) async fn fetch_with_progress(
+    repo_dir: &Path,
+    base_url: &str,
+    refspecs: &[String],
+    progress: Option<&TransferProgress>,
+) -> Result<()> {
     let client = reqwest::Client::new();
-    let advertised = fetch_info_refs(&client, base_url).await?;
-    let head = fetch_head_oid(&client, base_url, &advertised).await?;
+    set_phase(progress, "Reading registry references");
+    let advertised = fetch_info_refs(&client, base_url, progress).await?;
+    let head = fetch_head_oid(&client, base_url, &advertised, progress).await?;
 
     // Resolve every refspec to (oid, optional destination ref).
     let mut targets: Vec<(String, Option<String>)> = Vec::new();
@@ -98,16 +115,18 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
         // Pack phase (fast path): download + index advertised packs we do not
         // already have. A handful of large requests instead of one round trip
         // per loose object; libgit2's indexer verifies each pack on commit.
-        let advertised = fetch_pack_list(&client, base_url).await?;
+        set_phase(progress, "Discovering registry packs");
+        let advertised = fetch_pack_list(&client, base_url, progress).await?;
         let pack_dir = objects_dir.join("pack");
         let new_packs: Vec<String> = advertised
             .into_iter()
             .filter(|name| !pack_dir.join(name).exists())
             .collect();
         if !new_packs.is_empty() {
+            set_phase(progress, "Downloading registry packs");
             let client = &client;
             let packs: Vec<Vec<u8>> = stream::iter(new_packs.into_iter())
-                .map(|name| async move { fetch_pack(client, base_url, &name).await })
+                .map(|name| async move { fetch_pack(client, base_url, &name, progress).await })
                 .buffer_unordered(MAX_CONCURRENCY)
                 .collect::<Vec<_>>()
                 .await
@@ -121,6 +140,7 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
             // hash-verifies every still-missing object (the dumb-HTTP layout
             // guarantees loose completeness). On success, prune what the pack
             // already covered so the loose phase only fetches the remainder.
+            set_phase(progress, "Indexing registry packs");
             let indexed =
                 tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
                     .await
@@ -136,6 +156,10 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
         // can reveal deeper references, so it iterates to a fixpoint.
         let mut total_fetched = 0usize;
         while !missing.is_empty() {
+            set_phase(
+                progress,
+                &format!("Downloading registry objects ({})", missing.len()),
+            );
             total_fetched += missing.len();
             if total_fetched > MAX_OBJECTS {
                 bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
@@ -143,7 +167,9 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
             let client = &client;
             let objects_dir = &objects_dir;
             stream::iter(missing.into_iter())
-                .map(|oid| async move { fetch_loose(client, base_url, objects_dir, &oid).await })
+                .map(|oid| async move {
+                    fetch_loose(client, base_url, objects_dir, &oid, progress).await
+                })
                 .buffer_unordered(MAX_CONCURRENCY)
                 .collect::<Vec<_>>()
                 .await
@@ -161,6 +187,7 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
         }
     }
     if !ref_writes.is_empty() {
+        set_phase(progress, "Updating registry references");
         let repo_dir = repo_dir.to_path_buf();
         tokio::task::spawn_blocking(move || -> Result<()> {
             for (refname, oid) in ref_writes {
@@ -207,6 +234,7 @@ const MAX_ATTEMPTS: usize = 6;
 async fn get_with_retry(
     client: &reqwest::Client,
     url: &str,
+    progress: Option<&TransferProgress>,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     let mut attempt = 0;
     loop {
@@ -214,13 +242,21 @@ async fn get_with_retry(
         let outcome = async {
             let response = client.get(url).send().await?;
             let status = response.status();
-            let body = response.bytes().await?;
+            let mut stream = response.bytes_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                if let Some(progress) = progress {
+                    progress.inc(chunk.len() as u64);
+                }
+                body.extend_from_slice(&chunk);
+            }
             Ok::<_, reqwest::Error>((status, body))
         }
         .await;
         match outcome {
             Ok((status, _)) if status.is_server_error() && attempt < MAX_ATTEMPTS => {}
-            Ok((status, body)) => return Ok((status, body.to_vec())),
+            Ok((status, body)) => return Ok((status, body)),
             Err(err) if attempt < MAX_ATTEMPTS && is_transient(&err) => {}
             Err(err) => return Err(err).with_context(|| format!("fetching {url}")),
         }
@@ -247,9 +283,10 @@ async fn fetch_loose(
     base_url: &str,
     objects_dir: &Path,
     oid: &str,
+    progress: Option<&TransferProgress>,
 ) -> Result<()> {
     let loose_path = loose_object_path(objects_dir, oid)?;
-    let compressed = fetch_object(client, base_url, oid).await?;
+    let compressed = fetch_object(client, base_url, oid, progress).await?;
     let inflated = inflate(&compressed).with_context(|| format!("inflating object {oid}"))?;
     verify_oid(oid, &inflated)?;
     write_loose_verbatim(&loose_path, &compressed).await
@@ -259,9 +296,13 @@ async fn fetch_loose(
 ///
 /// The file holds `P pack-<hash>.pack` lines. A missing file (404) means the
 /// origin serves no packs (loose-only), returning an empty list.
-async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec<String>> {
+async fn fetch_pack_list(
+    client: &reqwest::Client,
+    base_url: &str,
+    progress: Option<&TransferProgress>,
+) -> Result<Vec<String>> {
     let url = join_cache_url(base_url, "objects/info/packs");
-    let (status, body) = get_with_retry(client, &url).await?;
+    let (status, body) = get_with_retry(client, &url, progress).await?;
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
@@ -290,9 +331,14 @@ async fn fetch_pack_list(client: &reqwest::Client, base_url: &str) -> Result<Vec
 ///
 /// Only the `.pack` is fetched; libgit2's indexer regenerates and verifies the
 /// `.idx`, so a server-supplied index is never trusted.
-async fn fetch_pack(client: &reqwest::Client, base_url: &str, name: &str) -> Result<Vec<u8>> {
+async fn fetch_pack(
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+    progress: Option<&TransferProgress>,
+) -> Result<Vec<u8>> {
     let url = join_cache_url(base_url, &format!("objects/pack/{name}"));
-    let (status, body) = get_with_retry(client, &url).await?;
+    let (status, body) = get_with_retry(client, &url, progress).await?;
     if !status.is_success() {
         bail!("fetching pack {name} failed with {status}");
     }
@@ -316,9 +362,10 @@ fn is_safe_pack_name(name: &str) -> bool {
 async fn fetch_info_refs(
     client: &reqwest::Client,
     base_url: &str,
+    progress: Option<&TransferProgress>,
 ) -> Result<HashMap<String, String>> {
     let url = join_cache_url(base_url, "info/refs");
-    let (status, body) = get_with_retry(client, &url).await?;
+    let (status, body) = get_with_retry(client, &url, progress).await?;
     if !status.is_success() {
         bail!("fetching {url} failed with {status}");
     }
@@ -348,9 +395,10 @@ async fn fetch_head_oid(
     client: &reqwest::Client,
     base_url: &str,
     advertised: &HashMap<String, String>,
+    progress: Option<&TransferProgress>,
 ) -> Result<Option<String>> {
     let url = join_cache_url(base_url, "HEAD");
-    let (status, body) = get_with_retry(client, &url).await?;
+    let (status, body) = get_with_retry(client, &url, progress).await?;
     if !status.is_success() {
         return Ok(None);
     }
@@ -406,14 +454,25 @@ fn resolve_refspec(
 }
 
 /// Download a single loose object (zlib-compressed bytes).
-async fn fetch_object(client: &reqwest::Client, base_url: &str, oid: &str) -> Result<Vec<u8>> {
+async fn fetch_object(
+    client: &reqwest::Client,
+    base_url: &str,
+    oid: &str,
+    progress: Option<&TransferProgress>,
+) -> Result<Vec<u8>> {
     let path = format!("objects/{}/{}", &oid[..2], &oid[2..]);
     let url = join_cache_url(base_url, &path);
-    let (status, body) = get_with_retry(client, &url).await?;
+    let (status, body) = get_with_retry(client, &url, progress).await?;
     if !status.is_success() {
         bail!("fetching object {oid} failed with {status}");
     }
     Ok(body)
+}
+
+fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
+    if let Some(progress) = progress {
+        progress.phase(phase);
+    }
 }
 
 /// Inflate a zlib-compressed loose object into `"<type> <size>\0<body>"`.
@@ -674,7 +733,24 @@ mod tests {
         let Some(origin) = serve_repo(false) else {
             return;
         };
-        fetch_and_assert(&origin).await;
+        let client_dir = origin._tmp.path().join("client-progress.git");
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+        let progress =
+            aos_core::output::Printer::new(0, true, false).transfer("test registry fetch", 0);
+
+        fetch_with_progress(
+            &client_dir,
+            &origin.url,
+            &[MAIN_REFSPEC.to_string()],
+            Some(&progress),
+        )
+        .await
+        .expect("dumb-http fetch should succeed");
+
+        assert!(
+            progress.position() > 0,
+            "fetch should report received bytes"
+        );
     }
 
     /// Authoring clones are normal worktrees, so loose objects must land in
