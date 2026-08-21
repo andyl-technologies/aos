@@ -225,14 +225,26 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   state, and returns results to the supervisor actor for durable completion or
   bounded retry without holding supervisor state during guest execution.
   A coordinator-owned `CampaignExecutorDriver` now pages authenticated
-  claimable attempts into exact bounded reservations, derives a stable
-  assignment per lease, invokes the checked direct/RPC executor boundary
+  claimable attempts into exact bounded reservations, derives one deterministic
+  assignment per lease, then polls its exact execution through the read-only
+  status operation without growing assignment history. It retains the exact
+  submit or status request across commit-indeterminate failure and invokes the
+  checked direct/RPC executor boundary
   without repository mutation ownership, authenticates and incorporates
   completed observations, and rebuilds from semantic roots after restart.
   Retryable executor rejection rotates the assignment identity, authorization
   failure remains operational, and the sole eligible local executor's stable
   incompatibility closes the exact admission ordinal through the imported-
   validated `AttemptClosed` owner transition.
+  A startup-fixed `LocalExecutorWorkerPool` now creates at most 256 workers and
+  never more than the supervisor's advertised execution slots. Its cloneable
+  checked service keeps repository-backed admission, guest execution,
+  candidate preflight, and immutable publication outside the short supervisor
+  actor. Linear phase tokens preserve execute-once semantics across retryable
+  publication/ledger failure; sticky shutdown cancels in-flight work, drains
+  queued work without launching it, and releases capacity only after worker
+  exit. Blocked-guest, blocked-admission, queued-shutdown, retry, and caught-
+  panic regressions exercise the responsive bounded owner.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -311,9 +323,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   Executor restart recovery now uses direct-by-ID, bounded, checksummed,
   single-writer directory records and preserves exact responses, completed
   observations, and cancellation races without loading history. Full campaign-
-  supervisor scheduling, pause-policy cancellation/checkpoint orchestration,
-  and the bounded worker-thread pool around the existing linear worker tokens
-  remain open.
+  supervisor scheduling and pause-policy cancellation/checkpoint orchestration
+  remain open; the fixed worker pool and its linear publication/reconciliation
+  path are implemented.
 - [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy

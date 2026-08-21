@@ -8,6 +8,10 @@
 //!                          attempt | resource-limits | retention-intent
 //! SubmitAttemptResponseV1 = version | assignment | daemon-epoch | attempt |
 //!                           request-digest | disposition
+//! GetAttemptExecutionRequestV1 = version | daemon-epoch | lineage | attempt |
+//!                                execution | execution-basis-digest
+//! GetAttemptExecutionResponseV1 = version | daemon-epoch | attempt | execution |
+//!                                 request-digest | disposition
 //! ```
 //!
 //! Assignment, execution, epoch, resource, and retention fields are local
@@ -777,6 +781,322 @@ impl Canonical for SubmitAttemptResponse {
     }
 }
 
+/// Strict read-only query for one exact local execution incarnation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetAttemptExecutionRequest {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    execution_basis: CampaignHash,
+}
+
+impl GetAttemptExecutionRequest {
+    /// Builds a status query from the exact accepted assignment basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        assignment: &SubmitAttemptRequest,
+        execution: ExecutionId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: assignment.daemon_epoch(),
+            lineage: assignment.lineage(),
+            attempt: assignment.attempt(),
+            execution,
+            execution_basis: assignment.execution_basis_digest(),
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "get-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the daemon incarnation that accepted the execution.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the exact compatibility lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> CampaignLineageId {
+        self.lineage
+    }
+
+    /// Returns the immutable semantic attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution incarnation being queried.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub const fn execution_basis(&self) -> CampaignHash {
+        self.execution_basis
+    }
+
+    /// Returns a domain-separated digest of every canonical request field.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign.get-attempt-execution-request.v1",
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "get-attempt-execution-request-encoded-bytes")
+    }
+}
+
+impl Canonical for GetAttemptExecutionRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.lineage.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.execution_basis.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            lineage: CampaignLineageId::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            execution_basis: CampaignHash::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "get-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+}
+
+/// Read-only state of one exact local execution incarnation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GetAttemptExecutionDisposition {
+    /// The accepted execution or its publication reconciliation remains active.
+    Running,
+    /// The executor durably retained one completed observation.
+    Completed {
+        /// Immutable observation identity ready for coordinator authentication.
+        observation: ObservationId,
+    },
+    /// Durable cancellation won before completion.
+    Canceled,
+    /// No current runtime record matches the complete query basis.
+    NotCurrent,
+}
+
+impl Canonical for GetAttemptExecutionDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Running => encoder.u8(0),
+            Self::Completed { observation } => {
+                encoder.u8(1);
+                observation.encode(encoder);
+            }
+            Self::Canceled => encoder.u8(2),
+            Self::NotCurrent => encoder.u8(3),
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Running),
+            1 => Ok(Self::Completed {
+                observation: ObservationId::decode(decoder)?,
+            }),
+            2 => Ok(Self::Canceled),
+            3 => Ok(Self::NotCurrent),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "get-attempt-execution-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Strict status response bound to one exact execution query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetAttemptExecutionResponse {
+    schema_version: u32,
+    daemon_epoch: DaemonEpoch,
+    attempt: AttemptId,
+    execution: ExecutionId,
+    request_digest: CampaignHash,
+    disposition: GetAttemptExecutionDisposition,
+}
+
+impl GetAttemptExecutionResponse {
+    /// Builds one response that cannot be replayed across another execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        request: &GetAttemptExecutionRequest,
+        disposition: GetAttemptExecutionDisposition,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: request.daemon_epoch(),
+            attempt: request.attempt(),
+            execution: request.execution(),
+            request_digest: request.request_digest(),
+            disposition,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "get-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the daemon incarnation copied from the request.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the semantic attempt copied from the request.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the local execution copied from the request.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the digest of the complete request this response answers.
+    #[must_use]
+    pub const fn request_digest(&self) -> CampaignHash {
+        self.request_digest
+    }
+
+    /// Returns the exact current execution state.
+    #[must_use]
+    pub const fn disposition(&self) -> GetAttemptExecutionDisposition {
+        self.disposition
+    }
+
+    /// Validates that this response answers every field of one exact request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any echoed identity or request digest differs.
+    pub fn validate_for(
+        &self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.daemon_epoch == request.daemon_epoch()
+            && self.attempt == request.attempt()
+            && self.execution == request.execution()
+            && self.request_digest == request.request_digest()
+        {
+            Ok(())
+        } else {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "get attempt execution response does not match request",
+            })
+        }
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "get-attempt-execution-response-encoded-bytes")
+    }
+
+    /// Decodes and binds a response to one exact execution query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ordinary strict-decoding error or a cross-request mismatch.
+    pub fn from_canonical_bytes_for(
+        request: &GetAttemptExecutionRequest,
+        bytes: &[u8],
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self::from_canonical_bytes(bytes)?;
+        response.validate_for(request)?;
+        Ok(response)
+    }
+}
+
+impl Canonical for GetAttemptExecutionResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.attempt.encode(encoder);
+        self.execution.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.disposition.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            execution: ExecutionId::decode(decoder)?,
+            request_digest: CampaignHash::decode(decoder)?,
+            disposition: GetAttemptExecutionDisposition::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "get-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
 /// Implementor-facing transport-neutral executor assignment interface.
 ///
 /// A loopback RPC adapter must strictly decode the same
@@ -801,6 +1121,20 @@ pub trait ExecutorService {
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error>;
+}
+
+/// Read-only status extension implemented by direct and RPC executors.
+pub trait ExecutorStatusService: ExecutorService {
+    /// Returns the current state of one exact execution incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific error when operational state cannot
+    /// be read or a protocol response cannot be constructed.
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error>;
 }
 
 /// Coordinator-facing checked client over one direct or RPC executor service.
@@ -837,6 +1171,28 @@ impl<S: ExecutorService> ExecutorClient<S> {
         let response = self
             .service
             .submit_attempt(request)
+            .map_err(ExecutorClientError::Service)?;
+        response
+            .validate_for(request)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        Ok(response)
+    }
+}
+
+impl<S: ExecutorStatusService> ExecutorClient<S> {
+    /// Reads and validates one exact local execution status response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] for service failure or
+    /// [`ExecutorClientError::InvalidResponse`] for a cross-request response.
+    pub fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, ExecutorClientError<S::Error>> {
+        let response = self
+            .service
+            .get_attempt_execution(request)
             .map_err(ExecutorClientError::Service)?;
         response
             .validate_for(request)
@@ -1056,6 +1412,77 @@ mod tests {
         assert_eq!(
             SubmitAttemptRequest::from_canonical_bytes(&request_bytes[..request_bytes.len() - 1]),
             Err(CampaignCodecError::Truncated)
+        );
+    }
+
+    #[test]
+    fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
+        let assignment = fixture_request();
+        let execution = ExecutionId::from_bytes([0x37; 16]).expect("execution");
+        let request =
+            GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+        let request_bytes = request.canonical_bytes();
+        assert_eq!(
+            GetAttemptExecutionRequest::from_canonical_bytes(&request_bytes)
+                .expect("status request decode"),
+            request
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.get-attempt-execution-request-vector.v1",
+                &request_bytes,
+            )
+            .to_hex(),
+            "1a5423e378161790b224f0ec09c9ab8683c2de01fb98caed319940b564919e64"
+        );
+
+        let observation = ObservationId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Observation,
+            1,
+            b"executor-status-observation",
+        ))
+        .expect("observation");
+        let response = GetAttemptExecutionResponse::new(
+            &request,
+            GetAttemptExecutionDisposition::Completed { observation },
+        )
+        .expect("status response");
+        let response_bytes = response.canonical_bytes();
+        assert_eq!(
+            GetAttemptExecutionResponse::from_canonical_bytes_for(&request, &response_bytes)
+                .expect("status response decode"),
+            response
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.get-attempt-execution-response-vector.v1",
+                &response_bytes,
+            )
+            .to_hex(),
+            "d8160ab0ff7f7c93be260837f7b2fbc66a945e5bc08e62cfe0da28cc5104b542"
+        );
+
+        let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
+        let other = GetAttemptExecutionRequest::new(&assignment, other_execution)
+            .expect("other status request");
+        assert_eq!(
+            GetAttemptExecutionResponse::from_canonical_bytes_for(&other, &response_bytes),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "get attempt execution response does not match request"
+            })
+        );
+
+        let mut unknown_disposition =
+            GetAttemptExecutionResponse::new(&request, GetAttemptExecutionDisposition::Canceled)
+                .expect("canceled status response")
+                .canonical_bytes();
+        *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+        assert_eq!(
+            GetAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
+            Err(CampaignCodecError::UnknownTag {
+                kind: "get-attempt-execution-disposition",
+                tag: 0xff
+            })
         );
     }
 

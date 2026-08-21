@@ -106,6 +106,62 @@ fn exact_replay_running_dedup_and_capacity_are_bounded() {
 }
 
 #[test]
+fn execution_status_is_read_only_and_requires_the_exact_runtime_basis() {
+    let epoch = daemon_epoch(0x24);
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    let request = request(0x15, 0x34, epoch, resources(1, 2048, 4096));
+    let execution = accepted_execution(
+        &supervisor
+            .submit_attempt(&request)
+            .expect("accept assignment"),
+    );
+    let query = GetAttemptExecutionRequest::new(&request, execution).expect("status query");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&query)
+            .expect("running status")
+            .disposition(),
+        GetAttemptExecutionDisposition::Running
+    );
+
+    let foreign = GetAttemptExecutionRequest::new(
+        &request,
+        ExecutionId::from_bytes([0x72; 16]).expect("foreign execution"),
+    )
+    .expect("foreign query");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&foreign)
+            .expect("foreign status")
+            .disposition(),
+        GetAttemptExecutionDisposition::NotCurrent
+    );
+
+    let queued = supervisor.next_queued().expect("queued execution");
+    let completed = observation(0x73);
+    supervisor
+        .stage_observation_publication(&queued, completed)
+        .expect("stage completion");
+    supervisor
+        .complete_execution(execution_key(&request), execution, completed)
+        .expect("complete execution");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&query)
+            .expect("completed status")
+            .disposition(),
+        GetAttemptExecutionDisposition::Completed {
+            observation: completed
+        }
+    );
+}
+
+#[test]
 fn runtime_dedup_is_lineage_scoped_and_requires_an_exact_execution_basis() {
     let epoch = daemon_epoch(0x28);
     let mut supervisor = LocalExecutorSupervisor::new(

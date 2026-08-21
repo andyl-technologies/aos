@@ -14,8 +14,9 @@ use std::sync::{
 
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, DaemonEpoch, ExecutionId, ExecutorRejection,
-    ExecutorService, ObservationId, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse,
+    ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 use crate::{
@@ -371,10 +372,18 @@ enum AttemptAdvance<E> {
     CommittedAfterError(E),
 }
 
+/// Short actor decision made before repository-backed semantic validation.
+pub(crate) enum SubmitPreflight {
+    /// An exact replay, conflict, or stale epoch produced a complete response.
+    Resolved(SubmitAttemptResponse),
+    /// The caller must authenticate semantic input outside actor ownership.
+    NeedsValidation,
+}
+
 /// Sole-writer bounded local executor over one operational ledger.
 pub struct LocalExecutorSupervisor<L, V> {
     ledger: L,
-    validator: V,
+    validator: Arc<V>,
     daemon_epoch: DaemonEpoch,
     capacity: ExecutorCapacity,
     next_execution_ordinal: u64,
@@ -400,7 +409,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     ) -> Self {
         Self {
             ledger,
-            validator,
+            validator: Arc::new(validator),
             daemon_epoch,
             capacity,
             next_execution_ordinal: 0,
@@ -493,6 +502,11 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         self.ledger
     }
 
+    /// Returns shared read-only admission authority for out-of-actor preflight.
+    pub(crate) fn admission_validator(&self) -> Arc<V> {
+        Arc::clone(&self.validator)
+    }
+
     /// Takes the next accepted execution exactly once from the pending queue.
     #[must_use]
     pub fn next_queued(&mut self) -> Option<QueuedAttempt> {
@@ -527,6 +541,17 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             self.queued.push_back(execution);
         }
     }
+
+    /// Signals cancellation to every active worker without releasing capacity.
+    ///
+    /// The bounded worker-pool owner uses this during shutdown. Physical
+    /// reservations remain charged until each worker returns and reconciles its
+    /// exact linear token.
+    pub(crate) fn signal_all_active_cancellation(&self) {
+        for active in self.active.values() {
+            active.cancellation.cancel();
+        }
+    }
 }
 
 impl<L, V> LocalExecutorSupervisor<L, V>
@@ -534,6 +559,77 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    /// Performs replay/conflict and epoch checks before semantic admission.
+    ///
+    /// A caller may release actor ownership while evaluating [`Self::admission_validator`]
+    /// after this method returns [`SubmitPreflight::NeedsValidation`]. The final
+    /// submit method rechecks assignment identity after reacquiring ownership.
+    pub(crate) fn preflight_submit(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitPreflight, LocalExecutorError<L::Error>> {
+        if let Some(response) = self.assignment_response(request)? {
+            return Ok(SubmitPreflight::Resolved(response));
+        }
+        if request.daemon_epoch() != self.daemon_epoch {
+            return self
+                .persist_response(
+                    request,
+                    SubmitAttemptDisposition::Rejected {
+                        reason: ExecutorRejection::Unauthorized,
+                    },
+                )
+                .map(SubmitPreflight::Resolved);
+        }
+        Ok(SubmitPreflight::NeedsValidation)
+    }
+
+    /// Completes assignment admission after out-of-actor semantic validation.
+    pub(crate) fn submit_after_validation(
+        &mut self,
+        request: &SubmitAttemptRequest,
+        validation: Result<(), ExecutorRejection>,
+    ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
+        if let Some(response) = self.assignment_response(request)? {
+            return Ok(response);
+        }
+        if request.daemon_epoch() != self.daemon_epoch {
+            return self.persist_response(
+                request,
+                SubmitAttemptDisposition::Rejected {
+                    reason: ExecutorRejection::Unauthorized,
+                },
+            );
+        }
+        if let Err(reason) = validation {
+            return self.persist_response(request, SubmitAttemptDisposition::Rejected { reason });
+        }
+        self.submit_admitted(request)
+    }
+
+    /// Reconciles a caught worker panic after its linear token was unwound.
+    ///
+    /// Only the fixed worker owner calls this with the execution identity and
+    /// attempt key captured before dispatch. The method marks physical worker
+    /// ownership finished before durable cancellation so capacity cannot remain
+    /// charged to an execution whose thread has already stopped.
+    pub(crate) fn reconcile_panicked_worker(
+        &mut self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<CancellationOutcome, LocalExecutorError<L::Error>> {
+        if let Some(active) = self.active.get_mut(&execution) {
+            if AttemptExecutionKey::new(active.request.lineage(), active.request.attempt()) != key {
+                return Err(LocalExecutorError::LedgerInvariant {
+                    reason: "panicked worker execution basis does not match active reservation",
+                });
+            }
+            active.cancellation.cancel();
+            active.worker_in_flight = false;
+        }
+        self.cancel_execution(key, execution)
+    }
+
     /// Durably reserves the exact observation as an in-progress publication root.
     ///
     /// The operational ledger entry is established before immutable candidate
@@ -1010,33 +1106,41 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
-        if let Some(record) = self
+        match self.preflight_submit(request)? {
+            SubmitPreflight::Resolved(response) => return Ok(response),
+            SubmitPreflight::NeedsValidation => {}
+        }
+        let validation = self.validator.validate(request);
+        self.submit_after_validation(request, validation)
+    }
+
+    fn assignment_response(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<Option<SubmitAttemptResponse>, LocalExecutorError<L::Error>> {
+        let Some(record) = self
             .ledger
             .load_assignment(request.assignment())
             .map_err(LocalExecutorError::Ledger)?
-        {
-            if record.request() == request {
-                return Ok(record.response().clone());
-            }
-            return self.response(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::ConflictingAssignment,
-                },
-            );
+        else {
+            return Ok(None);
+        };
+        if record.request() == request {
+            return Ok(Some(record.response().clone()));
         }
+        self.response(
+            request,
+            SubmitAttemptDisposition::Rejected {
+                reason: ExecutorRejection::ConflictingAssignment,
+            },
+        )
+        .map(Some)
+    }
 
-        if request.daemon_epoch() != self.daemon_epoch {
-            return self.persist_response(
-                request,
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Unauthorized,
-                },
-            );
-        }
-        if let Err(reason) = self.validator.validate(request) {
-            return self.persist_response(request, SubmitAttemptDisposition::Rejected { reason });
-        }
+    fn submit_admitted(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
         if !self.capacity.supports(request.resources()) {
             return self.persist_response(
                 request,
@@ -1493,6 +1597,45 @@ where
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
         self.submit(request)
+    }
+}
+
+impl<L, V> ExecutorStatusService for LocalExecutorSupervisor<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        let disposition = match state {
+            Some(state)
+                if state.daemon_epoch() == request.daemon_epoch()
+                    && state.execution() == request.execution()
+                    && state.execution_basis() == request.execution_basis() =>
+            {
+                match state {
+                    AttemptRuntimeState::Running { .. }
+                    | AttemptRuntimeState::Publishing { .. } => {
+                        GetAttemptExecutionDisposition::Running
+                    }
+                    AttemptRuntimeState::Completed { observation, .. } => {
+                        GetAttemptExecutionDisposition::Completed { observation }
+                    }
+                    AttemptRuntimeState::Canceled { .. } => {
+                        GetAttemptExecutionDisposition::Canceled
+                    }
+                }
+            }
+            Some(_) | None => GetAttemptExecutionDisposition::NotCurrent,
+        };
+        GetAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
     }
 }
 

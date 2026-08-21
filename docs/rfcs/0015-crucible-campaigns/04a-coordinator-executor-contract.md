@@ -983,6 +983,12 @@ resource_limits = maximum_vcpus | maximum_resident_bytes |
 
 SubmitAttemptResponseV1 = version | assignment_id | daemon_epoch | attempt_id |
                           request_digest | disposition
+
+GetAttemptExecutionRequestV1 = version | daemon_epoch | lineage_id | attempt_id |
+                               execution_id | execution_basis_digest
+
+GetAttemptExecutionResponseV1 = version | daemon_epoch | attempt_id | execution_id |
+                                request_digest | disposition
 ```
 
 The canonical `AttemptId` names the immutable `Attempt` record and is itself
@@ -1015,6 +1021,18 @@ uses a fresh assignment ID. Incompatible, unauthorized, and conflicting
 assignments require changed compatibility, authority, or caller state rather
 than a blind retry.
 
+`GetAttemptExecution` is the read-only completion-poll operation. Its request
+digest is
+`H("crucible.campaign.get-attempt-execution-request.v1", canonical_request)`;
+the response repeats the exact epoch, attempt, and execution and is rejected if
+any echo or the digest differs. Its closed disposition vocabulary is
+`running | completed(observation ID) | canceled | not-current`. The executor
+returns `running` for exact durable `running` or `publishing` state,
+`completed` only for exact durable completion, and `canceled` only for exact
+durable cancellation. Absence or any epoch, lineage, attempt, execution, or
+execution-basis mismatch is `not-current`. This operation reads the direct
+lineage-qualified attempt-state record and MUST NOT create an assignment record.
+
 The implementor-facing Rust `ExecutorService` trait implements this same vocabulary.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
@@ -1037,11 +1055,14 @@ remains the next implementation checkpoint.
 The bounded loopback binding is:
 
 ```text
-ExecutorLoopbackFrameV1 = magic[8] | kind:u8 | reserved[3] |
+ExecutorLoopbackFrameV2 = magic[8] | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 
-kind = submit-attempt-request(1) | submit-attempt-response(2)
-magic = "CRUCEX01"
+kind = submit-attempt-request(1) | submit-attempt-response(2) |
+       describe-executor-request(3) | executor-description(4) |
+       watch-capacity-request(5) | capacity-report(6) |
+       get-attempt-execution-request(7) | get-attempt-execution-response(8)
+magic = "CRUCEX02"
 ```
 
 The body limit is 4 KiB and is checked before allocation. Reserved bytes must
@@ -1197,6 +1218,9 @@ the configured `AttemptQueue` reservation count, scans at most 10,000
 accounting entries per step, and performs no component call while holding the
 repository mutation owner. A completed response is independently authenticated
 against the exact request and then admitted by the snapshot owner. Retryable
+running-status polls use the exact read-only `GetAttemptExecution` basis and
+therefore do not grow the immutable assignment ledger; transport and
+response-validation failures retain that query. Retryable
 `backpressure` and `unavailable-input` responses release the current lease and
 retry under a fresh assignment ID, as required by the immutable response
 ledger. `unauthorized` is a local configuration/authority stop and creates no
@@ -1214,6 +1238,20 @@ same reservation once; retryable result-storage failure retains and republishes
 the already-produced candidate without rerunning the guest. Stable failure is
 explicitly canceled or quarantined. Pending locators remain bounded by admitted
 capacity.
+
+The single-host daemon composes that phase protocol with a startup-fixed
+`LocalExecutorWorkerPool`. It creates at most 256 workers and never more than
+the advertised execution-slot ceiling. Submit first performs exact ledger
+replay/epoch preflight under the actor, releases it for repository-backed
+semantic admission, and rechecks assignment identity before final admission.
+Thus closure authentication cannot block concurrent capacity or cancellation
+operations. A worker owns one non-cloneable queued token; retryable execution
+failure requeues it, while retryable preflight/publication/completion failure
+retains the later phase token and cannot invoke the model again. Shutdown is
+sticky, cancels in-flight work, drains queued tokens without launching them,
+and retains charged capacity until each physical worker acknowledges exit.
+Caught component panic poisons the incarnation and fail-closes new submissions
+while the exact active execution is durably canceled.
 
 Cancellation races are explicit. A canonical completion produced before the
 executor accepted cancellation remains eligible for ordinary validation. A

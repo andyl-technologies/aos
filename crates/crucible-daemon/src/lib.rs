@@ -20,7 +20,9 @@
 //! idempotent scheduling, completion, and cancellation;
 //! [`repository_admission`] is its read-only production semantic boundary.
 //! [`executor_worker`] resolves accepted assignments, delegates execution, and
-//! publishes immutable observation candidates; [`crucible_artifact`] strictly
+//! publishes immutable observation candidates; [`executor_pool`] owns the
+//! fixed worker threads and their short supervisor reconciliation phases;
+//! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
@@ -45,6 +47,7 @@ pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
 pub mod executor_capability;
 pub mod executor_loopback;
+pub mod executor_pool;
 pub mod executor_supervisor;
 pub mod executor_worker;
 pub mod planner_loopback;
@@ -107,6 +110,11 @@ pub use executor_loopback::{
     LoopbackExecutorTimeouts, serve_loopback_executor_component_once, serve_loopback_executor_once,
     serve_loopback_executor_once_with_timeouts,
 };
+pub use executor_pool::{
+    LocalExecutorPoolConfigError, LocalExecutorPoolReport, LocalExecutorPoolService,
+    LocalExecutorPoolServiceError, LocalExecutorPoolShutdownError, LocalExecutorWorkerPool,
+    MAX_LOCAL_EXECUTOR_WORKERS,
+};
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome, CompletionOutcome,
     CompletionValidationFailure, ExecutionCancellation, ExecutorAvailability, ExecutorCapacity,
@@ -118,9 +126,10 @@ pub use executor_worker::{
     AttemptResultPreparationError, AttemptResultPublicationError, AttemptResultStageOutcome,
     AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
     AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, LocalAttemptWorker,
-    PendingAttemptResult, PreparedAttemptResult, PublishedAttemptResult, RepositoryAttemptWorker,
-    RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
-    abort_prepared_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    PendingAttemptResult, PreparedAttemptResult, PublishedAttemptResult,
+    PublishedAttemptResultAbortError, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
+    ResolvedAttemptStart, StagedAttemptResult, abort_prepared_attempt_result,
+    abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, reconcile_attempt_failure, reconcile_published_attempt_result,
     retry_pending_attempt_result, stage_prepared_attempt_result,
 };

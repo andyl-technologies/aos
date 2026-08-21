@@ -195,6 +195,16 @@ impl<E> AttemptWorkResult<E> {
     ) -> Self {
         Self { queued, result }
     }
+
+    /// Consumes the worker return into its linear token and classified result.
+    pub fn into_parts(
+        self,
+    ) -> (
+        QueuedAttempt,
+        Result<ObservationCandidate, AttemptWorkerFailure<E>>,
+    ) {
+        (self.queued, self.result)
+    }
 }
 
 /// Failure while resolving, executing, or publishing one local attempt.
@@ -454,6 +464,22 @@ pub struct StagedAttemptResult {
     prepared: PreparedAttemptResult,
 }
 
+impl StagedAttemptResult {
+    /// Returns the exact execution token owned by this publication phase.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        self.prepared.queued()
+    }
+}
+
+impl PublishedAttemptResult {
+    /// Returns the exact execution token owned by this completion phase.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        &self.queued
+    }
+}
+
 /// Actor result of consuming one prepared candidate.
 #[derive(Debug)]
 pub enum AttemptResultStageOutcome {
@@ -564,6 +590,16 @@ pub struct AttemptResultStagingError<L> {
 pub struct AttemptResultAbortError<L> {
     /// Staged candidate retained for an exact cancellation retry.
     pub staged: Box<StagedAttemptResult>,
+    /// Supervisor or operational-ledger failure.
+    pub source: L,
+}
+
+/// Stable completion-abort failure retaining the published candidate token.
+#[derive(Debug, thiserror::Error)]
+#[error("local attempt completion abort failed")]
+pub struct PublishedAttemptResultAbortError<L> {
+    /// Published candidate retained for an exact cancellation retry.
+    pub published: Box<PublishedAttemptResult>,
     /// Supervisor or operational-ledger failure.
     pub source: L,
 }
@@ -801,6 +837,33 @@ where
     match supervisor.stage_and_reconcile_cancellation(staged.prepared.queued()) {
         Ok(outcome) => Ok(outcome),
         Err(source) => Err(AttemptResultAbortError { staged, source }),
+    }
+}
+
+/// Aborts a published result after stable completion reconciliation failure.
+///
+/// The immutable candidate remains content-addressed and may be collected when
+/// its canceled publication root is no longer retained. This operation changes
+/// only operational execution state and never fabricates campaign meaning.
+///
+/// # Errors
+///
+/// Returns [`PublishedAttemptResultAbortError`] with the linear published token
+/// when durable cancellation cannot yet be reconciled.
+pub fn abort_published_attempt_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    published: PublishedAttemptResult,
+) -> Result<CancellationOutcome, PublishedAttemptResultAbortError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    match supervisor.stage_and_reconcile_cancellation(&published.queued) {
+        Ok(outcome) => Ok(outcome),
+        Err(source) => Err(PublishedAttemptResultAbortError {
+            published: Box::new(published),
+            source,
+        }),
     }
 }
 
