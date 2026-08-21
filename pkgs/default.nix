@@ -708,10 +708,48 @@
   in
     filePackages // subdirPackages;
 
+  discoveredPackages = discoverPackages ./.;
+  # Discovered factory modules are callable package constructors, not
+  # derivations. Keep them in `pkgs` for their consumers, but never advertise
+  # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
+  # This explicit structural inventory preserves lazy package enumeration:
+  # probing every value with tryEval would execute unrelated IFDs.
+  packageFactories = [
+    "aos-uki"
+    "dbus-conf"
+  ];
+  packageNames = builtins.attrNames (
+    builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
+    // {
+      nuke-references = null;
+      qemu-crucible = null;
+      qemu-crucible-reference = null;
+      crucible-controller = null;
+      git-minimal = null;
+      gcc = null;
+      glibc = null;
+      binutils = null;
+      cc = null;
+      gccUnwrapped = null;
+      getent = null;
+      bash = null;
+      coreutils = null;
+      gnumake = null;
+      sed = null;
+      grep = null;
+      findutils = null;
+      gawk = null;
+      diffutils = null;
+      tar = null;
+      gzip = null;
+      patch = null;
+    }
+  );
+
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl lib;
+      inherit mkDerivation fetchurl lib packageNames;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
@@ -728,7 +766,7 @@
         inherit (self) bash gawk sed;
       };
     }
-    // discoverPackages ./.
+    // discoveredPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
