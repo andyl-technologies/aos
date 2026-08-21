@@ -1,32 +1,44 @@
 //! In-memory immutable-blob and mutable-ref store leaves.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
+use super::admin::{InventoryCounter, persistent_inventory_generation};
 use super::*;
+
+static MEMORY_INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Bounded process-local logical-object store used by tests and hot caches.
 #[derive(Debug)]
 pub struct MemoryBlobBackend {
     name: String,
     max_logical_bytes: u64,
+    inventory_instance: [u8; 32],
     state: Mutex<MemoryBlobState>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MemoryBlobState {
     objects: BTreeMap<ContentId, Arc<[u8]>>,
     logical_bytes: u64,
+    generation: u64,
 }
 
 impl MemoryBlobBackend {
     /// Creates an empty non-durable memory backend with a hard logical-byte cap.
     #[must_use]
     pub fn new(name: impl Into<String>, max_logical_bytes: u64) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            inventory_instance: new_memory_inventory_instance(&name),
+            name,
             max_logical_bytes,
-            state: Mutex::new(MemoryBlobState::default()),
+            state: Mutex::new(MemoryBlobState {
+                objects: BTreeMap::new(),
+                logical_bytes: 0,
+                generation: 1,
+            }),
         }
     }
 
@@ -120,6 +132,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             if next_logical_bytes > self.max_logical_bytes {
                 return Err(StoreError::Quota);
             }
+            state.generation = state.generation.checked_add(1).ok_or(StoreError::Quota)?;
             state.objects.insert(id, Arc::from(bytes));
             state.logical_bytes = next_logical_bytes;
         }
@@ -132,6 +145,77 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             },
         ))
     }
+}
+
+impl BlobStoreAdmin for MemoryBlobBackend {
+    fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Poisoned {
+            operation: "memory-inventory-fence",
+        })?;
+        Ok(Box::new(MemoryBlobInventoryFence {
+            backend: &self.name,
+            instance: self.inventory_instance,
+            state,
+        }))
+    }
+}
+
+struct MemoryBlobInventoryFence<'a> {
+    backend: &'a str,
+    instance: [u8; 32],
+    state: MutexGuard<'a, MemoryBlobState>,
+}
+
+impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
+    fn visit_inventory(
+        &mut self,
+        visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<BlobInventorySummary, StoreError> {
+        let generation =
+            persistent_inventory_generation(self.backend, self.instance, self.state.generation)?;
+        let mut inventory = InventoryCounter::new(generation);
+        for (id, bytes) in &self.state.objects {
+            let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
+            let record = BlobInventoryRecord::new(*id, logical_length);
+            inventory.push(record)?;
+            visitor(record)?;
+        }
+        Ok(inventory.finish(self.backend.to_owned()))
+    }
+
+    fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        if !self.state.objects.contains_key(&id) {
+            return Ok(PlannedDeleteDisposition::AlreadyAbsent);
+        }
+        let next_generation = self
+            .state
+            .generation
+            .checked_add(1)
+            .ok_or(StoreError::Quota)?;
+        let bytes = self.state.objects.remove(&id).ok_or(StoreError::Poisoned {
+            operation: "memory-delete-candidate",
+        })?;
+        let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
+        self.state.logical_bytes =
+            self.state
+                .logical_bytes
+                .checked_sub(logical_length)
+                .ok_or(StoreError::Poisoned {
+                    operation: "memory-delete-accounting",
+                })?;
+        self.state.generation = next_generation;
+        Ok(PlannedDeleteDisposition::Deleted)
+    }
+}
+
+fn new_memory_inventory_instance(name: &str) -> [u8; 32] {
+    let ordinal = MEMORY_INVENTORY_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.content-store.memory-inventory-instance.v1");
+    hasher.update(name.as_bytes());
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&ordinal.to_le_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 /// Process-local authoritative ref backend used by model tests.

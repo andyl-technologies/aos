@@ -130,6 +130,23 @@ pub trait StoreAdmin: Send + Sync {
 }
 ```
 
+`StoreAdmin` above is the complete maintenance target, not authority granted to
+a campaign repository. The current loose-leaf checkpoint implements its
+physical foundation as a separate `BlobStoreAdmin` capability on the memory and
+directory blob leaves. An acquired `BlobInventoryFence` excludes cooperating
+puts, streams exact `(ContentId, logical_length)` placements with checked
+terminal counts, returns a backend-instance-bound `InventoryGeneration`, and
+permits only exact caller-selected candidate deletion. A visitor can fail early
+when its own work bound is exhausted. Prefix output is tentative until terminal
+enumeration succeeds, and the visitor cannot reenter the exclusively fenced
+backend.
+
+This primitive does not compute reachability or confer deletion authority on
+`ImmutableBlobBackend`. It is not yet the complete `plan_gc`/`apply_gc`
+contract: store-graph inventory composition, ref and assignment-ledger root
+fences, canonical root-set and graph generations, and an interruption-safe
+application journal remain mandatory before destructive campaign GC is wired.
+
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
 promotion reread a source without retaining a RAM-sized extent. Every leaf
@@ -232,6 +249,31 @@ flushes its containing directory before returning a durable receipt; this
 matters when a prior attempt installed the name but failed its directory flush.
 An error after a ref replacement may be an indeterminate commit, so the sole
 coordinator re-reads the authoritative ref before deciding whether to retry.
+
+The directory blob leaf serializes every cooperating put and administrative
+deletion through `<root>/.inventory-admin/lock`. Its registered
+`crucible.content-store.directory-inventory-state` schema v1 is canonical UTF-8
+text:
+
+```text
+version=1
+instance=<64 lowercase hexadecimal digits>
+generation=<canonical unsigned decimal u64>
+checksum=<64 lowercase hexadecimal digits>
+```
+
+`checksum` is BLAKE3 over the exact first three newline-terminated lines,
+prefixed by the ASCII domain
+`crucible.content-store.directory-inventory-state.v1`. `instance` is generated
+once when the state is first durably created. A reader retains at most 257
+bytes and rejects the record when it exceeds the 256-byte schema limit.
+`generation` advances durably before every attempted cooperating physical
+mutation; conservative advancement without a resulting object change is valid,
+but a physical change under an old generation is not. The persistent state
+makes delete-and-reinsert ABA distinct across restart. The configured directory
+root is operator-owned: an
+uncooperating writer that bypasses this lock invalidates the backend admission
+contract and MUST be excluded before administrative deletion is enabled.
 
 Directory read handles pin an already-opened inode rather than reopening its
 path. Unlink or atomic path replacement therefore cannot retarget an in-flight
@@ -529,6 +571,16 @@ object cannot be deleted. Repacking first writes and verifies replacement packs
 and indexes, atomically switches the index generation, waits for existing
 readers, then permits delayed deletion of old packs. Removing an exact
 materialization never removes the semantic configuration or thin replay path.
+
+The implemented memory and directory loose leaves now provide the exclusive
+physical inventory generation and idempotent exact-candidate deletion primitive
+needed by that apply step. The directory generation survives restart and is
+advanced before puts and deletes; the memory generation is process-local and
+monotonic for that ephemeral backend instance. These primitives remain held by
+the daemon maintenance owner. No campaign repository, planner, executor, or
+ordinary store-graph handle receives them, and no deletion is safe until the
+full plan and every root/ref/ledger fence above have been implemented and
+revalidated.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing
