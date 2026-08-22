@@ -157,7 +157,7 @@ index 13569f0ce..cc779123a 100644
   * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
   * @manifest: optional plugin-owned output bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index cedcf92e4..c68d46a9d 100644
+index cecbf9cc4..4d1142f87 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -489,6 +489,11 @@ void qemu_plugin_crucible_exact_boundary_leave(void)

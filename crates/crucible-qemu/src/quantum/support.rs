@@ -288,6 +288,32 @@ pub enum QemuQuantumError {
         /// The shared state validation failure.
         source: FrameDeliveryStateError,
     },
+    /// An inbound frame's delivery state disagrees with its attempt provenance.
+    #[error(
+        "QEMU quantum inbound frame {frame:?} has invalid {state:?} delivery provenance: attempts={attempts}, last_attempt_icount={last_attempt_icount}"
+    )]
+    InboundFrameDeliveryAttempts {
+        /// The affected deterministic delivery key.
+        frame: FrameDeliveryKey,
+        /// Canonical delivery state observed in shared memory.
+        state: FrameDeliveryState,
+        /// Concrete delivery attempts recorded for the frame.
+        attempts: u32,
+        /// Coordinate of the most recent concrete delivery attempt.
+        last_attempt_icount: u64,
+    },
+    /// A retained frame's canonical next-retry coordinate overflowed.
+    #[error(
+        "QEMU quantum inbound frame {frame:?} retry coordinate overflowed: last_attempt_icount={last_attempt_icount}, retry_interval_icount={retry_interval_icount}"
+    )]
+    InboundFrameRetryCoordinateOverflow {
+        /// The affected deterministic delivery key.
+        frame: FrameDeliveryKey,
+        /// Coordinate of the most recent concrete delivery attempt.
+        last_attempt_icount: u64,
+        /// Fixed retry interval added to the prior attempt.
+        retry_interval_icount: u64,
+    },
     /// The node-slot handoff rejected a state transition.
     #[error("QEMU quantum node-slot operation {operation} failed: {source}")]
     NodeSlot {

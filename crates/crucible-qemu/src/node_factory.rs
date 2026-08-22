@@ -131,6 +131,12 @@ pub enum QemuNodeFactoryError {
         /// Underlying VMState restore channel error.
         source: QemuNodeChannelError,
     },
+    /// QMP could not release the consumed restore anchor from the working image.
+    #[error("QEMU VMState restore anchor release failed after load")]
+    VmStateRestoreAnchorRelease {
+        /// Underlying VMState snapshot-delete channel error.
+        source: QemuNodeChannelError,
+    },
     /// The host-I/O half did not match before QMP was allowed to change state.
     #[error("QEMU host-I/O checkpoint prevalidation failed")]
     HostIoCheckpointValidation {
@@ -965,6 +971,14 @@ where
             .map_err(|source| QemuNodeFactoryError::VmStateRestoreCeiling { source })?;
         qmp.restore_checkpoint_vmstate_authorized(checkpoint)
             .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+        // The durable checkpoint closure retains the authoritative VMState
+        // image. This child owns a materialized working copy. Once load has
+        // completed, remove the consumed internal snapshot from that copy so a
+        // deterministic replay may capture the same checkpoint identity again.
+        // Keeping the anchor would make a correct replay fail with QEMU's
+        // "snapshot already exists" error even though the live state matches.
+        qmp.delete_checkpoint_vmstate(checkpoint)
+            .map_err(|source| QemuNodeFactoryError::VmStateRestoreAnchorRelease { source })?;
         host_io_runtime
             .restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
             .map_err(|source| QemuNodeFactoryError::HostIoCheckpointRestore { source })

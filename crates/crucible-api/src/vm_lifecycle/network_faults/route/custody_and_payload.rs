@@ -1640,7 +1640,7 @@ pub(in super::super) fn network_effect_draw(
     let mut material = Vec::new();
     material.extend_from_slice(&scenario_seed.bytes);
     material.extend_from_slice(&opportunity.id().bytes);
-    material.extend_from_slice(&action.id().bytes);
+    material.extend_from_slice(&action.committed_state_id().bytes);
     material.extend_from_slice(axis.as_bytes());
     material.extend_from_slice(&ordinal.to_be_bytes());
     let digest = ContentHash::from_bytes(&material);

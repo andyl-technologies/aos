@@ -53,6 +53,7 @@ in
         pkgs.binutils
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.sed
         pkgs.jq
         pkgs.pkg-config

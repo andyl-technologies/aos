@@ -127,6 +127,7 @@ static uint64_t current_icount;
 static uint64_t last_guest_observed_icount;
 static uint8_t last_payload[MAX_FRAME_LEN];
 static size_t last_payload_len;
+static bool guest_has_rx_buffer;
 
 static void
 reset_fixture(void)
@@ -178,6 +179,7 @@ reset_fixture(void)
   current_icount = 0;
   last_guest_observed_icount = 0;
   last_payload_len = 0;
+  guest_has_rx_buffer = true;
   memset(last_payload, 0, sizeof(last_payload));
 }
 
@@ -200,11 +202,18 @@ deliver_to_guest(const uint8_t *buf, int size)
 ssize_t
 qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size)
 {
+  ssize_t delivered;
+
   direct_receive_calls++;
   if (!qemu_can_receive_packet(nc)) {
     return 0;
   }
-  return deliver_to_guest(buf, size);
+  delivered = guest_has_rx_buffer ? deliver_to_guest(buf, size) : 0;
+  if (delivered == 0) {
+    /* Match qemu_deliver_packet_iov(), including its persistent latch. */
+    nc->receive_disabled = 1;
+  }
+  return delivered;
 }
 
 bool
@@ -309,24 +318,27 @@ main(void)
   }
 
   reset_fixture();
-  nic_queue.can_receive = false;
+  guest_has_rx_buffer = false;
   current_icount = 88;
   if (qemu_plugin_net_inject(frame, sizeof(frame)) != 1 ||
       delivered_frame_count != 0 || queued_frame_count != 0 ||
-      direct_receive_calls != 1) {
+      direct_receive_calls != 1 || !nic_queue.receive_disabled) {
     fprintf(stderr,
-            "direct injection should retain caller ownership when not ready: delivered=%u queued=%zu direct=%u\n",
-            delivered_frame_count, queued_frame_count, direct_receive_calls);
+            "direct injection should retain caller ownership and expose QEMU's latch when not ready: delivered=%u queued=%zu direct=%u disabled=%u\n",
+            delivered_frame_count, queued_frame_count, direct_receive_calls,
+            nic_queue.receive_disabled);
     return 1;
   }
-  nic_queue.can_receive = true;
+  guest_has_rx_buffer = true;
   current_icount = 89;
   if (qemu_plugin_net_inject(frame, sizeof(frame)) != 0 || queued_frame_count != 0 ||
-      delivered_frame_count != 1 || last_guest_observed_icount != 89) {
+      delivered_frame_count != 1 || last_guest_observed_icount != 89 ||
+      nic_queue.receive_disabled) {
     fprintf(stderr,
-            "caller-retained frame did not deliver after receiver recovered: queued=%zu delivered=%u observed=%llu\n",
+            "caller-retained frame did not clear the stale QEMU latch after receiver recovered: queued=%zu delivered=%u observed=%llu disabled=%u\n",
             queued_frame_count, delivered_frame_count,
-            (unsigned long long)last_guest_observed_icount);
+            (unsigned long long)last_guest_observed_icount,
+            nic_queue.receive_disabled);
     return 1;
   }
 
@@ -375,6 +387,7 @@ main(void)
   puts("direct_inject_delivers_when_ready=true");
   puts("direct_inject_retains_caller_ownership_when_not_ready=true");
   puts("canonical_retry_delivers_after_receiver_recovers=true");
+  puts("canonical_retry_clears_qemu_receive_disabled_latch=true");
   puts("qemu_private_rx_queue_used=false");
   puts("skewed_producer_observed_icount_identical=true");
   puts("guest_observed_icount=4096");

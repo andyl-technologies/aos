@@ -64,6 +64,7 @@ fn recorded_effects_execute_in_every_network_replay_mode() {
         let trace = recorder
             .recorded_trace(mode)
             .unwrap_or_else(|error| panic!("recorded trace: {error}"));
+        let expected_work_items = trace.work_items.clone();
         let mut replay = FaultExecutionRuntime::new(
             &plan,
             &NoArtifacts,
@@ -82,6 +83,13 @@ fn recorded_effects_execute_in_every_network_replay_mode() {
         replay
             .verify_replay_exhausted()
             .unwrap_or_else(|error| panic!("replay exhaustion: {error}"));
+        assert_eq!(
+            replay
+                .recorded_trace(mode)
+                .unwrap_or_else(|error| panic!("replay recording: {error}"))
+                .work_items,
+            expected_work_items,
+        );
         replay
             .checkpoint()
             .unwrap_or_else(|error| panic!("replay checkpoint: {error}"));

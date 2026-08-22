@@ -40,7 +40,7 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_from_checkpoint,
 };
 
-const EVENT_NANOS: u64 = 48_000_000_000;
+const EVENT_NANOS: u64 = 8_000_000_000;
 const DEVICE_BYTES: u64 = 1_048_576;
 
 fn id(value: &str) -> Result<FaultObjectId, Box<dyn Error>> {
@@ -498,6 +498,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             .iter()
             .map(|queue| queue.reservations)
             .sum::<usize>();
+        let queue_finish = evidence
+            .network_queues
+            .iter()
+            .filter_map(|queue| queue.last_finish_nanos)
+            .max();
         let volatile = evidence
             .block_devices
             .iter()
@@ -505,11 +510,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             .sum::<usize>();
         last_precondition = Some((evidence.frontier.ticks, queued, volatile));
         eprintln!(
-            "shared-cause phase=precondition quantum={quantum} frontier={} queue={queued} volatile={volatile}",
+            "shared-cause phase=precondition quantum={quantum} frontier={} queue={queued} queue_finish={queue_finish:?} volatile={volatile}",
             evidence.frontier.ticks,
         );
         if evidence.frontier.ticks < EVENT_NANOS
             && queued > 0
+            && queue_finish.is_some_and(|finish| finish > EVENT_NANOS)
             && volatile > 0
             && lifecycle.exact_checkpoint_ready()?
         {
@@ -605,6 +611,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("gate=gate:signal-shared-cause");
     println!("backend=production-qemu-lifecycle");
     println!("pre_event_queue_and_volatile_cache=true");
+    println!("pre_event_queue_finish_after_event=true");
     println!("network_storage_node_same_event=true");
     println!("exact_checkpoint_evidence_match=true");
     println!("locked_effect_replay_evidence_match=true");

@@ -1,5 +1,5 @@
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index c68d46a9d..908431f81 100644
+index 4d1142f87..81299fdf6 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -235,7 +235,9 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)

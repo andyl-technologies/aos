@@ -32,6 +32,9 @@ where
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
+    runtime
+        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
+        .map_err(QemuAsyncDriverError::Runtime)?;
     let wait_timeout = policy.timeout_for(QemuAsyncWait::AdvanceCompletion);
     let mut first_wait = true;
     let completion = loop {
@@ -69,6 +72,7 @@ where
             .shutdown_after_crash()
             .map_err(QemuAsyncDriverError::Target)?;
         return Ok(QemuAsyncNodeStepReport {
+            ceiling: None,
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
             final_state: None,
             inbound_frames_consumed: 0,
@@ -87,6 +91,7 @@ where
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
     Ok(QemuAsyncNodeStepReport {
+        ceiling: Some(completion.ceiling),
         outcome: QemuAsyncNodeStepOutcome::Completed {
             advance: completion.outcome,
         },

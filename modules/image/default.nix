@@ -29,17 +29,28 @@
   logicalDiskContractMiB =
     2
     + cfg.budgets.maxEspMiB
-    + 2 * cfg.budgets.maxRootMiB
+    + 2 * cfg.rootPartitionMiB
     + verityStorageMiB;
   buildImage = import ./_builder.nix;
+  runtimeRoots =
+    [config.system.build.toplevel config.system.build.kernel]
+    ++ cfg.hostConfigClosures;
+  runtimeClosureAudit = import ../../lib/build/runtime-closure-audit.nix {
+    inherit pkgs lib;
+    roots = runtimeRoots;
+    name = config.aos.system.name;
+    maxClosureMiB = cfg.budgets.maxRuntimeClosureMiB;
+    maxDevelopmentPayloadMiB = cfg.budgets.maxDevelopmentPayloadMiB;
+    allowTestArtifacts = cfg.allowTestArtifacts;
+  };
 
   rawImage = buildImage {
-    inherit pkgs lib;
+    inherit pkgs lib runtimeClosureAudit;
     system = {inherit config;};
     name = config.aos.system.name;
   };
   imageBudgetCheck = import ./_budget-check.nix {
-    inherit config lib pkgs;
+    inherit config lib pkgs runtimeClosureAudit;
     image = rawImage;
     name = config.aos.system.name;
     rootfs = rawImage.rootfs;
@@ -206,6 +217,12 @@ in {
       '';
     };
 
+    rootPartitionMiB = positiveMiB 1024 ''
+      Fixed capacity in MiB of each immutable A/B root partition. This is
+      independent of budgets.maxRootMiB so devices retain update headroom
+      without weakening the root artifact growth gate.
+    '';
+
     hostConfigClosures = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -217,13 +234,24 @@ in {
       '';
     };
 
+    allowTestArtifacts = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      internal = true;
+      description = ''
+        Whether this explicitly test-only image may retain guest agents and
+        development Secure Boot keys in its runtime closure.
+      '';
+    };
+
     budgets = {
-      maxRootMiB = positiveMiB 512 "Maximum immutable root payload size and capacity of each A/B root partition.";
+      maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
       maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
       maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
       maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
     };
   };
@@ -295,6 +323,10 @@ in {
         message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
       }
       {
+        assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;
+        message = "aos.image.rootPartitionMiB must be at least aos.image.budgets.maxRootMiB";
+      }
+      {
         assertion = cfg.espExtraFreeMiB >= 0;
         message = "aos.image.espExtraFreeMiB must not be negative";
       }
@@ -310,6 +342,7 @@ in {
       vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
     };
     system.build.checks.image-budget = imageBudgetCheck;
+    system.build.checks.runtime-closure = runtimeClosureAudit;
     system.build.uki = rawImage.uki;
     system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
     system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;

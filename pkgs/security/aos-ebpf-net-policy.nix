@@ -15,6 +15,8 @@
   targetArch =
     targetArchBySystem.${stdenv.system}
     or (throw "aos-ebpf-net-policy: unsupported system '${stdenv.system}'");
+  bpfSource = ./aos-ebpf-net-policy.bpf.c;
+  loaderSource = ./aos-ebpf-net-policy.c;
 in
   mkDerivation {
     pname = "aos-ebpf-net-policy";
@@ -31,19 +33,21 @@ in
       json-c
     ];
     propagatedDeps = [];
+    disallowedReferences = [bpfSource loaderSource];
 
     phases = [
       {
         name = "build";
         script = ''
           mkdir -p $out/bin $out/lib/bpf
+          cp ${bpfSource} aos-ebpf-net-policy.bpf.c
 
           ${llvm}/bin/clang -target bpf -O2 -g \
             -D__TARGET_ARCH_${targetArch} \
             -I${linux-headers}/include \
             -I${libbpf}/include \
             -Wall -Wextra -Werror \
-            -c ${./aos-ebpf-net-policy.bpf.c} \
+            -c aos-ebpf-net-policy.bpf.c \
             -o $out/lib/bpf/aos-ebpf-net-policy.bpf.o
 
           # clang -g is required to emit BTF (for CO-RE), but it also writes
@@ -55,7 +59,7 @@ in
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \
             -o $out/bin/aos-ebpf-net-policy \
-            ${./aos-ebpf-net-policy.c} \
+            ${loaderSource} \
             $(pkg-config --cflags --libs libbpf json-c)
         '';
       }

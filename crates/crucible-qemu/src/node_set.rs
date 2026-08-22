@@ -15,6 +15,7 @@ use crucible::{
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
+    MAX_FRAME_DELIVERY_ATTEMPTS,
 };
 
 #[cfg(target_os = "linux")]
@@ -31,7 +32,12 @@ pub struct QemuNodeTerminalReplacementPlan {
 }
 
 /// Maximum early-pause reissues for one scheduler-selected node step.
-const MAX_STEP_REISSUES: u32 = 64;
+///
+/// A backpressured FIFO head can create one exact pause per canonical QEMU RX
+/// attempt. Use the public transport hard bound so a valid retained frame can
+/// exhaust its own typed retry budget before this adapter reports a generic
+/// progress failure.
+const MAX_STEP_REISSUES: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
 
 fn consumed_input_without_retiring(
     observation: &StepObservation,
@@ -556,6 +562,21 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Reads one live node's authoritative fault-command coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent, permanently closed,
+    /// or its shared-memory hot path cannot be read.
+    pub(crate) fn fault_command_coordinate(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Icount, BackendError> {
+        self.node_mut(node)?
+            .current_icount()
+            .map_err(BackendError::from)
+    }
+
     /// Reserves one strictly increasing fault-command sequence for `node`.
     ///
     /// # Errors
@@ -760,10 +781,11 @@ impl SimulationBackend for QemuNodeSet {
                 }
                 return Err(BackendError::Rejected {
                     message: format!(
-                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: outcome {:?}, completed state {:?}, consumed inbound {}",
+                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: effective ceiling {:?}, outcome {:?}, completed state {:?}, consumed inbound {}",
                         node.name,
                         observation.reached.ticks,
                         ceiling.ticks,
+                        backend.last_step_ceiling(),
                         observation.outcome,
                         backend.last_step_final_state(),
                         backend.last_step_inbound_frames_consumed(),

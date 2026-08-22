@@ -21,7 +21,7 @@ pub(super) fn control_plane_outcome_evidence(
     outcome: &boundary::ControlPlaneOutcome,
 ) -> Result<ContentHash, SchedulerError> {
     let mut material = Vec::new();
-    material.extend_from_slice(&outcome.action.id().bytes);
+    material.extend_from_slice(&outcome.action.committed_state_id().bytes);
     material.push(match outcome.kind {
         boundary::ControlPlaneOutcomeKind::Dropped => 1,
         boundary::ControlPlaneOutcomeKind::TypedError => 2,
@@ -54,7 +54,7 @@ pub(super) fn availability_transition_evidence(
     queued: &[crucible::BackendNetworkOutput],
 ) -> Result<ContentHash, SchedulerError> {
     let mut material = Vec::new();
-    material.extend_from_slice(&action.id().bytes);
+    material.extend_from_slice(&action.committed_state_id().bytes);
     material.extend_from_slice(&action.transition_sequence.to_be_bytes());
     append_evidence_bytes(&mut material, action.phase.as_str().as_bytes())?;
     material.push(availability_state_tag(old_state));

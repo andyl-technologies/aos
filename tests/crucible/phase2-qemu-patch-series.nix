@@ -755,6 +755,13 @@
       enforces = "DET-1,PLUG-23,PLUG-24,QEMU-43";
       capability = "sim-mode virtio-net queue kicks and serialized tx_waiting resumes drain every deferred TX bottom half synchronously, supply one committed raw transmit icount, preserve the virtqueue notification cursor in an optional sim VMState subsection, symmetrically flush pre-checkpoint translation history, and use bounded cache-independent TB shapes without direct chains on both continuations so VMState restore preserves packet and fault-decision continuation";
     }
+    {
+      file = "0109-crucible-control-boundary-node-faults.patch";
+      catalogName = "crucible-control-boundary-node-faults";
+      class = "F";
+      enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
+      capability = "a node-boundary command submitted while QEMU is halted at an exact drained control wake is dispatched at that same raw icount, so PREPARE and APPLY complete without requiring guest progress; terminal authorization hashes zero the raw evidence coordinate before the plugin maps it into scheduler-logical space";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

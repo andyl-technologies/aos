@@ -68,6 +68,26 @@ fn unacknowledged_device_wake_preserves_a_reached_boundary() {
 }
 
 #[test]
+fn unobserved_scheduler_input_invalidates_a_future_idle_boundary() {
+    let idle = crate::QemuNodeIdleState {
+        current_icount: crucible::Icount { retired: 40 },
+        next_deadline: Some(crucible::Icount { retired: 200 }),
+    };
+
+    assert_eq!(
+        classify_after_scheduler_and_host_wake(&idle, 100, true, false),
+        QuantumBoundary::Pending,
+    );
+    assert_eq!(
+        classify_after_scheduler_and_host_wake(&idle, 100, false, false),
+        QuantumBoundary::Paused {
+            at: 40,
+            deadline: 200,
+        },
+    );
+}
+
+#[test]
 fn advance_requires_a_plugin_publication_after_a_device_wake() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     let initial = slot.snapshot();

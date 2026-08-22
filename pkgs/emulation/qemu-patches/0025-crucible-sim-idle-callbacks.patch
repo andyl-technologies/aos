@@ -210,7 +210,7 @@ index f568f186a..1e6b12e2d 100644
   * qemu_plugin_register_blk_cb() - register shmem block callbacks
   * @submit_cb: request submit callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 6d76bfef1..8e0007840 100644
+index 96141b30e..5a6abc070 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -118,6 +118,9 @@ static NotifierList qemu_plugin_wake_notifiers =

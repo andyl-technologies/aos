@@ -16,10 +16,11 @@ in
 
     buildDeps = [
       pkg-config
-      glib
+      glib.dev
+      glib.tools
       qemu-crucible
     ];
-    runtimeDeps = [];
+    runtimeDeps = [glib];
     propagatedDeps = [];
 
     phases = [

@@ -37,10 +37,10 @@ use crate::shutdown::{
 };
 use crate::supervision::HostSupervisionDeadline;
 use crate::{
-    QemuAsyncCrashEscalationTarget, QemuAsyncDriverPolicy, QemuAsyncDriverTargetError,
-    QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion,
-    QemuCrashDetector, QemuGdbstubChannelConfig, QemuGdbstubProxy, QemuGdbstubProxyServer,
-    QemuHostIoRuntime, run_bounded_qemu_node_step,
+    QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverPolicy,
+    QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
+    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuGdbstubProxy,
+    QemuGdbstubProxyServer, QemuHostIoRuntime, run_bounded_qemu_node_step,
 };
 
 mod checkpoint_probe;
@@ -647,6 +647,7 @@ pub trait QemuShmemHotPathChannel: Send {
 /// Type-erased token returned after a shared-memory quantum is started.
 pub struct QemuNodePendingQuantum {
     token: Box<dyn Any>,
+    completion_fence: Option<QemuAdvanceCompletionFence>,
 }
 
 impl QemuNodePendingQuantum {
@@ -658,7 +659,26 @@ impl QemuNodePendingQuantum {
     {
         Self {
             token: Box::new(token),
+            completion_fence: None,
         }
+    }
+
+    /// Wraps a token whose scheduler input requires a fresh plugin publication.
+    #[must_use]
+    pub fn new_with_completion_fence<T>(token: T, fence: QemuAdvanceCompletionFence) -> Self
+    where
+        T: Any,
+    {
+        Self {
+            token: Box::new(token),
+            completion_fence: Some(fence),
+        }
+    }
+
+    /// Returns the optional publication fence carried by this quantum.
+    #[must_use]
+    pub const fn completion_fence(&self) -> Option<QemuAdvanceCompletionFence> {
+        self.completion_fence
     }
 
     /// Recovers the concrete token expected by the finishing channel.
@@ -799,6 +819,7 @@ pub struct QemuNode {
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     last_observed_time: VirtualTime,
+    last_step_ceiling: Option<Icount>,
     last_step_final_state: Option<QemuNodeIdleState>,
     last_step_inbound_frames_consumed: usize,
     // Console polling proves availability only at the scheduler-requested boundary.
@@ -985,6 +1006,7 @@ impl QemuNode {
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
             last_observed_time: VirtualTime::default(),
+            last_step_ceiling: None,
             last_step_final_state: None,
             last_step_inbound_frames_consumed: 0,
             console_observation_boundary: VirtualTime::default(),
@@ -1717,6 +1739,7 @@ impl QemuNode {
         ceiling: Icount,
         report: crate::QemuAsyncNodeStepReport,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
+        self.last_step_ceiling = report.ceiling;
         self.last_step_final_state = report.final_state;
         self.last_step_inbound_frames_consumed = report.inbound_frames_consumed;
         self.observe_network_output_batch(&report.emitted_frames)?;
@@ -1742,6 +1765,12 @@ impl QemuNode {
     #[must_use]
     pub(crate) const fn last_step_final_state(&self) -> Option<QemuNodeIdleState> {
         self.last_step_final_state
+    }
+
+    /// Returns the effective shared-memory ceiling from the last scheduler step.
+    #[must_use]
+    pub(crate) const fn last_step_ceiling(&self) -> Option<Icount> {
+        self.last_step_ceiling
     }
 
     /// Delivers deterministic input through shared memory.
@@ -1920,6 +1949,7 @@ impl QemuNode {
             ));
         }
         self.last_observed_time = checkpoint.last_observed_time;
+        self.last_step_ceiling = None;
         self.last_step_final_state = None;
         self.last_step_inbound_frames_consumed = 0;
         self.console_observation_boundary = checkpoint.console_observation_boundary;

@@ -57,6 +57,9 @@
   qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {
     inherit pkgs lib qemuPackage;
   };
+  qemuLiveNodeLifecycleFault = import ./phase2-qemu-live-node-lifecycle-fault.nix {
+    inherit pkgs lib;
+  };
   qemuGenesisObservationBoundary = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-genesis-observation-boundary";
     version = "0";
@@ -1091,6 +1094,10 @@
     {
       patch = "0108-crucible-deterministic-network-kick.patch";
       check = qemuDeterministicNetworkKick;
+    }
+    {
+      patch = "0109-crucible-control-boundary-node-faults.patch";
+      check = qemuLiveNodeLifecycleFault;
     }
   ];
 

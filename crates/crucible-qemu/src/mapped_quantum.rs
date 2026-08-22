@@ -762,10 +762,15 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             let start_operations = hot_path.operation_log().to_vec();
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
                 .map_err(QemuNodeChannelError::from)?;
-            Ok(QemuNodePendingQuantum::new(QemuMappedPendingQuantum {
+            let completion_fence = pending.completion_fence;
+            let mapped = QemuMappedPendingQuantum {
                 pending,
                 start_operations,
-            }))
+            };
+            Ok(match completion_fence {
+                Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(mapped, fence),
+                None => QemuNodePendingQuantum::new(mapped),
+            })
         })
     }
 

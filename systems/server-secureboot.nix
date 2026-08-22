@@ -28,6 +28,7 @@
     maxEspMiB = 512;
     maxDownloadMiB = 768;
   };
+  aos.image.allowTestArtifacts = true;
 
   # The server profile sets the test fixtures to `bundle = mkDefault false`
   # to keep them out of the production image. This is a test-only fixture
