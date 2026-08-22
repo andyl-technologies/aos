@@ -8,9 +8,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    Arc,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CancelAttemptExecutionDisposition,
@@ -26,6 +27,8 @@ use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
     AttemptRuntimeState, AttemptStateCas,
 };
+
+const MAX_CANCELLATION_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
 
 /// Read-only semantic and capability validation performed before guest work.
 pub trait AttemptAdmissionValidator {
@@ -260,27 +263,85 @@ impl QueuedAttempt {
     }
 }
 
+#[derive(Debug, Default)]
+struct ExecutionCancellationState {
+    canceled: AtomicBool,
+    wait_lock: Mutex<()>,
+    changed: Condvar,
+}
+
 /// Cloneable process-local cancellation signal for one execution incarnation.
+///
+/// Besides the inexpensive polling path, this signal provides a bounded wait
+/// for attempt resource guards. A concrete QEMU guard uses that wait to make
+/// cancellation visible to its sticky process event while a launch, replay,
+/// or shutdown operation is blocked.
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionCancellation {
-    canceled: Arc<AtomicBool>,
+    state: Arc<ExecutionCancellationState>,
 }
 
 impl ExecutionCancellation {
     /// Returns whether cancellation has been requested for this execution.
     #[must_use]
     pub fn is_canceled(&self) -> bool {
-        self.canceled.load(Ordering::Acquire)
+        self.state.canceled.load(Ordering::Acquire)
     }
 
     /// Returns whether two handles name the same execution incarnation.
     #[must_use]
     pub fn same_incarnation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.canceled, &other.canceled)
+        Arc::ptr_eq(&self.state, &other.state)
     }
 
     fn cancel(&self) {
-        self.canceled.store(true, Ordering::Release);
+        self.state.canceled.store(true, Ordering::Release);
+        self.state.changed.notify_all();
+    }
+
+    /// Waits up to `timeout` for cancellation to become visible.
+    ///
+    /// Synchronization poisoning is treated as cancellation so a resource
+    /// guard fails closed instead of leaving a child process unmonitored. Long
+    /// waits are internally divided into bounded one-hour slices, avoiding an
+    /// oversized platform timeout while preserving the caller's full bound.
+    #[must_use]
+    pub fn wait_for_cancellation(&self, timeout: Duration) -> bool {
+        if self.is_canceled() {
+            return true;
+        }
+        let mut wait = match self.state.wait_lock.lock() {
+            Ok(wait) => wait,
+            Err(_) => return true,
+        };
+        if self.is_canceled() {
+            return true;
+        }
+        let mut remaining = timeout;
+        loop {
+            let slice = remaining.min(MAX_CANCELLATION_WAIT_SLICE);
+            let result = self.state.changed.wait_timeout_while(wait, slice, |_| {
+                !self.state.canceled.load(Ordering::Acquire)
+            });
+            let (next_wait, elapsed) = match result {
+                Ok(result) => result,
+                Err(_) => return true,
+            };
+            wait = next_wait;
+            if self.is_canceled() {
+                return true;
+            }
+            if !elapsed.timed_out() {
+                continue;
+            }
+            let Some(next_remaining) = remaining.checked_sub(slice) else {
+                return false;
+            };
+            if next_remaining.is_zero() {
+                return false;
+            }
+            remaining = next_remaining;
+        }
     }
 
     /// Requests cancellation from a crate-internal regression fixture.

@@ -1768,6 +1768,17 @@ its group, optional watcher, and retained children to the nondroppable worker.
 Startup, watcher, and removal failures return or retain their authority for
 retry, and an unrecoverable worker-start failure leaks it fail-closed.
 
+The process-local cancellation incarnation supports both lock-free boundary
+polling and a bounded blocking wait. Cancellation wakes every waiter, and a
+poisoned wait primitive is interpreted as cancellation rather than leaving a
+process guard dormant. The attempt-process owner can duplicate a narrow signal
+that only publishes the sticky eventfd transition and terminal watcher state;
+it cannot change limits, inspect membership, or release the cgroup. Once that
+signal fires, the owner refuses to lend its child contract even while the
+watcher is still killing and reaping existing members. The concrete daemon
+guard must still own and join the relay from the exact cancellation incarnation
+to this narrow signal.
+
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
 guard, but the concrete guard must still compose that handoff and active-node

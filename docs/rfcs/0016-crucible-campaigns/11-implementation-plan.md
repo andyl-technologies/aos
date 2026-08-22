@@ -333,11 +333,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   identity authentication failed, and transfers unfinished state to that
   worker from `Drop`. Concrete launchers retain an unreaped pre-install child
   and reject relaunch; the guarded replay session transfers that authority into
-  its abstract attempt guard before returning the realization error. Concrete
-  guard composition of that transfer and active-node handoff into the cgroup
-  owner, aggregate filesystem quota, execution-quantum counter composition,
-  exclusive run-directory namespace ownership through artifact open, the
-  modeled attempt driver, and concrete session wiring remain open. Real-node
+  its abstract attempt guard before returning the realization error. The exact
+  process-local cancellation incarnation now supports a bounded blocking wait,
+  wakes all guards on cancellation, and fails closed after synchronization
+  poison. The process owner can lend a narrow sticky-event signal and refuses
+  child-contract access after it fires. Concrete guard ownership of that relay,
+  composition of failed-child and active-node handoff into the cgroup owner,
+  aggregate filesystem quota, execution-quantum counter composition, exclusive
+  run-directory namespace ownership through artifact open, the modeled attempt
+  driver, and concrete session wiring remain open. Real-node
   exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before

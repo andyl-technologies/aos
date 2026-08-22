@@ -16,8 +16,8 @@ use super::quarantine::{
     LinuxQemuAttemptProcessQuarantine, LinuxQemuAttemptProcessQuarantineStatus,
 };
 use super::{
-    LinuxQemuCgroup, LinuxQemuCgroupError, LinuxQemuCgroupWatcher, QemuChildProcessContract,
-    QemuNodeChild,
+    LinuxQemuCgroup, LinuxQemuCgroupCancellationSignal, LinuxQemuCgroupError,
+    LinuxQemuCgroupWatcher, QemuChildProcessContract, QemuNodeChild, WATCHER_RUNNING,
 };
 
 /// Result of one attempt-process owner cleanup observation.
@@ -171,11 +171,41 @@ impl LinuxQemuAttemptProcessOwner {
     pub(crate) fn process_contract(
         &self,
     ) -> Result<&QemuChildProcessContract, LinuxQemuAttemptProcessOwnerError> {
+        if let Some(group) = self.group.as_ref()
+            && group
+                .control
+                .watcher_state
+                .load(std::sync::atomic::Ordering::Acquire)
+                != WATCHER_RUNNING
+        {
+            return Err(LinuxQemuCgroupError::WatcherNotRunning {
+                path: group.path.clone(),
+            }
+            .into());
+        }
         self.process_contract
             .as_ref()
             .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
                 authority: "child-process contract",
             })
+    }
+
+    /// Duplicates the narrow sticky-cancellation signal for a daemon relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuAttemptProcessOwnerError`] after terminal cleanup or
+    /// when the event descriptor cannot be duplicated.
+    pub(crate) fn cancellation_signal(
+        &self,
+    ) -> Result<LinuxQemuCgroupCancellationSignal, LinuxQemuAttemptProcessOwnerError> {
+        let group =
+            self.group
+                .as_ref()
+                .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "configured cgroup",
+                })?;
+        group.control.cancellation_signal().map_err(Into::into)
     }
 
     /// Retains a direct child that synchronous realization cleanup could not reap.
@@ -473,6 +503,29 @@ mod tests {
         );
         assert!(!path.exists());
         assert!(owner.process_contract().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_signal_closes_minting_and_drives_normal_cleanup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, mut owner) = owner_fixture()?;
+        let path = owner.group.as_ref().expect("configured group").path.clone();
+        let signal = owner.cancellation_signal()?;
+
+        signal.signal()?;
+        assert!(matches!(
+            owner.process_contract(),
+            Err(LinuxQemuAttemptProcessOwnerError::Cgroup(
+                LinuxQemuCgroupError::WatcherNotRunning { .. }
+            ))
+        ));
+        unlink_virtual_controls(&path)?;
+        assert_eq!(
+            owner.finish(Duration::from_secs(1))?,
+            LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased
+        );
+        assert!(!path.exists());
         Ok(())
     }
 
