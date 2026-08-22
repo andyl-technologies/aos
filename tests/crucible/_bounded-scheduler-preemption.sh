@@ -3,7 +3,7 @@
 # The old fixture ran three `yes` processes for the whole guest execution,
 # consuming three host cores per derivation.  This fixture instead interrupts
 # QEMU itself six times.  Each configured stop is 15 ms and stops are separated
-# by 25 ms sleeps: 90 ms of configured stopped time and about 240 ms nominal
+# by 25 ms sleeps: 90 ms of requested stopped time and about 240 ms nominal
 # worker lifetime. A separate sleeping watchdog terminates the worker and
 # resumes QEMU after two seconds. No helper generates synthetic CPU load, and
 # existing outer `timeout` processes bound each QEMU run's wall-clock duration.
@@ -17,6 +17,29 @@ BOUNDED_PREEMPTION_WATCHDOG_PID=""
 BOUNDED_PREEMPTION_TARGET_PID=""
 BOUNDED_QEMU_PID=""
 BOUNDED_QEMU_WAIT_PID=""
+
+bounded_preemption_wait_for_guest_progress() {
+  bsp_progress_path="$1"
+  bsp_progress_needle="$2"
+  bsp_progress_attempts="$3"
+  bsp_progress_delay="$4"
+  bsp_progress_attempt=0
+
+  while [ "$bsp_progress_attempt" -lt "$bsp_progress_attempts" ]; do
+    if grep -Fq "$bsp_progress_needle" "$bsp_progress_path" 2>/dev/null; then
+      return 0
+    fi
+    if [ -z "$BOUNDED_QEMU_PID" ] || ! kill -0 "$BOUNDED_QEMU_PID" 2>/dev/null; then
+      echo "bounded scheduler preemption: QEMU exited before guest progress" >&2
+      return 1
+    fi
+    sleep "$bsp_progress_delay"
+    bsp_progress_attempt=$((bsp_progress_attempt + 1))
+  done
+
+  echo "bounded scheduler preemption: guest progress marker did not appear" >&2
+  return 1
+}
 
 bounded_preemption_launch_qemu() {
   bsp_timeout_seconds="$1"
@@ -75,6 +98,8 @@ bounded_preemption_launch_qemu() {
 
 bounded_preemption_start() {
   bsp_event_log="$1"
+  bsp_progress_path="$2"
+  bsp_progress_needle="$3"
   if [ -z "$BOUNDED_QEMU_PID" ] || ! kill -0 "$BOUNDED_QEMU_PID" 2>/dev/null; then
     echo "bounded scheduler preemption: QEMU is not running" >&2
     return 1
@@ -83,8 +108,14 @@ bounded_preemption_start() {
     echo "bounded scheduler preemption: adversary is already active" >&2
     return 1
   fi
+  if ! grep -Fq "$bsp_progress_needle" "$bsp_progress_path" 2>/dev/null; then
+    echo "bounded scheduler preemption: guest progress was not established" >&2
+    return 1
+  fi
 
   : > "$bsp_event_log"
+  printf 'guest-progress-before source=%s needle=%s\n' \
+    "$bsp_progress_path" "$bsp_progress_needle" >> "$bsp_event_log"
   BOUNDED_PREEMPTION_TARGET_PID="$BOUNDED_QEMU_PID"
   (
     bsp_worker_target="$BOUNDED_PREEMPTION_TARGET_PID"
@@ -115,11 +146,18 @@ bounded_preemption_start() {
   ) &
   BOUNDED_PREEMPTION_PID="$!"
   (
+    bsp_watchdog_target="$BOUNDED_PREEMPTION_TARGET_PID"
+    bsp_watchdog_worker="$BOUNDED_PREEMPTION_PID"
     sleep "$BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS"
-    if kill -0 "$BOUNDED_PREEMPTION_PID" 2>/dev/null; then
+    if kill -0 "$bsp_watchdog_worker" 2>/dev/null; then
       printf 'wall-timeout seconds=%s\n' \
         "$BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS" >> "$bsp_event_log"
-      kill -TERM "$BOUNDED_PREEMPTION_PID" 2>/dev/null || true
+      # Resume independently before asking the worker to exit. This remains
+      # effective even if the worker is delayed or its EXIT trap regresses.
+      kill -CONT "$bsp_watchdog_target" 2>/dev/null || true
+      printf 'watchdog-resume target=%s\n' \
+        "$bsp_watchdog_target" >> "$bsp_event_log"
+      kill -TERM "$bsp_watchdog_worker" 2>/dev/null || true
     fi
   ) &
   BOUNDED_PREEMPTION_WATCHDOG_PID="$!"

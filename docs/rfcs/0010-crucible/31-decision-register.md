@@ -1062,7 +1062,8 @@ genuinely unresolved and is tracked as a spike in
   `aarch64_whitebox_supported=true`, and `fallback_adopted=none`.
   `checks.crucible.phase0.aarch64S1S6` boots the same seeded AArch64 guest twice
   with six configured 15 ms scheduler preemptions applied directly to QEMU in
-  the second run under a two-second resume watchdog, compares its exact-icount
+  the second run after a live kernel progress marker and under a two-second
+  resume watchdog, compares its exact-icount
   extended fingerprints,
   and records `aarch64_s1_complete=true`, `aarch64_s6_complete=true`,
   `randomized_kernel_offset_reproducible=true`,
@@ -1563,7 +1564,8 @@ register.
     `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
     seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
     controls. The second run applies six configured 15 ms SIGSTOP/SIGCONT
-    preemptions to QEMU itself under a two-second resume watchdog. The proof compares the
+    preemptions to QEMU itself after the first positive trace coordinate and
+    under a two-second resume watchdog. The proof compares the
     aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
     IO-event multiset digest at each cadence point including the requested
     `3600000000` horizon. It also compares the stable projection of the
@@ -2172,7 +2174,8 @@ register.
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
     clean run and a run with six configured 15 ms preemptions of QEMU itself
-    under a two-second resume watchdog. The check asserts every sampled vCPU
+    after the first positive trace coordinate and under a two-second resume
+    watchdog. The check asserts every sampled vCPU
     has a nonempty register descriptor set and zero register-read failures.
     Memory/device-event callbacks are disabled in this diskless proof; full
     device-event hashing remains later §4.6 gate work. The check scans the

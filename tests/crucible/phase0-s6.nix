@@ -422,15 +422,23 @@ in
             bounded_preemption_launch_qemu \
               1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
               || fail "guest $label QEMU launch failed"
+
+            wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             if [ "''${label##*-}" = b ]; then
               # ASLR/KASLR fingerprints must depend on scenario inputs, never
-              # on host scheduling. Finite preemption targets that invariant
-              # directly and costs no synthetic busy CPU time.
-              bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+              # on host scheduling. The first trace coordinate proves guest
+              # execution is active before finite preemption begins; no
+              # synthetic busy CPU time is consumed.
+              progress_needle="\"observed_icount\":$CADENCE"
+              bounded_preemption_wait_for_guest_progress \
+                "$TMPDIR/trace-$label.jsonl" "$progress_needle" 12000 0.1 \
+                || fail "guest $label made no pre-adversary trace progress"
+              bounded_preemption_start \
+                "$TMPDIR/preemption-$label.log" \
+                "$TMPDIR/trace-$label.jsonl" "$progress_needle" \
                 || fail "guest $label scheduler adversary did not start"
             fi
 
-            wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             wait_for_horizon_pause "$label" "$qmp_socket" \
               || fail "guest $label did not pause at horizon"
             if ! wait_for_guest_pass "$label"; then
@@ -589,12 +597,12 @@ in
             ' "$TMPDIR/trace-$label.jsonl" >&2 || true
           }
 
+          run_pair control
+          run_pair kaslr
+
           mkdir -p "$out"
           cp "$TMPDIR/preemption-control-b.log" "$out/preemption-control-b.log"
           cp "$TMPDIR/preemption-kaslr-b.log" "$out/preemption-kaslr-b.log"
-
-          run_pair control
-          run_pair kaslr
 
           for label in control-a control-b kaslr-a kaslr-b; do
             if ! jq -e -s --argjson horizon "$HORIZON" \

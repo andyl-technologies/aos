@@ -471,15 +471,22 @@ in
             bounded_preemption_launch_qemu \
               1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
               || fail "guest $label QEMU launch failed"
+
+            wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             if [ "$label" = b ] && [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
               # The invariant is trace independence from host scheduling. Six
-              # short QEMU preemptions perturb scheduling directly with no
-              # synthetic CPU load; a two-second watchdog guarantees resume.
-              bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+              # short QEMU preemptions begin only after the first guest trace
+              # coordinate, perturb scheduling directly with no synthetic CPU
+              # load, and retain a two-second independent resume watchdog.
+              progress_needle="\"observed_icount\":$CADENCE"
+              bounded_preemption_wait_for_guest_progress \
+                "$trace_path" "$progress_needle" 12000 0.1 \
+                || fail "guest $label made no pre-adversary trace progress"
+              bounded_preemption_start \
+                "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
                 || fail "guest $label scheduler adversary did not start"
             fi
 
-            wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             wait_for_horizon_pause "$label" "$qmp_socket" || fail "guest $label did not pause at horizon"
 
             migrate_state "$label" "$qmp_socket"

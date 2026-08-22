@@ -990,15 +990,21 @@ in
               bounded_preemption_launch_qemu \
                 2400 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
                 || fail "QEMU run $label launch failed"
+
+              wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for run $label"
               if [ "$label" = b ]; then
-                # The trace must be invariant under host scheduling. Bounded
-                # preemption perturbs the actual QEMU process six times while
-                # consuming no synthetic busy CPU time.
-                bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+                # The trace must be invariant under host scheduling. The first
+                # cadence record anchors bounded preemption inside active guest
+                # execution without synthetic busy CPU time.
+                progress_needle="\"observed_icount\":$cadence"
+                bounded_preemption_wait_for_guest_progress \
+                  "$trace" "$progress_needle" 12000 0.1 \
+                  || fail "QEMU run $label made no pre-adversary trace progress"
+                bounded_preemption_start \
+                  "$TMPDIR/preemption-$label.log" "$trace" "$progress_needle" \
                   || fail "QEMU run $label scheduler adversary did not start"
               fi
 
-              wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for run $label"
               wait_for_stop_at_pause "$label" "$qmp_socket" \
                 || fail "QEMU run $label did not pause at the N-vCPU horizon"
               qmp_cmd "$qmp_socket" '{"execute":"query-cpus-fast"}' "$TMPDIR/qmp-cpus-$label.json" \

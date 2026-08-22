@@ -774,13 +774,6 @@ in
               bounded_preemption_launch_qemu \
                 "$launch_timeout" "$TMPDIR/qemu-target-$label.pid" - "$QEMU" "$@" \
                 || fail "QEMU guest $label launch failed"
-              if [ "$label" = b ]; then
-                # S11 proves RR trace identity despite host scheduling. Six
-                # bounded pauses of QEMU itself are sufficient to perturb that
-                # schedule; a two-second watchdog guarantees resume.
-                bounded_preemption_start "$TMPDIR/preemption-$label.log" \
-                  || fail "QEMU guest $label scheduler adversary did not start"
-              fi
 
               if [ -n "$STOP_AT" ]; then
                 wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
@@ -798,6 +791,18 @@ in
                     '{"execute":"cont"}' \
                     "$TMPDIR/qmp-cont-$label.json" \
                     || fail "failed to start realtime-deadline probe guest $label"
+                fi
+                if [ "$label" = b ]; then
+                  # S11 proves RR trace identity despite host scheduling. The
+                  # first cadence record establishes guest execution before
+                  # six finite pauses; the independent watchdog resumes QEMU.
+                  progress_needle="\"observed_icount\":$CADENCE"
+                  bounded_preemption_wait_for_guest_progress \
+                    "$trace_path" "$progress_needle" 12000 0.1 \
+                    || fail "QEMU guest $label made no pre-adversary trace progress"
+                  bounded_preemption_start \
+                    "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
+                    || fail "QEMU guest $label scheduler adversary did not start"
                 fi
                 wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
                 if [ "$label" = b ]; then
@@ -819,6 +824,13 @@ in
                 fi
               else
                 if [ "$label" = b ]; then
+                  progress_needle="\"observed_icount\":$CADENCE"
+                  bounded_preemption_wait_for_guest_progress \
+                    "$trace_path" "$progress_needle" 6000 0.1 \
+                    || fail "QEMU guest $label made no pre-adversary trace progress"
+                  bounded_preemption_start \
+                    "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
+                    || fail "QEMU guest $label scheduler adversary did not start"
                   bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
                     || fail "QEMU guest $label scheduler adversary was incomplete"
                 fi
