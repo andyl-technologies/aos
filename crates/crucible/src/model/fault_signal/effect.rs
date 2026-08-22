@@ -178,7 +178,7 @@ pub struct ResolvedEffectRecord {
     pub network_frame_key: Option<ContentHash>,
     /// Stable producer/direction/sequence network alignment identity.
     pub network_producer_direction_key: Option<ContentHash>,
-    /// Scheduler coordinate at application.
+    /// Scheduler coordinate refined with the backend application coordinate.
     pub coordinate: FaultCoordinate,
     /// Stable order among scheduler work at the same coordinate.
     pub same_coordinate_sequence: u64,
@@ -213,6 +213,15 @@ pub struct ResolvedEffectRecord {
 }
 
 impl ResolvedEffectRecord {
+    /// Reports whether `coordinate` is the scheduler coordinate for this record.
+    pub(super) fn refines_work_item_coordinate(&self, coordinate: FaultCoordinate) -> bool {
+        if self.effect.descriptor().adapter == super::FaultAdapter::Node {
+            coordinate.accepts_backend_refinement(self.coordinate)
+        } else {
+            coordinate == self.coordinate
+        }
+    }
+
     /// Captures one committed typed action and its backend evidence.
     ///
     /// # Errors
@@ -288,11 +297,15 @@ impl ResolvedEffectRecord {
     /// Returns whether a recomputed action exactly matches the recorded resolution.
     #[must_use]
     pub fn matches_recomputed_action(&self, action: &ResolvedBindingAction) -> bool {
-        self.locked_action()
-            == ResolvedBindingAction {
-                expected_precondition: self.precondition_digest,
-                ..action.clone()
-            }
+        let coordinate_matches = action.accepts_observation_coordinate(self.coordinate);
+        let mut action = action.clone();
+        action.coordinate = self.coordinate;
+        coordinate_matches
+            && self.locked_action()
+                == ResolvedBindingAction {
+                    expected_precondition: self.precondition_digest,
+                    ..action
+                }
     }
 
     /// Validates record ordering, capability version, target, and opportunity
@@ -381,6 +394,11 @@ impl ResolvedEffectRecord {
             && (self.operation.is_none()
                 || self.opportunity.is_none()
                 || self.effect.descriptor().adapter != super::FaultAdapter::Network)
+        {
+            return Err(FaultContractError::InvalidPayload);
+        }
+        if descriptor.adapter == super::FaultAdapter::Node
+            && self.coordinate.retired_instructions.is_none()
         {
             return Err(FaultContractError::InvalidPayload);
         }

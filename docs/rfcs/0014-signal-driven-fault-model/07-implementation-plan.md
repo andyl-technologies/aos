@@ -127,8 +127,10 @@ normative inputs to generated schema, code, capabilities, evidence, and docs.
   and final fingerprints.
 - [x] **T-REPLAY-2** Implement resolved-effect recording and locked replay with
   exact target, opportunity, phase, profile, capability version, precondition,
-  and final-fingerprint validation. No semantic-version compatibility shim is
-  included.
+  backend-refined QEMU application coordinate, application evidence, and
+  final-fingerprint validation. Both replay modes install the authenticated
+  QEMU coordinate before adapter preparation. No semantic-version compatibility
+  shim is included.
 - [x] **T-SEARCH-1** Implement finite outcome/transition/parameter branching,
   bounded trace-window and mapping mutation, independence analysis, schedule
   export, and signature-preserving minimization.

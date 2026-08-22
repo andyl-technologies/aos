@@ -32,14 +32,18 @@ fn typed_node_application_evidence_excludes_replay_authorization() {
     replay.action_hash = [7; 32];
     replay.request_sha256 = [8; 32];
     assert_eq!(
-        typed_node_application_evidence_hash(&baseline),
-        typed_node_application_evidence_hash(&replay)
+        typed_node_application_evidence_hash(&baseline, 73),
+        typed_node_application_evidence_hash(&replay, 73)
     );
 
     replay.after_sha256 = [9; 32];
     assert_ne!(
-        typed_node_application_evidence_hash(&baseline),
-        typed_node_application_evidence_hash(&replay)
+        typed_node_application_evidence_hash(&baseline, 73),
+        typed_node_application_evidence_hash(&replay, 73)
+    );
+    assert_ne!(
+        typed_node_application_evidence_hash(&baseline, 73),
+        typed_node_application_evidence_hash(&baseline, 74)
     );
 }
 
