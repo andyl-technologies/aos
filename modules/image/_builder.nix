@@ -8,7 +8,7 @@
 ##!                          EFI/systemd/systemd-boot<arch>.efi (sd-boot canonical)
 ##!                          EFI/Linux/aos-<version>.efi       (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
-##!   Partition 2 (root-a) — rootFsType (erofs/ext4), fixed contract capacity
+##!   Partition 2 (root-a) — rootFsType (erofs/ext4), fixed slot capacity
 ##!
 ##! systemd-repart creates swap and /var partitions on first boot
 ##! in the unallocated space after root-a.
@@ -32,6 +32,7 @@
   lib,
   system,
   name,
+  runtimeClosureAudit,
 }: let
   # Kernel command line parameters from the evaluated config.
   kernelParams = lib.concatStringsSep " " system.config.aos.boot.kernelParams;
@@ -407,9 +408,6 @@
       # Make the runtime closure available to the builder itself. The raw
       # image is the publication root, so it independently enforces every
       # release budget even when callers do not build the focused check.
-      outputChecks = {};
-      exportReferencesGraph.runtime = [system.config.system.build.toplevel];
-
       buildDeps =
         [
           pkgs.util-linux # sfdisk
@@ -419,6 +417,7 @@
           pkgs.coreutils
           pkgs.jq
           pkgs.zstd
+          runtimeClosureAudit
         ]
         ++ lib.optional sb.enable pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
@@ -447,12 +446,14 @@
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
       MAX_ROOT_MIB = toString budgets.maxRootMiB;
+      ROOT_PARTITION_MIB = toString system.config.aos.image.rootPartitionMiB;
       MAX_VERITY_MIB = toString budgets.maxVerityMiB;
       MAX_INITRD_MIB = toString budgets.maxInitrdMiB;
       MAX_UKI_MIB = toString budgets.maxUkiMiB;
       MAX_ESP_MIB = toString budgets.maxEspMiB;
       MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
       MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
+      RUNTIME_CLOSURE_REPORT = "${runtimeClosureAudit}/report.json";
       IMAGE_MODULE_ABI = toString system.config.aos.system.moduleAbi;
       RECOVERY_ENABLE = lib.optionalString recoveryEnabled "1";
       RECOVERY_ABI = toString recovery.abi;
@@ -506,11 +507,7 @@
               echo "initrd exceeds its $MAX_INITRD_MIB MiB artifact contract" >&2
               exit 1
             fi
-            runtime_closure_bytes=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
-            if [ "$runtime_closure_bytes" -gt $(( MAX_RUNTIME_CLOSURE_MIB * 1048576 )) ]; then
-              echo "runtime closure exceeds its $MAX_RUNTIME_CLOSURE_MIB MiB artifact contract" >&2
-              exit 1
-            fi
+            runtime_closure_bytes=$(jq -er '.actual.closureBytes' "$RUNTIME_CLOSURE_REPORT")
             echo "    root image: $(( root_bytes / 1048576 )) MiB"
 
             # ── 2. ESP tree ─────────────────────────────────────────────
@@ -645,7 +642,7 @@
             done
 
             # ── 4. Assemble final GPT image ─────────────────────────────
-            root_sectors=$(( MAX_ROOT_MIB * 2048 ))
+            root_sectors=$(( ROOT_PARTITION_MIB * 2048 ))
             # The dm-verity hash tree rides in a `root-a-hash`
             # partition immediately after root-a, sized from the build-time
             # root-verity-size-bytes and rounded up to a 1 MiB (2048-sector)
@@ -816,7 +813,7 @@
               --argjson espTransactionBytes "$esp_transaction_bytes" \
               --argjson espRequiredBytes "$esp_required_bytes" \
               --argjson rootSizeMiB "$root_size_mib" \
-              --argjson rootPartitionSizeMiB "$MAX_ROOT_MIB" \
+              --argjson rootPartitionSizeMiB "$ROOT_PARTITION_MIB" \
               --argjson espOffsetBytes "$esp_offset_bytes" \
               --argjson espPartitionSizeBytes "$esp_partition_size_bytes" \
               --argjson rootOffsetBytes "$root_offset_bytes" \

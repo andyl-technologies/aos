@@ -23,8 +23,12 @@ Files under `systems/` are discovered automatically. A file named
   aos.roles.server.enable = true;
   aos.networking.hostName = "web-01";
 
-  # These maxima are both release gates and on-disk compatibility contracts.
-  # Root, verity, and ESP values size the A/B partitions or zvols.
+  # Keep physical root capacity independent from the artifact growth gate.
+  # The 1 GiB default can be overridden for a device class when needed.
+  aos.image.rootPartitionMiB = 1024;
+
+  # These maxima are release gates. Verity and ESP values also size their
+  # partitions; maxRootMiB does not resize the root A/B slots.
   aos.image.budgets = {
     maxRootMiB = 512;
     maxVerityMiB = 16;

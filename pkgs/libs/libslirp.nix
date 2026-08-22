@@ -28,6 +28,8 @@ in
       meson
       ninja
       python3
+      glib.dev
+      glib.tools
     ];
     runtimeDeps = [
       glib

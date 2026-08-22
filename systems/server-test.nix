@@ -34,6 +34,7 @@
   # Preserve the production EROFS format and all boot semantics while avoiding
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
+  aos.image.allowTestArtifacts = true;
 
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See
