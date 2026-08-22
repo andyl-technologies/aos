@@ -15,10 +15,10 @@ use crucible_campaign::{
 };
 
 use crate::{
-    AssignmentLedger, AttemptAdmissionValidator, CancellationOutcome, CheckpointCompletionOutcome,
-    CheckpointPublicationOutcome, CompletionOutcome, ExactCheckpointPublication,
-    ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
-    ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
+    AssignmentLedger, AttemptAdmissionValidator, CancellationOutcome, CapturedExactCheckpoint,
+    CheckpointCompletionOutcome, CheckpointPublicationOutcome, CompletionOutcome,
+    ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
+    ExecutionCancellation, ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
     ObservationPublicationOutcome, PreparedExactCheckpoint, QueuedAttempt,
 };
 
@@ -166,7 +166,24 @@ pub trait AttemptExecutionModel {
         &mut self,
         input: &AttemptExecutionInput,
         context: &AttemptExecutionContext,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
+}
+
+/// Canonical completion or exact paused capture returned by an execution model.
+#[derive(Debug)]
+pub enum AttemptExecutionProduct {
+    /// The attempt reached its modeled stop and produced immutable evidence.
+    Observation(Box<ObservationCandidate>),
+    /// A durable checkpoint request won at an exact scheduler boundary.
+    ExactCheckpoint(Box<CapturedExactCheckpoint>),
+}
+
+impl AttemptExecutionProduct {
+    /// Wraps one canonical observation candidate.
+    #[must_use]
+    pub fn observation(candidate: ObservationCandidate) -> Self {
+        Self::Observation(Box::new(candidate))
+    }
 }
 
 /// Stable disposition of one local execution failure.
@@ -197,7 +214,7 @@ pub trait LocalAttemptWorker {
 #[derive(Debug)]
 pub struct AttemptWorkResult<E> {
     queued: QueuedAttempt,
-    result: Result<ObservationCandidate, AttemptWorkerFailure<E>>,
+    result: Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
 }
 
 impl<E> AttemptWorkResult<E> {
@@ -205,7 +222,7 @@ impl<E> AttemptWorkResult<E> {
     #[must_use]
     pub fn new(
         queued: QueuedAttempt,
-        result: Result<ObservationCandidate, AttemptWorkerFailure<E>>,
+        result: Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
     ) -> Self {
         Self { queued, result }
     }
@@ -215,7 +232,7 @@ impl<E> AttemptWorkResult<E> {
         self,
     ) -> (
         QueuedAttempt,
-        Result<ObservationCandidate, AttemptWorkerFailure<E>>,
+        Result<AttemptExecutionProduct, AttemptWorkerFailure<E>>,
     ) {
         (self.queued, self.result)
     }
@@ -292,7 +309,7 @@ where
     fn execute_borrowed(
         &mut self,
         queued: &QueuedAttempt,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<RepositoryAttemptWorkerError<M::Error>>>
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<RepositoryAttemptWorkerError<M::Error>>>
     {
         let input = self
             .resolve_input(queued.request())
@@ -303,29 +320,41 @@ where
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
         );
-        let candidate = self
+        let product = self
             .model
             .execute(&input, &context)
             .map_err(|failure| map_worker_failure(failure, RepositoryAttemptWorkerError::Model))?;
-
-        if candidate.observation().attempt() != queued.request().attempt() {
-            return Err(AttemptWorkerFailure::Terminal(
-                RepositoryAttemptWorkerError::IncompatibleResult {
-                    reason: "observation attempt differs from assignment",
-                },
-            ));
+        match &product {
+            AttemptExecutionProduct::Observation(candidate) => {
+                if candidate.observation().attempt() != queued.request().attempt() {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "observation attempt differs from assignment",
+                        },
+                    ));
+                }
+                if candidate.child().scenario() != input.lineage().scenario()
+                    || candidate.child().scenario_artifact() != input.lineage().scenario_content()
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "child configuration differs from assignment lineage",
+                        },
+                    ));
+                }
+            }
+            AttemptExecutionProduct::ExactCheckpoint(_) => {
+                if !queued.checkpoint_request().is_requested() {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        RepositoryAttemptWorkerError::IncompatibleResult {
+                            reason: "execution returned an unsolicited exact checkpoint",
+                        },
+                    ));
+                }
+            }
         }
-        if candidate.child().scenario() != input.lineage().scenario()
-            || candidate.child().scenario_artifact() != input.lineage().scenario_content()
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                RepositoryAttemptWorkerError::IncompatibleResult {
-                    reason: "child configuration differs from assignment lineage",
-                },
-            ));
-        }
 
-        Ok(candidate)
+        Ok(product)
     }
 
     fn resolve_input(
@@ -445,6 +474,33 @@ pub struct PendingAttemptResult {
     candidate: ObservationCandidate,
 }
 
+/// Captured checkpoint retained for no-write preparation retry.
+#[derive(Debug)]
+pub struct PendingCheckpointResult {
+    queued: QueuedAttempt,
+    capture: CapturedExactCheckpoint,
+}
+
+impl PendingCheckpointResult {
+    /// Returns the exact execution whose capture awaits preparation.
+    #[must_use]
+    pub const fn queued(&self) -> &QueuedAttempt {
+        &self.queued
+    }
+
+    /// Returns the captured metadata and opaque VMState source.
+    #[must_use]
+    pub const fn capture(&self) -> &CapturedExactCheckpoint {
+        &self.capture
+    }
+
+    /// Consumes the pending value into its execution token and capture.
+    #[must_use]
+    pub fn into_parts(self) -> (QueuedAttempt, CapturedExactCheckpoint) {
+        (self.queued, self.capture)
+    }
+}
+
 /// Read-only-preflighted result ready for a short publication-root CAS.
 #[derive(Debug)]
 pub struct PreparedAttemptResult {
@@ -484,6 +540,15 @@ pub struct StagedAttemptResult {
 pub struct PreparedCheckpointResult {
     queued: QueuedAttempt,
     checkpoint: PreparedExactCheckpoint,
+}
+
+/// Read-only-prepared worker result ready for its short supervisor phase.
+#[derive(Debug)]
+pub enum PreparedAttemptWorkResult {
+    /// Canonical observation candidate ready for publication-root staging.
+    Observation(Box<PreparedAttemptResult>),
+    /// Exact checkpoint root ready for checkpoint-publication staging.
+    ExactCheckpoint(Box<PreparedCheckpointResult>),
 }
 
 impl PreparedCheckpointResult {
@@ -720,6 +785,14 @@ pub enum AttemptResultPreparationError<W> {
         /// Repository failure from the read-only preflight.
         source: CampaignRepositoryError,
     },
+    /// Exact capture preparation failed without publishing immutable objects.
+    #[error("local exact-checkpoint preparation failed")]
+    Checkpoint {
+        /// Captured checkpoint retained for direct preparation retry.
+        pending: Box<PendingCheckpointResult>,
+        /// Exact-checkpoint store failure from the no-write preparation phase.
+        source: ExactCheckpointStoreError,
+    },
 }
 
 /// Immutable publication failure retaining the preflighted candidate.
@@ -893,11 +966,12 @@ where
 /// its candidate when read-only preflight fails.
 pub fn prepare_attempt_result<W>(
     store: &CampaignExecutorStore,
+    checkpoints: &ExactCheckpointStore,
     work: AttemptWorkResult<W>,
-) -> Result<PreparedAttemptResult, AttemptResultPreparationError<W>> {
+) -> Result<PreparedAttemptWorkResult, AttemptResultPreparationError<W>> {
     let AttemptWorkResult { queued, result } = work;
-    let candidate = match result {
-        Ok(candidate) => candidate,
+    let product = match result {
+        Ok(product) => product,
         Err(failure) => {
             return Err(AttemptResultPreparationError::Worker {
                 queued: Box::new(queued),
@@ -905,7 +979,24 @@ pub fn prepare_attempt_result<W>(
             });
         }
     };
-    prepare_pending_attempt_result(store, PendingAttemptResult { queued, candidate })
+    match product {
+        AttemptExecutionProduct::Observation(candidate) => prepare_pending_attempt_result(
+            store,
+            PendingAttemptResult {
+                queued,
+                candidate: *candidate,
+            },
+        )
+        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
+        AttemptExecutionProduct::ExactCheckpoint(capture) => prepare_pending_checkpoint_result(
+            checkpoints,
+            PendingCheckpointResult {
+                queued,
+                capture: *capture,
+            },
+        )
+        .map(|prepared| PreparedAttemptWorkResult::ExactCheckpoint(Box::new(prepared))),
+    }
 }
 
 /// Retries read-only preflight of an already-executed candidate.
@@ -918,6 +1009,18 @@ pub fn retry_pending_attempt_result<W>(
     pending: PendingAttemptResult,
 ) -> Result<PreparedAttemptResult, AttemptResultPreparationError<W>> {
     prepare_pending_attempt_result(store, pending)
+}
+
+/// Retries no-write preparation of an already-captured exact checkpoint.
+///
+/// # Errors
+///
+/// Returns the same checkpoint error with the linear capture token retained.
+pub fn retry_pending_checkpoint_result<W>(
+    checkpoints: &ExactCheckpointStore,
+    pending: PendingCheckpointResult,
+) -> Result<PreparedCheckpointResult, AttemptResultPreparationError<W>> {
+    prepare_pending_checkpoint_result(checkpoints, pending)
 }
 
 fn prepare_pending_attempt_result<W>(
@@ -943,6 +1046,33 @@ fn prepare_pending_attempt_result<W>(
         pending,
         observation,
     })
+}
+
+fn prepare_pending_checkpoint_result<W>(
+    checkpoints: &ExactCheckpointStore,
+    pending: PendingCheckpointResult,
+) -> Result<PreparedCheckpointResult, AttemptResultPreparationError<W>> {
+    if !pending.queued.checkpoint_request().is_requested() {
+        return Err(AttemptResultPreparationError::Checkpoint {
+            pending: Box::new(pending),
+            source: ExactCheckpointStoreError::InvalidRoot {
+                reason: "execution returned an unsolicited exact checkpoint",
+            },
+        });
+    }
+    let checkpoint = match checkpoints.prepare_capture(CapturedExactCheckpoint::new(
+        pending.capture.snapshot().clone(),
+        pending.capture.vmstate_source(),
+    )) {
+        Ok(checkpoint) => checkpoint,
+        Err(source) => {
+            return Err(AttemptResultPreparationError::Checkpoint {
+                pending: Box::new(pending),
+                source,
+            });
+        }
+    };
+    Ok(PreparedCheckpointResult::new(pending.queued, checkpoint))
 }
 
 /// Reconciles a worker failure using only short supervisor operations.

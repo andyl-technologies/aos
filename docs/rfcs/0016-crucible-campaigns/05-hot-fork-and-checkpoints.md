@@ -296,7 +296,11 @@ durably stage the expected root in its bounded assignment ledger before the
 first put. The executor's `checkpoint-publishing` and `paused` records are the
 retention roots across publication and restart. A failed put may leave
 unreachable immutable children for GC, but may not make an incomplete root
-visible.
+visible. The live session returns metadata plus its reopenable VMState source
+as one linear capture result, reaps QEMU, and hands that value to the fixed
+worker pool. Preparation, root staging, publication, and paused-state
+reconciliation each consume a distinct retryable phase token, so storage or
+ledger failure never repeats guest execution or capture.
 
 The store admits only durable, conditional-create, streaming-read and
 streaming-put backends. The VMState source is finite and reopenable and is

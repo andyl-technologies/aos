@@ -25,13 +25,17 @@ use crucible_campaign::{
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
     AttemptResultPreparationError, AttemptResultStageOutcome, AttemptWorkerFailure,
-    AttemptWorkerReconcileError, CompletionValidationFailure, LocalAttemptWorker,
+    AttemptWorkerReconcileError, CheckpointResultAbortToken, CheckpointResultStageOutcome,
+    CompletionValidationFailure, ExactCheckpointStore, LocalAttemptWorker,
     LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
-    PreparedAttemptResult, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
+    PreparedAttemptResult, PreparedAttemptWorkResult, PreparedCheckpointResult,
+    PublishedAttemptResult, QueuedAttempt, StagedAttemptResult, abort_checkpoint_result,
     abort_prepared_attempt_result, abort_published_attempt_result, abort_staged_attempt_result,
-    prepare_attempt_result, publish_prepared_attempt_result, reconcile_attempt_failure,
-    reconcile_published_attempt_result, retry_pending_attempt_result,
-    stage_prepared_attempt_result,
+    prepare_attempt_result, publish_prepared_attempt_result, publish_staged_checkpoint_result,
+    reconcile_attempt_failure, reconcile_published_attempt_result,
+    reconcile_published_checkpoint_result, retry_pending_attempt_result,
+    retry_pending_checkpoint_result, stage_prepared_attempt_result,
+    stage_prepared_checkpoint_result,
 };
 
 /// Maximum execution threads accepted by one local executor pool.
@@ -222,8 +226,9 @@ where
     /// Starts one fixed thread for every supplied worker implementation.
     ///
     /// The worker count is additionally bounded by the supervisor's configured
-    /// execution-slot capacity. No thread is created after the constructor
-    /// returns.
+    /// execution-slot capacity. Exact captures are prepared and published
+    /// through `checkpoints` after their worker session has reaped QEMU. No
+    /// thread is created after the constructor returns.
     ///
     /// # Errors
     ///
@@ -232,6 +237,7 @@ where
     pub fn start<W>(
         executor: LocalExecutorCapabilityService<L, V>,
         store: CampaignExecutorStore,
+        checkpoints: Arc<ExactCheckpointStore>,
         workers: Vec<W>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
@@ -255,7 +261,7 @@ where
             return Err(LocalExecutorPoolConfigError::WorkerCountExceedsSlots);
         }
 
-        let shared = Arc::new(SharedExecutor::new(executor, worker_count));
+        let shared = Arc::new(SharedExecutor::new(executor, checkpoints, worker_count));
         let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
         for (slot, worker) in workers.into_iter().enumerate() {
             let worker_shared = Arc::clone(&shared);
@@ -402,6 +408,8 @@ pub struct LocalExecutorPoolReport {
     publication_retries: u64,
     reconciled: u64,
     discarded: u64,
+    checkpoints_paused: u64,
+    checkpoints_discarded: u64,
     terminal_stops: u64,
     worker_panics: u64,
 }
@@ -455,6 +463,18 @@ impl LocalExecutorPoolReport {
         self.discarded
     }
 
+    /// Returns exact checkpoints reconciled as durable paused executions.
+    #[must_use]
+    pub const fn checkpoints_paused(self) -> u64 {
+        self.checkpoints_paused
+    }
+
+    /// Returns captured checkpoints discarded because another outcome won.
+    #[must_use]
+    pub const fn checkpoints_discarded(self) -> u64 {
+        self.checkpoints_discarded
+    }
+
     /// Returns canceled or terminal worker results durably stopped.
     #[must_use]
     pub const fn terminal_stops(self) -> u64 {
@@ -471,6 +491,7 @@ impl LocalExecutorPoolReport {
 struct SharedExecutor<L, V> {
     executor: Mutex<LocalExecutorCapabilityService<L, V>>,
     validator: Arc<V>,
+    checkpoints: Arc<ExactCheckpointStore>,
     ready: Condvar,
     state: AtomicU8,
     worker_count: usize,
@@ -478,11 +499,16 @@ struct SharedExecutor<L, V> {
 }
 
 impl<L, V> SharedExecutor<L, V> {
-    fn new(executor: LocalExecutorCapabilityService<L, V>, worker_count: usize) -> Self {
+    fn new(
+        executor: LocalExecutorCapabilityService<L, V>,
+        checkpoints: Arc<ExactCheckpointStore>,
+        worker_count: usize,
+    ) -> Self {
         let validator = executor.supervisor().admission_validator();
         Self {
             executor: Mutex::new(executor),
             validator,
+            checkpoints,
             ready: Condvar::new(),
             state: AtomicU8::new(POOL_RUNNING),
             worker_count,
@@ -562,6 +588,8 @@ impl<L, V> SharedExecutor<L, V> {
             publication_retries: self.counters.publication_retries.load(Ordering::Relaxed),
             reconciled: self.counters.reconciled.load(Ordering::Relaxed),
             discarded: self.counters.discarded.load(Ordering::Relaxed),
+            checkpoints_paused: self.counters.checkpoints_paused.load(Ordering::Relaxed),
+            checkpoints_discarded: self.counters.checkpoints_discarded.load(Ordering::Relaxed),
             terminal_stops: self.counters.terminal_stops.load(Ordering::Relaxed),
             worker_panics: self.counters.worker_panics.load(Ordering::Relaxed),
         }
@@ -575,6 +603,8 @@ struct PoolCounters {
     publication_retries: AtomicU64,
     reconciled: AtomicU64,
     discarded: AtomicU64,
+    checkpoints_paused: AtomicU64,
+    checkpoints_discarded: AtomicU64,
     terminal_stops: AtomicU64,
     worker_panics: AtomicU64,
 }
@@ -649,7 +679,7 @@ fn reconcile_work_result<L, V, W>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    let prepared = match prepare_attempt_result(store, work) {
+    let prepared = match prepare_attempt_result(store, &shared.checkpoints, work) {
         Ok(prepared) => prepared,
         Err(AttemptResultPreparationError::Worker { queued, failure }) => {
             reconcile_worker_failure(shared, *queued, failure);
@@ -672,7 +702,9 @@ fn reconcile_work_result<L, V, W>(
             increment(&shared.counters.publication_retries);
             thread::sleep(WORKER_RETRY_INTERVAL);
             match retry_pending_attempt_result::<W>(store, *pending) {
-                Ok(prepared) => break prepared,
+                Ok(prepared) => {
+                    break PreparedAttemptWorkResult::Observation(Box::new(prepared));
+                }
                 Err(AttemptResultPreparationError::Candidate {
                     pending: next,
                     source: next_source,
@@ -684,8 +716,67 @@ fn reconcile_work_result<L, V, W>(
                     reconcile_worker_failure(shared, *queued, failure);
                     return;
                 }
+                Err(AttemptResultPreparationError::Checkpoint { pending, source }) => {
+                    let (queued, _) = pending.into_parts();
+                    reconcile_worker_failure(
+                        shared,
+                        queued,
+                        AttemptWorkerFailure::Terminal(source),
+                    );
+                    return;
+                }
             }
         },
+        Err(AttemptResultPreparationError::Checkpoint {
+            mut pending,
+            mut source,
+        }) => loop {
+            if pending.queued().cancellation().is_canceled() {
+                let (queued, _) = pending.into_parts();
+                reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
+                return;
+            }
+            if !source.is_retryable() {
+                let (queued, _) = pending.into_parts();
+                reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+                return;
+            }
+            increment(&shared.counters.publication_retries);
+            thread::sleep(WORKER_RETRY_INTERVAL);
+            match retry_pending_checkpoint_result::<W>(&shared.checkpoints, *pending) {
+                Ok(prepared) => {
+                    break PreparedAttemptWorkResult::ExactCheckpoint(Box::new(prepared));
+                }
+                Err(AttemptResultPreparationError::Checkpoint {
+                    pending: next,
+                    source: next_source,
+                }) => {
+                    pending = next;
+                    source = next_source;
+                }
+                Err(AttemptResultPreparationError::Worker { queued, failure }) => {
+                    reconcile_worker_failure(shared, *queued, failure);
+                    return;
+                }
+                Err(AttemptResultPreparationError::Candidate { pending, source }) => {
+                    let (queued, _) = pending.into_parts();
+                    reconcile_worker_failure(
+                        shared,
+                        queued,
+                        AttemptWorkerFailure::Terminal(source),
+                    );
+                    return;
+                }
+            }
+        },
+    };
+
+    let prepared = match prepared {
+        PreparedAttemptWorkResult::Observation(prepared) => *prepared,
+        PreparedAttemptWorkResult::ExactCheckpoint(prepared) => {
+            reconcile_checkpoint_result(shared, *prepared);
+            return;
+        }
     };
 
     let staged = match stage_prepared(shared, prepared) {
@@ -697,6 +788,140 @@ fn reconcile_work_result<L, V, W>(
         None => return,
     };
     reconcile_published(shared, published);
+}
+
+fn reconcile_checkpoint_result<L, V>(
+    shared: &SharedExecutor<L, V>,
+    mut prepared: PreparedCheckpointResult,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let mut staged = loop {
+        if prepared.queued().cancellation().is_canceled() {
+            abort_checkpoint(
+                shared,
+                CheckpointResultAbortToken::Prepared(Box::new(prepared)),
+            );
+            return;
+        }
+        let mut executor = lock_or_retain(shared, &prepared);
+        match stage_prepared_checkpoint_result(executor.supervisor_mut(), prepared) {
+            Ok(CheckpointResultStageOutcome::Publish(staged)) => break staged,
+            Ok(CheckpointResultStageOutcome::Finished { outcome, .. }) => {
+                record_checkpoint_stage_outcome(shared, outcome);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                abort_checkpoint(shared, CheckpointResultAbortToken::Prepared(error.prepared));
+                return;
+            }
+        }
+    };
+
+    let mut published = loop {
+        if staged.queued().cancellation().is_canceled() {
+            abort_checkpoint(shared, CheckpointResultAbortToken::Staged(staged));
+            return;
+        }
+        match publish_staged_checkpoint_result(&shared.checkpoints, *staged) {
+            Ok(published) => break Box::new(published),
+            Err(error) if error.source.is_retryable() => {
+                staged = error.staged;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                abort_checkpoint(shared, CheckpointResultAbortToken::Staged(error.staged));
+                return;
+            }
+        }
+    };
+
+    loop {
+        if published.queued().cancellation().is_canceled() {
+            abort_checkpoint(shared, CheckpointResultAbortToken::Published(published));
+            return;
+        }
+        let mut executor = lock_or_retain(shared, &published);
+        match reconcile_published_checkpoint_result(executor.supervisor_mut(), *published) {
+            Ok(crate::CheckpointCompletionOutcome::Paused)
+            | Ok(crate::CheckpointCompletionOutcome::AlreadyPaused) => {
+                increment(&shared.counters.checkpoints_paused);
+                return;
+            }
+            Ok(crate::CheckpointCompletionOutcome::NotCurrent) => {
+                increment(&shared.counters.checkpoints_discarded);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                published = error.published;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                abort_checkpoint(
+                    shared,
+                    CheckpointResultAbortToken::Published(error.published),
+                );
+                return;
+            }
+        }
+    }
+}
+
+fn abort_checkpoint<L, V>(shared: &SharedExecutor<L, V>, mut token: CheckpointResultAbortToken)
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        let mut executor = lock_or_retain(shared, &token);
+        match abort_checkpoint_result(executor.supervisor_mut(), token) {
+            Ok(_) => {
+                increment(&shared.counters.checkpoints_discarded);
+                increment(&shared.counters.terminal_stops);
+                return;
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                token = error.token;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(executor);
+                retain_forever(shared, error.token);
+            }
+        }
+    }
+}
+
+fn record_checkpoint_stage_outcome<L, V>(
+    shared: &SharedExecutor<L, V>,
+    outcome: crate::CheckpointPublicationOutcome,
+) {
+    match outcome {
+        crate::CheckpointPublicationOutcome::AlreadyPaused => {
+            increment(&shared.counters.checkpoints_paused);
+        }
+        crate::CheckpointPublicationOutcome::NotCurrent => {
+            increment(&shared.counters.checkpoints_discarded);
+        }
+        crate::CheckpointPublicationOutcome::Staged
+        | crate::CheckpointPublicationOutcome::AlreadyStaged => {
+            shared.poison();
+        }
+    }
 }
 
 enum StageDisposition {

@@ -9,12 +9,12 @@
 use crucible::{Configuration, Decision, ScenarioDefForm, SelectionDecision, step};
 use crucible_campaign::{
     Attempt, BranchPath, CampaignExecutorStore, CampaignLineage, ExecutorRejection,
-    ObservationCandidate, ResolvedSelection,
+    ResolvedSelection,
 };
 
 use crate::{
-    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptWorkerFailure,
-    CrucibleArtifactError, ResolvedAttemptStart,
+    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
+    AttemptWorkerFailure, CrucibleArtifactError, ResolvedAttemptStart,
     decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
 };
 
@@ -49,9 +49,9 @@ pub enum CrucibleMaterializationTier {
 }
 
 /// Complete runner result with non-canonical materialization telemetry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CrucibleExecutionOutcome {
-    candidate: ObservationCandidate,
+    product: AttemptExecutionProduct,
     materialization: CrucibleMaterializationTier,
 }
 
@@ -59,19 +59,19 @@ impl CrucibleExecutionOutcome {
     /// Binds one canonical candidate to the operational tier that realized it.
     #[must_use]
     pub const fn new(
-        candidate: ObservationCandidate,
+        product: AttemptExecutionProduct,
         materialization: CrucibleMaterializationTier,
     ) -> Self {
         Self {
-            candidate,
+            product,
             materialization,
         }
     }
 
-    /// Returns the canonical immutable candidate.
+    /// Returns the modeled completion or exact-checkpoint product.
     #[must_use]
-    pub const fn candidate(&self) -> &ObservationCandidate {
-        &self.candidate
+    pub const fn product(&self) -> &AttemptExecutionProduct {
+        &self.product
     }
 
     /// Returns the operational realization tier.
@@ -80,10 +80,10 @@ impl CrucibleExecutionOutcome {
         self.materialization
     }
 
-    /// Consumes the outcome into its canonical candidate and operational tier.
+    /// Consumes the outcome into its result product and operational tier.
     #[must_use]
-    pub fn into_parts(self) -> (ObservationCandidate, CrucibleMaterializationTier) {
-        (self.candidate, self.materialization)
+    pub fn into_parts(self) -> (AttemptExecutionProduct, CrucibleMaterializationTier) {
+        (self.product, self.materialization)
     }
 }
 
@@ -214,7 +214,7 @@ where
         &mut self,
         input: &AttemptExecutionInput,
         context: &AttemptExecutionContext,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.last_materialization = None;
         let scenario = decode_crucible_scenario_artifact(input.scenario()).map_err(|error| {
             AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Artifact(error))
@@ -274,9 +274,9 @@ where
             .runner
             .execute(&decoded, context)
             .map_err(map_runner_failure)?;
-        let (candidate, materialization) = outcome.into_parts();
+        let (product, materialization) = outcome.into_parts();
         self.last_materialization = Some(materialization);
-        Ok(candidate)
+        Ok(product)
     }
 }
 

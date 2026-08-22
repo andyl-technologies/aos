@@ -149,6 +149,58 @@ pub struct LoadedExactCheckpoint {
     vmstate: BlobHandle,
 }
 
+/// One live exact capture paired with its reopenable opaque VMState stream.
+///
+/// The QEMU session constructs this value only after pausing at an authenticated
+/// scheduler boundary. The VMState source must remain reopenable and byte-stable
+/// after the live process is reaped so the worker pool can hash and publish it
+/// without retaining QEMU resource ownership.
+pub struct CapturedExactCheckpoint {
+    snapshot: QemuVmSnapshot,
+    vmstate: BlobHandle,
+}
+
+impl fmt::Debug for CapturedExactCheckpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapturedExactCheckpoint")
+            .field("snapshot", &self.snapshot.id())
+            .field("configuration", &self.snapshot.checkpoint().configuration)
+            .field("vmstate_bytes", &self.vmstate.logical_length())
+            .finish()
+    }
+}
+
+impl CapturedExactCheckpoint {
+    /// Binds authenticated QEMU/Apache continuation metadata to opaque VMState.
+    #[must_use]
+    pub const fn new(snapshot: QemuVmSnapshot, vmstate: BlobHandle) -> Self {
+        Self { snapshot, vmstate }
+    }
+
+    /// Returns the captured scheduler and Apache continuation metadata.
+    #[must_use]
+    pub const fn snapshot(&self) -> &QemuVmSnapshot {
+        &self.snapshot
+    }
+
+    /// Returns the declared opaque VMState byte length.
+    #[must_use]
+    pub fn vmstate_bytes(&self) -> u64 {
+        self.vmstate.logical_length()
+    }
+
+    pub(crate) fn vmstate_source(&self) -> BlobHandle {
+        self.vmstate.clone()
+    }
+
+    /// Consumes the capture into its metadata and reopenable VMState source.
+    #[must_use]
+    pub fn into_parts(self) -> (QemuVmSnapshot, BlobHandle) {
+        (self.snapshot, self.vmstate)
+    }
+}
+
 impl LoadedExactCheckpoint {
     /// Returns the complete exact-checkpoint root.
     #[must_use]
@@ -303,6 +355,20 @@ impl ExactCheckpointStore {
             snapshot_identity,
             configuration,
         })
+    }
+
+    /// Authenticates and prepares one completed live capture without writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bounded metadata, source, envelope, or store errors as
+    /// [`Self::prepare`].
+    pub fn prepare_capture(
+        &self,
+        capture: CapturedExactCheckpoint,
+    ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
+        let (snapshot, vmstate) = capture.into_parts();
+        self.prepare(&snapshot, vmstate)
     }
 
     /// Publishes prepared children and then their durable root.
@@ -462,6 +528,24 @@ pub enum ExactCheckpointStoreError {
     /// QEMU snapshot metadata failed canonical authentication.
     #[error(transparent)]
     Snapshot(#[from] QemuVmSnapshotCodecError),
+}
+
+impl ExactCheckpointStoreError {
+    /// Returns whether retrying the same retained phase may repair the failure.
+    ///
+    /// Only explicit backend availability and I/O failures are retryable. A
+    /// malformed capture, corrupt content, quota rejection, poisoned owner, or
+    /// incompatible capability is stable and must be canceled or quarantined
+    /// rather than retried forever.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(
+                StoreError::Unavailable | StoreError::Io { .. } | StoreError::StreamIo { .. }
+            )
+        )
+    }
 }
 
 struct RootBody {

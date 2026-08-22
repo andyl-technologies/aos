@@ -6,16 +6,17 @@
 //! may report [`CrucibleMaterializationTier::HotFork`].
 
 use crucible::Configuration;
-use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
+use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
     QemuVmRealizationKind, QemuVmRealizationStore, QemuVmSnapshot, instantiate_qemu_vm,
 };
 
 use crate::{
-    AttemptExecutionContext, AttemptWorkerFailure, CrucibleAttemptExecution,
-    CrucibleExecutionOutcome, CrucibleExecutionRunner, CrucibleMaterializationTier,
-    CrucibleResolvedAttemptStart, ExecutionCancellation,
+    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    CapturedExactCheckpoint, CrucibleAttemptExecution, CrucibleExecutionOutcome,
+    CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
+    ExecutionCancellation,
 };
 
 /// Cancellation-aware checkpoint reads used by one campaign realization.
@@ -103,14 +104,15 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
         &mut self,
         input: &CrucibleAttemptExecution,
         realization: QemuVmRealization,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>>;
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
 
     /// Captures one exact paused checkpoint under the active resource guard.
     ///
-    /// Modeled drivers do not receive this authority. The daemon lifecycle
-    /// owner supplies the scheduler checkpoint, durably publishes the returned
-    /// snapshot while this session still owns the paused process and resource
-    /// guard, and only then consumes the session through [`Self::finish`].
+    /// Modeled drivers do not receive this authority. The returned capture owns
+    /// a reopenable, byte-stable VMState source. The lifecycle owner may
+    /// therefore reap the paused process through [`Self::finish`] before the
+    /// worker pool performs no-write preparation and durable publication,
+    /// while the supervisor keeps the execution reservation charged.
     ///
     /// # Errors
     ///
@@ -119,7 +121,7 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
     fn capture_exact_checkpoint(
         &mut self,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, QemuVmRealizationError>;
+    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError>;
 
     /// Reclaims every process, file, and resource reservation owned by the session.
     ///
@@ -315,10 +317,10 @@ where
         QemuVmRealizationKind::AncestorReplay { .. }
         | QemuVmRealizationKind::BakedGenesisLoad { .. } => CrucibleMaterializationTier::ThinReplay,
     };
-    let candidate = session
+    let product = session
         .run_attempt(input, realization)
         .map_err(map_driver_failure)?;
-    Ok(CrucibleExecutionOutcome::new(candidate, materialization))
+    Ok(CrucibleExecutionOutcome::new(product, materialization))
 }
 
 struct CancellableRealizationStore<'a, S> {
@@ -487,14 +489,14 @@ mod tests {
             &mut self,
             _input: &CrucibleAttemptExecution,
             _realization: QemuVmRealization,
-        ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+        ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
             unreachable!("finish-only test session does not drive QEMU")
         }
 
         fn capture_exact_checkpoint(
             &mut self,
             _checkpoint: crucible::Checkpoint,
-        ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+        ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
             unreachable!("finish-only test session does not capture QEMU")
         }
 

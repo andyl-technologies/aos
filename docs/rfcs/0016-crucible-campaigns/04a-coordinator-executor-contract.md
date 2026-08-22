@@ -1774,19 +1774,21 @@ event log, and then requires the checkpoint's exact event-log offset and node
 instruction count to match the live boundary before QEMU VMState or host-I/O
 capture begins. Success leaves QEMU paused. Failure after sealing also closes
 further modeled progress and retains the session for guarded reap or
-quarantine. The returned authenticated `QemuVmSnapshot` MUST be durably
-published before the session is finished and its resource guard is released.
-The daemon now prepares a no-write, content-addressed root over canonical
-snapshot metadata and a streamed opaque VMState child, stages that exact root
-in the assignment ledger before the first immutable write, publishes both
-children before the root, and requires exact durable placement receipts. The
+quarantine. A successful capture returns authenticated `QemuVmSnapshot`
+metadata plus a reopenable, byte-stable VMState source. The session reaps QEMU
+before handing that linear capture to the worker pool; the supervisor continues
+charging the execution reservation until durable pause. The daemon then
+prepares a no-write, content-addressed root over canonical snapshot metadata and
+the streamed opaque VMState child, stages that exact root in the assignment
+ledger before the first immutable write, publishes both children before the
+root, and requires exact durable placement receipts. The
 ledger preserves requested, publishing, and paused phases across restart; the
-worker publication API uses linear prepared, staged, and published tokens so a
-storage or compare-exchange error never requires rerunning a completed capture.
+worker result and publication APIs use linear captured, prepared, staged, and
+published tokens, so a storage or compare-exchange error never requires
+rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
-reservation until the executor reports durable pause. Concrete modeled-driver
-capture-result wiring and resume materialization remain mandatory before the
-full campaign/QEMU flight may claim completion.
+reservation until the executor reports durable pause. Resume materialization
+remains mandatory before the full campaign/QEMU flight may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
