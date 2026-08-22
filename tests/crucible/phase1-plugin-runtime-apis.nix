@@ -23,8 +23,10 @@
     "0073-crucible-device-wait-vmstop.patch"
   ];
   taskIds =
-    if patchName == "0063-crucible-plugin-vmstop.patch"
-    || patchName == "0073-crucible-device-wait-vmstop.patch"
+    if
+      patchName
+      == "0063-crucible-plugin-vmstop.patch"
+      || patchName == "0073-crucible-device-wait-vmstop.patch"
     then ["T-QEMU-0063"]
     else ["T-PATCH-11"];
   qemuPackageResultLines =

@@ -32,29 +32,31 @@
     "0018-crucible-dev-cb-api.patch"
     "0019-crucible-9p-shmem.patch"
   ];
-  patchContextNames = [
-    "0001-crucible-sim-accel.patch"
-    "0002-crucible-rr-fingerprint-helpers.patch"
-    "0003-crucible-icount-no-realtime.patch"
-    "0004-crucible-no-warp-with-plugin.patch"
-    "0005-crucible-det-glib-prng.patch"
-    "0006-crucible-clock-deadline.patch"
-    "0007-crucible-block-rtc-read.patch"
-    "0008-crucible-det-getrandom.patch"
-    "0009-crucible-net-deterministic.patch"
-    "0010-crucible-plugin-time-advance.patch"
-    "0011-crucible-plugin-icount-raw.patch"
-    "0012-crucible-plugin-vcpu-exit.patch"
-    "0013-crucible-plugin-wake-fd.patch"
-    "0014-crucible-plugin-tcg-exec-cb.patch"
-    "0015-crucible-blk-shmem.patch"
-    "0016-crucible-blk-shmem-io-fixes.patch"
-    "0017-crucible-blk-write-sentinel.patch"
-    "0018-crucible-dev-cb-api.patch"
-    "0019-crucible-9p-shmem.patch"
-  ] ++ lib.optionals (patchName == "0076-crucible-9p-completion-wake-registration.patch") [
-    "0076-crucible-9p-completion-wake-registration.patch"
-  ];
+  patchContextNames =
+    [
+      "0001-crucible-sim-accel.patch"
+      "0002-crucible-rr-fingerprint-helpers.patch"
+      "0003-crucible-icount-no-realtime.patch"
+      "0004-crucible-no-warp-with-plugin.patch"
+      "0005-crucible-det-glib-prng.patch"
+      "0006-crucible-clock-deadline.patch"
+      "0007-crucible-block-rtc-read.patch"
+      "0008-crucible-det-getrandom.patch"
+      "0009-crucible-net-deterministic.patch"
+      "0010-crucible-plugin-time-advance.patch"
+      "0011-crucible-plugin-icount-raw.patch"
+      "0012-crucible-plugin-vcpu-exit.patch"
+      "0013-crucible-plugin-wake-fd.patch"
+      "0014-crucible-plugin-tcg-exec-cb.patch"
+      "0015-crucible-blk-shmem.patch"
+      "0016-crucible-blk-shmem-io-fixes.patch"
+      "0017-crucible-blk-write-sentinel.patch"
+      "0018-crucible-dev-cb-api.patch"
+      "0019-crucible-9p-shmem.patch"
+    ]
+    ++ lib.optionals (patchName == "0076-crucible-9p-completion-wake-registration.patch") [
+      "0076-crucible-9p-completion-wake-registration.patch"
+    ];
   taskIds =
     if patchName == "0076-crucible-9p-completion-wake-registration.patch"
     then ["T-PATCH-20"]

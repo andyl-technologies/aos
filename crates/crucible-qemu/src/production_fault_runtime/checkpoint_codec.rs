@@ -12,18 +12,21 @@ use super::{
 };
 use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crucible::model::{
-    ContentHash, FaultObservation, FaultResourceLimitError, FaultRuntimeCheckpoint,
-    FaultSignalPlan, HostFaultActionState, ReferencedSignalEvent, ResolvedBindingAction,
+    ContentHash, FaultObservation, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionState,
+    ReferencedSignalEvent, ResolvedBindingAction,
 };
 use crucible::{BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::DequeuedFaultEvent;
 
 use crate::checkpoint::bounded_cbor::{
-    BoundedCborError, BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed,
-    map_decode_error,
+    BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed, map_decode_error,
 };
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v4\0";
+mod resource;
+
+use resource::*;
+
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v5\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_EVENT_RECORDS: u64 = 1_073_741_824;
 
@@ -139,8 +142,8 @@ impl ProductionFaultRuntimeCheckpoint {
                 .transpose()?,
             host: bounded_checkpoint_bytes(
                 self.host
-                    .canonical_bytes()
-                    .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Host)?,
+                    .canonical_bytes_with_limits(host_resource_limits(self, maximum))
+                    .map_err(map_host_error)?,
             )?,
             qemu_fingerprints: &self.qemu_fingerprints,
             qemu_fault_sequences: &self.qemu_fault_sequences,
@@ -238,8 +241,11 @@ impl ProductionFaultRuntimeCheckpoint {
         if runtime.is_none() && !plan.programs().is_empty() {
             return Err(ProductionFaultRuntimeCheckpointCodecError::Runtime);
         }
-        let host = HostFaultActionState::from_canonical_bytes(wire.host.as_slice())
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Host)?;
+        let host = HostFaultActionState::from_canonical_bytes_with_limits(
+            wire.host.as_slice(),
+            plan.resource_limits(),
+        )
+        .map_err(map_host_error)?;
         let network_state = wire.network_state.map(decode_network).transpose()?;
         let mut pending_qemu_events = BTreeMap::new();
         for (node, events) in wire.pending_qemu_events {
@@ -326,66 +332,6 @@ pub enum ProductionFaultRuntimeCheckpointCodecError {
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical production fault-runtime checkpoint")]
     Noncanonical,
-}
-
-fn map_bounded_cbor_error(error: BoundedCborError) -> ProductionFaultRuntimeCheckpointCodecError {
-    match error {
-        BoundedCborError::Malformed => ProductionFaultRuntimeCheckpointCodecError::Malformed,
-        BoundedCborError::ResourceLimit {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => resource_limit(field, current, requested, configured, hard),
-    }
-}
-
-fn map_plan_resource_error(
-    error: FaultResourceLimitError,
-) -> ProductionFaultRuntimeCheckpointCodecError {
-    match error {
-        FaultResourceLimitError::Exceeded {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        }
-        | FaultResourceLimitError::UsageOverflow {
-            field,
-            current,
-            requested,
-            configured,
-            hard,
-        } => resource_limit(field, current, requested, configured, hard),
-        FaultResourceLimitError::ConfiguredAboveHard {
-            field,
-            configured,
-            hard,
-        } => resource_limit(field, 0, configured, configured, hard),
-        FaultResourceLimitError::Zero { field } => resource_limit(field, 0, 1, 0, 0),
-        FaultResourceLimitError::UnknownField { field } => resource_limit(field, 0, 1, 0, 0),
-        FaultResourceLimitError::Representation { field, value } => {
-            resource_limit(field, 0, value, value, value)
-        }
-    }
-}
-
-const fn resource_limit(
-    field: &'static str,
-    current: u64,
-    requested: u64,
-    configured: u64,
-    hard: u64,
-) -> ProductionFaultRuntimeCheckpointCodecError {
-    ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
-        field,
-        current,
-        requested,
-        configured,
-        hard,
-    }
 }
 
 fn encode_network(
@@ -487,44 +433,6 @@ fn encode_qemu_event_map(
     }
 
     Ok(EncodedQemuEventMap { entries })
-}
-
-fn admit_checkpoint_record_count(
-    field: &'static str,
-    count: usize,
-) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
-    let requested = u64::try_from(count)
-        .map_err(|_| resource_limit(field, 0, u64::MAX, MAX_EVENT_RECORDS, MAX_EVENT_RECORDS))?;
-    if requested > MAX_EVENT_RECORDS {
-        return Err(resource_limit(
-            field,
-            0,
-            requested,
-            MAX_EVENT_RECORDS,
-            MAX_EVENT_RECORDS,
-        ));
-    }
-    Ok(())
-}
-
-fn admit_checkpoint_bytes(
-    field: &'static str,
-    count: usize,
-) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
-    let requested = u64::try_from(count)
-        .map_err(|_| resource_limit(field, 0, u64::MAX, MAX_BYTES, MAX_BYTES))?;
-    if requested > MAX_BYTES {
-        return Err(resource_limit(field, 0, requested, MAX_BYTES, MAX_BYTES));
-    }
-    Ok(())
-}
-
-fn record_allocation_limit(
-    field: &'static str,
-    count: usize,
-) -> ProductionFaultRuntimeCheckpointCodecError {
-    let requested = u64::try_from(count).unwrap_or(u64::MAX);
-    resource_limit(field, 0, requested, MAX_EVENT_RECORDS, MAX_EVENT_RECORDS)
 }
 
 fn validate_checkpoint(

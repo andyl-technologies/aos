@@ -436,6 +436,14 @@ in rec {
   # Rust (Cargo)
   cargoPhases = {
     cargoDeps,
+    cargoArtifacts ? null,
+    cargoRoot ? ".",
+    cargoEnv ? {},
+    cargoBuildCommands ? [],
+    installCargoArtifacts ? false,
+    cargoArtifactContract ? {},
+    cargoNextest ? null,
+    nextestFlags ? "",
     cargoFlags ? "",
     buildType ? "release",
     checkType ? buildType,
@@ -448,6 +456,12 @@ in rec {
     doParallelCheck ? true,
     gitDeps ? [],
   }: let
+    shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] (toString value)}'";
+    cargoEnvExports = builtins.concatStringsSep "\n" (
+      builtins.map
+      (name: "export ${name}=${shellQuote cargoEnv.${name}}")
+      (builtins.attrNames cargoEnv)
+    );
     featuresFlag =
       if buildFeatures != []
       then "--features ${builtins.concatStringsSep "," buildFeatures}"
@@ -471,6 +485,20 @@ in rec {
       )
       gitDeps
     );
+    defaultBuildCommand = "build ${profileFlag} --frozen --offline ${noDefaultFlag} ${featuresFlag} -j$NIX_BUILD_CORES ${cargoFlags}";
+    effectiveBuildCommands =
+      if cargoBuildCommands == []
+      then [defaultBuildCommand]
+      else cargoBuildCommands;
+    loggedBuildCommands = builtins.concatStringsSep "\n" (
+      builtins.map (command: ''
+        cargo ${command} --message-format=json-render-diagnostics > "$cargoBuildLogPart"
+        jq -r '.message.rendered // empty' "$cargoBuildLogPart" >&2
+        cat "$cargoBuildLogPart" >> "$cargoBuildLog"
+        cargoBuildLogPart="$cargoBuildLogPart.next"
+      '')
+      effectiveBuildCommands
+    );
   in
     [
       unpackPhase
@@ -478,6 +506,8 @@ in rec {
         name = "configure";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
+          export CARGO_INCREMENTAL=0
+          ${cargoEnvExports}
           mkdir -p "$CARGO_HOME"
           mkdir -p .cargo
           if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
@@ -488,21 +518,38 @@ in rec {
           else
             # fetchCargoDeps layout: raw vendor dir, write config inline.
             printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' > .cargo/config.toml
-            ${gitSourceLines}
+              ${gitSourceLines}
+          fi
+          if [ "${cargoRoot}" != "." ]; then
+            cd "${cargoRoot}"
+          fi
+          if [ -n "${
+            if cargoArtifacts == null
+            then ""
+            else toString cargoArtifacts
+          }" ]; then
+            mkdir -p target
+            tar xf "${
+            if cargoArtifacts == null
+            then "/dev/null"
+            else "${cargoArtifacts}/target.tar"
+          }" -C target
+            chmod -R u+w target
+            # Nix builders reuse /build/source and normalize source mtimes.
+            # Without an explicit freshness boundary Cargo can mistake dummy
+            # first-party units for the real source. Force workspace targets
+            # dirty while leaving restored registry dependencies reusable.
+            find . -path ./target -prune -o -type f -name '*.rs' -exec touch {} +
           fi
         '';
       }
       {
         name = "build";
         script = ''
-          cargo build \
-            ${profileFlag} \
-            --frozen \
-            --offline \
-            ${noDefaultFlag} \
-            ${featuresFlag} \
-            -j$NIX_BUILD_CORES \
-            ${cargoFlags}
+          cargoBuildLog="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
+          cargoBuildLogPart="$cargoBuildLog.part"
+          : > "$cargoBuildLog"
+          ${loggedBuildCommands}
         '';
       }
     ]
@@ -512,16 +559,35 @@ in rec {
         {
           name = "check";
           script = ''
-            cargo test \
-              ${checkProfileFlag} \
-              --frozen \
-              --offline \
-              ${
-              if !doParallelCheck
-              then "-- --test-threads=1"
-              else ""
-            } \
-              ${cargoTestFlags}
+            ${
+              if cargoNextest != null
+              then ''
+                cargo nextest run \
+                  ${
+                  if checkType == "release"
+                  then "--cargo-profile release"
+                  else ""
+                } \
+                  --frozen \
+                  --offline \
+                  ${noDefaultFlag} \
+                  ${featuresFlag} \
+                  ${cargoTestFlags} \
+                  ${nextestFlags}
+              ''
+              else ''
+                cargo test \
+                  ${checkProfileFlag} \
+                  --frozen \
+                  --offline \
+                  ${
+                  if !doParallelCheck
+                  then "-- --test-threads=1"
+                  else ""
+                } \
+                  ${cargoTestFlags}
+              ''
+            }
           '';
         }
       ]
@@ -532,11 +598,31 @@ in rec {
         name = "install";
         script =
           (
+            if installCargoArtifacts
+            then ''
+              mkdir -p "$out"
+              tar cf "$out/target.tar" -C target .
+              cp "$NIX_BUILD_TOP/cargo-build-messages.jsonl" "$out/build-messages.jsonl"
+              printf '%s\n' '${builtins.toJSON cargoArtifactContract}' > "$out/contract.json"
+            ''
+            else ""
+          )
+          + (
+            if !installCargoArtifacts
+            then ''
+              mkdir -p "$out/nix-support"
+              cp "$NIX_BUILD_TOP/cargo-build-messages.jsonl" \
+                "$out/nix-support/cargo-build-messages.jsonl"
+            ''
+            else ""
+          )
+          + (
             if installBins
             then ''
               mkdir -p "$out/bin"
-              find target/${buildType} -maxdepth 1 -type f -executable \
-                ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
+              jq -r 'select(.reason == "compiler-artifact") | .executable // empty' \
+                "$NIX_BUILD_TOP/cargo-build-messages.jsonl" | sort -u | while read bin; do
+                test -n "$bin" || continue
                 install -m 755 "$bin" "$out/bin/"
               done
             ''
@@ -546,8 +632,8 @@ in rec {
             if installLibs
             then ''
               mkdir -p "$out/lib"
-              find target/${buildType} -maxdepth 1 \
-                \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
+              jq -r 'select(.reason == "compiler-artifact") | .filenames[]? | select(endswith(".so") or endswith(".a") or endswith(".dylib"))' \
+                "$NIX_BUILD_TOP/cargo-build-messages.jsonl" | sort -u | while read lib; do
                 install -m 644 "$lib" "$out/lib/"
               done
             ''
