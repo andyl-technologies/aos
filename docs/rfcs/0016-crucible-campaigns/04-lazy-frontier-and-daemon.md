@@ -276,11 +276,14 @@ count against a materialized scheduler checkpoint, captures VMState plus the
 host-I/O continuation while leaving QEMU paused, and keeps the attempt resource
 guard charged until the lifecycle owner explicitly finishes the session.
 Modeled attempt drivers do not receive capture or guard-release authority. The
-executor persists checkpoint-requested, checkpoint-publishing, and paused
-states; stages the expected root before immutable writes; retains that root for
-GC and restart; and releases capacity only after durable pause. The campaign
-supervisor drives this exact request/status protocol. Concrete modeled-driver
-capture-result wiring and resume materialization remain open.
+executor persists checkpoint-requested, checkpoint-publishing, paused, and
+raw-root checkpoint-promoting states; stages every expected root before
+immutable writes; retains source and replacement roots for GC and restart; and
+releases capacity only after durable pause. The campaign supervisor drives this
+exact request/status protocol. Capture-result wiring, complete-root attempt
+resume materialization, guarded replay validation, and crash-safe promotion are
+implemented. Concrete run-directory/process-guard composition and the full
+real-node executor flight remain open.
 
 - **[LAZY-9]** Daemon epoch, worker slot, reservation generation, retry count,
   and execution handle MUST NOT enter attempt, configuration, observation, or

@@ -1266,6 +1266,8 @@ any echo or the digest differs. Its closed disposition vocabulary is
 paused(exact-checkpoint ID) | completed(observation ID) | canceled |
 not-current`. The executor returns `running` for exact durable `running` or
 observation-`publishing` state,
+`checkpoint-publishing(promoted)` for the internal replay-validation
+`checkpoint-promoting(source,promoted)` state,
 `completed` only for exact durable completion, and `canceled` only for exact
 durable cancellation. Absence or any epoch, lineage, attempt, execution, or
 execution-basis mismatch is `not-current`. This operation reads the direct
@@ -1285,6 +1287,22 @@ to `paused(root)` only after the complete root closure has durable placement;
 only then may it release the process-local execution reservation. A retry
 returns the exact durable phase and root. A different root for the same
 execution is a stable conflict and MUST NOT replace the staged root.
+
+A newly captured `paused(raw)` root carries `NotRun` replay-oracle evidence and
+is not resumable. Replay validation runs outside supervisor ownership under one
+attempt process/resource guard. After a matching fat/thin comparison, the
+executor prepares the deterministic replacement without writes and CASes the
+version-5 operational record to
+`checkpoint-promoting(raw,promoted)` before the first replacement put. Both
+roots are GC roots in that phase. The promoted root reuses the exact VMState
+child and may differ from the raw root only by its authenticated matching
+replay-oracle metadata. After all replacement objects have durable placement,
+the executor CASes to `paused(promoted)`. A restart authenticates both complete
+roots and this exact relationship before finishing the CAS without rerunning
+QEMU; an incomplete replacement retains the raw root and reruns the same bound
+validation/publication or is explicitly reverted only after stable failure.
+Resume is `not-current` while promotion is staged and can begin only from the
+final `paused(promoted)` root.
 
 `ResumeAttemptExecution` is the idempotent admission request for a fresh local
 execution incarnation from one exact durable `paused(root)` state. Its request
@@ -1339,10 +1357,13 @@ resuming the pre-selection parent and skips that application when resuming the
 post-selection boundary; a resumed attempt cannot traverse the edge twice. The
 checkpoint store and pinned run-directory transaction implement the
 complete-root, streamed-VMState materialization primitive for that operation.
-Concrete composition of replay-oracle validation/promotion, run-directory
-ownership, the guarded real-node launcher, and the production process guard
-remains required before the full QEMU flight is complete; a raw `NotRun` root
-is not admitted merely because it materialized successfully.
+The guarded replay-validation session, source-bound promotion preparation,
+linear publication phases, version-5 ledger transition, restart
+reauthentication, and final paused-root CAS are implemented. Concrete
+run-directory ownership, the guarded real-node launcher, the production
+process guard, and invocation of this composition by the full QEMU flight
+remain required; a raw `NotRun` root is not admitted merely because it
+materialized successfully.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
 `ExecutorClient` wraps both direct and future RPC services and rejects a
@@ -1396,16 +1417,18 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV4 = magic | lineage_id | attempt_id |
+AttemptStateRecordV5 = magic | lineage_id | attempt_id |
                        execution_basis_digest |
                        execution_origin(initial |
                          exact-checkpoint(assignment_id, request_digest,
                            prior_execution_id, exact_checkpoint_id)) |
                        (running | observation-publishing |
                         checkpoint-requested | checkpoint-publishing | paused |
+                        checkpoint-promoting(source, promoted) |
                         completed | canceled) |
                        daemon_epoch | execution_id |
                        observation_id? | output_exact_checkpoint_id? |
+                       source_exact_checkpoint_id? |
                        checksum
 ```
 
@@ -1420,9 +1443,12 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
+The version-5 attempt-state reader retains strict read compatibility for
+versions 1 through 4; only version 5 may encode `checkpoint-promoting`.
 
 `checkpoint-publishing` and `paused` records are durable GC roots for their
-exact output checkpoint IDs. Every phase of a resumed incarnation also retains
+exact output checkpoint IDs. `checkpoint-promoting` retains both its raw source
+and expected replacement. Every phase of a resumed incarnation also retains
 its exact input checkpoint as a GC root until that incarnation reaches durable
 retirement. Restart replaces a stale checkpoint-requested execution
 with a new-epoch recovery execution and keeps the checkpoint request signal
