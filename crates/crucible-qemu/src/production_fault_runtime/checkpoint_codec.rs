@@ -363,7 +363,7 @@ fn encode_network(
             checkpoint
                 .scheduler
                 .canonical_bytes()
-                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+                .map_err(map_scheduler_network_error)?,
         )?,
         committed_frontier_ticks: checkpoint.committed_frontier.ticks,
         pending_outputs,
@@ -391,7 +391,7 @@ fn decode_network(
     Ok(ProductionNetworkStateCheckpoint {
         identity: wire.identity,
         scheduler: SchedulerNetworkCheckpoint::from_canonical_bytes(wire.scheduler.as_slice())
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+            .map_err(map_scheduler_network_error)?,
         committed_frontier: crucible::VirtualTime {
             ticks: wire.committed_frontier_ticks,
         },
