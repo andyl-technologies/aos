@@ -28,18 +28,21 @@ use std::os::unix::net::UnixStream;
 
 use crucible_campaign::{
     ActiveAttemptPolicy, AlternativeId, ApplyCampaignCommandRequest, BranchBudget, BranchPointId,
-    BranchRequest, BranchRequestCause, BranchRequestId, BudgetGrant, CampaignClient,
-    CampaignCommandId, CampaignControlAction, CampaignHash, CampaignLineage, CampaignName,
-    CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignService,
-    CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateGeneratorSpecId,
-    CandidateSource, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId,
-    ConfigurationId, ContinuationState, ControlRequest, CreateCampaignRequest,
-    DeriveCampaignRequest, FindingKind, GetCampaignRequest, IntegerValue,
-    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
-    QueryCampaignChoicesRequest, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    QueryCampaignGraphRequest, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
+    BranchRequest, BranchRequestCause, BranchRequestId, BudgetGrant, CampaignChoiceObject,
+    CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignControlAction,
+    CampaignHash, CampaignLineage, CampaignName, CampaignPolicy, CampaignPolicyId,
+    CampaignPrincipal, CampaignService, CampaignServiceFailureSource, CampaignSnapshotId,
+    CampaignState, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId,
+    CandidateSource, ChoiceDomain, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue,
+    ConfigurationArtifactId, ConfigurationId, ContinuationState, ControlRequest,
+    CreateCampaignRequest, DeriveCampaignRequest, FindingKind, GetCampaignChoiceObjectRequest,
+    GetCampaignRequest, IntegerValue, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
+    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
+    QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
+    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, StopCondition, SubmitCampaignBranchRequest,
+    WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
@@ -162,6 +165,17 @@ struct CampaignMutationBasisRef<'a> {
     command: &'a str,
 }
 
+struct ParsedCampaignBranchBasis {
+    campaign: CampaignName,
+    expected: CampaignSnapshotId,
+    command: Option<CampaignCommandId>,
+    branch_point: BranchPointId,
+    parent: ConfigurationArtifactId,
+    opportunity: ChoiceOpportunityId,
+    domain: ChoiceDomainId,
+    stop: StopCondition,
+}
+
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
     let principal = CampaignPrincipal::new(args.principal.clone())
         .map_err(|error| usage_error(format!("invalid campaign principal: {error}")))?;
@@ -179,11 +193,22 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         .map_err(|error| backend_error(format!("campaign transport setup failed: {error}")))?;
     let client = CampaignClient::new(service);
     let rendered = match &args.command {
-        CampaignCommand::Create(_) | CampaignCommand::Derive(_) | CampaignCommand::Branch(_) => {
+        CampaignCommand::Create(_) | CampaignCommand::Derive(_) => {
             let prepared = prepared.ok_or_else(|| {
                 backend_error("campaign acceptance command was not prepared before connection")
             })?;
             let report = apply_campaign_acceptance(&client, prepared)?;
+            render_campaign_acceptance(&report, cli.output_format())?
+        }
+        CampaignCommand::Branch(branch) => {
+            let report = if branch.all {
+                apply_campaign_all_branch(&client, principal.clone(), branch)?
+            } else {
+                let prepared = prepared.ok_or_else(|| {
+                    backend_error("campaign branch was not prepared before connection")
+                })?;
+                apply_campaign_acceptance(&client, prepared)?
+            };
             render_campaign_acceptance(&report, cli.output_format())?
         }
         CampaignCommand::Status(_) | CampaignCommand::Watch(_) => {
@@ -287,6 +312,20 @@ fn prepare_campaign_command(
                         usage_error(format!("invalid campaign derivation basis: {error}"))
                     })?;
             Ok(Some(PreparedCampaignCommand::Derive(request)))
+        }
+        CampaignCommand::Branch(branch) if branch.all => {
+            parse_campaign_branch_basis(branch)?;
+            if branch.command.is_some()
+                || !branch.values.is_empty()
+                || branch.generator.is_some()
+                || branch.proposals.is_some()
+            {
+                return Err(usage_error(concat!(
+                    "campaign --all branch cannot carry an operator command, values, ",
+                    "a generator, or a proposal budget",
+                )));
+            }
+            Ok(None)
         }
         CampaignCommand::Branch(branch) => prepare_campaign_branch(branch, principal).map(Some),
         CampaignCommand::Status(status) => {
@@ -425,23 +464,11 @@ fn prepare_campaign_branch(
     branch: &CampaignBranchArgs,
     principal: &CampaignPrincipal,
 ) -> Result<PreparedCampaignCommand, CliError> {
-    let campaign = campaign_name(&branch.name)?;
-    let expected = CampaignSnapshotId::parse(&branch.expected)
-        .map_err(|error| usage_error(format!("invalid campaign snapshot precondition: {error}")))?;
-    let command = CampaignCommandId::parse(&branch.command)
-        .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?;
-    let branch_point = BranchPointId::parse(&branch.branch_point)
-        .map_err(|error| usage_error(format!("invalid branch-point ID: {error}")))?;
-    let parent = ConfigurationArtifactId::parse(&branch.parent)
-        .map_err(|error| usage_error(format!("invalid parent configuration artifact: {error}")))?;
-    let opportunity = ChoiceOpportunityId::parse(&branch.opportunity)
-        .map_err(|error| usage_error(format!("invalid choice opportunity: {error}")))?;
-    let domain = ChoiceDomainId::parse(&branch.domain)
-        .map_err(|error| usage_error(format!("invalid choice domain: {error}")))?;
+    let basis = parse_campaign_branch_basis(branch)?;
 
-    if branch.generator.is_some() && !branch.values.is_empty() {
+    if branch.all || (branch.generator.is_some() && !branch.values.is_empty()) {
         return Err(usage_error(
-            "campaign branch must use either finite values or one generator",
+            "campaign branch must use exactly one of finite values, a generator, or --all",
         ));
     }
     let mut values = BTreeSet::new();
@@ -470,22 +497,126 @@ fn prepare_campaign_branch(
     };
     let budget = BranchBudget::new(proposals, branch.attempts)
         .map_err(|error| usage_error(format!("invalid campaign branch budget: {error}")))?;
-    let request = BranchRequest::new(
-        branch_point,
-        parent,
-        opportunity,
-        domain,
-        source,
-        BranchRequestCause::Operator(command),
-        budget,
-        parse_campaign_stop_condition(&branch.stop)?,
-    )
-    .map_err(|error| usage_error(format!("invalid campaign branch request: {error}")))?;
+    let request =
+        BranchRequest::new(
+            basis.branch_point,
+            basis.parent,
+            basis.opportunity,
+            basis.domain,
+            source,
+            BranchRequestCause::Operator(basis.command.ok_or_else(|| {
+                usage_error("campaign operator branch requires an exact command ID")
+            })?),
+            budget,
+            basis.stop,
+        )
+        .map_err(|error| usage_error(format!("invalid campaign branch request: {error}")))?;
 
-    let submission =
-        SubmitCampaignBranchRequest::new(principal.clone(), campaign, expected, request)
-            .map_err(|error| usage_error(format!("invalid campaign branch submission: {error}")))?;
+    let submission = SubmitCampaignBranchRequest::new(
+        principal.clone(),
+        basis.campaign,
+        basis.expected,
+        request,
+    )
+    .map_err(|error| usage_error(format!("invalid campaign branch submission: {error}")))?;
     Ok(PreparedCampaignCommand::Branch(submission))
+}
+
+fn parse_campaign_branch_basis(
+    branch: &CampaignBranchArgs,
+) -> Result<ParsedCampaignBranchBasis, CliError> {
+    Ok(ParsedCampaignBranchBasis {
+        campaign: campaign_name(&branch.name)?,
+        expected: CampaignSnapshotId::parse(&branch.expected).map_err(|error| {
+            usage_error(format!("invalid campaign snapshot precondition: {error}"))
+        })?,
+        command: branch
+            .command
+            .as_deref()
+            .map(CampaignCommandId::parse)
+            .transpose()
+            .map_err(|error| usage_error(format!("invalid campaign command ID: {error}")))?,
+        branch_point: BranchPointId::parse(&branch.branch_point)
+            .map_err(|error| usage_error(format!("invalid branch-point ID: {error}")))?,
+        parent: ConfigurationArtifactId::parse(&branch.parent).map_err(|error| {
+            usage_error(format!("invalid parent configuration artifact: {error}"))
+        })?,
+        opportunity: ChoiceOpportunityId::parse(&branch.opportunity)
+            .map_err(|error| usage_error(format!("invalid choice opportunity: {error}")))?,
+        domain: ChoiceDomainId::parse(&branch.domain)
+            .map_err(|error| usage_error(format!("invalid choice domain: {error}")))?,
+        stop: parse_campaign_stop_condition(&branch.stop)?,
+    })
+}
+
+fn apply_campaign_all_branch<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    branch: &CampaignBranchArgs,
+) -> Result<CampaignAcceptanceReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let basis = parse_campaign_branch_basis(branch)?;
+    let domain_request = GetCampaignChoiceObjectRequest::new(
+        principal.clone(),
+        basis.campaign.clone(),
+        basis.expected,
+        basis.opportunity,
+        CampaignChoiceObjectKind::Domain,
+    )
+    .map_err(|error| usage_error(format!("invalid exhaustive domain query: {error}")))?;
+    let domain_response = client
+        .get_campaign_choice_object(&domain_request)
+        .map_err(|error| {
+            backend_error(format!("campaign exhaustive domain query failed: {error}"))
+        })?;
+    let CampaignChoiceObject::Domain(domain) = domain_response.object() else {
+        return Err(backend_error(
+            "authenticated exhaustive domain query returned another object kind",
+        ));
+    };
+    if domain.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated exhaustive domain identity failed: {error}"
+        ))
+    })? != basis.domain
+    {
+        return Err(usage_error(
+            "campaign --all domain differs from the authenticated opportunity domain",
+        ));
+    }
+    if !matches!(domain, ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_)) {
+        return Err(usage_error(
+            "campaign --all currently supports only finite Boolean or discrete domains",
+        ));
+    }
+    let proposals = u64::try_from(domain.cardinality())
+        .map_err(|_| usage_error("campaign --all domain cardinality exceeds u64"))?;
+    let generator = CandidateGeneratorSpec::new(
+        STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .map_err(|error| backend_error(format!("canonical all generator is invalid: {error}")))?
+    .id()
+    .map_err(|error| backend_error(format!("canonical all generator identity failed: {error}")))?;
+    let request = BranchRequest::new(
+        basis.branch_point,
+        basis.parent,
+        basis.opportunity,
+        basis.domain,
+        CandidateSource::generated(generator),
+        BranchRequestCause::ExhaustivePolicy(domain_response.snapshot_body().active_policy()),
+        BranchBudget::new(proposals, branch.attempts)
+            .map_err(|error| usage_error(format!("invalid campaign --all budget: {error}")))?,
+        basis.stop,
+    )
+    .map_err(|error| usage_error(format!("invalid campaign --all request: {error}")))?;
+    let submission =
+        SubmitCampaignBranchRequest::new(principal, basis.campaign, basis.expected, request)
+            .map_err(|error| usage_error(format!("invalid campaign --all submission: {error}")))?;
+    apply_campaign_acceptance(client, PreparedCampaignCommand::Branch(submission))
 }
 
 fn parse_campaign_choice_value(value: &str) -> Result<ChoiceValue, CliError> {
@@ -1907,9 +2038,18 @@ mod tests {
 
         fn submit_branch_request(
             &self,
-            _request: &SubmitCampaignBranchRequest,
+            request: &SubmitCampaignBranchRequest,
         ) -> Result<SubmitCampaignBranchResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            Ok(SubmitCampaignBranchResponse::new(
+                request,
+                BranchRequestResult {
+                    prior_snapshot: request.expected_snapshot(),
+                    new_snapshot: snapshot("graph-page-branched"),
+                    request: request.request().id().expect("branch request ID"),
+                    replayed: false,
+                },
+            )
+            .expect("fixed graph-page branch response"))
         }
     }
 
@@ -2480,6 +2620,63 @@ mod tests {
             branch,
             CampaignAcceptanceReport::Branch { new_snapshot, replayed: false, .. }
                 if new_snapshot == snapshot("branched").to_string()
+        ));
+    }
+
+    #[test]
+    fn campaign_all_branch_derives_authenticated_generator_policy_and_budget() {
+        let (service, source_snapshot, _) = graph_page_service();
+        let template = service.branch_request.clone();
+        let active_policy = service.snapshot.active_policy();
+        let all_generator = CandidateGeneratorSpec::new(
+            STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::All,
+        )
+        .expect("all generator")
+        .id()
+        .expect("all generator ID");
+        let branch = CampaignBranchArgs {
+            name: "example".to_owned(),
+            expected: source_snapshot.to_string(),
+            command: None,
+            branch_point: template.branch_point().to_string(),
+            parent: template.parent().to_string(),
+            opportunity: template.opportunity().to_string(),
+            domain: template.domain().to_string(),
+            values: Vec::new(),
+            generator: None,
+            all: true,
+            proposals: None,
+            attempts: 2,
+            stop: "next-choice".to_owned(),
+        };
+        let expected = BranchRequest::new(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+            CandidateSource::generated(all_generator),
+            BranchRequestCause::ExhaustivePolicy(active_policy),
+            BranchBudget::new(2, 2).expect("all budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("expected all request")
+        .id()
+        .expect("expected all request ID");
+        let report = apply_campaign_all_branch(
+            &CampaignClient::new(service),
+            CampaignPrincipal::new("operator").expect("principal"),
+            &branch,
+        )
+        .expect("apply exhaustive branch");
+        assert!(matches!(
+            report,
+            CampaignAcceptanceReport::Branch {
+                request,
+                prior_snapshot,
+                replayed: false,
+                ..
+            } if request == expected.to_string() && prior_snapshot == source_snapshot.to_string()
         ));
     }
 
@@ -3173,7 +3370,7 @@ mod tests {
             "--expected",
             &branch.expected,
             "--command",
-            &branch.command,
+            branch.command.as_deref().expect("operator command"),
             "--branch-point",
             &branch.branch_point,
             "--parent",
@@ -3211,7 +3408,7 @@ mod tests {
             "--expected",
             &branch.expected,
             "--command",
-            &branch.command,
+            branch.command.as_deref().expect("operator command"),
             "--branch-point",
             &branch.branch_point,
             "--parent",
@@ -3244,6 +3441,95 @@ mod tests {
                 ..
             }) if values.is_empty()
         ));
+        let all_branch = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "branch",
+            "created",
+            "--expected",
+            &branch.expected,
+            "--branch-point",
+            &branch.branch_point,
+            "--parent",
+            &branch.parent,
+            "--opportunity",
+            &branch.opportunity,
+            "--domain",
+            &branch.domain,
+            "--all",
+            "--attempts",
+            "2",
+        ])
+        .expect("campaign exhaustive branch arguments");
+        assert!(matches!(
+            all_branch.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Branch(CampaignBranchArgs {
+                    all: true,
+                    values,
+                    generator: None,
+                    proposals: None,
+                    attempts: 2,
+                    ..
+                }),
+                ..
+            }) if values.is_empty()
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "crucible",
+                "campaign",
+                "--socket",
+                "/run/crucible/campaign.sock",
+                "--principal",
+                "operator",
+                "branch",
+                "created",
+                "--expected",
+                &branch.expected,
+                "--command",
+                branch.command.as_deref().expect("operator command"),
+                "--branch-point",
+                &branch.branch_point,
+                "--parent",
+                &branch.parent,
+                "--opportunity",
+                &branch.opportunity,
+                "--domain",
+                &branch.domain,
+                "--all",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "crucible",
+                "campaign",
+                "--socket",
+                "/run/crucible/campaign.sock",
+                "--principal",
+                "operator",
+                "branch",
+                "created",
+                "--expected",
+                &branch.expected,
+                "--branch-point",
+                &branch.branch_point,
+                "--parent",
+                &branch.parent,
+                "--opportunity",
+                &branch.opportunity,
+                "--domain",
+                &branch.domain,
+                "--value",
+                "false",
+            ])
+            .is_err()
+        );
 
         let expected = snapshot("current").to_string();
         let command = hash("pause").to_hex();
@@ -3485,7 +3771,9 @@ mod tests {
         CampaignBranchArgs {
             name: "created".to_owned(),
             expected: snapshot("created").to_string(),
-            command: CampaignCommandId::from_hash(hash(&format!("{label}-command"))).to_string(),
+            command: Some(
+                CampaignCommandId::from_hash(hash(&format!("{label}-command"))).to_string(),
+            ),
             branch_point: BranchPointId::from_hash(hash(&format!("{label}-point"))).to_string(),
             parent: ConfigurationArtifactId::parse(&format!(
                 "crucible.campaign.configuration-artifact@{}",
@@ -3522,6 +3810,7 @@ mod tests {
             .to_string(),
             values: vec!["false".to_owned(), "true".to_owned()],
             generator: None,
+            all: false,
             proposals: None,
             attempts: 1,
             stop: "next-choice".to_owned(),

@@ -531,7 +531,10 @@ oracle.
   inputs match.
 - **[GUIDE-22]** `branch --all` MUST fail before request publication when the
   validated finite domain exceeds the configured exhaustive-cardinality ceiling
-  or cannot provide a finite cardinality proof.
+  or cannot provide a finite cardinality proof. The first executable porcelain
+  derives implementation-version 2 `all` and an exact-cardinality proposal
+  budget for Boolean and discrete domains, and binds both to the active
+  exhaustive policy selected at the request's authenticated snapshot.
 - **[GUIDE-23]** An operator or debugger `ExecutionBasis` MUST be excluded from
   statistical estimators unless the pinned statistical policy admitted its
   selection mechanism and records valid support and weighting evidence. An

@@ -464,8 +464,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;
   legacy heads without the optional index fail closed until a future explicit
   complete migration and ordinary mutations never create a partial index.
-  A separate choice-object read authenticates the opportunity's authoritative
-  graph membership and returns only its exact declaration or effective domain;
+  A separate current-or-historical choice-object read authenticates the
+  opportunity's authoritative graph membership at one exact named-history
+  snapshot and returns only its exact declaration or effective domain;
   arbitrary non-graph reads remain unavailable.
   `QueryFindings` returns at most four complete canonical finding records from
   the authenticated findings root with an exact range/EOF proof and
@@ -793,9 +794,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
   `fork` only as a deprecated compatibility alias for `branch` if needed. The
   checked local client now exposes canonical create/derive inputs and exact
-  finite or already-imported generated operator branch requests in addition to lifecycle control; manifest
-  authoring, verifier-backed import/validation, start attachment, selector
-  resolution, and generated `--all` authoring remain open.
+  finite or already-imported generated operator branch requests in addition to
+  lifecycle control. Exhaustive `--all` authenticates the exact current or
+  historical opportunity domain, derives the canonical version-2 generator and
+  cardinality budget, and is owner-checked against the active exhaustive policy
+  before publication. Manifest authoring, verifier-backed import/validation,
+  start attachment, and selector resolution remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed

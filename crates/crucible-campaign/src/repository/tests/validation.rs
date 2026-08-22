@@ -6,6 +6,20 @@ use crate::{
     IntegerValue, PinChange, PinRetention,
 };
 
+struct PermitExhaustive;
+
+impl crate::CampaignPrincipalAuthorizer for PermitExhaustive {
+    fn authorize(
+        &self,
+        _principal: &crate::CampaignPrincipal,
+        _operation: crate::CampaignServiceOperation,
+        _campaign: &crate::CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crate::CampaignAuthorizationError> {
+        Ok(())
+    }
+}
+
 #[test]
 fn authenticated_closure_inventory_includes_campaign_records_and_merkle_nodes() {
     let (repository, lineage, policy) = fixture();
@@ -561,6 +575,193 @@ fn generated_branch_requests_validate_the_complete_domain_compatible_spec() {
             .expect("rebuild generated history")
             .snapshot_id(),
         legacy_issued.new_snapshot
+    );
+}
+
+#[test]
+fn exhaustive_all_requests_bind_policy_cardinality_and_replay_exactly() {
+    let (repository, lineage, _, blobs) = fixture_with_quota(64 * 1024 * 1024);
+    let all = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("all generator");
+    let all_id = all.id().expect("all generator id");
+    let policy =
+        exhaustive_policy_with_generator(lineage.scenario(), all_id, "product.network.retry", 2);
+    let genesis = repository
+        .create(
+            "exhaustive-all",
+            &lineage,
+            &policy,
+            &BTreeMap::from([(all_id, all.clone())]),
+        )
+        .expect("create exhaustive campaign");
+    let finite = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "exhaustive-all",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "exhaustive-all",
+            genesis.snapshot_id(),
+            finite.parent(),
+            finite.opportunity(),
+        )
+        .expect("discover exhaustive choice");
+    let exhaustive = BranchRequest::new(
+        finite.branch_point(),
+        finite.parent(),
+        finite.opportunity(),
+        finite.domain(),
+        CandidateSource::generated(all_id),
+        BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
+        BranchBudget::new(2, 2).expect("exact exhaustive budget"),
+        finite.stop().clone(),
+    )
+    .expect("exhaustive request");
+    let partial = BranchRequest::new(
+        finite.branch_point(),
+        finite.parent(),
+        finite.opportunity(),
+        finite.domain(),
+        CandidateSource::generated(all_id),
+        BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
+        BranchBudget::new(1, 1).expect("partial budget"),
+        finite.stop().clone(),
+    )
+    .expect("partial exhaustive request");
+    let objects_before_partial = blobs
+        .object_count()
+        .expect("objects before partial rejection");
+    assert!(matches!(
+        repository.submit_branch_request("exhaustive-all", discovered.new_snapshot, &partial),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "exhaustive-branch-request-budget-is-not-domain-cardinality"
+        })
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after partial rejection"),
+        objects_before_partial
+    );
+    assert_eq!(
+        repository
+            .head("exhaustive-all")
+            .expect("head after partial rejection")
+            .snapshot_id(),
+        discovered.new_snapshot
+    );
+    let accepted = repository
+        .submit_branch_request("exhaustive-all", discovered.new_snapshot, &exhaustive)
+        .expect("accept exhaustive request");
+    let advanced = repository
+        .submit_branch_request("exhaustive-all", accepted.new_snapshot, &finite)
+        .expect("advance after exhaustive request");
+    let replay = repository
+        .submit_branch_request("exhaustive-all", discovered.new_snapshot, &exhaustive)
+        .expect("replay exhaustive request before stale check");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, discovered.new_snapshot);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+    let service_replay = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitExhaustive,
+    ))
+    .submit_branch_request(
+        &crate::SubmitCampaignBranchRequest::new(
+            crate::CampaignPrincipal::new("operator").expect("principal"),
+            crate::CampaignName::new("exhaustive-all").expect("campaign name"),
+            discovered.new_snapshot,
+            exhaustive.clone(),
+        )
+        .expect("service exhaustive request"),
+    )
+    .expect("service accepts exhaustive policy request");
+    assert!(service_replay.replayed());
+    assert_eq!(service_replay.prior_snapshot(), discovered.new_snapshot);
+    assert_eq!(service_replay.new_snapshot(), accepted.new_snapshot);
+    assert_eq!(
+        repository
+            .head("exhaustive-all")
+            .expect("current exhaustive head")
+            .snapshot_id(),
+        advanced.new_snapshot
+    );
+    repository
+        .validated_heads
+        .lock()
+        .expect("validation cache")
+        .clear();
+    assert_eq!(
+        repository
+            .head("exhaustive-all")
+            .expect("rebuild exhaustive history")
+            .snapshot_id(),
+        advanced.new_snapshot
+    );
+
+    let narrow_policy =
+        exhaustive_policy_with_generator(lineage.scenario(), all_id, "product.network.retry", 1);
+    let narrow_genesis = repository
+        .create(
+            "exhaustive-too-wide",
+            &lineage,
+            &narrow_policy,
+            &BTreeMap::from([(all_id, all)]),
+        )
+        .expect("create narrow exhaustive campaign");
+    let narrow_finite = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "exhaustive-too-wide",
+    );
+    let narrow_discovery = repository
+        .discover_choice_opportunity(
+            "exhaustive-too-wide",
+            narrow_genesis.snapshot_id(),
+            narrow_finite.parent(),
+            narrow_finite.opportunity(),
+        )
+        .expect("discover too-wide choice");
+    let too_wide = BranchRequest::new(
+        narrow_finite.branch_point(),
+        narrow_finite.parent(),
+        narrow_finite.opportunity(),
+        narrow_finite.domain(),
+        CandidateSource::generated(all_id),
+        BranchRequestCause::ExhaustivePolicy(narrow_policy.id().expect("narrow policy id")),
+        BranchBudget::new(2, 2).expect("complete domain budget"),
+        narrow_finite.stop().clone(),
+    )
+    .expect("too-wide exhaustive request");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+    assert!(matches!(
+        repository.submit_branch_request(
+            "exhaustive-too-wide",
+            narrow_discovery.new_snapshot,
+            &too_wide,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "exhaustive-branch-request-domain-exceeds-policy"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before
+    );
+    assert_eq!(
+        repository
+            .head("exhaustive-too-wide")
+            .expect("unchanged narrow head")
+            .snapshot_id(),
+        narrow_discovery.new_snapshot
     );
 }
 

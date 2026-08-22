@@ -393,9 +393,14 @@ struct CampaignBranchArgs {
     /// Snapshot this additive request expects to advance.
     #[arg(long, value_name = "SNAPSHOT", required = true)]
     expected: String,
-    /// Exact lowercase hexadecimal operator idempotency key.
-    #[arg(long, value_name = "COMMAND", required = true)]
-    command: String,
+    /// Exact operator idempotency key; omitted for exhaustive-policy `--all`.
+    #[arg(
+        long,
+        value_name = "COMMAND",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    command: Option<String>,
     /// Semantic branch-point ID.
     #[arg(long, value_name = "BRANCH_POINT", required = true)]
     branch_point: String,
@@ -412,14 +417,21 @@ struct CampaignBranchArgs {
     #[arg(
         long = "value",
         value_name = "VALUE",
-        required_unless_present = "generator",
-        conflicts_with = "generator",
+        required_unless_present_any = ["generator", "all"],
+        conflicts_with_all = ["generator", "all"],
         action = ArgAction::Append
     )]
     values: Vec<String>,
     /// Deterministic candidate-generator ID instead of finite values.
-    #[arg(long, value_name = "GENERATOR", conflicts_with = "values")]
+    #[arg(
+        long,
+        value_name = "GENERATOR",
+        conflicts_with_all = ["values", "all"]
+    )]
     generator: Option<String>,
+    /// Exhaust the authenticated finite domain under the active exhaustive policy.
+    #[arg(long, conflicts_with_all = ["values", "generator", "proposals"])]
+    all: bool,
     /// Maximum proposals; required for a generator, otherwise defaults to value count.
     #[arg(long, value_name = "COUNT")]
     proposals: Option<u64>,

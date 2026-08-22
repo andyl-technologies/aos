@@ -174,18 +174,31 @@ crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
   --opportunity OPPORTUNITY --domain DOMAIN --generator GENERATOR \
   --proposals N [--attempts N] [--stop CONDITION]
+crucible campaign branch NAME --expected SNAPSHOT \
+  --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
+  --opportunity OPPORTUNITY --domain DOMAIN --all \
+  [--attempts N] [--stop CONDITION]
 ```
 
-The current `branch` command publishes an additive finite or generated
-`BranchRequest` with an exact operator command cause. Values use the closed `true`, `false`,
-`i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
+The ordinary `branch` forms publish an additive finite or generated
+`BranchRequest` with an exact operator command cause. Values use the closed
+`true`, `false`, `i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
 `next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, or `events:N`.
 The request carries exact parent-artifact, opportunity, domain, and semantic
 branch-point IDs so repository admission can authenticate the complete basis.
-`--generator` names one already imported, policy-reachable canonical generator
-and requires an explicit nonzero proposal budget; it is mutually exclusive
-with finite values. Selector resolution and generated `--all` authoring remain
-richer future porcelain over the same record. Finite values are validated against the choice
+`--generator` names one already imported canonical generator and requires an
+explicit nonzero proposal budget; it is mutually exclusive with finite values.
+It is an explicit operator intervention, while planner and exhaustive-policy
+causes additionally require the generator selected by the active choice policy.
+`--all` is a content-idempotent exhaustive-policy request rather than an
+operator-command request, so it does not accept `--command`. It authenticates
+the exact named-history snapshot and effective domain, derives implementation-
+version 2 `all`, and sets the proposal budget to the domain's exact cardinality.
+The owner accepts it only for a Boolean or discrete domain, when that generator
+is selected by the active exhaustive policy and the cardinality is within the
+policy's configured ceiling; every mismatch fails before request publication.
+Selector resolution remains richer future
+porcelain over the same record. Finite values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain
 below the configured exhaustive-cardinality ceiling. A request may target one
@@ -286,7 +299,8 @@ The current service checkpoint implements the first authenticated `choices`
 and `frontier` pages. `choices` returns discovered opportunity IDs from a
 snapshot-bound nested Merkle index and separately authorizes each requested
 opportunity body. A distinct choice-object operation returns only the exact
-declaration or effective domain named by an authenticated opportunity.
+declaration or effective domain named by an authenticated opportunity at an
+exact current or historical snapshot in the named campaign.
 `frontier` returns each request's exact branch point and owner-projected
 `ContinuationState` from an independently verified exploration-root index.
 An independently authorized frontier-object read returns the exact
