@@ -170,10 +170,11 @@ mod entry {
 
     use std::sync::Arc;
 
+    use futures_util::{lock::Mutex, stream, StreamExt};
     use wasm_bindgen::{JsCast, JsValue};
     use worker::{
-        durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response,
-        Result, ScheduleContext, ScheduledEvent, State,
+        durable_object, Context, DurableObject, Env, MessageExt, Method, Request, RequestInit,
+        Response, Result, ScheduleContext, ScheduledEvent, State,
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -369,7 +370,6 @@ mod entry {
     /// `env`.
     async fn router_from(
         env: &Env,
-        _request_origin: &str,
         db: Arc<Database>,
     ) -> Result<(
         Router,
@@ -783,7 +783,15 @@ mod entry {
             .durable_object(crate::handlers::bindings::HUB_DB)?
             .id_from_name(&database_instance)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-        let resp = stub.fetch_with_request(req).await?;
+        let started_at = worker::Date::now().as_millis();
+        let mut resp = stub.fetch_with_request(req).await?;
+        let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+        resp.headers_mut()
+            .set("server-timing", &format!("hubdb;dur={duration_ms}"))?;
+        worker::console_log!(
+            "hub_edge_request status={} hubdb_ms={duration_ms}",
+            resp.status_code()
+        );
 
         Ok(resp)
     }
@@ -810,8 +818,8 @@ mod entry {
     ///
     /// Decodes each [`Job`](aos_hub_core::jobs::Job) in the batch and runs it.
     /// Supported jobs execute inside HubDb and return success only after their
-    /// durable outcome is recorded. Unsupported, decode, and execution failures
-    /// make the internal endpoint non-2xx, so the entire batch is retried.
+    /// durable outcome is recorded. Messages are acknowledged independently so
+    /// one transient or malformed job cannot replay successful neighbors.
     #[worker::event(queue)]
     async fn queue(
         batch: worker::MessageBatch<aos_hub_core::jobs::Job>,
@@ -819,37 +827,55 @@ mod entry {
         _ctx: Context,
     ) -> Result<()> {
         crate::tracinglog::init();
-        // RFC-0004 ch.14 Phase E: jobs run **inside `HubDb`** over its colocated
-        // SQLite. The worker forwards each decoded job to the DO's
-        // seal-gated `/_internal/job`. A decode failure retries the batch.
-        let messages = match batch.messages() {
-            Ok(messages) => messages,
-            Err(err) => {
-                worker::console_error!("queue: failed to decode batch: {err}");
-                batch.retry_all();
-                return Ok(());
-            }
-        };
-        let mut failed = false;
-        for message in &messages {
-            let body = match serde_json::to_string(message.body()) {
-                Ok(body) => body,
-                Err(err) => {
-                    worker::console_error!("queue: re-encode job: {err}");
-                    failed = true;
-                    continue;
+        // Raw iteration keeps decode failures scoped to their own message. The
+        // queue's configured retry limit moves a persistent poison message to
+        // the dead-letter queue without replaying successfully acknowledged
+        // jobs from the same delivery batch.
+        stream::iter(batch.raw_iter())
+            .for_each_concurrent(4, |message| {
+                let env = &env;
+                async move {
+                    let message_id = message.id();
+                    let queued_at = message.timestamp().as_millis();
+                    let queue_age_ms = worker::Date::now().as_millis().saturating_sub(queued_at);
+                    let job: aos_hub_core::jobs::Job =
+                        match serde_wasm_bindgen::from_value(message.body()) {
+                            Ok(job) => job,
+                            Err(error) => {
+                                worker::console_error!(
+                                    "queue: message={message_id} age_ms={queue_age_ms} decode failed: {error}"
+                                );
+                                message.retry();
+                                return;
+                            }
+                        };
+                    let body = match serde_json::to_string(&job) {
+                        Ok(body) => body,
+                        Err(error) => {
+                            worker::console_error!(
+                                "queue: message={message_id} age_ms={queue_age_ms} encode failed: {error}"
+                            );
+                            message.retry();
+                            return;
+                        }
+                    };
+                    match forward_internal(env, "/_internal/job", Some(body)).await {
+                        Ok(()) => {
+                            worker::console_log!(
+                                "queue: message={message_id} age_ms={queue_age_ms} acknowledged"
+                            );
+                            message.ack();
+                        }
+                        Err(error) => {
+                            worker::console_error!(
+                                "queue: message={message_id} age_ms={queue_age_ms} failed: {error:#}"
+                            );
+                            message.retry();
+                        }
+                    }
                 }
-            };
-            if let Err(err) = forward_internal(&env, "/_internal/job", Some(body)).await {
-                worker::console_error!("queue: forward job to HubDb failed: {err:#}");
-                failed = true;
-            }
-        }
-        if failed {
-            batch.retry_all();
-        } else {
-            batch.ack_all();
-        }
+            })
+            .await;
         Ok(())
     }
 
@@ -1493,15 +1519,35 @@ mod entry {
     /// thread — so the request makes one hop to the DO's region and every query
     /// is local to the object. The schema is the shared
     /// `MIGRATIONS`, applied to the DO's SQLite on first use (`ensure_migrated`).
+    #[cfg(not(feature = "do-e2e"))]
+    #[derive(Clone)]
+    struct HubRequestRuntime {
+        router: Router,
+        service: Arc<RpcService>,
+        console_deps: ConsoleDeps,
+        sql_metrics: crate::sqldobackend::SqlDoMetrics,
+        delivery_attestation_verifier:
+            Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
+    }
+
     #[durable_object]
     pub struct HubDb {
         state: State,
         env: Env,
+        migrated: Mutex<bool>,
+        #[cfg(not(feature = "do-e2e"))]
+        request_runtime: Mutex<Option<HubRequestRuntime>>,
     }
 
     impl DurableObject for HubDb {
         fn new(state: State, env: Env) -> Self {
-            HubDb { state, env }
+            HubDb {
+                state,
+                env,
+                migrated: Mutex::new(false),
+                #[cfg(not(feature = "do-e2e"))]
+                request_runtime: Mutex::new(None),
+            }
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -1509,8 +1555,7 @@ mod entry {
             // Worker, so they must install their own tracing subscriber.
             crate::tracinglog::init();
 
-            let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
-            if let Err(err) = crate::sqldobackend::ensure_migrated(&backend).await {
+            if let Err(err) = self.ensure_migrated().await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
             // Live-workerd bootstrap (`do-e2e` only, never production). This
@@ -1609,39 +1654,96 @@ mod entry {
                     };
                 }
             }
-            let db = Arc::new(Database::attach(Box::new(backend)));
-            #[cfg(not(feature = "do-e2e"))]
-            let request_origin = req
-                .url()
-                .ok()
-                .map(|u| {
-                    let scheme = u.scheme();
-                    match (u.host_str(), u.port()) {
-                        (Some(host), Some(port)) => format!("{scheme}://{host}:{port}"),
-                        (Some(host), None) => format!("{scheme}://{host}"),
-                        (None, _) => String::new(),
-                    }
-                })
-                .unwrap_or_default();
             #[cfg(feature = "do-e2e")]
             {
+                let db = Arc::new(Database::attach(Box::new(
+                    crate::sqldobackend::SqlDoBackend::new(self.state.storage()),
+                )));
                 let (router, service, console_deps) =
                     router_from_do_e2e(&self.state, &self.env, db).await?;
                 return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]
+            {
+                let runtime = self.request_runtime().await?;
+                let method = format!("{:?}", req.method());
+                let path = req
+                    .url()
+                    .ok()
+                    .map(|url| url.path().to_string())
+                    .unwrap_or_else(|| "<invalid>".to_string());
+                let started_at = worker::Date::now().as_millis();
+                let sql_before = runtime.sql_metrics.snapshot();
+                let result = crate::bridge::dispatch(
+                    runtime.router,
+                    runtime.service.as_ref(),
+                    runtime.console_deps,
+                    runtime.delivery_attestation_verifier.as_deref(),
+                    req,
+                )
+                .await;
+                let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+                let sql = runtime.sql_metrics.snapshot().since(sql_before);
+                let status = result
+                    .as_ref()
+                    .map(worker::Response::status_code)
+                    .unwrap_or(500);
+                worker::console_log!(
+                    "hub_do_request method={method} path={path} status={status} duration_ms={duration_ms} sql_statements={} sql_queries={} sql_mutations={} sql_transactions={} sql_changes_queries={} sql_rows_read={} sql_rows_written={}",
+                    sql.statements,
+                    sql.queries,
+                    sql.mutations,
+                    sql.transactions,
+                    sql.affected_count_queries,
+                    sql.rows_read,
+                    sql.rows_written,
+                );
+                result
+            }
+        }
+    }
+
+    impl HubDb {
+        /// Applies and validates the colocated schema once per object activation.
+        async fn ensure_migrated(&self) -> anyhow::Result<()> {
+            let mut migrated = self.migrated.lock().await;
+            if *migrated {
+                return Ok(());
+            }
+
+            let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+            crate::sqldobackend::ensure_migrated(&backend).await?;
+            *migrated = true;
+            Ok(())
+        }
+
+        /// Builds immutable request dependencies once per object activation.
+        #[cfg(not(feature = "do-e2e"))]
+        async fn request_runtime(&self) -> Result<HubRequestRuntime> {
+            let mut runtime = self.request_runtime.lock().await;
+            if let Some(runtime) = runtime.as_ref() {
+                return Ok(runtime.clone());
+            }
+
+            let sql_metrics = crate::sqldobackend::SqlDoMetrics::default();
+            let db = Arc::new(Database::attach(Box::new(
+                crate::sqldobackend::SqlDoBackend::with_metrics(
+                    self.state.storage(),
+                    sql_metrics.clone(),
+                ),
+            )));
             let (router, service, console_deps, delivery_attestation_verifier) =
-                router_from(&self.env, &request_origin, db).await?;
-            #[cfg(not(feature = "do-e2e"))]
-            crate::bridge::dispatch(
+                router_from(&self.env, db).await?;
+            let initialized = HubRequestRuntime {
                 router,
-                &service,
+                service,
                 console_deps,
-                delivery_attestation_verifier.as_deref(),
-                req,
-            )
-            .await
+                sql_metrics,
+                delivery_attestation_verifier,
+            };
+            *runtime = Some(initialized.clone());
+            Ok(initialized)
         }
     }
 

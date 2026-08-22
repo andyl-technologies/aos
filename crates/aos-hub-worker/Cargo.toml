@@ -54,6 +54,7 @@ tracing = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde-wasm-bindgen = "0.6"
 anyhow = { workspace = true }
 hex = { workspace = true }
 # Encodes the OIDC token-exchange POST body (application/x-www-form-urlencoded)
