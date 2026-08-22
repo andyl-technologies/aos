@@ -385,7 +385,7 @@ struct CampaignDeriveArgs {
     policy: Option<PathBuf>,
 }
 
-#[derive(Args, Debug, PartialEq, Eq)]
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
 struct CampaignBranchArgs {
     /// Canonical campaign name.
     #[arg(value_name = "NAME")]
@@ -412,11 +412,15 @@ struct CampaignBranchArgs {
     #[arg(
         long = "value",
         value_name = "VALUE",
-        required = true,
+        required_unless_present = "generator",
+        conflicts_with = "generator",
         action = ArgAction::Append
     )]
     values: Vec<String>,
-    /// Maximum proposals, defaulting to the number of distinct finite values.
+    /// Deterministic candidate-generator ID instead of finite values.
+    #[arg(long, value_name = "GENERATOR", conflicts_with = "values")]
+    generator: Option<String>,
+    /// Maximum proposals; required for a generator, otherwise defaults to value count.
     #[arg(long, value_name = "COUNT")]
     proposals: Option<u64>,
     /// Maximum newly admitted attempts.

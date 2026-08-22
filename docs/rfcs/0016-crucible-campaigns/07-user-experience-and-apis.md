@@ -170,16 +170,22 @@ crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
   --opportunity OPPORTUNITY --domain DOMAIN --value VALUE [--value VALUE ...] \
   [--proposals N] [--attempts N] [--stop CONDITION]
+crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
+  --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
+  --opportunity OPPORTUNITY --domain DOMAIN --generator GENERATOR \
+  --proposals N [--attempts N] [--stop CONDITION]
 ```
 
-The current `branch` command publishes an additive finite `BranchRequest` with
-an exact operator command cause. Values use the closed `true`, `false`,
+The current `branch` command publishes an additive finite or generated
+`BranchRequest` with an exact operator command cause. Values use the closed `true`, `false`,
 `i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
 `next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, or `events:N`.
 The request carries exact parent-artifact, opportunity, domain, and semantic
-branch-point IDs so repository admission can authenticate the complete basis;
-selector resolution and generated `--all` authoring remain richer future
-porcelain over the same record. The values are validated against the choice
+branch-point IDs so repository admission can authenticate the complete basis.
+`--generator` names one already imported, policy-reachable canonical generator
+and requires an explicit nonzero proposal budget; it is mutually exclusive
+with finite values. Selector resolution and generated `--all` authoring remain
+richer future porcelain over the same record. Finite values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain
 below the configured exhaustive-cardinality ceiling. A request may target one
