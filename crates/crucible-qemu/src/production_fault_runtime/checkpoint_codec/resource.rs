@@ -1,7 +1,7 @@
 //! Resource admission and error translation for production fault checkpoints.
 
-use crucible::SchedulerNetworkCheckpointCodecError;
 use crucible::model::{FaultResourceLimitError, FaultResourceLimits, FaultRuntimeError};
+use crucible::{BackendNetworkOutputCodecError, SchedulerNetworkCheckpointCodecError};
 
 use super::{
     MAX_BYTES, MAX_EVENT_RECORDS, ProductionFaultRuntimeCheckpoint,
@@ -78,6 +78,21 @@ pub(super) fn map_scheduler_network_error(
 ) -> ProductionFaultRuntimeCheckpointCodecError {
     match error {
         SchedulerNetworkCheckpointCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Network,
+    }
+}
+
+pub(super) fn map_backend_network_output_error(
+    error: BackendNetworkOutputCodecError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        BackendNetworkOutputCodecError::ResourceLimit {
             field,
             current,
             requested,

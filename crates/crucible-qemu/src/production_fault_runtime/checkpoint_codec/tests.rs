@@ -143,6 +143,26 @@ fn scheduler_network_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
+fn pending_network_output_resource_coordinates_cross_production_envelope() {
+    assert_eq!(
+        map_backend_network_output_error(crucible::BackendNetworkOutputCodecError::ResourceLimit {
+            field: "frame payload",
+            current: 0,
+            requested: 16_777_217,
+            configured: 16_777_216,
+            hard: 16_777_216,
+        },),
+        ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "frame payload",
+            current: 0,
+            requested: 16_777_217,
+            configured: 16_777_216,
+            hard: 16_777_216,
+        }
+    );
+}
+
+#[test]
 fn aggregate_codec_rejects_pre_policy_version() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"old policy checkpoint seed");
