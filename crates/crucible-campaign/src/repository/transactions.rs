@@ -433,6 +433,22 @@ impl CampaignRepository {
             })
     }
 
+    pub(crate) fn finding_with_proof(
+        &self,
+        root: ContentId,
+        finding: FindingId,
+    ) -> Result<(Finding, MerkleMapLookupProof), CampaignRepositoryError> {
+        let value = self.read_finding(finding.content_id())?;
+        let key = finding_signature_key(value.signature().cluster_key());
+        let (indexed, proof) = self.merkle.get_with_proof(root, key)?;
+        if indexed != Some(finding.content_id()) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-finding-is-not-in-snapshot",
+            });
+        }
+        Ok((value, proof))
+    }
+
     pub(crate) fn graph_object_with_proof(
         &self,
         root: ContentId,

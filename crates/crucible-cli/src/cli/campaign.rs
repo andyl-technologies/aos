@@ -10,7 +10,9 @@ mod object;
 mod snapshot;
 
 use explain::{
-    query_campaign_explanation, render_campaign_explanation, validate_campaign_explain_command,
+    query_campaign_explanation, query_campaign_finding_explanation, render_campaign_explanation,
+    render_campaign_finding_explanation, validate_campaign_explain_command,
+    validate_campaign_finding_explain_command,
 };
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
 use snapshot::{
@@ -194,6 +196,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_explanation(&client, principal, &args.command)?;
             render_campaign_explanation(&report, cli.output_format())?
         }
+        CampaignCommand::ExplainFinding(_) => {
+            let report = query_campaign_finding_explanation(&client, principal, &args.command)?;
+            render_campaign_finding_explanation(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_)
         | CampaignCommand::Choices(_)
         | CampaignCommand::Frontier(_)
@@ -336,6 +342,10 @@ fn prepare_campaign_command(
         }
         CampaignCommand::Explain(_) => {
             validate_campaign_explain_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::ExplainFinding(_) => {
+            validate_campaign_finding_explain_command(command)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -1032,6 +1042,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Snapshot(_)
         | CampaignCommand::Compare(_)
         | CampaignCommand::Explain(_)
+        | CampaignCommand::ExplainFinding(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
@@ -1376,6 +1387,8 @@ mod tests {
         frontier_projection: ContinuationProjection,
         finding: Finding,
         finding_root: ContentId,
+        finding_observation: Observation,
+        finding_reproduction: ReproductionArtifact,
     }
 
     impl CampaignService for FixedHeadService {
@@ -1459,6 +1472,13 @@ mod tests {
             &self,
             _request: &QueryCampaignFindingsRequest,
         ) -> Result<QueryCampaignFindingsResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn get_campaign_finding_object(
+            &self,
+            _request: &GetCampaignFindingObjectRequest,
+        ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
             unreachable!("unused campaign-service operation")
         }
 
@@ -1631,6 +1651,45 @@ mod tests {
                 proof,
             )
             .expect("bound finding response"))
+        }
+
+        fn get_campaign_finding_object(
+            &self,
+            request: &GetCampaignFindingObjectRequest,
+        ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+            assert_eq!(
+                request.finding(),
+                self.finding.id().expect("explanation finding ID")
+            );
+            let (_, proof) = self
+                .map
+                .get_with_proof(
+                    self.finding_root,
+                    finding_index_key(self.finding.signature().cluster_key()),
+                )
+                .expect("finding explanation membership proof");
+            let object = match request.kind() {
+                CampaignFindingObjectKind::Observation => {
+                    CampaignFindingObject::Observation(self.finding_observation.clone())
+                }
+                CampaignFindingObjectKind::LatestOccurrence => {
+                    CampaignFindingObject::LatestOccurrence(self.finding_observation.clone())
+                }
+                CampaignFindingObjectKind::Reproduction => {
+                    CampaignFindingObject::Reproduction(self.finding_reproduction.clone())
+                }
+                CampaignFindingObjectKind::MinimizedReproduction => {
+                    unreachable!("fixture finding has no minimized reproduction")
+                }
+            };
+            Ok(GetCampaignFindingObjectResponse::new(
+                request,
+                self.snapshot.clone(),
+                self.finding.clone(),
+                object,
+                proof,
+            )
+            .expect("bound finding explanation response"))
         }
 
         fn get_campaign_graph_object(
@@ -2144,6 +2203,48 @@ mod tests {
         assert_eq!(decoded["cause"]["request"], request.to_string());
         assert_eq!(decoded["cause"]["continuation_state"], "ready");
         assert_eq!(decoded["cause"]["finite_values"][0], "true");
+    }
+
+    #[test]
+    fn campaign_finding_explain_joins_observation_and_reproduction_proofs() {
+        let (service, snapshot, _) = graph_page_service();
+        let finding = service.finding.id().expect("explanation finding ID");
+        let command = CampaignCommand::ExplainFinding(CampaignFindingExplainArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            finding: finding.to_string(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve finding observation request");
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve finding reproduction request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_finding_explanation(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked finding explanation");
+        server.join().expect("campaign server thread");
+
+        let rendered = render_campaign_finding_explanation(&report, OutputFormat::Json)
+            .expect("finding explanation JSON");
+        let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(
+            decoded["schema"],
+            "crucible.cli.campaign-finding-explanation.v1"
+        );
+        assert_eq!(decoded["finding"]["id"], finding.to_string());
+        assert_eq!(decoded["finding"]["kind"], "timeout");
+        assert_eq!(decoded["observation"]["stop"], "modeled-timeout:execution");
+        assert_eq!(decoded["reproduction"]["payload_schema"], 1);
+        assert_eq!(decoded["reproduction"]["payload_bytes"], 17);
     }
 
     #[test]
@@ -2666,6 +2767,34 @@ mod tests {
             explain_command.command,
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::Explain(_),
+                ..
+            })
+        ));
+        let finding = FindingId::parse(&format!(
+            "crucible.campaign.finding@{}",
+            ContentId::for_bytes(ObjectKind::Finding, 1, b"finding-explanation-parser").encode()
+        ))
+        .expect("finding explanation ID")
+        .to_string();
+        let explain_finding = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "explain-finding",
+            "example",
+            "--snapshot",
+            &left_snapshot,
+            "--finding",
+            &finding,
+        ])
+        .expect("campaign finding explanation arguments");
+        assert!(matches!(
+            explain_finding.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::ExplainFinding(_),
                 ..
             })
         ));
@@ -3261,11 +3390,53 @@ mod tests {
                 frontier_index.content_id(),
             )
             .expect("frontier explanation anchor");
-        let finding_observation = ObservationId::parse(&format!(
-            "crucible.campaign.observation@{}",
-            ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-observation").encode()
-        ))
-        .expect("finding observation ID");
+        let finding_observation = Observation::new(
+            AttemptId::parse(&format!(
+                "crucible.campaign.attempt@{}",
+                ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"cli-finding-attempt").encode()
+            ))
+            .expect("finding attempt ID"),
+            configuration.configuration(),
+            configuration.id().expect("finding child artifact ID"),
+            BranchPathId::parse(&format!(
+                "crucible.campaign.branch-path@{}",
+                ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"cli-finding-path").encode()
+            ))
+            .expect("finding path ID"),
+            StopOutcome::ModeledTimeout("execution".to_owned()),
+            MeasurementSetId::parse(&format!(
+                "crucible.campaign.measurement-set@{}",
+                ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-measurements")
+                    .encode()
+            ))
+            .expect("finding measurement ID"),
+            PropertyVerdictSetId::parse(&format!(
+                "crucible.campaign.property-verdict-set@{}",
+                ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-properties")
+                    .encode()
+            ))
+            .expect("finding property ID"),
+            CoverageProjectionId::parse(&format!(
+                "crucible.campaign.coverage-projection@{}",
+                ContentId::for_bytes(ObjectKind::Projection, 1, b"cli-finding-coverage").encode()
+            ))
+            .expect("finding coverage ID"),
+            BTreeSet::new(),
+        )
+        .expect("finding observation");
+        let finding_observation_id = finding_observation.id().expect("finding observation ID");
+        let finding_reproduction = ReproductionArtifact::new(
+            configuration.scenario(),
+            configuration.scenario_artifact(),
+            configuration.configuration(),
+            configuration
+                .id()
+                .expect("finding configuration artifact ID"),
+            hash("finding-fingerprint"),
+            1,
+            b"reproduce-timeout".to_vec(),
+        )
+        .expect("finding reproduction");
         let finding = Finding::new(
             FindingSignature::new(
                 FindingKind::Timeout,
@@ -3276,14 +3447,11 @@ mod tests {
                 BTreeSet::new(),
             )
             .expect("finding signature"),
-            finding_observation,
-            ReproductionArtifactId::parse(&format!(
-                "crucible.campaign.reproduction-artifact@{}",
-                ContentId::for_bytes(ObjectKind::Finding, 1, b"cli-finding-reproduction").encode()
-            ))
-            .expect("finding reproduction ID"),
+            finding_observation_id,
+            finding_reproduction.id().expect("finding reproduction ID"),
             snapshot("finding-first-seen"),
-            FindingOccurrenceSet::new(empty, 3, finding_observation).expect("finding occurrences"),
+            FindingOccurrenceSet::new(empty, 3, finding_observation_id)
+                .expect("finding occurrences"),
             None,
             BTreeSet::new(),
         )
@@ -3340,6 +3508,8 @@ mod tests {
                 frontier_projection,
                 finding,
                 finding_root: finding_root.content_id(),
+                finding_observation,
+                finding_reproduction,
             },
             snapshot_id,
             historical_id,

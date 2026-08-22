@@ -34,15 +34,16 @@ pub use derive::{DeriveCampaignRequest, DeriveCampaignResponse};
 pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
-    CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignGraphEntry,
-    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
-    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
-    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
-    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse, QueryCampaignFindingsRequest,
-    QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
-    QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
+    CampaignFindingObjectKind, CampaignGraphEntry, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
@@ -151,6 +152,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFrontier,
     /// Read complete finding records from the authenticated findings index.
     QueryCampaignFindings,
+    /// Read one exact dependency named by an authenticated finding.
+    GetCampaignFindingObject,
     /// Read one exact branch-request body named by the authenticated frontier.
     GetCampaignFrontierObject,
     /// Read one exact declaration or domain named by an authenticated choice.
@@ -406,6 +409,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_findings(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign finding-dependency read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_get_campaign_finding_object(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1450,6 +1466,18 @@ pub trait CampaignService {
         request: &QueryCampaignFindingsRequest,
     ) -> Result<QueryCampaignFindingsResponse, Self::Error>;
 
+    /// Returns one exact dependency named by an authenticated finding.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, finding membership, dependency validation,
+    /// repository access, or response construction fails.
+    fn get_campaign_finding_object(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<GetCampaignFindingObjectResponse, Self::Error>;
+
     /// Returns one exact branch-request body authenticated by the frontier.
     ///
     /// # Errors
@@ -1783,6 +1811,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_findings(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one finding dependency and validates its exact Merkle membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, finding, dependency kind, or object body.
+    pub fn get_campaign_finding_object(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<GetCampaignFindingObjectResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_finding_object(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_finding_object(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -2353,6 +2407,62 @@ where
         )?)
     }
 
+    fn get_campaign_finding_object(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignFindingObject,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (finding, proof) = self
+            .repository
+            .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
+        let object = match request.kind() {
+            CampaignFindingObjectKind::Observation => CampaignFindingObject::Observation(
+                self.repository
+                    .read_observation(finding.observation().content_id())?,
+            ),
+            CampaignFindingObjectKind::LatestOccurrence => CampaignFindingObject::LatestOccurrence(
+                self.repository
+                    .read_observation(finding.latest_occurrence().content_id())?,
+            ),
+            CampaignFindingObjectKind::Reproduction => CampaignFindingObject::Reproduction(
+                self.repository
+                    .read_reproduction_artifact(finding.reproduction().content_id())?,
+            ),
+            CampaignFindingObjectKind::MinimizedReproduction => {
+                let minimized =
+                    finding
+                        .minimized()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-has-no-minimized-reproduction",
+                        })?;
+                CampaignFindingObject::MinimizedReproduction(
+                    self.repository
+                        .read_reproduction_artifact(minimized.content_id())?,
+                )
+            }
+        };
+        Ok(GetCampaignFindingObjectResponse::new(
+            request,
+            head.snapshot().clone(),
+            finding,
+            object,
+            proof,
+        )?)
+    }
+
     fn get_campaign_frontier_object(
         &self,
         request: &GetCampaignFrontierObjectRequest,
@@ -2776,6 +2886,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn get_campaign_finding_object(
+            &self,
+            _request: &GetCampaignFindingObjectRequest,
+        ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -2912,6 +3029,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn get_campaign_finding_object(
+            &self,
+            _request: &GetCampaignFindingObjectRequest,
+        ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -3018,6 +3142,13 @@ mod tests {
             &self,
             _request: &QueryCampaignFindingsRequest,
         ) -> Result<QueryCampaignFindingsResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn get_campaign_finding_object(
+            &self,
+            _request: &GetCampaignFindingObjectRequest,
+        ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

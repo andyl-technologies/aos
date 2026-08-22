@@ -471,11 +471,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the authenticated findings root with an exact range/EOF proof and
   signature-key/body identity validation; the checked CLI renders their stable
   class, fingerprint, representative observation, occurrence count, and
-  reproduction IDs without granting child-object reads.
+  reproduction IDs without granting child-object reads. A separately
+  authorized finding-object lookup proves one exact finding membership and
+  returns only its representative/latest observation or original/minimized
+  reproduction dependency. The checked `explain-finding` composition reads the
+  representative observation and original reproduction, then verifies their
+  exact finding, fingerprint, and configuration-artifact basis before rendering
+  the handoff identities.
   The local
   Unix-stream binding
-  now dispatches all thirty current success messages plus one stable
-  request-bound error envelope under a version-14, 64-MiB-body,
+  now dispatches all thirty-two current success messages plus one stable
+  request-bound error envelope under a version-15, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -800,8 +806,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   their opportunity and domain agree before reporting legality, producer,
   cause, budget, stop, and continuation state. A proof-bearing findings page
   returns complete canonical clusters in signature-key order and renders their
-  stable failure and reproduction projection. Proposal/attempt/finding
-  explanations and richer filtered or aggregated views remain open.
+  stable failure and reproduction projection. A second explanation operation
+  composes separately authorized observation and reproduction reads for one
+  exact indexed finding, rejects cross-finding/configuration/fingerprint drift,
+  and renders its causal, evidence, occurrence, stop, and replay basis.
+  Proposal/attempt explanations and richer filtered or aggregated views remain
+  open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,
