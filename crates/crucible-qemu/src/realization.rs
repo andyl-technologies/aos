@@ -25,8 +25,9 @@ mod node_executor;
 #[cfg(target_os = "linux")]
 pub use node_executor::{
     QemuExactRootWarmRestoreNodeLauncher, QemuGuardedNodeRealizationLauncher,
-    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor,
+    QemuGuardedThinNodeRealizationLauncher, QemuLiveAttemptBackend, QemuLiveBackendShutdown,
+    QemuNodeLauncher, QemuNodeRealizationExecutor, QemuNodeRealizationLauncher,
+    QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher, QemuVmLiveRealizationExecutor,
     QemuWarmRestoreNodeLauncher,
 };
 

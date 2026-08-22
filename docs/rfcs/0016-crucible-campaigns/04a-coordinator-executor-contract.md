@@ -1805,9 +1805,13 @@ contract, and production replay admission rejects missing or mismatched oracle
 evidence before invoking it. The durable owner now authenticates the exact
 selected raw root, runs the fat/thin comparison, promotes only a source-bound
 match into a new root that reuses the VMState child, and durably replaces the
-selection. Concrete resource-guard ownership around that comparison and guarded
-spawn, plus the complete pause/restart/resume flight, remain mandatory before
-the full campaign/QEMU gate may claim completion.
+selection. The comparison session owns one process/resource guard, uses
+disjoint launch capabilities for target and thin base, reaps each generation
+before replacement, and finishes before promotion writes. Any realization or
+cleanup failure quarantines the guard and leaves the raw root selected. The
+nondroppable child/cgroup/watcher quarantine owner and the complete
+pause/restart/resume flight remain mandatory before the full campaign/QEMU gate
+may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
