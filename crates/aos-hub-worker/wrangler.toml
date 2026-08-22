@@ -110,6 +110,8 @@ queue = "aos-hub-jobs"
 queue = "aos-hub-jobs"
 max_batch_size = 10
 max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "aos-hub-jobs-dlq"
 
 # KV for human sessions (RFC-0004) — now also the Phase C read-through cache for
 # hot point-key state (sessions/tokens/config/routing). The binding name matches
