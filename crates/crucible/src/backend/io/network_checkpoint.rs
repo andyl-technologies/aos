@@ -5,11 +5,13 @@
 
 use super::*;
 
+mod encode;
 mod error;
 mod writer;
 
 pub use error::BackendNetworkOutputCodecError;
 
+use encode::BackendNetworkOutputEncodeWire;
 use error::backend_network_resource;
 
 use writer::{BackendNetworkCheckpointCountingWriter, BackendNetworkCheckpointReservedWriter};
@@ -40,7 +42,7 @@ impl BackendNetworkOutput {
     ) -> Result<Vec<u8>, BackendNetworkOutputCodecError> {
         let hard = u64::try_from(HARD_BACKEND_NETWORK_CHECKPOINT_BYTES).unwrap_or(u64::MAX);
         let configured = usize::try_from(maximum.min(hard)).unwrap_or(usize::MAX);
-        let wire = BackendNetworkOutputWire::try_from(self)?;
+        let wire = BackendNetworkOutputEncodeWire::new(self)?;
         let mut counter = BackendNetworkCheckpointCountingWriter::new(configured);
         ciborium::ser::into_writer(&wire, &mut counter).map_err(|_| {
             counter
@@ -203,50 +205,6 @@ struct ResolvedNetworkFrameEffectsWire {
     duplicate_gaps_nanos: Vec<u64>,
 }
 
-impl TryFrom<&BackendNetworkOutput> for BackendNetworkOutputWire {
-    type Error = BackendNetworkOutputCodecError;
-
-    fn try_from(output: &BackendNetworkOutput) -> Result<Self, Self::Error> {
-        validate_network_checkpoint_name(&output.source.name, "source")?;
-        validate_network_checkpoint_name(&output.destination.name, "destination")?;
-        if output.payload.len() > HARD_BACKEND_NETWORK_CHECKPOINT_BYTES {
-            return Err(backend_network_resource(
-                "frame payload",
-                0,
-                output.payload.len(),
-                HARD_BACKEND_NETWORK_CHECKPOINT_BYTES,
-                HARD_BACKEND_NETWORK_CHECKPOINT_BYTES,
-            ));
-        }
-        let route = output
-            .route
-            .as_ref()
-            .map(|route| {
-                validate_network_checkpoint_name(&route.link.name, "route link")?;
-                validate_network_checkpoint_name(&route.destination.name, "route destination")?;
-                Ok(BackendNetworkRouteWire {
-                    link: route.link.name.clone(),
-                    direction: match route.direction {
-                        crate::device::NetworkLinkDirection::EndpointAToEndpointB => 1,
-                        crate::device::NetworkLinkDirection::EndpointBToEndpointA => 2,
-                    },
-                    destination: route.destination.name.clone(),
-                })
-            })
-            .transpose()?;
-        Ok(Self {
-            version: BACKEND_NETWORK_OUTPUT_VERSION,
-            source: output.source.name.clone(),
-            destination: output.destination.name.clone(),
-            emit_icount: output.emit_icount.retired,
-            sequence: output.sequence,
-            payload: output.payload.clone(),
-            route,
-            fault: BackendNetworkFaultContinuationWire::try_from(&output.fault_continuation)?,
-        })
-    }
-}
-
 impl TryFrom<BackendNetworkOutputWire> for BackendNetworkOutput {
     type Error = BackendNetworkOutputCodecError;
 
@@ -300,38 +258,6 @@ impl TryFrom<BackendNetworkOutputWire> for BackendNetworkOutput {
     }
 }
 
-impl TryFrom<&BackendNetworkFaultContinuation> for BackendNetworkFaultContinuationWire {
-    type Error = BackendNetworkOutputCodecError;
-
-    fn try_from(value: &BackendNetworkFaultContinuation) -> Result<Self, Self::Error> {
-        validate_network_fault_continuation(value)?;
-        Ok(Self {
-            preserved_availability: value
-                .preserved_availability
-                .iter()
-                .map(|entry| BackendNetworkPreservedAvailabilityWire {
-                    binding: entry.binding.clone(),
-                    target: entry.target.clone(),
-                    phase: entry.phase,
-                    transition_sequence: entry.transition_sequence,
-                })
-                .collect(),
-            resolved_frame_effects: ResolvedNetworkFrameEffectsWire::from(
-                &value.resolved_frame_effects,
-            ),
-            protocol_expansion_path: value.protocol_expansion_path.clone(),
-            generated_response_depth: value.generated_response_depth,
-            generated_response_cause: value.generated_response_cause,
-            forwarding_mutation_path: value.forwarding_mutation_path.clone(),
-            forced_route_destination: value
-                .forced_route_destination
-                .as_ref()
-                .map(|node| node.name.clone()),
-            cursor: BackendNetworkFaultCursorWire::from(&value.cursor),
-        })
-    }
-}
-
 impl TryFrom<BackendNetworkFaultContinuationWire> for BackendNetworkFaultContinuation {
     type Error = BackendNetworkOutputCodecError;
 
@@ -373,27 +299,6 @@ impl TryFrom<BackendNetworkFaultContinuationWire> for BackendNetworkFaultContinu
         };
         validate_network_fault_continuation(&value)?;
         Ok(value)
-    }
-}
-
-impl From<&BackendNetworkFaultCursor> for BackendNetworkFaultCursorWire {
-    fn from(value: &BackendNetworkFaultCursor) -> Self {
-        Self {
-            completed_phases: value
-                .completed_phases
-                .iter()
-                .map(|entry| BackendNetworkCompletedFaultPhaseWire {
-                    target: entry.target.clone(),
-                    phase: entry.phase,
-                })
-                .collect(),
-            not_before_nanos: value.not_before_nanos,
-            completed_release_nanos: value.completed_release_nanos,
-            queue_opportunity: value.queue_opportunity,
-            repeated_phase_effect: value.repeated_phase_effect,
-            queue_priority: value.queue_priority,
-            route_path_version: value.route_path_version.clone(),
-        }
     }
 }
 
@@ -444,20 +349,6 @@ impl TryFrom<BackendNetworkFaultCursorWire> for BackendNetworkFaultCursor {
             queue_priority: wire.queue_priority,
             route_path_version: wire.route_path_version,
         })
-    }
-}
-
-impl From<&crucible_device::ResolvedNetworkFrameEffects> for ResolvedNetworkFrameEffectsWire {
-    fn from(value: &crucible_device::ResolvedNetworkFrameEffects) -> Self {
-        Self {
-            latency_delta_nanos: value.latency_delta_nanos(),
-            additional_delay_nanos: value.additional_delay_nanos(),
-            serialization_rate_cap_bps: value.serialization_rate_cap_bps(),
-            serialization_accounted: value.serialization_is_accounted(),
-            contact_services_accounted: value.accounted_contact_services().to_vec(),
-            drop: value.is_dropped(),
-            duplicate_gaps_nanos: value.duplicate_gaps_nanos().to_vec(),
-        }
     }
 }
 
@@ -554,11 +445,56 @@ fn validate_network_fault_continuation(
     if let Some(node) = &value.forced_route_destination {
         validate_network_checkpoint_name(&node.name, "forced route destination")?;
     }
-    let _ =
-        BackendNetworkFaultCursor::try_from(BackendNetworkFaultCursorWire::from(&value.cursor))?;
-    let wire = ResolvedNetworkFrameEffectsWire::from(&value.resolved_frame_effects);
-    let restored = crucible_device::ResolvedNetworkFrameEffects::try_from(wire)?;
-    if restored != value.resolved_frame_effects {
+    if value.cursor.completed_phases.len() > HARD_BACKEND_NETWORK_CURSOR_PHASES {
+        return Err(backend_network_resource(
+            "completed phases",
+            0,
+            value.cursor.completed_phases.len(),
+            HARD_BACKEND_NETWORK_CURSOR_PHASES,
+            HARD_BACKEND_NETWORK_CURSOR_PHASES,
+        ));
+    }
+    for completed in &value.cursor.completed_phases {
+        completed
+            .target
+            .validate()
+            .map_err(|_| BackendNetworkOutputCodecError::Invalid("completed target"))?;
+    }
+    if value
+        .cursor
+        .completed_phases
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+        || value.cursor.repeated_phase_effect.is_some() && value.cursor.queue_opportunity.is_none()
+        || value.cursor.queue_priority.is_some() && value.cursor.repeated_phase_effect.is_none()
+    {
+        return Err(BackendNetworkOutputCodecError::Noncanonical);
+    }
+    let effects = &value.resolved_frame_effects;
+    if effects.accounted_contact_services().len() > 256
+        || effects.duplicate_gaps_nanos().len() > 256
+    {
+        return Err(backend_network_resource(
+            "resolved frame effects",
+            0,
+            effects
+                .accounted_contact_services()
+                .len()
+                .max(effects.duplicate_gaps_nanos().len()),
+            256,
+            256,
+        ));
+    }
+    if effects
+        .accounted_contact_services()
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+        || effects
+            .duplicate_gaps_nanos()
+            .windows(2)
+            .any(|pair| pair[0] > pair[1])
+        || !effects.accounted_contact_services().is_empty() && !effects.serialization_is_accounted()
+    {
         return Err(BackendNetworkOutputCodecError::Noncanonical);
     }
     Ok(())

@@ -3,7 +3,7 @@
 //! The format records every directed link snapshot, symmetric-link RNG
 //! cursor, and exact signal-fault wakeup in deterministic identity order.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use crate::{LinkId, NetworkLinkDirection};
@@ -126,7 +126,7 @@ impl SchedulerNetworkCheckpoint {
             )
         })?;
         for _ in 0..link_count {
-            let link = LinkId::from_name(reader.string("link identity")?);
+            let link = reader.link_id("link identity")?;
             let direction = match reader.byte("link direction")? {
                 1 => NetworkLinkDirection::EndpointAToEndpointB,
                 2 => NetworkLinkDirection::EndpointBToEndpointA,
@@ -150,7 +150,7 @@ impl SchedulerNetworkCheckpoint {
         let rng_count = reader.count("RNG positions")?;
         let mut rng_positions = BTreeMap::new();
         for _ in 0..rng_count {
-            let link = LinkId::from_name(reader.string("RNG link identity")?);
+            let link = reader.link_id("RNG link identity")?;
             let position = reader.u64("RNG position")?;
             if rng_positions.insert(link, position).is_some() {
                 return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
@@ -361,12 +361,23 @@ fn validate_scheduler_network_checkpoint(
     {
         return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
     }
-    let directed = checkpoint
-        .links
-        .iter()
-        .map(|link| &link.link)
-        .collect::<BTreeSet<_>>();
-    if directed != checkpoint.rng_positions.keys().collect::<BTreeSet<_>>() {
+    let mut link_index = 0;
+    for rng_link in checkpoint.rng_positions.keys() {
+        let Some(directed_link) = checkpoint.links.get(link_index).map(|link| &link.link) else {
+            return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
+        };
+        if directed_link != rng_link {
+            return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
+        }
+        while checkpoint
+            .links
+            .get(link_index)
+            .is_some_and(|link| &link.link == directed_link)
+        {
+            link_index += 1;
+        }
+    }
+    if link_index != checkpoint.links.len() {
         return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
     }
     Ok(())
@@ -517,16 +528,22 @@ impl<'a> SchedulerNetworkCheckpointReader<'a> {
         Ok(value)
     }
 
-    fn string(
+    fn link_id(
         &mut self,
         field: &'static str,
-    ) -> Result<String, SchedulerNetworkCheckpointCodecError> {
+    ) -> Result<LinkId, SchedulerNetworkCheckpointCodecError> {
         let bytes = self.blob(field)?;
         if bytes.is_empty() || bytes.len() > HARD_SCHEDULER_NETWORK_NAME_BYTES {
             return Err(SchedulerNetworkCheckpointCodecError::Malformed(field));
         }
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| SchedulerNetworkCheckpointCodecError::Malformed(field))
+        let value = std::str::from_utf8(bytes)
+            .map_err(|_| SchedulerNetworkCheckpointCodecError::Malformed(field))?;
+        let mut name = String::new();
+        name.try_reserve_exact(value.len()).map_err(|_| {
+            scheduler_network_resource(field, 0, value.len(), HARD_SCHEDULER_NETWORK_NAME_BYTES)
+        })?;
+        name.push_str(value);
+        Ok(LinkId { name })
     }
 
     fn finish(self) -> Result<(), SchedulerNetworkCheckpointCodecError> {

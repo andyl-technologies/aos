@@ -268,7 +268,8 @@ fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
 #[test]
 fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
     let original = pending_qemu_observation();
-    let original_material = observation_identity_material(&original)
+    let limits = FaultResourceLimits::default();
+    let original_material = observation_identity_material(&original, limits)
         .unwrap_or_else(|error| panic!("observation should encode: {error}"));
 
     let mut changed_kind = original.clone();
@@ -282,9 +283,29 @@ fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
 
     for changed in [changed_kind, changed_binding, changed_target] {
         assert_ne!(
-            observation_identity_material(&changed)
+            observation_identity_material(&changed, limits)
                 .unwrap_or_else(|error| panic!("changed observation should encode: {error}")),
             original_material
         );
     }
+}
+
+#[test]
+fn pending_qemu_observation_identity_reserves_before_growth() {
+    let observation = pending_qemu_observation();
+    let mut limits = FaultResourceLimits::default();
+    limits.event_log_bytes = 1;
+
+    assert!(matches!(
+        observation_identity_material(&observation, limits),
+        Err(ProductionFaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "event_log_bytes",
+                current: 0,
+                requested,
+                configured: 1,
+                hard: 274_877_906_944,
+            }
+        )) if requested > 1
+    ));
 }

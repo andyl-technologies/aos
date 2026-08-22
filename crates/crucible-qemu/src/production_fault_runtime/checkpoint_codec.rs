@@ -131,33 +131,42 @@ impl ProductionFaultRuntimeCheckpoint {
             self.pending_qemu_observations.len(),
         )?;
 
+        let mut budget = CheckpointConstructionBudget::new(maximum);
+        let runtime = self
+            .runtime
+            .as_ref()
+            .map(|runtime| {
+                let bytes = checkpoint_runtime_bytes(runtime, budget.remaining())?;
+                budget.admit(bytes.len())?;
+                bounded_checkpoint_bytes(bytes)
+            })
+            .transpose()?;
+        let host_bytes = self
+            .host
+            .canonical_bytes_with_limits(host_resource_limits(self, budget.remaining()))
+            .map_err(map_host_error)?;
+        budget.admit(host_bytes.len())?;
+        let host = bounded_checkpoint_bytes(host_bytes)?;
+        let network_state = self
+            .network_state
+            .as_ref()
+            .map(|network| encode_network(network, &mut budget))
+            .transpose()?;
+        let pending_qemu_events = encode_qemu_event_map(&self.pending_qemu_events, &mut budget)?;
+
         let wire = CheckpointEncodeWire {
-            runtime: self
-                .runtime
-                .as_ref()
-                .map(|runtime| {
-                    checkpoint_runtime_bytes(runtime, maximum).and_then(bounded_checkpoint_bytes)
-                })
-                .transpose()?,
-            host: bounded_checkpoint_bytes(
-                self.host
-                    .canonical_bytes_with_limits(host_resource_limits(self, maximum))
-                    .map_err(map_host_error)?,
-            )?,
+            runtime,
+            host,
             qemu_fingerprints: &self.qemu_fingerprints,
             qemu_fault_sequences: &self.qemu_fault_sequences,
             qemu_fault_event_sequences: &self.qemu_fault_event_sequences,
             qemu_issued_actions: &self.qemu_issued_actions,
             qemu_action_commits: &self.qemu_action_commits,
             qemu_active_rule_ids: &self.qemu_active_rule_ids,
-            network_state: self
-                .network_state
-                .as_ref()
-                .map(|network| encode_network(network, maximum))
-                .transpose()?,
+            network_state,
             emitted_events: &self.emitted_events,
             pending_qemu_observations: &self.pending_qemu_observations,
-            pending_qemu_events: encode_qemu_event_map(&self.pending_qemu_events)?,
+            pending_qemu_events,
             identity: self.identity,
         };
         encode_prefixed(&wire, MAGIC, "production fault checkpoint", maximum)
@@ -336,10 +345,17 @@ pub enum ProductionFaultRuntimeCheckpointCodecError {
     Noncanonical,
 }
 
-fn encode_network(
-    checkpoint: &ProductionNetworkStateCheckpoint,
-    maximum: u64,
-) -> Result<NetworkEncodeWire<'_>, ProductionFaultRuntimeCheckpointCodecError> {
+fn encode_network<'a>(
+    checkpoint: &'a ProductionNetworkStateCheckpoint,
+    budget: &mut CheckpointConstructionBudget,
+) -> Result<NetworkEncodeWire<'a>, ProductionFaultRuntimeCheckpointCodecError> {
+    let scheduler_bytes = checkpoint
+        .scheduler
+        .canonical_bytes_with_limit(budget.remaining())
+        .map_err(map_scheduler_network_error)?;
+    budget.admit(scheduler_bytes.len())?;
+    let scheduler = bounded_checkpoint_bytes(scheduler_bytes)?;
+
     let mut pending_outputs = Vec::new();
     pending_outputs
         .try_reserve_exact(checkpoint.pending_outputs.len())
@@ -351,8 +367,9 @@ fn encode_network(
         })?;
     for output in &checkpoint.pending_outputs {
         let encoded = output
-            .canonical_bytes_with_limit(maximum)
+            .canonical_bytes_with_limit(budget.remaining())
             .map_err(map_backend_network_output_error)?;
+        budget.admit(encoded.len())?;
         pending_outputs.push(bounded_checkpoint_bytes(encoded)?);
     }
     let pending_outputs = BoundedVec::new(pending_outputs).map_err(map_bounded_cbor_error)?;
@@ -360,15 +377,11 @@ fn encode_network(
         "network adapter checkpoint bytes",
         checkpoint.adapter_state.len(),
     )?;
+    budget.admit(checkpoint.adapter_state.len())?;
 
     Ok(NetworkEncodeWire {
         identity: checkpoint.identity,
-        scheduler: bounded_checkpoint_bytes(
-            checkpoint
-                .scheduler
-                .canonical_bytes_with_limit(maximum)
-                .map_err(map_scheduler_network_error)?,
-        )?,
+        scheduler,
         committed_frontier_ticks: checkpoint.committed_frontier.ticks,
         pending_outputs,
         adapter_state: &checkpoint.adapter_state,
@@ -414,9 +427,10 @@ fn bounded_checkpoint_bytes(
     BoundedVec::new(bytes).map_err(map_bounded_cbor_error)
 }
 
-fn encode_qemu_event_map(
-    events_by_node: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
-) -> Result<EncodedQemuEventMap<'_>, ProductionFaultRuntimeCheckpointCodecError> {
+fn encode_qemu_event_map<'a>(
+    events_by_node: &'a BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    budget: &mut CheckpointConstructionBudget,
+) -> Result<EncodedQemuEventMap<'a>, ProductionFaultRuntimeCheckpointCodecError> {
     let mut entries = Vec::new();
     entries
         .try_reserve_exact(events_by_node.len())
@@ -433,6 +447,7 @@ fn encode_qemu_event_map(
             let encoded = event
                 .canonical_bytes()
                 .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
+            budget.admit(encoded.len())?;
             encoded_events.push(bounded_checkpoint_bytes(encoded)?);
         }
         let encoded_events = BoundedVec::new(encoded_events).map_err(map_bounded_cbor_error)?;
