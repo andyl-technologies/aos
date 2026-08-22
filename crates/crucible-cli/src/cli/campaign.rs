@@ -31,15 +31,15 @@ use crucible_campaign::{
     BranchRequest, BranchRequestCause, BranchRequestId, BudgetGrant, CampaignClient,
     CampaignCommandId, CampaignControlAction, CampaignHash, CampaignLineage, CampaignName,
     CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignService,
-    CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateSource,
-    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
-    ContinuationState, ControlRequest, CreateCampaignRequest, DeriveCampaignRequest, FindingKind,
-    GetCampaignRequest, IntegerValue, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
-    PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
-    QueryCampaignFrontierRequest, QueryCampaignGraphRequest, StopCondition,
-    SubmitCampaignBranchRequest, WatchCampaignRequest,
+    CampaignServiceFailureSource, CampaignSnapshotId, CampaignState, CandidateGeneratorSpecId,
+    CandidateSource, ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId,
+    ConfigurationId, ContinuationState, ControlRequest, CreateCampaignRequest,
+    DeriveCampaignRequest, FindingKind, GetCampaignRequest, IntegerValue,
+    MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    QueryCampaignChoicesRequest, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
+    QueryCampaignGraphRequest, StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
@@ -439,6 +439,11 @@ fn prepare_campaign_branch(
     let domain = ChoiceDomainId::parse(&branch.domain)
         .map_err(|error| usage_error(format!("invalid choice domain: {error}")))?;
 
+    if branch.generator.is_some() && !branch.values.is_empty() {
+        return Err(usage_error(
+            "campaign branch must use either finite values or one generator",
+        ));
+    }
     let mut values = BTreeSet::new();
     for value in &branch.values {
         let value = parse_campaign_choice_value(value)?;
@@ -446,12 +451,23 @@ fn prepare_campaign_branch(
             return Err(usage_error("campaign branch contains a duplicate value"));
         }
     }
-    let proposals =
-        branch
+    let (source, proposals) = if let Some(generator) = &branch.generator {
+        let generator = CandidateGeneratorSpecId::parse(generator)
+            .map_err(|error| usage_error(format!("invalid candidate generator: {error}")))?;
+        let proposals = branch.proposals.ok_or_else(|| {
+            usage_error("campaign generated branch requires an explicit proposal budget")
+        })?;
+        (CandidateSource::generated(generator), proposals)
+    } else {
+        let proposals = branch
             .proposals
             .unwrap_or(u64::try_from(values.len()).map_err(|_| {
                 usage_error("campaign branch value count exceeds the budget width")
             })?);
+        let source = CandidateSource::finite(values)
+            .map_err(|error| usage_error(format!("invalid finite branch source: {error}")))?;
+        (source, proposals)
+    };
     let budget = BranchBudget::new(proposals, branch.attempts)
         .map_err(|error| usage_error(format!("invalid campaign branch budget: {error}")))?;
     let request = BranchRequest::new(
@@ -459,8 +475,7 @@ fn prepare_campaign_branch(
         parent,
         opportunity,
         domain,
-        CandidateSource::finite(values)
-            .map_err(|error| usage_error(format!("invalid finite branch source: {error}")))?,
+        source,
         BranchRequestCause::Operator(command),
         budget,
         parse_campaign_stop_condition(&branch.stop)?,
@@ -2768,6 +2783,33 @@ mod tests {
         invalid_budget.proposals = Some(1);
         invalid_budget.attempts = 2;
         assert!(validate_campaign_command(&CampaignCommand::Branch(invalid_budget)).is_err());
+        let generator = CandidateGeneratorSpecId::parse(&format!(
+            "crucible.campaign.candidate-generator-spec@{}",
+            ContentId::for_bytes(ObjectKind::Policy, 1, b"branch-generator").encode()
+        ))
+        .expect("candidate generator ID");
+        let mut generated_branch = branch_args("generated");
+        generated_branch.values.clear();
+        generated_branch.generator = Some(generator.to_string());
+        generated_branch.proposals = Some(8);
+        let PreparedCampaignCommand::Branch(generated) = prepare_campaign_branch(
+            &generated_branch,
+            &CampaignPrincipal::new("operator").expect("campaign principal"),
+        )
+        .expect("generated branch request") else {
+            unreachable!("generated branch preparation returned another operation")
+        };
+        assert_eq!(generated.request().source().generator(), Some(generator));
+        assert_eq!(generated.request().budget().maximum_proposals(), 8);
+
+        let mut missing_generated_budget = generated_branch.clone();
+        missing_generated_budget.proposals = None;
+        assert!(
+            validate_campaign_command(&CampaignCommand::Branch(missing_generated_budget)).is_err()
+        );
+        let mut mixed_source = generated_branch;
+        mixed_source.values.push("true".to_owned());
+        assert!(validate_campaign_command(&CampaignCommand::Branch(mixed_source)).is_err());
 
         let mut bad_command_basis = mutation_basis("bad-command");
         bad_command_basis.command = "not-a-command".to_owned();
@@ -3157,6 +3199,51 @@ mod tests {
                 ..
             }) if values == &["false", "true"]
         ));
+        let generated_branch = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "branch",
+            "created",
+            "--expected",
+            &branch.expected,
+            "--command",
+            &branch.command,
+            "--branch-point",
+            &branch.branch_point,
+            "--parent",
+            &branch.parent,
+            "--opportunity",
+            &branch.opportunity,
+            "--domain",
+            &branch.domain,
+            "--generator",
+            &format!(
+                "crucible.campaign.candidate-generator-spec@{}",
+                ContentId::for_bytes(ObjectKind::Policy, 1, b"parser-generator").encode()
+            ),
+            "--proposals",
+            "8",
+            "--attempts",
+            "2",
+        ])
+        .expect("campaign generated branch arguments");
+        assert!(matches!(
+            generated_branch.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Branch(CampaignBranchArgs {
+                    values,
+                    generator: Some(_),
+                    proposals: Some(8),
+                    attempts: 2,
+                    ..
+                }),
+                ..
+            }) if values.is_empty()
+        ));
 
         let expected = snapshot("current").to_string();
         let command = hash("pause").to_hex();
@@ -3434,6 +3521,7 @@ mod tests {
             .expect("domain ID")
             .to_string(),
             values: vec!["false".to_owned(), "true".to_owned()],
+            generator: None,
             proposals: None,
             attempts: 1,
             stop: "next-choice".to_owned(),

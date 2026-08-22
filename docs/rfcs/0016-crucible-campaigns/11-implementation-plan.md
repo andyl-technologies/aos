@@ -793,9 +793,9 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
   `fork` only as a deprecated compatibility alias for `branch` if needed. The
   checked local client now exposes canonical create/derive inputs and exact
-  finite operator branch requests in addition to lifecycle control; manifest
+  finite or already-imported generated operator branch requests in addition to lifecycle control; manifest
   authoring, verifier-backed import/validation, start attachment, selector
-  resolution, and generated-source branch porcelain remain open.
+  resolution, and generated `--all` authoring remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed
