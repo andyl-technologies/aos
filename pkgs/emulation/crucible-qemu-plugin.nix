@@ -18,7 +18,7 @@
   };
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
-    nativeInputs = map toString [glib pkg-config qemu-crucible];
+    nativeInputs = map toString [glib.dev glib.tools pkg-config qemu-crucible];
     licenseScope = "GPL-2.0-only";
   };
   cargoArtifacts = mkCargoArtifacts {
@@ -34,7 +34,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
     ];
-    buildDeps = [glib pkg-config qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
     runtimeDeps = [qemu-crucible];
   };
 in
@@ -52,7 +52,7 @@ in
     installLibs = true;
     doCheck = true;
 
-    buildDeps = [glib pkg-config qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
     runtimeDeps = [qemu-crucible];
 
     preBuild = ''

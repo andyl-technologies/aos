@@ -40,6 +40,8 @@ in
       gettext
       perl
       python3
+      glib.dev
+      glib.tools
     ];
     runtimeDeps = [
       libtpms

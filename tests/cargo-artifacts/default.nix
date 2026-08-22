@@ -61,6 +61,12 @@ in
             ${consumer}/bin/artifact-fixture | grep -qx 'answer=42'
             jq -e 'select(.reason == "compiler-artifact" and (.package_id | startswith("registry+") and contains("itoa@1.0.18")) and .fresh == true)' \
               ${consumer}/nix-support/cargo-build-messages.jsonl >/dev/null
+            if grep -F '${cargoDeps}' ${consumer}/nix-support/cargo-build-messages.jsonl; then
+              echo "runtime Cargo diagnostics retain the vendor store path" >&2
+              exit 1
+            fi
+            grep -F '/nix/store/00000000000000000000000000000000-redacted/' \
+              ${consumer}/nix-support/cargo-build-messages.jsonl >/dev/null
             mkdir -p "$out"
             echo PASS > "$out/result"
           '';
