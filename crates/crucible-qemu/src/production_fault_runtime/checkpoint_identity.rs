@@ -279,7 +279,7 @@ fn observation_identity_material_with_checkpoint_offset(
     match &observation.target {
         Some(target) => {
             material.push(1)?;
-            material.append_length_prefixed(target.canonical_material().as_bytes())?;
+            material.append_target(target)?;
         }
         None => material.push(0)?,
     }

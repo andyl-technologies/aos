@@ -16,7 +16,8 @@ use crucible::model::{
     HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy, NodeEffectSpecification,
     NodeHangScope, NodeLifecycleTransition, NodeStatePolicy, NodeWatchdogPolicy,
     OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace,
-    SearchChoiceId, SearchOverride, SignalArtifactProvider, SignalBoundarySnapshot,
+    ResolvedFaultTarget, SearchChoiceId, SearchOverride, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
