@@ -23964,73 +23964,26 @@ impl RpcService {
         };
 
         let admission: Result<(), RpcError> = async {
-            for object in req.objects {
-                let existing = self
-                    .db
-                    .surface_object_named(SurfaceTarget::Registry(registry.id), &object.path)
-                    .await
-                    .map_err(RpcError::internal)?;
-                let existing = match existing {
-                    Some(existing)
-                        if existing.object_kind == "immutable"
-                            && object.kind == "mutable_pointer"
-                            && keymap::is_mutable_path(&object.path) =>
-                    {
-                        Some(
-                            self.db
-                                .convert_registry_object_to_mutable(
-                                    registry.id,
-                                    existing.id,
-                                    &object.path,
-                                    &publication_id,
-                                )
-                                .await
-                                .map_err(|error| {
-                                    RpcError::FailedPrecondition(format!("{error:#}"))
-                                })?,
-                        )
-                    }
-                    existing => existing,
-                };
-                let surface_object = match existing {
-                    Some(existing)
-                        if existing.object_kind == object.kind
-                            && (object.kind == "mutable_pointer"
-                                || (existing.content_hash.as_deref() == Some(&object.sha256)
-                                    && existing.size == Some(object.byte_size))) =>
-                    {
-                        existing
-                    }
-                    Some(_) => {
-                        return Err(RpcError::FailedPrecondition(format!(
-                            "publication path '{}' conflicts with its existing object identity",
-                            object.path
-                        )));
-                    }
-                    None => self
-                        .db
-                        .create_surface_object(&crate::db::SetSurfaceObject {
-                            surface: SurfaceTarget::Registry(registry.id),
-                            object_key: object.path,
-                            content_hash: Some(object.sha256.clone()),
-                            size: Some(object.byte_size),
-                            object_kind: object.kind.clone(),
-                            mutable_publication_id: (object.kind == "mutable_pointer")
-                                .then(|| publication_id.clone()),
-                        })
-                        .await
-                        .map_err(RpcError::internal)?,
-                };
+            let manifest_objects = req
+                .objects
+                .into_iter()
+                .map(|object| crate::db::RegistryPublicationManifestObject {
+                    object_key: object.path,
+                    expected_hash: object.sha256,
+                    expected_size: object.byte_size,
+                    object_kind: object.kind,
+                })
+                .collect::<Vec<_>>();
+            for objects in manifest_objects.chunks(crate::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH)
+            {
                 self.db
-                    .set_registry_publication_object(&crate::db::SetRegistryPublicationObject {
-                        publication_id: publication_id.clone(),
-                        surface_object_id: surface_object.id,
-                        object_kind: object.kind,
-                        expected_hash: object.sha256,
-                        expected_size: object.byte_size,
-                    })
+                    .admit_registry_publication_manifest_objects(
+                        registry.id,
+                        &publication_id,
+                        objects,
+                    )
                     .await
-                    .map_err(RpcError::internal)?;
+                    .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
             }
             for placement in placements {
                 self.db
