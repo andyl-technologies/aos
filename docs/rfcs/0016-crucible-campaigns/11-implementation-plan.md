@@ -345,9 +345,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   checkpoint, streams opaque VMState through a length-bounded pinned-file
   transaction, and records a selected-root binding over metadata plus VMState
   only after authenticated EOF and file sync; interruption leaves guarded
-  launch fail-closed. Concrete
-  resource-guard ownership through warm restore and lifecycle resume remains
-  open.
+  launch fail-closed. A guarded-only exact-root launcher now consumes that
+  pinned authority, rechecks the selected snapshot and checkpoint identities,
+  and uses the sealed child-process contract for pre-`exec` containment. The
+  daemon resume adapter derives production replay admission inside the QEMU
+  boundary, rejects `NotRun` or mismatched oracle evidence before launch, and
+  checks the guard immediately before and after realization. Concrete
+  resource-guard ownership through warm restore, production replay-oracle
+  validation of newly captured checkpoints, and lifecycle resume remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable

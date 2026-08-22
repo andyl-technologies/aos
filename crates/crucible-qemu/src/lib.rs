@@ -243,7 +243,8 @@ pub use realization::{
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeRealizationExecutor,
+    QemuExactRootWarmRestoreNodeLauncher, QemuGuardedNodeRealizationLauncher,
+    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
     QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuVmLiveRealizationExecutor,
     QemuWarmRestoreNodeLauncher,
 };

@@ -20,13 +20,15 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
-    QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
+    QemuAsyncDriverPolicy, QemuChildProcessContract, QemuCrashDetector, QemuHostIoRuntime,
+    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
     QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuMappedQuantumShmemHotPath,
     QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
-    QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuSpawnError, QmpError,
-    QmpTimeoutStream, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuQmpMachineControlChannel,
+    QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+    QemuShutdownPolicy, QemuSpawnError, QemuVmStateBinding, QmpError, QmpTimeoutStream,
+    complete_qemu_host_plugin_setup, spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 mod restore_cleanup;
@@ -582,6 +584,106 @@ where
     )?;
 
     let qmp = connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory))
+        .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
+    build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
+        .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
+}
+
+/// Exact-root-bound inputs retained across one prepared warm restore.
+pub(crate) struct QemuPreparedWarmRestoreLaunch<'a> {
+    command: &'a QemuLaunchCommand,
+    run_directory: &'a QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
+    process_contract: &'a QemuChildProcessContract,
+    region_config: RegionConfig,
+    slot_index: u32,
+}
+
+impl<'a> QemuPreparedWarmRestoreLaunch<'a> {
+    /// Binds one prepared run directory to its process and shared-memory basis.
+    pub(crate) const fn new(
+        command: &'a QemuLaunchCommand,
+        run_directory: &'a QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
+        process_contract: &'a QemuChildProcessContract,
+        region_config: RegionConfig,
+        slot_index: u32,
+    ) -> Self {
+        Self {
+            command,
+            run_directory,
+            vmstate_binding,
+            process_contract,
+            region_config,
+            slot_index,
+        }
+    }
+}
+
+/// Spawns and restores QEMU from one exact-root-bound prepared run directory.
+///
+/// This is the production warm-restore spawn boundary. It rejects a missing or
+/// different VMState binding before shared-memory allocation or child spawn,
+/// then uses the child process contract to install cgroup membership, sticky
+/// cancellation, file-size defense, and unprivileged credentials in
+/// `pre_exec`. The prepared directory remains descriptor-pinned throughout the
+/// launch and QMP socket resolution uses only its diagnostic path after guarded
+/// spawn has reauthenticated the retained directory and VMState inode.
+///
+/// # Errors
+///
+/// Returns [`QemuWarmRestoreLaunchError`] when the selected checkpoint-root
+/// binding is absent or changed, the guarded spawn contract rejects launch,
+/// plugin setup or priming fails, QMP cannot connect, or restored-node assembly
+/// fails.
+pub(crate) fn spawn_setup_and_restore_prepared_qemu_node_guarded<A, R>(
+    launch: QemuPreparedWarmRestoreLaunch<'_>,
+    restore: QemuNodeRestorePlan<'_>,
+    mut runtime: QemuNodeFactoryRuntime<A, R>,
+    service_prime_poll: impl FnMut(u64),
+) -> Result<QemuNode, QemuWarmRestoreLaunchError>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    launch
+        .run_directory
+        .require_exact_vmstate(launch.vmstate_binding)
+        .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    runtime.shmem_config.coverage = match launch.command.plugin_coverage() {
+        QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
+        QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),
+    };
+    let qmp = launch
+        .command
+        .qmp_channel()
+        .ok_or(QemuWarmRestoreLaunchError::MissingQmpChannel)?;
+    let allocation = RegionAllocation::new(launch.region_config)
+        .map_err(|source| QemuWarmRestoreLaunchError::RegionLayout { source })?;
+    let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+        launch.command,
+        launch.run_directory,
+        allocation.layout().region_size,
+        launch.process_contract,
+    )
+    .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    let (child, resources) = spawned.into_parts();
+    let setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        launch.region_config,
+        launch.slot_index,
+        launch.command.fault_capability_requirement(),
+    )
+    .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
+
+    prime_off_boot_barrier(
+        &setup,
+        runtime.shmem_config.clone(),
+        WARM_RESTORE_PRIME_TIMEOUT,
+        service_prime_poll,
+    )?;
+
+    let qmp = connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(launch.run_directory.path()))
         .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
     build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
         .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })

@@ -1,5 +1,8 @@
 //! Tests for QEMU real-node realization execution.
 
+// crucible-lint: allow panic-shortcut -- fixture setup uses panic shortcuts for failure localization.
+#![allow(clippy::expect_used)]
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -26,6 +29,11 @@ enum NodeExecutorCall {
         authorization: QemuLoadvmCommandPurpose,
         admission: QemuNodeRestoreAdmission,
     },
+    GuardedLaunch {
+        config: ContentHash,
+        snapshot: ContentHash,
+        checkpoint: ContentHash,
+    },
     PrepareObservationStream,
     Advance(u64),
     Fingerprint,
@@ -50,9 +58,18 @@ struct ScriptedNode {
     shutdown_event: Option<ObservableEvent>,
 }
 
-impl QemuNodeRealizationLauncher for ScriptedLauncher {
-    type Node = ScriptedNode;
+struct ScriptedGuardedLauncher {
+    log: SharedLog,
+    snapshot: ContentHash,
+    runtime_id: ContentHash,
+    current_icount: Icount,
+}
 
+impl QemuNodeLauncher for ScriptedLauncher {
+    type Node = ScriptedNode;
+}
+
+impl QemuNodeRealizationLauncher for ScriptedLauncher {
     fn launch_restored_node(
         &mut self,
         config: &Configuration,
@@ -63,6 +80,38 @@ impl QemuNodeRealizationLauncher for ScriptedLauncher {
             checkpoint: restore.checkpoint().id,
             authorization: restore.authorization().purpose(),
             admission: restore.admission(),
+        });
+        Ok(ScriptedNode {
+            log: Rc::clone(&self.log),
+            runtime_id: self.runtime_id,
+            current_icount: self.current_icount,
+            shutdown_event: None,
+        })
+    }
+}
+
+impl QemuNodeLauncher for ScriptedGuardedLauncher {
+    type Node = ScriptedNode;
+}
+
+impl QemuGuardedNodeRealizationLauncher for ScriptedGuardedLauncher {
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        restore: QemuNodeRestorePlan<'_>,
+        _process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if snapshot.id() != self.snapshot {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "scripted guarded launch",
+                message: String::from("snapshot differs from selected exact root"),
+            });
+        }
+        self.log.borrow_mut().push(NodeExecutorCall::GuardedLaunch {
+            config: config.id(),
+            snapshot: snapshot.id(),
+            checkpoint: restore.checkpoint().id,
         });
         Ok(ScriptedNode {
             log: Rc::clone(&self.log),
@@ -209,6 +258,52 @@ fn qemu_node_realization_executor_loads_baked_genesis_before_node_replay()
                 checkpoint: baked.checkpoint.id,
                 authorization: QemuLoadvmCommandPurpose::BakedGenesisRealization,
                 admission: QemuNodeRestoreAdmission::BakedGenesis { world_id: world.id },
+            },
+            NodeExecutorCall::PrepareObservationStream,
+            NodeExecutorCall::Fingerprint,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_exact_root_launcher_binds_snapshot_before_runtime_admission()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let config = Configuration::genesis(scenario("guarded-exact-root"));
+    let runtime_id = hash("runtime", "guarded-exact-root");
+    let checkpoint =
+        checkpoint_for_config("guarded-exact-root", &config, &node, 7, CheckpointKind::Fat)?;
+    let snapshot = QemuVmSnapshot::diskless(
+        checkpoint,
+        QemuReplayOracleValidation::Match {
+            runtime_hash: runtime_id,
+        },
+    )?;
+    let launcher = ScriptedGuardedLauncher {
+        log: Rc::clone(&log),
+        snapshot: snapshot.id(),
+        runtime_id,
+        current_icount: Icount { retired: 7 },
+    };
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    let process_contract = test_process_contract();
+    let runtime = executor.resume_materialized_exact_snapshot_guarded(
+        &process_contract,
+        &config,
+        &snapshot,
+    )?;
+
+    assert_eq!(runtime.id, runtime_id);
+    assert_eq!(runtime.configuration, config.id());
+    assert_eq!(
+        logged(&log),
+        vec![
+            NodeExecutorCall::GuardedLaunch {
+                config: config.id(),
+                snapshot: snapshot.id(),
+                checkpoint: snapshot.checkpoint().id,
             },
             NodeExecutorCall::PrepareObservationStream,
             NodeExecutorCall::Fingerprint,
@@ -704,4 +799,18 @@ fn shared_log() -> SharedLog {
 
 fn logged(log: &SharedLog) -> Vec<NodeExecutorCall> {
     log.borrow().clone()
+}
+
+fn test_process_contract() -> QemuChildProcessContract {
+    let (_cgroup_reader, cgroup_writer) =
+        std::os::unix::net::UnixStream::pair().expect("cgroup socket pair");
+    let (cancellation_reader, _cancellation_writer) =
+        std::os::unix::net::UnixStream::pair().expect("cancellation socket pair");
+    QemuChildProcessContract::from_unvalidated_test_descriptors(
+        cgroup_writer.into(),
+        cancellation_reader.into(),
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
 }

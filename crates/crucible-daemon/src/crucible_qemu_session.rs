@@ -12,9 +12,10 @@ use crucible::{
 };
 use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission, QemuVmLiveRealizationExecutor, QemuVmRealization,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLiveAttemptBackend,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuVmLiveRealizationExecutor,
+    QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmReplayRequest,
+    QemuVmSnapshot,
 };
 
 use crate::{
@@ -123,6 +124,17 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
     /// ceiling active until the quarantine reaper attests that the process is
     /// gone; it must not release the guard in the calling session.
     fn quarantine(&mut self);
+}
+
+/// Resource guard that can lend one sealed child-process launch contract.
+///
+/// The returned capability is read-only and cannot release cgroup, quota,
+/// cancellation, quantum, watcher, or quarantine ownership. It remains valid
+/// only while the attempt guard is live.
+pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Returns the exact child-process containment contract for this attempt.
+    #[must_use]
+    fn child_process_contract(&self) -> &QemuChildProcessContract;
 }
 
 /// Factory for one pre-launch attempt resource guard.

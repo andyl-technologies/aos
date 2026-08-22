@@ -8,7 +8,12 @@
 
 use std::io::{self, Write};
 
-use crucible_qemu::{QemuPreparedRunDirectory, QemuSpawnError, QemuVmSnapshot, QemuVmStateBinding};
+use crucible::Configuration;
+use crucible_qemu::{
+    QemuGuardedNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuPreparedRunDirectory,
+    QemuSpawnError, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmSnapshot, QemuVmStateBinding,
+};
 use thiserror::Error;
 
 use crucible_campaign::{
@@ -17,7 +22,8 @@ use crucible_campaign::{
 
 use crate::{
     ExactCheckpointStore, ExactCheckpointStoreError, ExactPinRetentionAdmin,
-    ExactPinRetentionError, ExecutionCancellation,
+    ExactPinRetentionError, ExecutionCancellation, QemuAttemptOperationalBoundary,
+    QemuAttemptProcessResourceGuard,
 };
 
 /// One exact checkpoint durably materialized for guarded QEMU restore.
@@ -134,6 +140,48 @@ where
     })
 }
 
+/// Realizes one materialized exact checkpoint under its attempt process guard.
+///
+/// The QEMU executor rechecks the paired snapshot and the launcher's selected
+/// root binding before guarded spawn. Replay-oracle evidence is admitted inside
+/// `crucible-qemu`; this function cannot mint a raw `loadvm` authorization.
+/// Cancellation and resource state are checked immediately before and after the
+/// blocking realization operation. The caller must still run the session
+/// cleanup ladder on every returned error so failed child ownership is reaped
+/// or transferred to quarantine.
+///
+/// # Errors
+///
+/// Returns [`ExactCheckpointResumeError::Canceled`] when cancellation wins, or
+/// [`ExactCheckpointResumeError::Realization`] when replay admission, the
+/// selected root, guarded launch, restore, or runtime validation fails.
+pub fn realize_materialized_exact_checkpoint_guarded<L, G>(
+    executor: &mut QemuNodeRealizationExecutor<L>,
+    guard: &mut G,
+    configuration: &Configuration,
+    materialized: &MaterializedExactCheckpoint,
+) -> Result<QemuVmRealization, ExactCheckpointResumeError>
+where
+    L: QemuGuardedNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    check_resume_boundary(guard)?;
+    let runtime = executor.resume_materialized_exact_snapshot_guarded(
+        guard.child_process_contract(),
+        configuration,
+        materialized.snapshot(),
+    )?;
+    check_resume_boundary(guard)?;
+    Ok(QemuVmRealization {
+        operation: QemuVmRealizationOperation::Resume,
+        configuration: configuration.clone(),
+        runtime,
+        branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
+            checkpoint: materialized.snapshot().checkpoint().clone(),
+        },
+    })
+}
+
 struct CancellationCheckedWriter<'a, 'b> {
     destination: &'a mut crucible_qemu::QemuVmStateMaterialization<'b>,
     cancellation: &'a ExecutionCancellation,
@@ -188,6 +236,17 @@ pub enum ExactCheckpointRestoreError {
     Spawn(#[from] QemuSpawnError),
 }
 
+/// Failure while turning a selected materialization into a guarded live node.
+#[derive(Debug, Error)]
+pub enum ExactCheckpointResumeError {
+    /// Cancellation won before or during guarded realization.
+    #[error("exact-checkpoint resume was canceled")]
+    Canceled,
+    /// QEMU replay admission, launch, restore, or runtime validation failed.
+    #[error(transparent)]
+    Realization(#[from] QemuVmRealizationError),
+}
+
 fn check_cancellation(
     cancellation: &ExecutionCancellation,
 ) -> Result<(), ExactCheckpointRestoreError> {
@@ -204,4 +263,14 @@ fn canceled_io() -> io::Error {
 
 fn restore_binding(checkpoint: ExactCheckpointId) -> QemuVmStateBinding {
     QemuVmStateBinding::from_exact_checkpoint_root_digest(checkpoint.content_id().digest())
+}
+
+fn check_resume_boundary(
+    guard: &mut impl QemuAttemptOperationalBoundary,
+) -> Result<(), ExactCheckpointResumeError> {
+    match guard.check_operational_boundary() {
+        Ok(()) => Ok(()),
+        Err(QemuVmRealizationError::Canceled { .. }) => Err(ExactCheckpointResumeError::Canceled),
+        Err(source) => Err(ExactCheckpointResumeError::Realization(source)),
+    }
 }
