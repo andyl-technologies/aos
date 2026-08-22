@@ -30,16 +30,16 @@ use crucible_cas::content_store::{
 };
 use crucible_qemu::{
     DeterministicLaunchProfile, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
-    QemuCachedAncestor, QemuChildProcessContract, QemuFaultCapabilityRequirement,
-    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher, QemuLaunchArtifact,
-    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
-    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeLauncher,
-    QemuNodeRealizationExecutor, QemuNodeRestorePlan, QemuPreparedRunDirectory,
-    QemuRealizedNodeBackend, QemuReplayOracleCheck, QemuReplayOracleValidation,
-    QemuReplayValidationNodeLauncher, QemuVmLaunchConfig, QemuVmLiveRealizationExecutor,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
-    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
-    QemuVmStateBinding,
+    QemuCachedAncestor, QemuChildProcessContract, QemuFailedLaunchChildSource,
+    QemuFaultCapabilityRequirement, QemuGuardedNodeRealizationLauncher,
+    QemuGuardedThinNodeRealizationLauncher, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLoadvmCommandAuthorization,
+    QemuLoadvmRealizationAdmission, QemuNodeLauncher, QemuNodeRealizationExecutor,
+    QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuRealizedNodeBackend, QemuReplayOracleCheck,
+    QemuReplayOracleValidation, QemuReplayValidationNodeLauncher, QemuVmLaunchConfig,
+    QemuVmLiveRealizationExecutor, QemuVmRealizationError, QemuVmRealizationExecutor,
+    QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest,
+    QemuVmSnapshot, QemuVmStateBinding,
 };
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
@@ -208,6 +208,12 @@ impl QemuNodeLauncher for GuardedResumeLauncher {
     type Node = GuardedResumeNode;
 }
 
+impl QemuFailedLaunchChildSource for GuardedResumeLauncher {
+    fn take_failed_launch_child(&mut self) -> Option<crucible_qemu::QemuNodeChild> {
+        None
+    }
+}
+
 impl QemuGuardedNodeRealizationLauncher for GuardedResumeLauncher {
     fn launch_materialized_exact_node_guarded(
         &mut self,
@@ -232,6 +238,12 @@ impl QemuGuardedNodeRealizationLauncher for GuardedResumeLauncher {
 
 impl QemuNodeLauncher for GuardedThinLauncher {
     type Node = GuardedResumeNode;
+}
+
+impl QemuFailedLaunchChildSource for GuardedThinLauncher {
+    fn take_failed_launch_child(&mut self) -> Option<crucible_qemu::QemuNodeChild> {
+        None
+    }
 }
 
 impl QemuGuardedThinNodeRealizationLauncher for GuardedThinLauncher {
@@ -343,6 +355,7 @@ struct GuardedResumeGuard {
     process_contract: QemuChildProcessContract,
     finishes: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    failed_children: Vec<crucible_qemu::QemuNodeChild>,
 }
 
 struct ReplayValidationStore {
@@ -491,6 +504,10 @@ impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
     fn child_process_contract(&self) -> &QemuChildProcessContract {
         &self.process_contract
     }
+
+    fn retain_failed_launch_child(&mut self, child: crucible_qemu::QemuNodeChild) {
+        self.failed_children.push(child);
+    }
 }
 
 fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard {
@@ -509,6 +526,7 @@ fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard 
         ),
         finishes: Arc::new(AtomicUsize::new(0)),
         quarantines: Arc::new(AtomicUsize::new(0)),
+        failed_children: Vec::new(),
     }
 }
 

@@ -13,9 +13,9 @@ use crucible::{
 use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLiveAttemptBackend,
-    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuVmLiveRealizationExecutor,
-    QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmReplayRequest,
-    QemuVmSnapshot,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeChild,
+    QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
 };
 
 use crate::{
@@ -135,6 +135,13 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// Returns the exact child-process containment contract for this attempt.
     #[must_use]
     fn child_process_contract(&self) -> &QemuChildProcessContract;
+
+    /// Retains a direct child whose failed realization could not reap it.
+    ///
+    /// This transfer is infallible: the guard must retain the nonduplicable
+    /// child authority itself or move it to a nondroppable quarantine owner.
+    /// It must not release attempt resources until that owner attests reap.
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild);
 }
 
 /// Factory for one pre-launch attempt resource guard.

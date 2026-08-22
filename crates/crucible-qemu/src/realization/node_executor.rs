@@ -343,6 +343,18 @@ pub trait QemuGuardedThinNodeRealizationLauncher: QemuNodeLauncher {
     ) -> Result<Self::Node, QemuVmRealizationError>;
 }
 
+/// Retains a direct child whose post-spawn realization cleanup could not reap it.
+///
+/// Concrete guarded launchers implement this sealed handoff so the attempt
+/// guard can authenticate the child against its cgroup and transfer it to the
+/// nondroppable process-quarantine owner. A launcher with a retained child must
+/// reject another launch until the caller takes that authority.
+pub trait QemuFailedLaunchChildSource: QemuNodeLauncher {
+    /// Takes the nonduplicable direct-child handle retained after failed reap.
+    #[must_use]
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild>;
+}
+
 /// Concrete launcher that composes QEMU spawn, plugin setup, QMP load, and node assembly.
 pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
@@ -350,6 +362,7 @@ pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     region_config: RegionConfig,
     slot_index: u32,
     runtime_factory: F,
+    failed_child: Option<crate::QemuNodeChild>,
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
@@ -368,6 +381,7 @@ pub struct QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     region_config: RegionConfig,
     slot_index: u32,
     runtime_factory: F,
+    failed_child: Option<crate::QemuNodeChild>,
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
@@ -383,6 +397,7 @@ pub(crate) struct QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
     region_config: RegionConfig,
     slot_index: u32,
     runtime_factory: F,
+    failed_child: Option<crate::QemuNodeChild>,
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
 }
 
@@ -424,6 +439,7 @@ impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
             region_config,
             slot_index,
             runtime_factory,
+            failed_child: None,
             _runtime: std::marker::PhantomData,
         })
     }
@@ -455,6 +471,7 @@ impl<A, R, F> QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
             region_config,
             slot_index,
             runtime_factory,
+            failed_child: None,
             _runtime: std::marker::PhantomData,
         }
     }
@@ -496,6 +513,7 @@ impl<A, R, F> QemuWarmRestoreNodeLauncher<A, R, F> {
             region_config,
             slot_index,
             runtime_factory,
+            failed_child: None,
             _runtime: std::marker::PhantomData,
         }
     }
@@ -536,6 +554,51 @@ where
     type Node = X::Node;
 }
 
+impl<A, R, F> QemuFailedLaunchChildSource for QemuWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.failed_child.take()
+    }
+}
+
+impl<A, R, F> QemuFailedLaunchChildSource for QemuExactRootWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.failed_child.take()
+    }
+}
+
+impl<A, R, F> QemuFailedLaunchChildSource for QemuPreparedThinWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.failed_child.take()
+    }
+}
+
+impl<X, T> QemuFailedLaunchChildSource for QemuReplayValidationNodeLauncher<X, T>
+where
+    X: QemuFailedLaunchChildSource,
+    T: QemuFailedLaunchChildSource<Node = X::Node>,
+{
+    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
+        self.exact
+            .take_failed_launch_child()
+            .or_else(|| self.thin.take_failed_launch_child())
+    }
+}
+
 impl<A, R, F> QemuNodeRealizationLauncher for QemuWarmRestoreNodeLauncher<A, R, F>
 where
     A: SchedulerSendAuthorizer + 'static,
@@ -547,8 +610,9 @@ where
         config: &Configuration,
         restore: QemuNodeRestorePlan<'_>,
     ) -> Result<Self::Node, QemuVmRealizationError> {
+        require_no_failed_launch_child(&self.failed_child)?;
         let runtime = (self.runtime_factory)(config);
-        spawn_setup_and_restore_qemu_node(
+        let result = spawn_setup_and_restore_qemu_node(
             &self.command,
             &self.run_directory,
             self.region_config,
@@ -558,8 +622,8 @@ where
             // Diskless warm restore issues no host-serviced device I/O during
             // priming; a block-capable caller supplies a servicing closure here.
             |_current_icount| {},
-        )
-        .map_err(warm_restore_error)
+        );
+        retain_warm_restore_result(result, &mut self.failed_child)
     }
 }
 
@@ -576,6 +640,7 @@ where
         restore: QemuNodeRestorePlan<'_>,
         process_contract: &QemuChildProcessContract,
     ) -> Result<Self::Node, QemuVmRealizationError> {
+        require_no_failed_launch_child(&self.failed_child)?;
         if snapshot.id() != self.snapshot || restore.checkpoint().id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded exact-root warm restore",
@@ -585,7 +650,7 @@ where
             });
         }
         let runtime = (self.runtime_factory)(config);
-        spawn_setup_and_restore_prepared_qemu_node_guarded(
+        let result = spawn_setup_and_restore_prepared_qemu_node_guarded(
             QemuPreparedWarmRestoreLaunch::new(
                 &self.command,
                 &self.run_directory,
@@ -597,8 +662,8 @@ where
             restore,
             runtime,
             |_current_icount| {},
-        )
-        .map_err(warm_restore_error)
+        );
+        retain_warm_restore_result(result, &mut self.failed_child)
     }
 }
 
@@ -615,6 +680,7 @@ where
         restore: QemuNodeRestorePlan<'_>,
         process_contract: &QemuChildProcessContract,
     ) -> Result<Self::Node, QemuVmRealizationError> {
+        require_no_failed_launch_child(&self.failed_child)?;
         if restore.checkpoint().id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded thin-path warm restore",
@@ -624,7 +690,7 @@ where
             });
         }
         let runtime = (self.runtime_factory)(config);
-        spawn_setup_and_restore_prepared_qemu_node_guarded(
+        let result = spawn_setup_and_restore_prepared_qemu_node_guarded(
             QemuPreparedWarmRestoreLaunch::provisioned(
                 &self.command,
                 &self.run_directory,
@@ -635,8 +701,8 @@ where
             restore,
             runtime,
             |_current_icount| {},
-        )
-        .map_err(warm_restore_error)
+        );
+        retain_warm_restore_result(result, &mut self.failed_child)
     }
 }
 
@@ -728,6 +794,20 @@ where
         self.observation_sealed = false;
         self.active_configuration = None;
         self.active_node.take()
+    }
+
+    /// Takes a direct child retained after a post-spawn launch reap failure.
+    ///
+    /// The caller must authenticate the returned child against the exact
+    /// attempt cgroup and transfer it to the nondroppable process-quarantine
+    /// owner before releasing resources. Until this handoff occurs, concrete
+    /// launchers reject every subsequent launch.
+    #[must_use]
+    pub fn take_failed_launch_child_for_quarantine(&mut self) -> Option<crate::QemuNodeChild>
+    where
+        L: QemuFailedLaunchChildSource,
+    {
+        self.launcher.take_failed_launch_child()
     }
 
     fn launch_and_install(
@@ -1485,6 +1565,33 @@ fn warm_restore_error(source: QemuWarmRestoreLaunchError) -> QemuVmRealizationEr
     QemuVmRealizationError::Executor {
         operation: "launch warm QEMU node",
         message: source.to_string(),
+    }
+}
+
+fn require_no_failed_launch_child(
+    failed_child: &Option<crate::QemuNodeChild>,
+) -> Result<(), QemuVmRealizationError> {
+    if failed_child.is_some() {
+        return Err(QemuVmRealizationError::ReapQuarantined {
+            operation: "launch warm QEMU node",
+            message: String::from(
+                "a prior failed launch still owns an unreaped direct-child handle",
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn retain_warm_restore_result(
+    result: Result<QemuNode, QemuWarmRestoreLaunchError>,
+    failed_child: &mut Option<crate::QemuNodeChild>,
+) -> Result<QemuNode, QemuVmRealizationError> {
+    match result {
+        Ok(node) => Ok(node),
+        Err(mut source) => {
+            *failed_child = source.take_unreaped_child();
+            Err(warm_restore_error(source))
+        }
     }
 }
 
