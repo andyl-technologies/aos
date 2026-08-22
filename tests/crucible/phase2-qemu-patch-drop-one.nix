@@ -1,11 +1,11 @@
 # Drop-one attribution aggregate.
 #
-# For every carried patch N, `_drop-one.nix` attempts to remove N from the
-# series (3-way `git rebase --onto`) and observes the result LIVE (nothing about
-# the clean/conflict split or the build-fail/succeed split is hardcoded -- it is
-# all an output of building this gate, so a future reordering/decoupling of the
-# series automatically migrates patches between branches). Each patch resolves to
-# exactly one attribution method:
+# A single shared repository removes every carried patch N with a 3-way `git
+# rebase --onto`. Per-patch derivations then observe the prepared result LIVE
+# and build only clean variants. Nothing about the clean/conflict split or the
+# build-fail/succeed split is hardcoded, so a future reordering/decoupling of the
+# series automatically migrates patches between branches. Each patch resolves
+# to exactly one attribution method:
 #
 #   drop-one-source-dependency : N cannot be removed without breaking a later
 #                                patch's 3-way application (the tightly-coupled
@@ -29,10 +29,44 @@
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests.dropOne",
   qemuPackage ? pkgs.qemu-crucible,
+  patchStackRepository ?
+    import ./_qemu-patch-stack-repository.nix {
+      inherit pkgs lib qemuPackage;
+    },
+  dropOneRepository ?
+    import ./_qemu-drop-one-repository.nix {
+      inherit pkgs lib qemuPackage patchStackRepository;
+    },
 }: let
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   patchFiles = series.patchFiles;
   patchCount = builtins.length patchFiles;
+  patchStackRepositorySource = builtins.readFile ./_qemu-patch-stack-repository.nix;
+  dropOneRepositorySource = builtins.readFile ./_qemu-drop-one-repository.nix;
+  dropOneBuildSource = builtins.readFile ./_drop-one-build.nix;
+  patchRegenerationSource = builtins.readFile ./phase2-qemu-patch-regeneration.nix;
+  staticFailures =
+    lib.optionals (!(lib.hasInfix "git add -A" patchStackRepositorySource)) [
+      "shared patch-stack repository must own the sole full-tree staging pass"
+    ]
+    ++ lib.optionals (lib.hasInfix "git add -A" dropOneRepositorySource) [
+      "drop-one repository must reuse bundle commits without full-tree staging"
+    ]
+    ++ lib.optionals (lib.hasInfix "git add -A" dropOneBuildSource) [
+      "per-patch builds must not reconstruct or stage the patch stack"
+    ]
+    ++ lib.optionals (lib.hasInfix "tar -xf \${qemuPackage.src}" dropOneBuildSource) [
+      "per-patch builds must materialize prepared refs instead of extracting QEMU"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "source-supplement/." dropOneBuildSource)) [
+      "per-patch builds must retain QEMU's ignored vendored subprojects"
+    ]
+    ++ lib.optionals (lib.hasInfix "ninja -C build -j" dropOneBuildSource) [
+      "per-patch builds must leave Ninja parallelism to the build environment"
+    ]
+    ++ lib.optionals (lib.hasInfix "tar -xf \${qemuPackage.src}" patchRegenerationSource) [
+      "patch regeneration must reuse the shared verified base repository"
+    ];
 
   # Exported-ABI-symbol discriminators for the patches that expose plugin API
   # symbols (used only if the patch drops clean AND builds -- otherwise the live
@@ -132,7 +166,7 @@
     in {
       inherit index patch symbols;
       drv = import ./_drop-one.nix {
-        inherit pkgs lib qemuPackage index rtcClock;
+        inherit pkgs lib qemuPackage index rtcClock dropOneRepository;
         expectAbsentSymbols = symbols;
         attrPath = "${attrPath}.p${toString index}";
       };
@@ -151,69 +185,90 @@
     '')
     dropOnes;
 in
-  pkgs.mkDerivation {
-    pname = "crucible-phase2-qemu-patch-drop-one";
-    version = "0";
-    src = null;
+  if staticFailures != []
+  then throw "crucible QEMU drop-one setup regression: ${builtins.concatStringsSep "; " staticFailures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-qemu-patch-drop-one";
+      version = "0";
+      src = null;
 
-    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep];
-    PATCH_COUNT = toString patchCount;
+      buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep];
+      PATCH_COUNT = toString patchCount;
 
-    phases = [
-      {
-        name = "aggregate-drop-one-attribution";
-        script = ''
-          set -eu
-          export LC_ALL=C
-          mkdir -p "$out/per-patch"
-          : > "$out/methods.tsv"
+      phases = [
+        {
+          name = "aggregate-drop-one-attribution";
+          script = ''
+              set -eu
+              export LC_ALL=C
+              mkdir -p "$out/per-patch"
+              : > "$out/methods.tsv"
 
-          ${perPatchChecks}
+              grep -q '^PASS$' ${patchStackRepository}/result
+              grep -q '^source_extractions=1$' ${patchStackRepository}/result
+              grep -q '^full_tree_staging_passes=1$' ${patchStackRepository}/result
+              grep -q '^ignored_vendored_subprojects_preserved=true$' \
+                ${patchStackRepository}/result
+              grep -q '^PASS$' ${dropOneRepository}/result
+              grep -q '^all_drop_one_branches_computed_in_one_repository=true$' \
+                ${dropOneRepository}/result
+              cp ${dropOneRepository}/drop-one-manifest.tsv \
+                "$out/drop-one-repository-manifest.tsv"
 
-          # Every patch resolves to exactly one recognized attribution method.
-          bad=$(gawk -F'\t' '
-            $3 != "drop-one-source-dependency" &&
-            $3 != "drop-one-build-required" &&
-            $3 != "drop-one-symbol" &&
-            $3 != "drop-one-semantic" &&
-            $3 != "drop-one-composition" &&
-            $3 != "structural-fallback" { print }
-          ' "$out/methods.tsv")
-          if [ -n "$bad" ]; then
-            echo "patches without a recognized drop-one method:" >&2
-            printf '%s\n' "$bad" >&2
-            exit 1
-          fi
+              ${perPatchChecks}
 
-          rows=$(wc -l < "$out/methods.tsv" | tr -d ' ')
-          test "$rows" -eq "$PATCH_COUNT"
+              # Every patch resolves to exactly one recognized attribution method.
+              bad=$(gawk -F'\t' '
+                $3 != "drop-one-source-dependency" &&
+                $3 != "drop-one-build-required" &&
+                $3 != "drop-one-symbol" &&
+                $3 != "drop-one-semantic" &&
+                $3 != "drop-one-composition" &&
+                $3 != "structural-fallback" { print }
+              ' "$out/methods.tsv")
+              if [ -n "$bad" ]; then
+                echo "patches without a recognized drop-one method:" >&2
+                printf '%s\n' "$bad" >&2
+                exit 1
+              fi
 
-          count() { gawk -F'\t' -v m="$1" '$3==m{c++} END{print c+0}' "$out/methods.tsv"; }
-          n_srcdep=$(count drop-one-source-dependency)
-          n_build=$(count drop-one-build-required)
-          n_symbol=$(count drop-one-symbol)
-          n_semantic=$(count drop-one-semantic)
-          n_composition=$(count drop-one-composition)
-          n_fallback=$(count structural-fallback)
-          test "$n_composition" -eq 0
-          test "$n_fallback" -eq 0
+              rows=$(wc -l < "$out/methods.tsv" | tr -d ' ')
+              test "$rows" -eq "$PATCH_COUNT"
 
-          cat > "$out/result" <<RESULT
-          PASS
-          check=${attrPath}
-          gate=gate:patch-microtests
-          patch_count=${toString patchCount}
-          every_patch_has_exactly_one_drop_one_method=true
-          clean_conflict_split_recomputed_live=true
-          drop_one_source_dependency_count=$n_srcdep
-          drop_one_build_required_count=$n_build
-          drop_one_symbol_count=$n_symbol
-          drop_one_semantic_count=$n_semantic
-          drop_one_composition_count=$n_composition
-          structural_fallback_count=$n_fallback
-          methods_manifest=methods.tsv
-          RESULT
-        '';
-      }
-    ];
-  }
+              count() { gawk -F'\t' -v m="$1" '$3==m{c++} END{print c+0}' "$out/methods.tsv"; }
+              n_srcdep=$(count drop-one-source-dependency)
+              n_build=$(count drop-one-build-required)
+              n_symbol=$(count drop-one-symbol)
+              n_semantic=$(count drop-one-semantic)
+              n_composition=$(count drop-one-composition)
+              n_fallback=$(count structural-fallback)
+              test "$n_composition" -eq 0
+              test "$n_fallback" -eq 0
+
+              cat > "$out/result" <<RESULT
+              PASS
+              check=${attrPath}
+              gate=gate:patch-microtests
+              patch_count=${toString patchCount}
+              every_patch_has_exactly_one_drop_one_method=true
+              clean_conflict_split_recomputed_live=true
+              shared_patch_stack_source_extractions=1
+              shared_patch_stack_full_tree_staging_passes=1
+              shared_patch_stack_preserves_ignored_vendored_subprojects=true
+              all_drop_one_branches_computed_in_one_repository=true
+            successful_variants_materialize_prepared_refs=true
+              conflict_variants_skip_source_checkout=true
+              drop_one_repository_manifest=drop-one-repository-manifest.tsv
+              drop_one_source_dependency_count=$n_srcdep
+              drop_one_build_required_count=$n_build
+              drop_one_symbol_count=$n_symbol
+              drop_one_semantic_count=$n_semantic
+              drop_one_composition_count=$n_composition
+              structural_fallback_count=$n_fallback
+              methods_manifest=methods.tsv
+              RESULT
+          '';
+        }
+      ];
+    }
