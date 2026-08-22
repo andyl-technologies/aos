@@ -822,11 +822,18 @@ mod entry {
     /// one transient or malformed job cannot replay successful neighbors.
     #[worker::event(queue)]
     async fn queue(
-        batch: worker::MessageBatch<aos_hub_core::jobs::Job>,
+        batch: worker::MessageBatch<aos_hub_core::jobs::JobEnvelope>,
         env: Env,
         _ctx: Context,
     ) -> Result<()> {
         crate::tracinglog::init();
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum QueuedJobBody {
+            Versioned(aos_hub_core::jobs::JobEnvelope),
+            Legacy(aos_hub_core::jobs::Job),
+        }
+
         // Raw iteration keeps decode failures scoped to their own message. The
         // queue's configured retry limit moves a persistent poison message to
         // the dead-letter queue without replaying successfully acknowledged
@@ -838,9 +845,12 @@ mod entry {
                     let message_id = message.id();
                     let queued_at = message.timestamp().as_millis();
                     let queue_age_ms = worker::Date::now().as_millis().saturating_sub(queued_at);
-                    let job: aos_hub_core::jobs::Job =
+                    let envelope =
                         match serde_wasm_bindgen::from_value(message.body()) {
-                            Ok(job) => job,
+                            Ok(QueuedJobBody::Versioned(envelope)) => envelope,
+                            Ok(QueuedJobBody::Legacy(job)) => {
+                                aos_hub_core::jobs::JobEnvelope::from_legacy(job, &message_id)
+                            }
                             Err(error) => {
                                 worker::console_error!(
                                     "queue: message={message_id} age_ms={queue_age_ms} decode failed: {error}"
@@ -849,7 +859,8 @@ mod entry {
                                 return;
                             }
                         };
-                    let body = match serde_json::to_string(&job) {
+                    let operation_id = envelope.operation_id.clone();
+                    let body = match serde_json::to_string(&envelope) {
                         Ok(body) => body,
                         Err(error) => {
                             worker::console_error!(
@@ -862,13 +873,13 @@ mod entry {
                     match forward_internal(env, "/_internal/job", Some(body)).await {
                         Ok(()) => {
                             worker::console_log!(
-                                "queue: message={message_id} age_ms={queue_age_ms} acknowledged"
+                                "queue: message={message_id} operation={operation_id} age_ms={queue_age_ms} acknowledged"
                             );
                             message.ack();
                         }
                         Err(error) => {
                             worker::console_error!(
-                                "queue: message={message_id} age_ms={queue_age_ms} failed: {error:#}"
+                                "queue: message={message_id} operation={operation_id} age_ms={queue_age_ms} failed: {error:#}"
                             );
                             message.retry();
                         }
@@ -1166,6 +1177,98 @@ mod entry {
 
     fn now_for_worker() -> i64 {
         aos_hub_core::clock::now_unix_secs()
+    }
+
+    /// Claims, executes, and durably completes one versioned queue operation.
+    async fn run_job_envelope(
+        envelope: &aos_hub_core::jobs::JobEnvelope,
+        state: &State,
+        env: &Env,
+    ) -> Result<()> {
+        use aos_hub_core::db::WorkerJobClaim;
+
+        envelope
+            .validate()
+            .map_err(|error| worker::Error::RustError(format!("invalid envelope: {error:#}")))?;
+        let payload_digest = envelope
+            .payload_digest()
+            .map_err(|error| worker::Error::RustError(format!("job payload digest: {error:#}")))?;
+        let now = now_for_worker();
+        let db = aos_hub_core::db::Database::attach(Box::new(
+            crate::sqldobackend::SqlDoBackend::new(state.storage()),
+        ));
+        let claim = db
+            .claim_worker_job(
+                &envelope.operation_id,
+                envelope.kind(),
+                &payload_digest,
+                now,
+                900,
+            )
+            .await
+            .map_err(|error| worker::Error::RustError(format!("claim job: {error:#}")))?;
+        let (claim_token, attempt) = match claim {
+            WorkerJobClaim::Acquired {
+                claim_token,
+                attempt,
+            } => (claim_token, attempt),
+            WorkerJobClaim::Completed => {
+                worker::console_log!(
+                    "job operation={} kind={} duplicate completed",
+                    envelope.operation_id,
+                    envelope.kind()
+                );
+                return Ok(());
+            }
+            WorkerJobClaim::Busy => {
+                return Err(worker::Error::RustError(format!(
+                    "job operation {} is already running",
+                    envelope.operation_id
+                )))
+            }
+        };
+        worker::console_log!(
+            "job operation={} kind={} attempt={} started",
+            envelope.operation_id,
+            envelope.kind(),
+            attempt
+        );
+
+        match run_job(&envelope.job, state, env).await {
+            Ok(()) => db
+                .complete_worker_job(&envelope.operation_id, &claim_token, now_for_worker())
+                .await
+                .map_err(|error| worker::Error::RustError(format!("complete job: {error:#}"))),
+            Err(error) => {
+                let detail = bounded_job_error(&format!("{error:#}"));
+                if let Err(release_error) = db
+                    .release_worker_job(
+                        &envelope.operation_id,
+                        &claim_token,
+                        &detail,
+                        now_for_worker(),
+                    )
+                    .await
+                {
+                    return Err(worker::Error::RustError(format!(
+                        "{error:#}; releasing job claim failed: {release_error:#}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn bounded_job_error(error: &str) -> String {
+        const MAX_BYTES: usize = 8_192;
+        if error.len() <= MAX_BYTES {
+            return error.to_string();
+        }
+        let mut end = MAX_BYTES;
+        while !error.is_char_boundary(end) {
+            end -= 1;
+        }
+        error[..end].to_string()
     }
 
     /// Runs a single deferred [`Job`](aos_hub_core::jobs::Job) inside `HubDb` over
@@ -1644,11 +1747,11 @@ mod entry {
                             Err(err) => Response::error(format!("bootstrap-root: {err:#}"), 500),
                         };
                     }
-                    let job: aos_hub_core::jobs::Job = match req.json().await {
-                        Ok(job) => job,
+                    let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                        Ok(envelope) => envelope,
                         Err(err) => return Response::error(format!("job decode: {err}"), 400),
                     };
-                    return match run_job(&job, &self.state, &self.env).await {
+                    return match run_job_envelope(&envelope, &self.state, &self.env).await {
                         Ok(()) => Response::ok("ok"),
                         Err(error) => Response::error(format!("job: {error}"), 500),
                     };
