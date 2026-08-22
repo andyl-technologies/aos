@@ -66,6 +66,15 @@ const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
 /// Maximum number of trigger batches admitted at one scheduler boundary.
 const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
+#[cfg(test)]
+fn clone_fault_checkpoint_fixture(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+) -> ProductionFaultRuntimeCheckpoint {
+    checkpoint
+        .try_clone()
+        .unwrap_or_else(|error| panic!("checkpoint fixture should clone: {error}"))
+}
+
 /// Immutable artifacts and bounds for local production QEMU execution.
 #[derive(Clone)]
 pub struct ProductionVmLifecycleConfig {

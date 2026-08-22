@@ -1,6 +1,10 @@
 //! Production fault-runtime checkpoint codec tests.
 
+use std::collections::BTreeMap;
+
 use super::*;
+use crucible::model::FaultResourceLimits;
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 fn empty_checkpoint(
@@ -97,6 +101,79 @@ fn authenticated_qemu_event(payload: Vec<u8>) -> DequeuedFaultEvent {
         },
         payload,
     }
+}
+
+#[derive(Serialize)]
+struct HostileCollectionWire {
+    qemu_fingerprints: BTreeMap<u8, u8>,
+}
+
+#[test]
+fn production_decode_rejects_nodes_above_authored_limit_before_wire_decode() {
+    let bytes = incomplete_checkpoint_bytes(&HostileCollectionWire {
+        qemu_fingerprints: BTreeMap::from([(1, 1), (2, 2)]),
+    });
+    let limits = FaultResourceLimits {
+        nodes: 1,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+        .unwrap_or_else(|error| panic!("test resource limits should build a plan: {error}"));
+
+    assert!(matches!(
+        ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
+            &bytes,
+            &plan,
+            ContentHash::from_bytes(b"hostile node-count seed"),
+        ),
+        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "nodes",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard: 16_384,
+        })
+    ));
+}
+
+#[derive(Serialize)]
+struct HostileActionWire {
+    qemu_issued_actions: BTreeMap<u8, u8>,
+}
+
+#[test]
+fn production_decode_rejects_actions_above_authored_event_limit_before_wire_decode() {
+    let bytes = incomplete_checkpoint_bytes(&HostileActionWire {
+        qemu_issued_actions: BTreeMap::from([(1, 1), (2, 2)]),
+    });
+    let limits = FaultResourceLimits {
+        event_records: 1,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+        .unwrap_or_else(|error| panic!("test resource limits should build a plan: {error}"));
+
+    assert!(matches!(
+        ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
+            &bytes,
+            &plan,
+            ContentHash::from_bytes(b"hostile action-count seed"),
+        ),
+        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "event_records",
+            current: 0,
+            requested: 2,
+            configured: 1,
+            hard: 1_073_741_824,
+        })
+    ));
+}
+
+fn incomplete_checkpoint_bytes(value: &impl Serialize) -> Vec<u8> {
+    let mut bytes = MAGIC.to_vec();
+    ciborium::ser::into_writer(value, &mut bytes)
+        .unwrap_or_else(|error| panic!("hostile checkpoint fixture should encode: {error}"));
+    bytes
 }
 
 #[test]
