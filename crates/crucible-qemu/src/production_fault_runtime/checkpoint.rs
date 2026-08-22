@@ -44,6 +44,7 @@ impl ProductionFaultRuntime {
         )?;
         let identity = production_checkpoint_identity(
             self.plan_id,
+            self.resource_limits,
             runtime.as_ref(),
             &host,
             &qemu_fingerprints,
@@ -97,6 +98,7 @@ impl ProductionFaultRuntime {
         checkpoint.network_state = Some(network_state);
         checkpoint.identity = production_checkpoint_identity(
             self.plan_id,
+            self.resource_limits,
             checkpoint.runtime.as_ref(),
             &checkpoint.host,
             &checkpoint.qemu_fingerprints,

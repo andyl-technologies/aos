@@ -380,12 +380,20 @@ fn validate_link_snapshot(snapshot: &LinkSnapshot) -> Result<(), LinkSnapshotCod
     {
         return Err(LinkSnapshotCodecError::Noncanonical);
     }
-    let normalized = NetLink::restore(snapshot)
-        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?
-        .snapshot();
-    if normalized != *snapshot {
-        return Err(LinkSnapshotCodecError::Noncanonical);
+    if snapshot.floor_ns == 0 || snapshot.base_latency_ns < snapshot.floor_ns {
+        return Err(LinkSnapshotCodecError::Device(
+            DeviceError::LinkLatencyBelowFloor {
+                base_latency_ns: snapshot.base_latency_ns,
+                floor_ns: snapshot.floor_ns,
+            }
+            .to_string(),
+        ));
     }
+    let mut clock = VirtualClock::new(snapshot.shift_bits)
+        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;
+    clock
+        .advance_to(snapshot.current_icount)
+        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;
     Ok(())
 }
 

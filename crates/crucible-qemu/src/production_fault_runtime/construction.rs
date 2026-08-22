@@ -117,6 +117,7 @@ impl ProductionFaultRuntime {
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
+                resource_limits,
                 checkpoint.runtime.as_ref(),
                 &checkpoint.host,
                 &checkpoint.qemu_fingerprints,
