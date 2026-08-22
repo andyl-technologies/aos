@@ -2631,7 +2631,7 @@ mod tests {
         assert!(default.contains("class=\"image-filter-actions\""));
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"hash-control\""));
-        assert!(default.contains("data-copy-value=\"0123456789abcdef\""));
+        assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
 
