@@ -271,6 +271,18 @@ fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
     let limits = FaultResourceLimits::default();
     let original_material = observation_identity_material(&original, limits)
         .unwrap_or_else(|error| panic!("observation should encode: {error}"));
+    let target = original
+        .target
+        .as_ref()
+        .unwrap_or_else(|| panic!("observation fixture should carry a target"));
+    let mut target_bytes = Vec::new();
+    target_bytes
+        .try_reserve_exact(target.canonical_material_length())
+        .unwrap_or_else(|error| panic!("target fixture reservation should succeed: {error}"));
+    target
+        .append_canonical_material_bytes(&mut target_bytes)
+        .unwrap_or_else(|error| panic!("reserved target fixture should encode: {error}"));
+    assert_eq!(target_bytes, target.canonical_material().as_bytes());
 
     let mut changed_kind = original.clone();
     changed_kind.kind = FaultObservationKind::FaultOpportunity;

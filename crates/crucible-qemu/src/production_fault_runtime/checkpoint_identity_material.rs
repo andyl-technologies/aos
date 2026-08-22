@@ -67,6 +67,33 @@ impl BoundedObservationIdentityMaterial {
         Ok(())
     }
 
+    pub(super) fn append_target(
+        &mut self,
+        target: &ResolvedFaultTarget,
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        let target_length = target.canonical_material_length();
+        let requested = target_length.checked_add(size_of::<u64>()).ok_or(
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            },
+        )?;
+        self.reserve(requested)?;
+        let length =
+            u64::try_from(target_length).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            })?;
+        self.bytes.extend_from_slice(&length.to_be_bytes());
+        target
+            .append_canonical_material_bytes(&mut self.bytes)
+            .map_err(|error| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::try_from(error.required).unwrap_or(u64::MAX),
+            })?;
+        Ok(())
+    }
+
     pub(super) fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
