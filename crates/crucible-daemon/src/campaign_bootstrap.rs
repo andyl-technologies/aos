@@ -12,9 +12,11 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignAuthorizationError, CampaignHash, CampaignName, CampaignPrincipal,
     CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
+    CandidateGeneratorSpec, CandidateGeneratorSpecId, ConfigurationArtifactId,
 };
 use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
@@ -22,8 +24,8 @@ use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 use crate::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, CampaignLoopbackListenerError,
     CampaignLoopbackServer, CampaignLoopbackServerConfig, CampaignLoopbackServerReport,
-    CampaignLoopbackServerShutdown, MAX_CAMPAIGN_POLICY_BYTES, UnixPeerCampaignPolicy,
-    UnixPeerCampaignPolicyLoadError,
+    CampaignLoopbackServerShutdown, CrucibleArtifactError, CrucibleCampaignArtifactStore,
+    MAX_CAMPAIGN_POLICY_BYTES, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -143,18 +145,18 @@ impl CampaignLocalServiceConfig {
         self.server
     }
 
-    /// Authenticates deployment input and opens one exclusive local service.
+    /// Authenticates deployment input and acquires one exclusive repository.
     ///
     /// Policy authentication is read-only and precedes any state-directory or
-    /// socket mutation. The returned owner retains both the repository and
-    /// endpoint locks until serving has stopped and every worker has joined.
+    /// socket mutation. The returned owner retains the repository lock and has
+    /// not yet created or bound the managed endpoint.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignLocalServiceError`] when the policy, state namespace,
-    /// durable subdirectories, endpoint, or listener cannot be authenticated
-    /// and acquired exactly.
-    pub fn open(&self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+    /// durable subdirectories, or repository lock cannot be authenticated and
+    /// acquired exactly.
+    pub fn prepare(&self) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
         let policy = Arc::new(load_policy(
             &self.policy_path,
             self.endpoint.owner_user_id(),
@@ -172,21 +174,118 @@ impl CampaignLocalServiceConfig {
         ));
         let refs = Arc::new(DirectoryRefBackend::new(state.ref_directory.clone()));
         let repository = Arc::new(CampaignRepository::new(blobs, refs));
-        let listener = self.endpoint.bind()?;
+        Ok(PreparedCampaignLocalService {
+            endpoint: self.endpoint.clone(),
+            server: self.server,
+            repository,
+            policy,
+            mode: self.mode,
+            state,
+        })
+    }
+
+    /// Authenticates deployment input and opens one exclusive local service.
+    ///
+    /// This is equivalent to [`Self::prepare`] followed immediately by
+    /// [`PreparedCampaignLocalService::bind`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when preparation or managed
+    /// endpoint binding fails.
+    pub fn open(&self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.prepare()?.bind()
+    }
+}
+
+/// Exclusive pre-bind owner of one durable campaign repository.
+///
+/// This type state permits narrow, verifier-backed immutable imports while the
+/// repository lock is held and before any service endpoint exists. Binding
+/// consumes the owner, so import authority cannot be retained through this API
+/// after request serving begins.
+pub struct PreparedCampaignLocalService {
+    endpoint: CampaignLoopbackEndpointConfig,
+    server: CampaignLoopbackServerConfig,
+    repository: Arc<CampaignRepository>,
+    policy: Arc<UnixPeerCampaignPolicy>,
+    mode: CampaignLocalServiceMode,
+    state: CampaignStateOwner,
+}
+
+impl PreparedCampaignLocalService {
+    /// Verifies and imports one exact Crucible scenario and configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::ArtifactImportReadOnly`] when the
+    /// service was configured read-only, or
+    /// [`CampaignLocalServiceError::Artifact`] when verification or immutable
+    /// publication fails.
+    pub fn import_configuration(
+        &self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, CampaignLocalServiceError> {
+        self.require_artifact_import()?;
+        CrucibleCampaignArtifactStore::new(Arc::clone(&self.repository))
+            .import_configuration(scenario, schedule)
+            .map_err(Into::into)
+    }
+
+    /// Verifies and imports one closed candidate-generator specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::ArtifactImportReadOnly`] when the
+    /// service was configured read-only, or
+    /// [`CampaignLocalServiceError::Artifact`] when verification or immutable
+    /// publication fails.
+    pub fn import_generator(
+        &self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<CandidateGeneratorSpecId, CampaignLocalServiceError> {
+        self.require_artifact_import()?;
+        CrucibleCampaignArtifactStore::new(Arc::clone(&self.repository))
+            .import_generator(generator)
+            .map_err(Into::into)
+    }
+
+    /// Binds the managed endpoint and consumes pre-bind import authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when endpoint acquisition or
+    /// listener construction fails.
+    pub fn bind(self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        let Self {
+            endpoint,
+            server: server_config,
+            repository,
+            policy,
+            mode,
+            state,
+        } = self;
+        let listener = endpoint.bind()?;
         let server = CampaignLoopbackServer::from_managed_listener(
             listener,
             repository,
             Arc::clone(&policy),
-            Arc::new(CampaignLocalAuthorizer {
-                policy,
-                mode: self.mode,
-            }),
-            self.server,
+            Arc::new(CampaignLocalAuthorizer { policy, mode }),
+            server_config,
         )?;
         Ok(CampaignLocalService {
             server,
             _state: state,
         })
+    }
+
+    fn require_artifact_import(&self) -> Result<(), CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            Err(CampaignLocalServiceError::ArtifactImportReadOnly)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -272,6 +371,12 @@ pub enum CampaignLocalServiceError {
     /// The managed Unix endpoint could not be acquired.
     #[error(transparent)]
     Endpoint(#[from] CampaignLoopbackEndpointError),
+    /// A pre-bind artifact import was attempted in read-only mode.
+    #[error("campaign artifact import is unavailable in read-only mode")]
+    ArtifactImportReadOnly,
+    /// Verifier-backed immutable artifact import failed.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
     /// The fixed listener could not be configured or failed while serving.
     #[error(transparent)]
     Listener(#[from] CampaignLoopbackListenerError),

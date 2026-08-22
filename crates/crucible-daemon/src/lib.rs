@@ -83,7 +83,7 @@ pub use assignment_ledger::{
 };
 pub use campaign_bootstrap::{
     CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
-    CampaignLocalServiceMode,
+    CampaignLocalServiceMode, PreparedCampaignLocalService,
 };
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ManagedCampaignLoopbackListener,
@@ -133,9 +133,9 @@ pub use control_responsiveness::{
 pub use crucible_artifact::{
     CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
-    decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact,
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, decode_crucible_configuration_artifact,
+    decode_crucible_configuration_artifact_with_selections, decode_crucible_scenario_artifact,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };
 pub use crucible_execution::{
     CrucibleAttemptExecution, CrucibleExecutionModel, CrucibleExecutionModelError,

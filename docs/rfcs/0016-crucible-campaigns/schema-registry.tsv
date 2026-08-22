@@ -103,6 +103,7 @@ crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:component-contract
 crucible.campaign.loopback-frame	16	crucible-daemon::campaign_loopback	component-message	gate:component-contract
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:component-contract
+crucible.campaign-import	1	crucible-cli::campaign_import	deployment-config	gate:component-contract
 crucible.executor.crucible-scenario-payload	1	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.executor.crucible-configuration-payload	2	crucible-daemon::crucible_artifact	execution-model-payload	gate:component-contract,gate:campaign-replay
 crucible.execution.schedule	2	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay

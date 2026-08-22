@@ -481,9 +481,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   constant time from validation checkpoints after later mutations. The daemon
   now provides a narrow Crucible verifier-backed immutable artifact importer;
   large scenario/configuration bytes remain outside the campaign control
-  message and are re-derived before publication. Stored generator closure
-  validation streams within 4,096-record and 128-MiB aggregate-body bounds and
-  does not rewrite imported records. Atomic name-based derivation now creates
+  message and are re-derived before publication. The daemon's local-service
+  bootstrap now has an exclusive prepared-repository state that applies strict,
+  bounded, exact-owner version-1 import manifests before socket bind; binding
+  consumes that import authority, and read-only service mode rejects it. Stored
+  generator closure validation streams within 4,096-record and 128-MiB
+  aggregate-body bounds and does not rewrite imported records. Atomic
+  name-based derivation now creates
   an audited successor of an exact authenticated source snapshot, optionally
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
@@ -857,8 +861,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   lifecycle control. Exhaustive `--all` authenticates the exact current or
   historical opportunity domain, derives the canonical version-2 generator and
   cardinality budget, and is owner-checked against the active exhaustive policy
-  before publication. Manifest authoring, verifier-backed import/validation,
-  start attachment, and selector resolution remain open.
+  before publication. The initial repeatable daemon-startup import manifest now
+  admits dependency-ordered compact scenario/schedule pairs and canonical
+  generator bodies through the narrow verifier-backed importer before endpoint
+  bind. Rich manifest authoring, standalone validation porcelain, start
+  attachment, and selector resolution remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed

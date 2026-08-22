@@ -1309,6 +1309,14 @@ struct ServeArgs {
     /// Load the strict local campaign peer policy from this file.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_policy: Option<PathBuf>,
+    /// Import verified campaign creation artifacts before binding the socket.
+    #[arg(
+        long,
+        value_name = "path",
+        requires = "campaign_socket",
+        conflicts_with = "read_only"
+    )]
+    campaign_import_manifest: Vec<PathBuf>,
     /// Set the managed campaign socket's Unix permission bits in octal.
     #[arg(
         long,

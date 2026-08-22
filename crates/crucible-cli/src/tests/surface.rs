@@ -1625,9 +1625,10 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_socket",
                 "campaign_state",
                 "campaign_policy",
+                "campaign_import_manifest",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2062,6 +2063,38 @@ campaign = "*"
     .expect("campaign policy");
     fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
         .expect("secure campaign policy");
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let scenario_path = directory.path().join("scenario.bin");
+    fs::write(&scenario_path, scenario.to_compact_binary()).expect("campaign scenario import");
+    fs::set_permissions(&scenario_path, std::fs::Permissions::from_mode(0o600))
+        .expect("secure scenario import");
+    let schedule_path = directory.path().join("schedule.bin");
+    fs::write(
+        &schedule_path,
+        crucible::Schedule::empty().to_compact_binary(),
+    )
+    .expect("campaign schedule import");
+    fs::set_permissions(&schedule_path, std::fs::Permissions::from_mode(0o600))
+        .expect("secure schedule import");
+    let manifest = directory.path().join("campaign-import.toml");
+    fs::write(
+        &manifest,
+        format!(
+            r#"schema = "crucible.campaign-import"
+version = 1
+
+[[configuration]]
+scenario = {:?}
+schedule = {:?}
+"#,
+            scenario_path, schedule_path
+        ),
+    )
+    .expect("campaign import manifest");
+    fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600))
+        .expect("secure import manifest");
 
     let cli = Cli::parse_from([
         "crucible",
@@ -2076,6 +2109,8 @@ campaign = "*"
         state.to_str().expect("state path"),
         "--campaign-policy",
         policy.to_str().expect("policy path"),
+        "--campaign-import-manifest",
+        manifest.to_str().expect("manifest path"),
     ]);
     let Commands::Serve(args) = &cli.command else {
         panic!("expected serve command");
@@ -2140,6 +2175,70 @@ campaign = "*"
             Ok(())
         }))
         .expect("campaign service restarts over durable state");
+    assert!(!socket.exists());
+}
+
+#[test]
+pub(super) fn cli_campaign_import_failure_precedes_socket_bind() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let directory = tempfile::tempdir().expect("campaign import directory");
+    fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign import directory");
+    let metadata = fs::metadata(directory.path()).expect("campaign import metadata");
+    let socket = directory.path().join("campaign.sock");
+    let state = directory.path().join("state");
+    fs::create_dir(&state).expect("campaign state directory");
+    fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign state");
+    let policy = directory.path().join("policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+"#,
+            metadata.uid(),
+            metadata.gid()
+        ),
+    )
+    .expect("campaign policy");
+    fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
+        .expect("secure campaign policy");
+    let manifest = directory.path().join("campaign-import.toml");
+    fs::write(&manifest, b"schema = [").expect("malformed import manifest");
+    fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600))
+        .expect("secure import manifest");
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        socket.to_str().expect("socket path"),
+        "--campaign-state",
+        state.to_str().expect("state path"),
+        "--campaign-policy",
+        policy.to_str().expect("policy path"),
+        "--campaign-import-manifest",
+        manifest.to_str().expect("manifest path"),
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    let error = match open_local_campaign_service(args) {
+        Ok(_) => panic!("malformed campaign import must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Serve(_)));
+    assert!(error.to_string().contains("campaign import error"));
     assert!(!socket.exists());
 }
 
@@ -2210,6 +2309,24 @@ pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
             "/tmp/campaign-policy",
             "--campaign-socket-mode",
             "888",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-import-manifest",
+            "/tmp/campaign-import.toml",
         ])
         .is_err()
     );

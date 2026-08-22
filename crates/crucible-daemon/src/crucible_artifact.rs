@@ -28,6 +28,11 @@ pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
 pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
 /// Payload schema for a compact canonical Crucible reproduction artifact.
 pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1: u32 = 1;
+/// Maximum bytes accepted from one pre-bind Crucible artifact import file.
+///
+/// This matches the campaign artifact payload ceiling. Import callers should
+/// enforce it while reading, before retaining or decoding the complete body.
+pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
