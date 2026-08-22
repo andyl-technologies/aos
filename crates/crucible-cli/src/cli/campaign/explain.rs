@@ -7,16 +7,19 @@ use super::object::{
 use super::*;
 
 use crucible_campaign::{
-    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
-    CampaignFindingObjectKind, ChoiceOpportunity, Finding, FindingId, FindingTarget,
+    AttemptAdmissionRole, AttemptId, AttemptStart, CampaignChoiceObject, CampaignChoiceObjectKind,
+    CampaignFindingObject, CampaignFindingObjectKind, ChoiceOpportunity,
+    ExplainCampaignAttemptRequest, Finding, FindingId, FindingTarget,
     GetCampaignChoiceObjectRequest, GetCampaignFindingObjectRequest,
     GetCampaignFrontierObjectRequest, Observation, ReproductionArtifact, SelectableDeclaration,
-    StopOutcome,
+    SelectionOrigin, StopOutcome,
 };
 
 const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanation.v1";
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-explanation.v1";
+const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
+    "crucible.cli.campaign-attempt-explanation.v1";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -133,6 +136,78 @@ struct CampaignExplainedReproduction {
     payload_bytes: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct CampaignAttemptExplanationReport {
+    schema: &'static str,
+    operation: &'static str,
+    campaign: String,
+    snapshot: String,
+    attempt: CampaignExplainedAttempt,
+    admission: CampaignExplainedAttemptAdmission,
+    path: CampaignExplainedAttemptPath,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection: Option<CampaignExplainedSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal: Option<CampaignExplainedProposal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<CampaignExplainedObservation>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedAttempt {
+    id: String,
+    start: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge: Option<String>,
+    path: String,
+    stop: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedAttemptAdmission {
+    cause: String,
+    admission_ordinal: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedAttemptPath {
+    id: String,
+    edges: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segments: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedSelection {
+    id: String,
+    opportunity: String,
+    domain: String,
+    value: String,
+    origin: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedProposal {
+    id: String,
+    branch_point: String,
+    request: String,
+    domain: String,
+    value: String,
+    policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planner_invocation: Option<String>,
+    ordinal: u64,
+    guidance_basis: String,
+}
+
 pub(super) fn validate_campaign_explain_command(command: &CampaignCommand) -> Result<(), CliError> {
     let CampaignCommand::Explain(args) = command else {
         return Err(backend_error(
@@ -167,6 +242,28 @@ pub(super) fn validate_campaign_finding_explain_command(
     FindingId::parse(&args.finding).map_err(|error| {
         usage_error(format!(
             "invalid campaign finding explanation identity: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
+pub(super) fn validate_campaign_attempt_explain_command(
+    command: &CampaignCommand,
+) -> Result<(), CliError> {
+    let CampaignCommand::ExplainAttempt(args) = command else {
+        return Err(backend_error(
+            "non-attempt-explain command reached attempt explanation validation",
+        ));
+    };
+    campaign_name(&args.name)?;
+    CampaignSnapshotId::parse(&args.snapshot).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign attempt explanation snapshot: {error}"
+        ))
+    })?;
+    AttemptId::parse(&args.attempt).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign attempt explanation identity: {error}"
         ))
     })?;
     Ok(())
@@ -396,6 +493,170 @@ where
     })
 }
 
+pub(super) fn query_campaign_attempt_explanation<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    command: &CampaignCommand,
+) -> Result<CampaignAttemptExplanationReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let CampaignCommand::ExplainAttempt(args) = command else {
+        return Err(backend_error(
+            "non-attempt-explain command reached attempt explanation query",
+        ));
+    };
+    let campaign = campaign_name(&args.name)?;
+    let snapshot = CampaignSnapshotId::parse(&args.snapshot).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign attempt explanation snapshot: {error}"
+        ))
+    })?;
+    let attempt_id = AttemptId::parse(&args.attempt).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign attempt explanation identity: {error}"
+        ))
+    })?;
+    let request =
+        ExplainCampaignAttemptRequest::new(principal, campaign.clone(), snapshot, attempt_id)
+            .map_err(|error| {
+                usage_error(format!(
+                    "invalid campaign attempt explanation query: {error}"
+                ))
+            })?;
+    let response = client.explain_campaign_attempt(&request).map_err(|error| {
+        backend_error(format!(
+            "campaign attempt explanation query failed: {error}"
+        ))
+    })?;
+
+    let attempt = response.attempt();
+    let (start, configuration, parent, selection_id, edge) = match attempt.start() {
+        AttemptStart::Discover { configuration } => (
+            "discover",
+            Some(configuration.to_string()),
+            None,
+            None,
+            None,
+        ),
+        AttemptStart::Branch {
+            edge,
+            parent,
+            selection,
+        } => (
+            "branch",
+            None,
+            Some(parent.to_string()),
+            Some(selection.to_string()),
+            Some(edge.to_string()),
+        ),
+    };
+    let AttemptAdmissionRole::ExecutionBasis {
+        proposal,
+        cause,
+        admission_ordinal,
+    } = response.admission().role()
+    else {
+        return Err(backend_error(
+            "attempt explanation carried a non-execution admission",
+        ));
+    };
+    let path = response.path();
+    let selection = response.selection().map(explained_selection).transpose()?;
+    let proposal_body = response.proposal().map(explained_proposal).transpose()?;
+    let observation = response
+        .observation()
+        .map(explained_observation)
+        .transpose()?;
+
+    Ok(CampaignAttemptExplanationReport {
+        schema: CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA,
+        operation: "attempt",
+        campaign: campaign.as_str().to_owned(),
+        snapshot: snapshot.to_string(),
+        attempt: CampaignExplainedAttempt {
+            id: attempt_id.to_string(),
+            start,
+            configuration,
+            parent,
+            selection: selection_id,
+            edge,
+            path: attempt.path().to_string(),
+            stop: campaign_stop_condition_label(attempt.stop()),
+        },
+        admission: CampaignExplainedAttemptAdmission {
+            cause: campaign_branch_cause_label(cause),
+            admission_ordinal: admission_ordinal.value(),
+            proposal: proposal.map(|value| value.to_string()),
+        },
+        path: CampaignExplainedAttemptPath {
+            id: attempt.path().to_string(),
+            edges: path.edges().iter().map(ToString::to_string).collect(),
+            segments: path.segments().map(|segments| {
+                segments
+                    .iter()
+                    .map(|segment| format!("{}:{}", segment.branch_point(), segment.edge()))
+                    .collect()
+            }),
+        },
+        selection,
+        proposal: proposal_body,
+        observation,
+    })
+}
+
+fn explained_selection(
+    selection: &crucible_campaign::Selection,
+) -> Result<CampaignExplainedSelection, CliError> {
+    let id = selection.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated attempt selection identity is invalid: {error}"
+        ))
+    })?;
+    let origin = match selection.origin() {
+        SelectionOrigin::Default => String::from("default"),
+        SelectionOrigin::LockedReplay => String::from("locked-replay"),
+        SelectionOrigin::ModelSample(evidence) => format!(
+            "model-sample:{}:{}:{}",
+            evidence.model(),
+            evidence.stream(),
+            evidence.draw()
+        ),
+        SelectionOrigin::CampaignBranch { branch_point, edge } => {
+            format!("campaign-branch:{branch_point}:{edge}")
+        }
+    };
+    Ok(CampaignExplainedSelection {
+        id: id.to_string(),
+        opportunity: selection.opportunity().to_string(),
+        domain: selection.domain().to_string(),
+        value: campaign_choice_value_label(selection.value()),
+        origin,
+    })
+}
+
+fn explained_proposal(
+    proposal: &crucible_campaign::Proposal,
+) -> Result<CampaignExplainedProposal, CliError> {
+    let id = proposal.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated attempt proposal identity is invalid: {error}"
+        ))
+    })?;
+    Ok(CampaignExplainedProposal {
+        id: id.to_string(),
+        branch_point: proposal.branch_point().to_string(),
+        request: proposal.request().to_string(),
+        domain: proposal.domain().to_string(),
+        value: campaign_choice_value_label(proposal.value()),
+        policy: proposal.policy().to_string(),
+        planner_invocation: proposal.planner_invocation().map(|value| value.to_string()),
+        ordinal: proposal.ordinal(),
+        guidance_basis: proposal.guidance_basis().to_string(),
+    })
+}
+
 fn explained_finding(finding: &Finding, id: FindingId) -> CampaignExplainedFinding {
     CampaignExplainedFinding {
         id: id.to_string(),
@@ -579,6 +840,43 @@ pub(super) fn render_campaign_finding_explanation(
             Ok(output.trim_end().to_owned())
         }
     }
+}
+
+pub(super) fn render_campaign_attempt_explanation(
+    report: &CampaignAttemptExplanationReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Json => serde_json::to_string_pretty(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Table => Ok(attempt_explanation_fields(report)?
+            .into_iter()
+            .map(|(field, value)| format!("{field:<32} {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")),
+        OutputFormat::Markdown => {
+            let mut output = String::from("| Field | Value |\n| --- | --- |\n");
+            for (field, value) in attempt_explanation_fields(report)? {
+                output.push_str(&format!("| {field} | {value} |\n"));
+            }
+            Ok(output.trim_end().to_owned())
+        }
+    }
+}
+
+fn attempt_explanation_fields(
+    report: &CampaignAttemptExplanationReport,
+) -> Result<Vec<(String, String)>, CliError> {
+    let value = serde_json::to_value(report).map_err(|error| {
+        backend_error(format!(
+            "campaign attempt explanation encoding failed: {error}"
+        ))
+    })?;
+    let mut fields = Vec::new();
+    flatten_explanation_value(None, &value, &mut fields)?;
+    Ok(fields)
 }
 
 fn finding_explanation_fields(

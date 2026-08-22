@@ -20,18 +20,19 @@ use crucible_campaign::{
     ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId,
     ContinuationProjection, ContinuationState, ControlRequest, CreateCampaignRequest,
     CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse, ExactRational,
-    ExplorerPolicy, FairnessPolicy, GetCampaignChoiceObjectRequest,
-    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
-    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
-    GetCampaignGraphObjectResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
-    QueryCampaignChoicesResponse, QueryCampaignFindingsRequest, QueryCampaignFindingsResponse,
-    QueryCampaignFrontierRequest, QueryCampaignFrontierResponse, QueryCampaignGraphRequest,
-    QueryCampaignGraphResponse, RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId,
-    ScenarioDefId, SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
+    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
+    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
+    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
+    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse, GetCampaignRequest,
+    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
+    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
     SubmitCampaignBranchResponse, WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
@@ -162,6 +163,13 @@ impl CampaignService for FixedCampaignService {
         _request: &GetCampaignFindingObjectRequest,
     ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
         unreachable!("fixed service has no finding dependencies")
+    }
+
+    fn explain_campaign_attempt(
+        &self,
+        _request: &ExplainCampaignAttemptRequest,
+    ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+        unreachable!("fixed service has no attempt explanations")
     }
 
     fn get_campaign_graph_object(
@@ -613,7 +621,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
     .expect("write frame");
     let mut bytes = [0_u8; 19];
     reader.read_exact(&mut bytes).expect("read frame");
-    assert_eq!(&bytes, b"CRUCCS15\x01\0\0\0\0\0\0\x03abc");
+    assert_eq!(&bytes, b"CRUCCS16\x01\0\0\0\0\0\0\x03abc");
 
     for (kind, reserved, length, reason) in [
         (
@@ -663,6 +671,7 @@ fn campaign_loopback_frame_header_is_frozen_and_malformed_headers_close() {
         b"CRUCCS12",
         b"CRUCCS13",
         b"CRUCCS14",
+        b"CRUCCS15",
     ] {
         let (mut legacy_client, mut legacy_server) =
             UnixStream::pair().expect("legacy stream pair");
@@ -814,6 +823,13 @@ impl CampaignService for WrongGetService {
         &self,
         _request: &GetCampaignFindingObjectRequest,
     ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
+    fn explain_campaign_attempt(
+        &self,
+        _request: &ExplainCampaignAttemptRequest,
+    ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
         unreachable!("test service only handles GetCampaign")
     }
 

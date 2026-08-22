@@ -192,7 +192,7 @@ GetSnapshot           QueryGraph           GetGraphObject
 QueryFrontier          GetFrontierObject    QueryChoices
 GetChoiceObject        PinCampaign
 SubmitBranchRequest    DeriveCampaign       QueryFindings
-ExplainObject          WatchCampaign
+ExplainObject          ExplainAttempt       WatchCampaign
 ```
 
 Every mutation of an existing campaign carries an idempotent command ID and its
@@ -205,8 +205,9 @@ therefore cannot lose campaign state.
 The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
-`QueryChoices`, `QueryFrontier`, `GetFrontierObject`, `GetChoiceObject`, and
-`PinCampaign` and `SubmitBranchRequest` messages. All use
+`QueryChoices`, `QueryFrontier`, `QueryFindings`, `GetFindingObject`,
+`ExplainAttempt`, `GetFrontierObject`, `GetChoiceObject`, `PinCampaign`, and
+`SubmitBranchRequest` messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -260,6 +261,18 @@ FindingObjectV1 = 0 ObservationV1 |
                   1 latest ObservationV1 |
                   2 ReproductionArtifactV1 |
                   3 minimized ReproductionArtifactV1
+
+ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
+                                  AttemptId
+ExplainCampaignAttemptResponseV1 = version | request_digest |
+                                   CampaignSnapshotV2 | AttemptV1 |
+                                   AttemptAdmissionV1 | BranchPathV2 |
+                                   optional SelectionV2 | optional ProposalV1 |
+                                   optional ObservationV1 |
+                                   MerkleLookupProofV1 attempt_proof |
+                                   MerkleLookupProofV1 admission_proof |
+                                   optional MerkleLookupProofV1 proposal_proof |
+                                   MerkleLookupProofV1 observation_proof
 
 MerkleLookupProofV1 = node_count:u64 |
                       nodes[node_id | canonical MerkleNodeV1 envelope bytes]
@@ -379,7 +392,8 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 2, 3, and 6; `GetCampaign`, `GetSnapshot`, and `WatchCampaign` additionally
 permit 2;
 `QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
-`GetFrontierObject`, and `GetChoiceObject`
+`QueryFindings`, `GetFindingObject`, `ExplainAttempt`, `GetFrontierObject`, and
+`GetChoiceObject`
 additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 2, 4, 5, 6, and 7; `PinCampaign` permits
 2, 4, 5, and 6; and `SubmitCampaignBranch` permits 2, 4, 5, and 6. For every
@@ -420,6 +434,9 @@ query_findings_request_digest =
 get_finding_object_request_digest =
   H("crucible.campaign-service.get-campaign-finding-object.v1",
     GetCampaignFindingObjectRequestV1)
+explain_attempt_request_digest =
+  H("crucible.campaign-service.explain-campaign-attempt.v1",
+    ExplainCampaignAttemptRequestV1)
 get_graph_object_request_digest =
   H("crucible.campaign-service.get-campaign-graph-object.v1",
     GetCampaignGraphObjectRequestV1)
@@ -584,6 +601,31 @@ optional minimized reproduction is an invalid request, not an absent generic
 object read. The operation grants the returned finding plus one child body; it
 does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
+`ExplainCampaignAttempt` is the separately authorized provenance view for one
+exact attempt in the current authenticated snapshot. Two minimal accounting
+lookup proofs bind the complete `AttemptV1` body and its unique execution-basis
+`AttemptAdmissionV1`; a third proof binds the execution-basis `ProposalV1` in
+the exploration root for branch attempts, and an observations-root proof binds
+either the canonical `ObservationV1` or authenticated absence. The response
+also carries the exact content-addressed `BranchPathV2` and, for a branch,
+`SelectionV2`. A checked reader reconstructs every typed ID, requires the
+attempt path and optional observation path to agree, requires the admission to
+name that attempt and be the execution basis, and requires a branch selection,
+proposal, campaign-branch origin, branch point, edge, domain, and value to
+agree. Discovery attempts reject all branch-only provenance. A reached-stop
+observation MUST equal the attempt stop condition; other terminal failure
+outcomes remain valid completions.
+
+The exact membership keys are `H("crucible.campaign-map-key.v1",
+u64be(len(namespace)) || namespace || u64be(len(id)) || id)` with the canonical
+typed content-ID string as `id` and namespaces `accounting.attempt`,
+`accounting.attempt-execution-basis`, `exploration.proposal`, and
+`observations.attempt`, respectively. Every lookup proof is minimal and rejects
+unused nodes. Authorization grants the complete snapshot metadata plus these
+specific attempt, admission, path, selection, optional proposal, and optional
+observation bodies; it grants no arbitrary accounting, exploration,
+observation-evidence, checkpoint, or content-store read.
+
 `GetCampaignGraphObject` is that separate graph-body capability. It accepts one
 exact current-snapshot graph key and returns only a strict
 `ConfigurationArtifact` or `ChoiceOpportunity` envelope. The response
@@ -686,12 +728,15 @@ state. This composition grants only the union of those two existing operation
 capabilities and introduces no generic object read. `campaign explain-finding`
 similarly composes the finding object's representative-observation and
 original-reproduction reads and requires their exact configuration-artifact
-basis to agree. Arbitrary non-graph object reads and proposal/attempt
-explanations are still open. The strict local transport frames exactly one
+basis to agree. `campaign explain-attempt` uses the single proof-bearing
+attempt capability to render the immutable start, path, execution cause,
+admission ordinal, branch selection and proposal, and optional completion.
+Arbitrary non-graph object reads and aggregate proposal-ranking views remain
+open. The strict local transport frames exactly one
 canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV15 = "CRUCCS15" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV16 = "CRUCCS16" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -725,10 +770,12 @@ kind = 1 (GetCampaignRequestV1) |
       30 (QueryCampaignFindingsRequestV1) |
       31 (QueryCampaignFindingsResponseV1) |
       32 (GetCampaignFindingObjectRequestV1) |
-      33 (GetCampaignFindingObjectResponseV1)
+      33 (GetCampaignFindingObjectResponseV1) |
+      34 (ExplainCampaignAttemptRequestV1) |
+      35 (ExplainCampaignAttemptResponseV1)
 ```
 
-Loopback frame versions 1 through 14 are rejected rather than reinterpreted
+Loopback frame versions 1 through 15 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
@@ -809,7 +856,8 @@ and campaign names reject the complete policy. `campaign = "*"` is the only
 wildcard. The closed operation labels are `create-campaign`,
 `derive-campaign`, `get-campaign`, `get-campaign-snapshot`, `watch-campaign`,
 `query-campaign-graph`, `query-campaign-findings`,
-`get-campaign-finding-object`, `get-campaign-graph-object`,
+`get-campaign-finding-object`, `explain-campaign-attempt`,
+`get-campaign-graph-object`,
 `query-campaign-choices`, `query-campaign-frontier`,
 `get-campaign-frontier-object`, `get-campaign-choice-object`,
 `apply-campaign-command`, `pin-campaign`, and `submit-branch-request`.

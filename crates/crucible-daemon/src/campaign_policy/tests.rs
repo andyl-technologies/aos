@@ -343,6 +343,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::GetCampaignFindingObject,
         ),
         (
+            "explain-campaign-attempt",
+            CampaignServiceOperation::ExplainCampaignAttempt,
+        ),
+        (
             "get-campaign-graph-object",
             CampaignServiceOperation::GetCampaignGraphObject,
         ),

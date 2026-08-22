@@ -889,6 +889,33 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
         };
         assert_eq!(actual, expected);
     }
+    let attempt_request = ExplainCampaignAttemptRequest::new(
+        finding_request.principal().clone(),
+        finding_request.campaign().clone(),
+        published.new_snapshot,
+        observation.attempt(),
+    )
+    .expect("attempt explanation request");
+    let attempt_response = client
+        .explain_campaign_attempt(&attempt_request)
+        .expect("authenticated attempt explanation");
+    assert_eq!(
+        attempt_response
+            .attempt()
+            .id()
+            .expect("explained attempt ID"),
+        observation.attempt()
+    );
+    assert_eq!(
+        attempt_response
+            .observation()
+            .expect("completed attempt observation")
+            .id()
+            .expect("explained observation ID"),
+        observed.observation
+    );
+    assert!(attempt_response.selection().is_some());
+    assert!(attempt_response.proposal().is_some());
     repository.evict_local_checkpoint(published.new_snapshot.content_id());
     assert_eq!(
         repository
