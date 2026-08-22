@@ -27,6 +27,24 @@ impl CheckpointConstructionBudget {
         self.configured.saturating_sub(self.current)
     }
 
+    pub(super) const fn current(&self) -> u64 {
+        self.current
+    }
+
+    pub(super) fn allocation_error(
+        &self,
+        current: u64,
+        requested: usize,
+    ) -> ProductionFaultRuntimeCheckpointCodecError {
+        resource_limit(
+            "production fault checkpoint",
+            current,
+            u64::try_from(requested).unwrap_or(u64::MAX),
+            self.configured,
+            MAX_BYTES,
+        )
+    }
+
     pub(super) fn admit(
         &mut self,
         requested: usize,

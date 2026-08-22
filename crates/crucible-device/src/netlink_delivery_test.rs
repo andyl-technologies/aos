@@ -56,24 +56,24 @@ fn link_snapshot_codec_enforces_authored_aggregate_limit() {
     let maximum = u64::try_from(bytes.len() - 1).unwrap_or(u64::MAX);
 
     assert!(matches!(
-        snapshot.canonical_bytes_with_limit(maximum).unwrap_err(),
-        LinkSnapshotCodecError::ResourceLimit {
+        snapshot.canonical_bytes_with_limit(maximum),
+        Err(LinkSnapshotCodecError::ResourceLimit {
             field: "link snapshot bytes",
             current,
             requested,
             configured,
             hard: 1_073_741_824,
-        } if current.saturating_add(requested) > maximum && configured == maximum
+        }) if current.saturating_add(requested) > maximum && configured == maximum
     ));
     assert!(matches!(
-        LinkSnapshot::from_canonical_bytes_with_limit(&bytes, maximum).unwrap_err(),
-        LinkSnapshotCodecError::ResourceLimit {
+        LinkSnapshot::from_canonical_bytes_with_limit(&bytes, maximum),
+        Err(LinkSnapshotCodecError::ResourceLimit {
             field: "link snapshot bytes",
             current: 0,
             requested,
             configured,
             hard: 1_073_741_824,
-        } if requested == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        }) if requested == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
             && configured == maximum
     ));
 

@@ -3,7 +3,6 @@
 //! The format records every directed link snapshot, symmetric-link RNG
 //! cursor, and exact signal-fault wakeup in deterministic identity order.
 
-use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use crate::{LinkId, NetworkLinkDirection};
@@ -148,13 +147,14 @@ impl SchedulerNetworkCheckpoint {
             });
         }
         let rng_count = reader.count("RNG positions")?;
-        let mut rng_positions = BTreeMap::new();
+        let mut rng_positions = Vec::new();
+        rng_positions.try_reserve_exact(rng_count).map_err(|_| {
+            scheduler_network_resource("RNG positions", 0, rng_count, HARD_SCHEDULER_NETWORK_LINKS)
+        })?;
         for _ in 0..rng_count {
             let link = reader.link_id("RNG link identity")?;
             let position = reader.u64("RNG position")?;
-            if rng_positions.insert(link, position).is_some() {
-                return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
-            }
+            rng_positions.push((link, position));
         }
         let signal_fault_wakeup_nanos = match reader.byte("fault wakeup tag")? {
             0 => None,
@@ -236,7 +236,7 @@ fn scheduler_network_encoded_length(
         scheduler_network_add_length(&mut length, state_length, configured)?;
     }
     scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
-    for link in checkpoint.rng_positions.keys() {
+    for (link, _position) in &checkpoint.rng_positions {
         scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
         scheduler_network_add_length(&mut length, link.name.len(), configured)?;
         scheduler_network_add_length(&mut length, size_of::<u64>(), configured)?;
@@ -354,15 +354,17 @@ fn validate_scheduler_network_checkpoint(
         }
         previous = Some((&link.link, link.direction));
     }
-    if checkpoint
+    if checkpoint.rng_positions.iter().any(|(link, _position)| {
+        link.name.is_empty() || link.name.len() > HARD_SCHEDULER_NETWORK_NAME_BYTES
+    }) || checkpoint
         .rng_positions
-        .keys()
-        .any(|link| link.name.is_empty() || link.name.len() > HARD_SCHEDULER_NETWORK_NAME_BYTES)
+        .windows(2)
+        .any(|pair| pair[0].0 >= pair[1].0)
     {
         return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
     }
     let mut link_index = 0;
-    for rng_link in checkpoint.rng_positions.keys() {
+    for (rng_link, _position) in &checkpoint.rng_positions {
         let Some(directed_link) = checkpoint.links.get(link_index).map(|link| &link.link) else {
             return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
         };

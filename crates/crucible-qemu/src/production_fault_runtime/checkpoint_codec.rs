@@ -16,7 +16,7 @@ use crucible::model::{
     ReferencedSignalEvent, ResolvedBindingAction,
 };
 use crucible::{BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
-use crucible_shmem::DequeuedFaultEvent;
+use crucible_shmem::{DequeuedFaultEvent, FaultEventError};
 
 use crate::checkpoint::bounded_cbor::{
     BoundedVec, HARD_FAT_CHECKPOINT_BYTES, admit_input, encode_prefixed, map_decode_error,
@@ -267,7 +267,7 @@ impl ProductionFaultRuntimeCheckpoint {
                 .map_err(|_| record_allocation_limit("pending QEMU event count", events.len()))?;
             for encoded in events {
                 decoded.push(
-                    DequeuedFaultEvent::from_canonical_bytes(encoded.as_slice())
+                    DequeuedFaultEvent::from_canonical_vec(encoded.into_inner())
                         .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?,
                 );
             }
@@ -431,6 +431,16 @@ fn encode_qemu_event_map<'a>(
     events_by_node: &'a BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
     budget: &mut CheckpointConstructionBudget,
 ) -> Result<EncodedQemuEventMap<'a>, ProductionFaultRuntimeCheckpointCodecError> {
+    admit_checkpoint_record_count("pending QEMU event nodes", events_by_node.len())?;
+    let event_count = events_by_node
+        .values()
+        .try_fold(0_usize, |current, events| {
+            current
+                .checked_add(events.len())
+                .ok_or_else(|| record_allocation_limit("pending QEMU event count", usize::MAX))
+        })?;
+    admit_checkpoint_record_count("pending QEMU event count", event_count)?;
+
     let mut entries = Vec::new();
     entries
         .try_reserve_exact(events_by_node.len())
@@ -447,10 +457,14 @@ fn encode_qemu_event_map<'a>(
             let encoded_length = event
                 .canonical_length()
                 .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
+            let allocation_current = budget.current();
             budget.admit(encoded_length)?;
-            let encoded = event
-                .canonical_bytes()
-                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
+            let encoded = event.canonical_bytes().map_err(|error| match error {
+                FaultEventError::CheckpointAllocation => {
+                    budget.allocation_error(allocation_current, encoded_length)
+                }
+                _ => ProductionFaultRuntimeCheckpointCodecError::QemuEvent,
+            })?;
             encoded_events.push(bounded_checkpoint_bytes(encoded)?);
         }
         let encoded_events = BoundedVec::new(encoded_events).map_err(map_bounded_cbor_error)?;

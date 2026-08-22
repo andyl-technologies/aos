@@ -3,6 +3,113 @@
 use super::*;
 
 impl SingleScheduler {
+    /// Captures every scheduler-owned network continuation component.
+    #[must_use]
+    pub fn network_checkpoint(&self) -> SchedulerNetworkCheckpoint {
+        SchedulerNetworkCheckpoint {
+            links: self
+                .world_network_links
+                .iter()
+                .map(
+                    |((link, direction), runtime)| SchedulerNetworkLinkCheckpoint {
+                        link: link.clone(),
+                        direction: *direction,
+                        state: runtime.link.snapshot(),
+                    },
+                )
+                .collect(),
+            rng_positions: self
+                .world_network_rng_positions
+                .iter()
+                .map(|(link, position)| (link.clone(), *position))
+                .collect(),
+            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.nanos),
+        }
+    }
+
+    /// Atomically restores scheduler-owned links, RNG cursors, and fault wakeup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if checkpoint link/RNG
+    /// identities differ from the admitted World or a link snapshot is invalid.
+    pub fn restore_network_checkpoint(
+        &mut self,
+        checkpoint: &SchedulerNetworkCheckpoint,
+    ) -> Result<(), SchedulerError> {
+        let mut staged = self.clone();
+        let checkpoint_keys = checkpoint
+            .links
+            .iter()
+            .map(|link| (link.link.clone(), link.direction))
+            .collect::<BTreeSet<_>>();
+        let runtime_keys = staged
+            .world_network_links
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if checkpoint_keys.len() != checkpoint.links.len() || checkpoint_keys != runtime_keys {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint directed links differ from the admitted World",
+                ),
+            });
+        }
+        if checkpoint
+            .rng_positions
+            .iter()
+            .map(|(link, _position)| link)
+            .ne(staged.world_network_rng_positions.keys())
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint RNG links differ from the admitted World",
+                ),
+            });
+        }
+        let mut restored = BTreeMap::new();
+        for link in &checkpoint.links {
+            let state = crucible_device::NetLink::restore(&link.state).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "restore network checkpoint link `{}` {:?}: {error}",
+                        link.link.name, link.direction
+                    ),
+                }
+            })?;
+            restored.insert((link.link.clone(), link.direction), state);
+        }
+        let wakeup = checkpoint.signal_fault_wakeup_nanos;
+        if wakeup.is_some_and(|coordinate| coordinate <= staged.frontier.ticks) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network checkpoint fault wakeup is not after the scheduler frontier",
+                ),
+            });
+        }
+        for (key, link) in restored {
+            let runtime = staged.world_network_links.get_mut(&key).ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("validated network checkpoint link disappeared"),
+                }
+            })?;
+            runtime.link = link;
+        }
+        for (link, position) in &checkpoint.rng_positions {
+            let runtime_position = staged
+                .world_network_rng_positions
+                .get_mut(link)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("validated network checkpoint RNG link disappeared"),
+                })?;
+            *runtime_position = *position;
+        }
+        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { nanos });
+        staged.refresh_device_horizons()?;
+        *self = staged;
+        Ok(())
+    }
+
     /// Attaches the scheduler-owned directed links declared by `world`.
     ///
     /// This is the live-backend counterpart to [`SingleScheduler::from_world`]:
