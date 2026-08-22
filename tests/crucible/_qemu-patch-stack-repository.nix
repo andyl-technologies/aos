@@ -24,6 +24,7 @@ in
     buildDeps = [
       pkgs.coreutils
       pkgs.diffutils
+      pkgs.findutils
       pkgs.gawk
       pkgs.git
       pkgs.grep
@@ -136,21 +137,52 @@ in
           cmp "$patchBranchManifestPath" "$out/patch-branch-manifest.actual"
 
           # QEMU's release archive vendors ignored subprojects such as
-          # keycodemapdb. They are deliberately absent from the pinned Git base
-          # tree, so retain that pristine supplement once for every downstream
-          # source materialization.
-          git ls-files --others --ignored --exclude-standard -z \
-            > "$TMPDIR/source-supplement.paths0"
-          supplement_count=$(tr '\0' '\n' < "$TMPDIR/source-supplement.paths0" \
+          # keycodemapdb, and Git cannot retain empty directories. Preserve
+          # those files and directory entries once for every downstream source
+          # materialization.
+          {
+            git ls-files --others --exclude-standard -z
+            git ls-files --others --ignored --exclude-standard -z
+          } | sort -zu > "$TMPDIR/source-supplement.paths0"
+          supplement_file_count=$(tr '\0' '\n' < "$TMPDIR/source-supplement.paths0" \
             | wc -l | tr -d ' ')
-          test "$supplement_count" -gt 0 \
+          test "$supplement_file_count" -gt 0 \
             || fail "QEMU source supplement unexpectedly has no ignored files"
-          tar --null --files-from="$TMPDIR/source-supplement.paths0" \
-            -cf "$TMPDIR/source-supplement.tar"
-          mkdir -p "$out/source-supplement"
-          tar -xf "$TMPDIR/source-supplement.tar" -C "$out/source-supplement"
-          test -f "$out/source-supplement/subprojects/keycodemapdb/meson.build" \
+          {
+            cat "$TMPDIR/source-supplement.paths0"
+            find . -path './.git' -prune -o -type d -print0
+          } | sort -zu > "$TMPDIR/source-supplement.entries0"
+          supplement_entry_count=$(tr '\0' '\n' < "$TMPDIR/source-supplement.entries0" \
+            | wc -l | tr -d ' ')
+          tar --no-recursion --null --files-from="$TMPDIR/source-supplement.entries0" \
+            -cf "$out/source-supplement.tar"
+          supplement_hash=$(sha256sum "$out/source-supplement.tar" | gawk '{ print $1 }')
+          printf '%s\n' "$supplement_hash" > "$out/source-supplement.sha256"
+          test -f subprojects/keycodemapdb/meson.build \
             || fail "QEMU keycodemapdb source supplement is incomplete"
+
+          # Prove that a checkout of the pinned base plus the one retained
+          # supplement reconstructs the extracted release archive exactly.
+          # Normalizing only ownership and timestamps keeps path, type, mode,
+          # symlink target, and file-content differences observable.
+          reconstructed="$TMPDIR/reconstructed-qemu-source"
+          mkdir -p "$reconstructed"
+          GIT_INDEX_FILE="$TMPDIR/base-source.index" git read-tree "$base_commit"
+          GIT_INDEX_FILE="$TMPDIR/base-source.index" git checkout-index \
+            --all --prefix="$reconstructed/"
+          tar -xf "$out/source-supplement.tar" -C "$reconstructed"
+          tar --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner --exclude='./.git' \
+            -cf "$TMPDIR/original-source.inventory.tar" -C "$work_tree" .
+          tar --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner \
+            -cf "$TMPDIR/reconstructed-source.inventory.tar" -C "$reconstructed" .
+          cmp "$TMPDIR/original-source.inventory.tar" \
+            "$TMPDIR/reconstructed-source.inventory.tar" \
+            || fail "base archive plus supplement does not exactly reconstruct QEMU source"
+          source_inventory_hash=$(sha256sum "$TMPDIR/original-source.inventory.tar" \
+            | gawk '{ print $1 }')
+          printf '%s\n' "$source_inventory_hash" > "$out/source-inventory.sha256"
 
           git symbolic-ref HEAD refs/heads/patch-stack
           git clone -q --bare --no-hardlinks . "$out/repo.git"
@@ -163,7 +195,11 @@ in
           patch_count=${toString patchCount}
           source_extractions=1
           full_tree_staging_passes=1
-          source_supplement_files=$supplement_count
+          source_supplement_files=$supplement_file_count
+          source_supplement_entries=$supplement_entry_count
+          source_supplement_sha256=$supplement_hash
+          source_inventory_sha256=$source_inventory_hash
+          source_reconstruction_inventory_verified=true
           ignored_vendored_subprojects_preserved=true
           base_commit=${series.patchBranchBaseCommit}
           base_tree=${series.patchBranchBaseTree}

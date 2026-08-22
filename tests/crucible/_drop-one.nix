@@ -35,7 +35,7 @@
     },
   buildDrv ?
     import ./_drop-one-build.nix {
-      inherit pkgs lib qemuPackage index dropOneRepository;
+      inherit pkgs lib qemuPackage index dropOneRepository expectAbsentSymbols;
       attrPath = "${attrPath}.build";
     },
   # Behavioral (sim-gated, no exported ABI symbol) patches are discriminated by
@@ -91,6 +91,14 @@ in
           outcome=$(cat "$BUILD_DRV/outcome")
 
           emit() {
+            if [ "$outcome" != conflict ]; then
+              test "$(cat "$BUILD_DRV/source-materialized")" = true \
+                || fail "clean variant was not materialized from its prepared ref"
+              grep -Fqx 'source_reconstruction_inventory_consumed=true' \
+                "$BUILD_DRV/source-reconstruction.env" \
+                || fail "clean variant did not consume the verified source inventory"
+              cat "$BUILD_DRV/source-reconstruction.env" >> "$out/attribution.env"
+            fi
             {
               echo PASS
               echo "check=${attrPath}"
@@ -115,22 +123,24 @@ in
               emit
               ;;
             build-failed)
-              test "$(cat "$BUILD_DRV/source-materialized")" = true \
-                || fail "clean variant was not materialized from its prepared ref"
               cp "$BUILD_DRV/failing-symbols" "$out/failing-symbols"
+              cp "$BUILD_DRV/build-diagnostics" "$out/build-diagnostics"
+              cp "$BUILD_DRV/patch-specific-build-evidence" \
+                "$out/patch-specific-build-evidence"
+              test -s "$out/patch-specific-build-evidence" \
+                || fail "build failure lacks patch-specific compiler/linker evidence"
               grep -E '^qemu_plugin_' "$out/failing-symbols" > "$out/failing-plugin-symbols" || true
               {
                 echo "attribution_method=drop-one-build-required"
                 echo "drop_conflicts=false"
                 echo "full_minus_n_build_fails=true"
+                echo "patch_specific_build_failure_evidence=true"
                 echo "failing_symbol_count=$(wc -l < "$out/failing-symbols" | tr -d ' ')"
                 echo "build_failure_references_plugin_symbols=$(test -s "$out/failing-plugin-symbols" && echo true || echo false)"
               } > "$out/attribution.env"
               emit
               ;;
             built)
-              test "$(cat "$BUILD_DRV/source-materialized")" = true \
-                || fail "clean variant was not materialized from its prepared ref"
               variant="$BUILD_DRV/variant-qemu-system-x86_64"
               test -x "$variant" || fail "built outcome but no variant binary"
               nm -D --defined-only "$variant" | gawk 'NF { print $NF }' | LC_ALL=C sort -u \

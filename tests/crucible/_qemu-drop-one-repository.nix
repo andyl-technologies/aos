@@ -46,7 +46,12 @@ in
 
           grep -q '^PASS$' ${patchStackRepository}/result
           mkdir -p "$out"
-          ln -s ${patchStackRepository}/source-supplement "$out/source-supplement"
+          ln -s ${patchStackRepository}/source-supplement.tar \
+            "$out/source-supplement.tar"
+          ln -s ${patchStackRepository}/source-supplement.sha256 \
+            "$out/source-supplement.sha256"
+          ln -s ${patchStackRepository}/source-inventory.sha256 \
+            "$out/source-inventory.sha256"
           work_repo="$out/repo.git"
           # The immutable source repository is never pruned, so an alternate
           # safely shares all base/patch-stack objects. This output stores only
@@ -98,11 +103,18 @@ in
                 rebase_ok=1
               else
                 rebase_ok=0
-                conflicting_commit=$(gawk '/could not apply/ {
-                  sub(/.*could not apply /, ""); print; exit
-                }' "$patch_metadata/rebase.log")
-                conflicting_files=$(git diff --name-only --diff-filter=U 2>/dev/null \
+                rebase_head=$(git rev-parse --verify REBASE_HEAD 2>/dev/null) \
+                  || fail "rebase for $patch_name failed without REBASE_HEAD"
+                test "$rebase_head" != "$drop_commit" \
+                  || fail "rebase for $patch_name conflicted on the dropped commit itself"
+                git rev-list "$drop_commit..refs/heads/patch-stack" \
+                  | grep -Fqx "$rebase_head" \
+                  || fail "rebase for $patch_name failed outside the pinned later stack"
+                conflicting_files=$(git diff --name-only --diff-filter=U \
                   | tr '\n' ',' | sed 's/,$//')
+                test -n "$conflicting_files" \
+                  || fail "rebase for $patch_name failed without unmerged paths"
+                conflicting_commit="$rebase_head"
                 git rebase --abort > /dev/null 2>&1 || true
               fi
               git checkout -q --detach refs/heads/patch-stack
@@ -152,6 +164,7 @@ in
           all_drop_one_branches_computed_in_one_repository=true
           successful_refs_retained=true
           conflicts_recorded_in_manifest=true
+          conflicts_require_pinned_rebase_head_and_unmerged_paths=true
           RESULT
         '';
       }
