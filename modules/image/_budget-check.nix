@@ -7,6 +7,7 @@
   rootfs,
   uki,
   name,
+  runtimeClosureAudit,
 }: let
   budgets = config.aos.image.budgets;
   mib = 1048576;
@@ -18,11 +19,10 @@ in
       src = null;
 
       outputChecks = {};
-      exportReferencesGraph.runtime = [config.system.build.toplevel];
       # The raw publication artifact performs the authoritative ESP-content
       # and fixed-layout checks. Keeping it as an input makes this focused
       # check a complete release gate instead of a partial parallel policy.
-      buildDeps = [pkgs.coreutils pkgs.jq image];
+      buildDeps = [pkgs.coreutils pkgs.jq image runtimeClosureAudit];
       dontStrip = true;
       dontNukeRefs = true;
 
@@ -34,6 +34,7 @@ in
       MAX_INITRD_BYTES = toString (budgets.maxInitrdMiB * mib);
       MAX_UKI_BYTES = toString (budgets.maxUkiMiB * mib);
       MAX_RUNTIME_CLOSURE_BYTES = toString (budgets.maxRuntimeClosureMiB * mib);
+      RUNTIME_CLOSURE_REPORT = "${runtimeClosureAudit}/report.json";
 
       phases = [
         {
@@ -45,7 +46,7 @@ in
             root_bytes=$(cat "$ROOT_SIZE_FILE")
             initrd_bytes=$(stat -c %s "$INITRD")
             uki_bytes=$(stat -c %s "$UKI")
-            closure_bytes=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
+            closure_bytes=$(jq -er '.actual.closureBytes' "$RUNTIME_CLOSURE_REPORT")
             download_bytes=$(jq -er '.byteSize' "$IMAGE_INFO")
             ${lib.optionalString verityEnabled ''verity_bytes=$(stat -c %s ${rootfs}/root.verity)''}
             ${lib.optionalString (!verityEnabled) ''verity_bytes=0''}

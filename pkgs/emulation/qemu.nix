@@ -224,6 +224,8 @@ in
       python3
       setuptools
       distlib
+      glib.dev
+      glib.tools
     ];
     runtimeDeps = [
       glib

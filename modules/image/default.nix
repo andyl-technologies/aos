@@ -32,14 +32,25 @@
     + 2 * cfg.budgets.maxRootMiB
     + verityStorageMiB;
   buildImage = import ./_builder.nix;
+  runtimeRoots =
+    [config.system.build.toplevel config.system.build.kernel]
+    ++ cfg.hostConfigClosures;
+  runtimeClosureAudit = import ../../lib/build/runtime-closure-audit.nix {
+    inherit pkgs lib;
+    roots = runtimeRoots;
+    name = config.aos.system.name;
+    maxClosureMiB = cfg.budgets.maxRuntimeClosureMiB;
+    maxDevelopmentPayloadMiB = cfg.budgets.maxDevelopmentPayloadMiB;
+    allowTestArtifacts = cfg.allowTestArtifacts;
+  };
 
   rawImage = buildImage {
-    inherit pkgs lib;
+    inherit pkgs lib runtimeClosureAudit;
     system = {inherit config;};
     name = config.aos.system.name;
   };
   imageBudgetCheck = import ./_budget-check.nix {
-    inherit config lib pkgs;
+    inherit config lib pkgs runtimeClosureAudit;
     image = rawImage;
     name = config.aos.system.name;
     rootfs = rawImage.rootfs;
@@ -217,6 +228,16 @@ in {
       '';
     };
 
+    allowTestArtifacts = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      internal = true;
+      description = ''
+        Whether this explicitly test-only image may retain guest agents and
+        development Secure Boot keys in its runtime closure.
+      '';
+    };
+
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size and capacity of each A/B root partition.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
@@ -224,6 +245,7 @@ in {
       maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
       maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
     };
   };
@@ -310,6 +332,7 @@ in {
       vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
     };
     system.build.checks.image-budget = imageBudgetCheck;
+    system.build.checks.runtime-closure = runtimeClosureAudit;
     system.build.uki = rawImage.uki;
     system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
     system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;

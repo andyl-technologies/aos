@@ -19,10 +19,12 @@
     pkgs.coreutils
     pkgs.bash
     pkgs.openssl
+    pkgs.aos
   ];
 
   # Check that a package's closure does not exceed a size limit.
-  # This is a derivation that queries the store at build time.
+  # Nix supplies a deterministic closure graph to the sandbox. Summing that
+  # graph measures the transitive NAR payload rather than only the root path.
   checkClosureSize = pkg: maxMB: let
     nameStr = pkg.pname or pkg.name or "unknown";
   in
@@ -31,7 +33,11 @@
       version = "0";
       src = null;
 
-      buildDeps = [pkg];
+      outputChecks = {};
+      exportReferencesGraph.runtime = [pkg];
+      buildDeps = [pkgs.jq];
+      dontStrip = true;
+      dontNukeRefs = true;
 
       phases = [
         {
@@ -39,8 +45,7 @@
           script = ''
             set -euo pipefail
 
-            # Query the closure size of the package
-            size=$(nix-store --query --size ${builtins.toString pkg} 2>/dev/null || echo "0")
+            size=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
             maxBytes=$((${builtins.toString maxMB} * 1024 * 1024))
 
             if [ "$size" -gt "$maxBytes" ]; then
@@ -51,6 +56,35 @@
             echo "PASS: ${nameStr} closure is $size bytes (limit: ${builtins.toString maxMB} MB)"
             mkdir -p $out
             echo "PASS" > $out/result
+          '';
+        }
+      ];
+    };
+
+  # Check that a critical executable can be loaded with only its declared
+  # runtime closure. Closure-size checks alone cannot detect a scrubbed RPATH.
+  checkProgramRuns = {
+    name,
+    program,
+    arguments ? [],
+  }:
+    pkgs.mkDerivation {
+      pname = "runtime-check-${name}";
+      version = "0";
+      src = null;
+
+      outputChecks = {};
+      dontStrip = true;
+      dontNukeRefs = true;
+
+      phases = [
+        {
+          name = "check";
+          script = ''
+            set -euo pipefail
+            ${program} ${builtins.concatStringsSep " " arguments}
+            mkdir -p "$out"
+            echo "PASS" > "$out/result"
           '';
         }
       ];
@@ -69,6 +103,12 @@ in
         (checkClosureSize pkgs.systemd 200)
         (checkClosureSize pkgs.containerd 300)
         (checkClosureSize pkgs.coreutils 100)
+        (checkClosureSize pkgs.aos 400)
+        (checkProgramRuns {
+          name = "qemu-img";
+          program = "${pkgs.qemu-img}/bin/qemu-img";
+          arguments = ["--version"];
+        })
       ];
 
     phases = [
