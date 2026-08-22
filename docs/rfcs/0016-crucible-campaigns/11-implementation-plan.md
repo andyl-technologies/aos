@@ -478,10 +478,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   representative observation and original reproduction, then verifies their
   exact finding, fingerprint, and configuration-artifact basis before rendering
   the handoff identities.
+  A proof-bearing attempt explanation authenticates the semantic attempt and
+  execution-basis admission in accounting, its optional branch proposal in
+  exploration, and its canonical completion or absence in observations. The
+  checked CLI renders the exact path, cause, admission ordinal, selection,
+  proposal, and completion identities without granting arbitrary record reads.
   The local
   Unix-stream binding
-  now dispatches all thirty-two current success messages plus one stable
-  request-bound error envelope under a version-15, 64-MiB-body,
+  now dispatches all thirty-four current success messages plus one stable
+  request-bound error envelope under a version-16, 64-MiB-body,
   absolute-deadline frame.
   `QueryCampaignGraph` authorization covers the complete anchoring snapshot
   metadata and all root IDs; bodies named by those IDs retain separate access
@@ -810,7 +815,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   composes separately authorized observation and reproduction reads for one
   exact indexed finding, rejects cross-finding/configuration/fingerprint drift,
   and renders its causal, evidence, occurrence, stop, and replay basis.
-  Proposal/attempt explanations and richer filtered or aggregated views remain
+  Exact attempt/execution-basis/proposal/completion explanation is implemented;
+  aggregate proposal-ranking and richer filtered or aggregated views remain
   open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic

@@ -449,6 +449,70 @@ impl CampaignRepository {
         Ok((value, proof))
     }
 
+    pub(crate) fn attempt_with_proof(
+        &self,
+        root: ContentId,
+        attempt: AttemptId,
+    ) -> Result<(Attempt, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (indexed, proof) = self
+            .merkle
+            .get_with_proof(root, attempt_index_key(attempt))?;
+        if indexed != Some(attempt.content_id()) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-attempt-is-not-in-snapshot",
+            });
+        }
+        Ok((self.load_attempt(attempt)?, proof))
+    }
+
+    pub(crate) fn attempt_execution_basis_with_proof(
+        &self,
+        root: ContentId,
+        attempt: AttemptId,
+    ) -> Result<(AttemptAdmission, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (indexed, proof) = self
+            .merkle
+            .get_with_proof(root, attempt_execution_basis_key(attempt))?;
+        let admission = AttemptAdmissionId::from_content_id(indexed.ok_or(
+            CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-attempt-execution-basis-is-not-in-snapshot",
+            },
+        )?)?;
+        Ok((self.load_attempt_admission(admission)?, proof))
+    }
+
+    pub(crate) fn proposal_with_proof(
+        &self,
+        root: ContentId,
+        proposal: ProposalId,
+    ) -> Result<(Proposal, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (indexed, proof) = self
+            .merkle
+            .get_with_proof(root, proposal_index_key(proposal))?;
+        if indexed != Some(proposal.content_id()) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-proposal-is-not-in-snapshot",
+            });
+        }
+        Ok((self.load_proposal(proposal)?, proof))
+    }
+
+    pub(crate) fn attempt_observation_with_proof(
+        &self,
+        root: ContentId,
+        attempt: AttemptId,
+    ) -> Result<(Option<Observation>, MerkleMapLookupProof), CampaignRepositoryError> {
+        let (indexed, proof) = self
+            .merkle
+            .get_with_proof(root, attempt_observation_key(attempt))?;
+        let observation = indexed
+            .map(ObservationId::from_content_id)
+            .transpose()?
+            .map(|id| self.load_observation(id))
+            .transpose()?;
+        Ok((observation, proof))
+    }
+
     pub(crate) fn graph_object_with_proof(
         &self,
         root: ContentId,

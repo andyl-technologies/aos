@@ -868,6 +868,22 @@ fn observation_sequence_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign-observation-sequence.v1", b"")
 }
 
+pub(crate) fn attempt_index_key(attempt: AttemptId) -> CampaignHash {
+    map_key_content("accounting.attempt", attempt.content_id())
+}
+
+pub(crate) fn attempt_execution_basis_key(attempt: AttemptId) -> CampaignHash {
+    map_key_content("accounting.attempt-execution-basis", attempt.content_id())
+}
+
+pub(crate) fn proposal_index_key(proposal: ProposalId) -> CampaignHash {
+    map_key_content("exploration.proposal", proposal.content_id())
+}
+
+pub(crate) fn attempt_observation_key(attempt: AttemptId) -> CampaignHash {
+    map_key_content("observations.attempt", attempt.content_id())
+}
+
 pub(crate) fn authoritative_choice_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
     map_key_content("graph.choice-opportunity", opportunity.content_id())
 }

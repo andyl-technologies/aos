@@ -4,8 +4,9 @@ use crucible_cas::content_store::ContentId;
 
 use super::*;
 use crate::{
+    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptId, AttemptStart, BranchPath,
     BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, Finding, FindingId,
-    Observation, ReproductionArtifact, SelectableDeclaration,
+    Observation, Proposal, ReproductionArtifact, SelectableDeclaration, Selection, SelectionOrigin,
 };
 
 /// Maximum entries returned by one campaign graph page.
@@ -1364,6 +1365,434 @@ fn finding_object_matches(
     }
 }
 
+/// Strict request for one authenticated attempt and its execution provenance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplainCampaignAttemptRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    attempt: AttemptId,
+}
+
+impl ExplainCampaignAttemptRequest {
+    /// Builds one snapshot-bound attempt-explanation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        attempt: AttemptId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            attempt,
+        };
+        ensure_message_size(&request, "explain-campaign-attempt-request-encoded-bytes")?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors the request.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact semantic attempt to explain.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("explain-campaign-attempt", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded attempt-explanation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "explain-campaign-attempt-request-encoded-bytes")
+    }
+}
+
+impl Canonical for ExplainCampaignAttemptRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.attempt.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            AttemptId::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound attempt, execution basis, proposal, and completion proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplainCampaignAttemptResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    attempt: Attempt,
+    admission: AttemptAdmission,
+    path: BranchPath,
+    selection: Option<Selection>,
+    proposal: Option<Proposal>,
+    observation: Option<Observation>,
+    attempt_proof: MerkleMapLookupProof,
+    admission_proof: MerkleMapLookupProof,
+    proposal_proof: Option<MerkleMapLookupProof>,
+    observation_proof: MerkleMapLookupProof,
+}
+
+impl ExplainCampaignAttemptResponse {
+    /// Builds one authenticated attempt-explanation response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when any snapshot, accounting,
+    /// exploration, path, selection, proposal, completion, or encoded-size
+    /// invariant is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        request: &ExplainCampaignAttemptRequest,
+        snapshot_body: CampaignSnapshot,
+        attempt: Attempt,
+        admission: AttemptAdmission,
+        path: BranchPath,
+        selection: Option<Selection>,
+        proposal: Option<Proposal>,
+        observation: Option<Observation>,
+        attempt_proof: MerkleMapLookupProof,
+        admission_proof: MerkleMapLookupProof,
+        proposal_proof: Option<MerkleMapLookupProof>,
+        observation_proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            attempt,
+            admission,
+            path,
+            selection,
+            proposal,
+            observation,
+            attempt_proof,
+            admission_proof,
+            proposal_proof,
+            observation_proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including every root ID.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the exact authenticated semantic attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> &Attempt {
+        &self.attempt
+    }
+
+    /// Returns the unique authenticated execution-basis admission.
+    #[must_use]
+    pub const fn admission(&self) -> AttemptAdmission {
+        self.admission
+    }
+
+    /// Returns the authenticated root-to-leaf branch path.
+    #[must_use]
+    pub const fn path(&self) -> &BranchPath {
+        &self.path
+    }
+
+    /// Returns the exact branch selection, absent for discovery attempts.
+    #[must_use]
+    pub const fn selection(&self) -> Option<&Selection> {
+        self.selection.as_ref()
+    }
+
+    /// Returns the execution-basis proposal, absent for discovery attempts.
+    #[must_use]
+    pub const fn proposal(&self) -> Option<&Proposal> {
+        self.proposal.as_ref()
+    }
+
+    /// Returns the canonical completion, or `None` when the proof authenticates absence.
+    #[must_use]
+    pub const fn observation(&self) -> Option<&Observation> {
+        self.observation.as_ref()
+    }
+
+    /// Validates exact request, snapshot, attempt, provenance, and completion binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or any proof, typed identity, or cross-record basis disagrees.
+    pub fn validate_for(
+        &self,
+        request: &ExplainCampaignAttemptRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded attempt-explanation response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "explain-campaign-attempt-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &ExplainCampaignAttemptRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || self.attempt.id()? != request.attempt()
+            || self.path.id()? != self.attempt.path()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign attempt explanation basis mismatch",
+            });
+        }
+
+        let accounting = self.snapshot_body.roots().accounting;
+        verify_exact_lookup(
+            accounting,
+            crate::repository::attempt_index_key(request.attempt()),
+            &self.attempt_proof,
+            Some(request.attempt().content_id()),
+            "campaign attempt membership proof is invalid",
+        )?;
+        let admission_id = self.admission.id()?;
+        verify_exact_lookup(
+            accounting,
+            crate::repository::attempt_execution_basis_key(request.attempt()),
+            &self.admission_proof,
+            Some(admission_id.content_id()),
+            "campaign attempt admission proof is invalid",
+        )?;
+        let AttemptAdmissionRole::ExecutionBasis { proposal, .. } = self.admission.role() else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign attempt explanation admission is not an execution basis",
+            });
+        };
+        if self.admission.attempt() != request.attempt() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign attempt explanation admission names another attempt",
+            });
+        }
+
+        self.validate_start_and_proposal(proposal)?;
+
+        let observation_id = self.observation.as_ref().map(Observation::id).transpose()?;
+        if let Some(observation) = &self.observation
+            && (observation.attempt() != request.attempt()
+                || observation.path() != self.attempt.path()
+                || matches!(
+                    observation.stop(),
+                    crate::StopOutcome::Reached(stop) if stop != self.attempt.stop()
+                ))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign attempt explanation observation basis mismatch",
+            });
+        }
+        verify_exact_lookup(
+            self.snapshot_body.roots().observations,
+            crate::repository::attempt_observation_key(request.attempt()),
+            &self.observation_proof,
+            observation_id.map(|id| id.content_id()),
+            "campaign attempt observation proof is invalid",
+        )
+    }
+
+    fn validate_start_and_proposal(
+        &self,
+        admission_proposal: Option<crate::ProposalId>,
+    ) -> Result<(), CampaignCodecError> {
+        match self.attempt.start() {
+            AttemptStart::Discover { .. } => {
+                if admission_proposal.is_some()
+                    || self.selection.is_some()
+                    || self.proposal.is_some()
+                    || self.proposal_proof.is_some()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign discovery explanation carries branch provenance",
+                    });
+                }
+                Ok(())
+            }
+            AttemptStart::Branch {
+                edge,
+                selection: selection_id,
+                ..
+            } => {
+                let selection =
+                    self.selection
+                        .as_ref()
+                        .ok_or(CampaignCodecError::InvalidValue {
+                            reason: "campaign branch explanation is missing its selection",
+                        })?;
+                let proposal = self
+                    .proposal
+                    .as_ref()
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "campaign branch explanation is missing its proposal",
+                    })?;
+                let proof =
+                    self.proposal_proof
+                        .as_ref()
+                        .ok_or(CampaignCodecError::InvalidValue {
+                            reason: "campaign branch explanation is missing its proposal proof",
+                        })?;
+                let proposal_id = proposal.id()?;
+                if selection.id()? != selection_id
+                    || admission_proposal != Some(proposal_id)
+                    || selection.domain() != proposal.domain()
+                    || selection.value() != proposal.value()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign branch explanation selection and proposal disagree",
+                    });
+                }
+                let SelectionOrigin::CampaignBranch {
+                    branch_point,
+                    edge: selection_edge,
+                } = selection.origin()
+                else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign branch explanation selection has another origin",
+                    });
+                };
+                if branch_point != proposal.branch_point() || selection_edge != edge {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "campaign branch explanation edge provenance disagrees",
+                    });
+                }
+                verify_exact_lookup(
+                    self.snapshot_body.roots().exploration,
+                    crate::repository::proposal_index_key(proposal_id),
+                    proof,
+                    Some(proposal_id.content_id()),
+                    "campaign attempt proposal proof is invalid",
+                )
+            }
+        }
+    }
+}
+
+impl Canonical for ExplainCampaignAttemptResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.attempt.encode(encoder);
+        self.admission.encode(encoder);
+        self.path.encode(encoder);
+        self.selection.encode(encoder);
+        self.proposal.encode(encoder);
+        self.observation.encode(encoder);
+        self.attempt_proof.encode(encoder);
+        self.admission_proof.encode(encoder);
+        self.proposal_proof.encode(encoder);
+        self.observation_proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            attempt: Attempt::decode(decoder)?,
+            admission: AttemptAdmission::decode(decoder)?,
+            path: BranchPath::decode(decoder)?,
+            selection: Option::decode(decoder)?,
+            proposal: Option::decode(decoder)?,
+            observation: Option::decode(decoder)?,
+            attempt_proof: MerkleMapLookupProof::decode(decoder)?,
+            admission_proof: MerkleMapLookupProof::decode(decoder)?,
+            proposal_proof: Option::decode(decoder)?,
+            observation_proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;
+        Ok(response)
+    }
+}
+
+fn verify_exact_lookup(
+    root: ContentId,
+    key: CampaignHash,
+    proof: &MerkleMapLookupProof,
+    expected: Option<ContentId>,
+    reason: &'static str,
+) -> Result<(), CampaignCodecError> {
+    let actual = MerkleMap::verify_lookup_proof(root, key, proof)
+        .map_err(|_| CampaignCodecError::InvalidValue { reason })?;
+    if actual != expected {
+        return Err(CampaignCodecError::InvalidValue { reason });
+    }
+    Ok(())
+}
+
 /// Strict request for one branch-request body authenticated by the frontier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetCampaignFrontierObjectRequest {
@@ -2557,9 +2986,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        AttemptId, BooleanDomain, BranchBudget, BranchPathId, BranchPointId, BranchRequestCause,
-        CampaignCommandId, CampaignRoots, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
-        ChoiceDomainId, ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+        AdmissionOrdinal, AttemptId, BooleanDomain, BranchBudget, BranchPathId, BranchPathSegment,
+        BranchPointId, BranchRequestCause, CampaignCommandId, CampaignPolicyId, CampaignRoots,
+        CampaignViewId, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
+        ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
         ConfigurationArtifactId, ConfigurationId, ContinuationState, CoverageProjectionId,
         FindingKind, FindingOccurrenceSet, FindingSignature, MeasurementSetId, ObservationId,
         PropertyVerdictSetId, ReproductionArtifactId, ScenarioArtifactId, ScenarioDefId,
@@ -3227,6 +3657,378 @@ mod tests {
         )
         .expect("reproduction request");
         assert!(response.validate_for(&reproduction_request).is_err());
+    }
+
+    #[test]
+    fn attempt_explanations_authenticate_execution_proposal_selection_and_completion() {
+        let backend = Arc::new(MemoryBlobBackend::new(
+            "attempt-explanation-proof",
+            u64::MAX,
+        ));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty attempt indexes");
+        let (_declaration, domain, opportunity) = choice_objects();
+        let parent_configuration = ConfigurationId::from_hash(hash("attempt-parent"));
+        let parent = ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Configuration,
+            1,
+            b"attempt-parent-artifact",
+        ))
+        .expect("attempt parent artifact ID");
+        let branch_point = opportunity.branch_point_id(parent_configuration);
+        let value = ChoiceValue::Boolean(true);
+        let selection =
+            Selection::new_campaign_branch(&opportunity, &domain, value.clone(), branch_point)
+                .expect("attempt selection");
+        let selection_id = selection.id().expect("attempt selection ID");
+        let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+            unreachable!("campaign branch selection origin")
+        };
+        let path = BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)])
+            .expect("attempt branch path");
+        let path_id = path.id().expect("attempt branch path ID");
+        let request = BranchRequest::new(
+            branch_point,
+            parent,
+            opportunity.id().expect("attempt opportunity ID"),
+            domain.id().expect("attempt domain ID"),
+            CandidateSource::finite(BTreeSet::from([value.clone()])).expect("attempt source"),
+            BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("attempt-command"))),
+            BranchBudget::new(1, 1).expect("attempt budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("attempt request");
+        let proposal = Proposal::new(
+            branch_point,
+            request.id().expect("attempt request ID"),
+            domain.id().expect("attempt proposal domain"),
+            value,
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-policy",
+            ))
+            .expect("attempt policy ID"),
+            None,
+            1,
+            CampaignViewId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"attempt-guidance-view",
+            ))
+            .expect("attempt guidance view ID"),
+        )
+        .expect("attempt proposal");
+        let proposal_id = proposal.id().expect("attempt proposal ID");
+        let attempt = Attempt::new(
+            AttemptStart::Branch {
+                edge,
+                parent,
+                selection: selection_id,
+            },
+            path_id,
+            StopCondition::NextChoice,
+        )
+        .expect("attempt");
+        let attempt_id = attempt.id().expect("attempt ID");
+        let admission = AttemptAdmission::new(
+            attempt_id,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal_id),
+                cause: request.cause(),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            },
+        );
+        let admission_id = admission.id().expect("attempt admission ID");
+        let observation = Observation::new(
+            attempt_id,
+            parent_configuration,
+            parent,
+            path_id,
+            StopOutcome::TerminalSuccess,
+            MeasurementSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"attempt-explanation-measurements",
+            ))
+            .expect("attempt measurement ID"),
+            PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"attempt-explanation-properties",
+            ))
+            .expect("attempt property ID"),
+            CoverageProjectionId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Projection,
+                1,
+                b"attempt-explanation-coverage",
+            ))
+            .expect("attempt coverage ID"),
+            BTreeSet::new(),
+        )
+        .expect("attempt observation");
+        let observation_id = observation.id().expect("attempt observation ID");
+
+        let accounting_attempt = map
+            .insert(
+                empty.content_id(),
+                crate::repository::attempt_index_key(attempt_id),
+                attempt_id.content_id(),
+            )
+            .expect("attempt accounting membership");
+        let accounting = map
+            .insert(
+                accounting_attempt.content_id(),
+                crate::repository::attempt_execution_basis_key(attempt_id),
+                admission_id.content_id(),
+            )
+            .expect("attempt accounting root");
+        let exploration = map
+            .insert(
+                empty.content_id(),
+                crate::repository::proposal_index_key(proposal_id),
+                proposal_id.content_id(),
+            )
+            .expect("attempt proposal root");
+        let observations = map
+            .insert(
+                empty.content_id(),
+                crate::repository::attempt_observation_key(attempt_id),
+                observation_id.content_id(),
+            )
+            .expect("attempt observation root");
+        let roots = CampaignRoots {
+            graph: empty.content_id(),
+            exploration: exploration.content_id(),
+            observations: observations.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: accounting.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"attempt-explanation-lineage",
+            ))
+            .expect("attempt lineage ID"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"attempt-explanation-snapshot-policy",
+            ))
+            .expect("attempt snapshot policy ID"),
+            roots,
+        )
+        .expect("attempt explanation snapshot");
+        let explanation_request = ExplainCampaignAttemptRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("attempt principal"),
+            CampaignName::new("network-recovery").expect("attempt campaign"),
+            snapshot_body.id().expect("attempt snapshot ID"),
+            attempt_id,
+        )
+        .expect("attempt explanation request");
+        let (_, attempt_proof) = map
+            .get_with_proof(
+                accounting.content_id(),
+                crate::repository::attempt_index_key(attempt_id),
+            )
+            .expect("attempt membership proof");
+        let (_, admission_proof) = map
+            .get_with_proof(
+                accounting.content_id(),
+                crate::repository::attempt_execution_basis_key(attempt_id),
+            )
+            .expect("attempt admission proof");
+        let (_, proposal_proof) = map
+            .get_with_proof(
+                exploration.content_id(),
+                crate::repository::proposal_index_key(proposal_id),
+            )
+            .expect("attempt proposal proof");
+        let (_, observation_proof) = map
+            .get_with_proof(
+                observations.content_id(),
+                crate::repository::attempt_observation_key(attempt_id),
+            )
+            .expect("attempt observation proof");
+        let response = ExplainCampaignAttemptResponse::new(
+            &explanation_request,
+            snapshot_body,
+            attempt,
+            admission,
+            path,
+            Some(selection),
+            Some(proposal),
+            Some(observation),
+            attempt_proof,
+            admission_proof,
+            Some(proposal_proof),
+            observation_proof,
+        )
+        .expect("attempt explanation response");
+        response
+            .validate_for(&explanation_request)
+            .expect("attempt explanation binding");
+        assert_eq!(
+            ExplainCampaignAttemptRequest::from_canonical_bytes(
+                &explanation_request.canonical_bytes()
+            )
+            .expect("attempt request decode"),
+            explanation_request
+        );
+        assert_eq!(
+            ExplainCampaignAttemptResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("attempt response decode"),
+            response
+        );
+
+        let mut wrong = response.clone();
+        let Some(proposal) = wrong.proposal.as_mut() else {
+            unreachable!("branch proposal")
+        };
+        *proposal = Proposal::new(
+            proposal.branch_point(),
+            proposal.request(),
+            proposal.domain(),
+            ChoiceValue::Boolean(false),
+            proposal.policy(),
+            proposal.planner_invocation(),
+            proposal.ordinal(),
+            proposal.guidance_basis(),
+        )
+        .expect("wrong attempt proposal");
+        assert!(wrong.validate_for(&explanation_request).is_err());
+    }
+
+    #[test]
+    fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_state() {
+        let backend = Arc::new(MemoryBlobBackend::new(
+            "discovery-attempt-explanation",
+            u64::MAX,
+        ));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty discovery explanation root");
+        let configuration = ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Configuration,
+            1,
+            b"discovery-explanation-configuration",
+        ))
+        .expect("discovery configuration ID");
+        let path = BranchPath::new(Vec::new()).expect("discovery path");
+        let attempt = Attempt::new(
+            AttemptStart::Discover { configuration },
+            path.id().expect("discovery path ID"),
+            StopCondition::NextChoice,
+        )
+        .expect("discovery attempt");
+        let attempt_id = attempt.id().expect("discovery attempt ID");
+        let admission = AttemptAdmission::new(
+            attempt_id,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: None,
+                cause: BranchRequestCause::ExhaustivePolicy(
+                    CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                        ObjectKind::Policy,
+                        1,
+                        b"discovery-explanation-policy",
+                    ))
+                    .expect("discovery policy ID"),
+                ),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            },
+        );
+        let accounting = map
+            .insert(
+                empty.content_id(),
+                crate::repository::attempt_index_key(attempt_id),
+                attempt_id.content_id(),
+            )
+            .expect("discovery attempt membership");
+        let accounting = map
+            .insert(
+                accounting.content_id(),
+                crate::repository::attempt_execution_basis_key(attempt_id),
+                admission.id().expect("discovery admission ID").content_id(),
+            )
+            .expect("discovery admission membership");
+        let roots = CampaignRoots {
+            graph: empty.content_id(),
+            exploration: empty.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: empty.content_id(),
+            pins: empty.content_id(),
+            accounting: accounting.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"discovery-explanation-lineage",
+            ))
+            .expect("discovery lineage ID"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"discovery-explanation-active-policy",
+            ))
+            .expect("discovery active policy ID"),
+            roots,
+        )
+        .expect("discovery explanation snapshot");
+        let request = ExplainCampaignAttemptRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("discovery principal"),
+            CampaignName::new("discovery-campaign").expect("discovery campaign"),
+            snapshot_body.id().expect("discovery snapshot ID"),
+            attempt_id,
+        )
+        .expect("discovery explanation request");
+        let (_, attempt_proof) = map
+            .get_with_proof(
+                accounting.content_id(),
+                crate::repository::attempt_index_key(attempt_id),
+            )
+            .expect("discovery attempt proof");
+        let (_, admission_proof) = map
+            .get_with_proof(
+                accounting.content_id(),
+                crate::repository::attempt_execution_basis_key(attempt_id),
+            )
+            .expect("discovery admission proof");
+        let (_, observation_proof) = map
+            .get_with_proof(
+                empty.content_id(),
+                crate::repository::attempt_observation_key(attempt_id),
+            )
+            .expect("discovery absence proof");
+        let response = ExplainCampaignAttemptResponse::new(
+            &request,
+            snapshot_body,
+            attempt,
+            admission,
+            path,
+            None,
+            None,
+            None,
+            attempt_proof,
+            admission_proof,
+            None,
+            observation_proof,
+        )
+        .expect("discovery explanation response");
+
+        response
+            .validate_for(&request)
+            .expect("discovery explanation binding");
+        assert!(response.selection().is_none());
+        assert!(response.proposal().is_none());
+        assert!(response.observation().is_none());
     }
 
     #[test]

@@ -10,8 +10,10 @@ mod object;
 mod snapshot;
 
 use explain::{
-    query_campaign_explanation, query_campaign_finding_explanation, render_campaign_explanation,
-    render_campaign_finding_explanation, validate_campaign_explain_command,
+    query_campaign_attempt_explanation, query_campaign_explanation,
+    query_campaign_finding_explanation, render_campaign_attempt_explanation,
+    render_campaign_explanation, render_campaign_finding_explanation,
+    validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
@@ -200,6 +202,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_finding_explanation(&client, principal, &args.command)?;
             render_campaign_finding_explanation(&report, cli.output_format())?
         }
+        CampaignCommand::ExplainAttempt(_) => {
+            let report = query_campaign_attempt_explanation(&client, principal, &args.command)?;
+            render_campaign_attempt_explanation(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_)
         | CampaignCommand::Choices(_)
         | CampaignCommand::Frontier(_)
@@ -346,6 +352,10 @@ fn prepare_campaign_command(
         }
         CampaignCommand::ExplainFinding(_) => {
             validate_campaign_finding_explain_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::ExplainAttempt(_) => {
+            validate_campaign_attempt_explain_command(command)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -1043,6 +1053,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Compare(_)
         | CampaignCommand::Explain(_)
         | CampaignCommand::ExplainFinding(_)
+        | CampaignCommand::ExplainAttempt(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
@@ -1389,6 +1400,11 @@ mod tests {
         finding_root: ContentId,
         finding_observation: Observation,
         finding_reproduction: ReproductionArtifact,
+        attempt: Attempt,
+        attempt_admission: AttemptAdmission,
+        attempt_path: BranchPath,
+        attempt_selection: Selection,
+        attempt_proposal: Proposal,
     }
 
     impl CampaignService for FixedHeadService {
@@ -1479,6 +1495,13 @@ mod tests {
             &self,
             _request: &GetCampaignFindingObjectRequest,
         ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
+        fn explain_campaign_attempt(
+            &self,
+            _request: &ExplainCampaignAttemptRequest,
+        ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
             unreachable!("unused campaign-service operation")
         }
 
@@ -1690,6 +1713,67 @@ mod tests {
                 proof,
             )
             .expect("bound finding explanation response"))
+        }
+
+        fn explain_campaign_attempt(
+            &self,
+            request: &ExplainCampaignAttemptRequest,
+        ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+            assert_eq!(
+                request.attempt(),
+                self.attempt.id().expect("explanation attempt ID")
+            );
+            let roots = self.snapshot.roots();
+            let (_, attempt_proof) = self
+                .map
+                .get_with_proof(
+                    roots.accounting,
+                    content_index_key("accounting.attempt", request.attempt().content_id()),
+                )
+                .expect("attempt explanation proof");
+            let (_, admission_proof) = self
+                .map
+                .get_with_proof(
+                    roots.accounting,
+                    content_index_key(
+                        "accounting.attempt-execution-basis",
+                        request.attempt().content_id(),
+                    ),
+                )
+                .expect("attempt admission explanation proof");
+            let proposal_id = self
+                .attempt_proposal
+                .id()
+                .expect("attempt explanation proposal ID");
+            let (_, proposal_proof) = self
+                .map
+                .get_with_proof(
+                    roots.exploration,
+                    content_index_key("exploration.proposal", proposal_id.content_id()),
+                )
+                .expect("attempt proposal explanation proof");
+            let (_, observation_proof) = self
+                .map
+                .get_with_proof(
+                    roots.observations,
+                    content_index_key("observations.attempt", request.attempt().content_id()),
+                )
+                .expect("attempt observation explanation proof");
+            Ok(ExplainCampaignAttemptResponse::new(
+                request,
+                self.snapshot.clone(),
+                self.attempt.clone(),
+                self.attempt_admission,
+                self.attempt_path.clone(),
+                Some(self.attempt_selection.clone()),
+                Some(self.attempt_proposal.clone()),
+                Some(self.finding_observation.clone()),
+                attempt_proof,
+                admission_proof,
+                Some(proposal_proof),
+                observation_proof,
+            )
+            .expect("bound attempt explanation response"))
         }
 
         fn get_campaign_graph_object(
@@ -2248,6 +2332,54 @@ mod tests {
     }
 
     #[test]
+    fn campaign_attempt_explain_authenticates_proposal_and_completion() {
+        let (service, snapshot, _) = graph_page_service();
+        let attempt = service.attempt.id().expect("explanation attempt ID");
+        let proposal = service
+            .attempt_proposal
+            .id()
+            .expect("explanation proposal ID");
+        let observation = service
+            .finding_observation
+            .id()
+            .expect("explanation observation ID");
+        let command = CampaignCommand::ExplainAttempt(CampaignAttemptExplainArgs {
+            name: "example".to_owned(),
+            snapshot: snapshot.to_string(),
+            attempt: attempt.to_string(),
+        });
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("campaign stream pair");
+        let server = thread::spawn(move || {
+            serve_loopback_campaign_once(&mut server_stream, &service)
+                .expect("serve attempt explanation request");
+        });
+        let client = CampaignClient::new(
+            LoopbackCampaignService::new(client_stream).expect("loopback client"),
+        );
+
+        let report = query_campaign_attempt_explanation(
+            &client,
+            CampaignPrincipal::new("operator").expect("campaign principal"),
+            &command,
+        )
+        .expect("checked attempt explanation");
+        server.join().expect("campaign server thread");
+
+        let rendered = render_campaign_attempt_explanation(&report, OutputFormat::Json)
+            .expect("attempt explanation JSON");
+        let decoded: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(
+            decoded["schema"],
+            "crucible.cli.campaign-attempt-explanation.v1"
+        );
+        assert_eq!(decoded["attempt"]["id"], attempt.to_string());
+        assert_eq!(decoded["attempt"]["start"], "branch");
+        assert_eq!(decoded["proposal"]["id"], proposal.to_string());
+        assert_eq!(decoded["selection"]["value"], "true");
+        assert_eq!(decoded["observation"]["id"], observation.to_string());
+    }
+
+    #[test]
     fn campaign_explain_rejects_individually_authenticated_unrelated_records() {
         let (service, _, _) = graph_page_service();
         let (service, snapshot) = mismatch_explanation_frontier(service);
@@ -2795,6 +2927,35 @@ mod tests {
             explain_finding.command,
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::ExplainFinding(_),
+                ..
+            })
+        ));
+        let attempt = AttemptId::parse(&format!(
+            "crucible.campaign.attempt@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"attempt-explanation-parser")
+                .encode()
+        ))
+        .expect("attempt explanation ID")
+        .to_string();
+        let explain_attempt = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "explain-attempt",
+            "example",
+            "--snapshot",
+            &left_snapshot,
+            "--attempt",
+            &attempt,
+        ])
+        .expect("campaign attempt explanation arguments");
+        assert!(matches!(
+            explain_attempt.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::ExplainAttempt(_),
                 ..
             })
         ));
@@ -3390,19 +3551,89 @@ mod tests {
                 frontier_index.content_id(),
             )
             .expect("frontier explanation anchor");
-        let finding_observation = Observation::new(
-            AttemptId::parse(&format!(
-                "crucible.campaign.attempt@{}",
-                ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"cli-finding-attempt").encode()
+        let selection = Selection::new_campaign_branch(
+            &opportunity,
+            &domain,
+            ChoiceValue::Boolean(true),
+            branch_request.branch_point(),
+        )
+        .expect("attempt explanation selection");
+        let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
+            unreachable!("campaign branch constructor returned another origin")
+        };
+        let path = BranchPath::new(vec![BranchPathSegment::new(
+            branch_request.branch_point(),
+            edge,
+        )])
+        .expect("attempt explanation path");
+        let proposal = Proposal::new(
+            branch_request.branch_point(),
+            request_id,
+            domain_id,
+            ChoiceValue::Boolean(true),
+            policy("next-policy"),
+            None,
+            1,
+            CampaignViewId::parse(&format!(
+                "crucible.campaign.planning-view@{}",
+                ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"attempt-guidance-view",)
+                    .encode()
             ))
-            .expect("finding attempt ID"),
+            .expect("attempt guidance view ID"),
+        )
+        .expect("attempt explanation proposal");
+        let proposal_id = proposal.id().expect("attempt explanation proposal ID");
+        let exploration = map
+            .insert(
+                exploration.content_id(),
+                content_index_key("exploration.proposal", proposal_id.content_id()),
+                proposal_id.content_id(),
+            )
+            .expect("attempt explanation proposal insertion");
+        let attempt = Attempt::new(
+            AttemptStart::Branch {
+                edge,
+                parent: configuration.id().expect("attempt parent artifact ID"),
+                selection: selection.id().expect("attempt selection ID"),
+            },
+            path.id().expect("attempt path ID"),
+            StopCondition::NextChoice,
+        )
+        .expect("attempt explanation attempt");
+        let attempt_id = attempt.id().expect("attempt explanation attempt ID");
+        let admission = AttemptAdmission::new(
+            attempt_id,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(proposal_id),
+                cause: branch_request.cause(),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            },
+        );
+        let accounting = map
+            .insert(
+                empty,
+                content_index_key("accounting.attempt", attempt_id.content_id()),
+                attempt_id.content_id(),
+            )
+            .expect("attempt explanation accounting insertion");
+        let accounting = map
+            .insert(
+                accounting.content_id(),
+                content_index_key(
+                    "accounting.attempt-execution-basis",
+                    attempt_id.content_id(),
+                ),
+                admission
+                    .id()
+                    .expect("attempt explanation admission ID")
+                    .content_id(),
+            )
+            .expect("attempt explanation admission insertion");
+        let finding_observation = Observation::new(
+            attempt_id,
             configuration.configuration(),
             configuration.id().expect("finding child artifact ID"),
-            BranchPathId::parse(&format!(
-                "crucible.campaign.branch-path@{}",
-                ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"cli-finding-path").encode()
-            ))
-            .expect("finding path ID"),
+            path.id().expect("finding path ID"),
             StopOutcome::ModeledTimeout("execution".to_owned()),
             MeasurementSetId::parse(&format!(
                 "crucible.campaign.measurement-set@{}",
@@ -3425,6 +3656,13 @@ mod tests {
         )
         .expect("finding observation");
         let finding_observation_id = finding_observation.id().expect("finding observation ID");
+        let observations = map
+            .insert(
+                empty,
+                content_index_key("observations.attempt", attempt_id.content_id()),
+                finding_observation_id.content_id(),
+            )
+            .expect("attempt explanation observation insertion");
         let finding_reproduction = ReproductionArtifact::new(
             configuration.scenario(),
             configuration.scenario_artifact(),
@@ -3466,12 +3704,12 @@ mod tests {
         let roots = CampaignRoots {
             graph: root.content_id(),
             exploration: exploration.content_id(),
-            observations: empty,
+            observations: observations.content_id(),
             corpus: empty,
             coverage: empty,
             findings: finding_root.content_id(),
             pins: empty,
-            accounting: empty,
+            accounting: accounting.content_id(),
             coordination: empty,
         };
         let historical = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
@@ -3510,6 +3748,11 @@ mod tests {
                 finding_root: finding_root.content_id(),
                 finding_observation,
                 finding_reproduction,
+                attempt,
+                attempt_admission: admission,
+                attempt_path: path,
+                attempt_selection: selection,
+                attempt_proposal: proposal,
             },
             snapshot_id,
             historical_id,
@@ -3522,6 +3765,16 @@ mod tests {
         bytes.extend_from_slice(&(namespace.len() as u64).to_be_bytes());
         bytes.extend_from_slice(namespace.as_bytes());
         bytes.extend_from_slice(&cluster.as_bytes());
+        CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
+    }
+
+    fn content_index_key(namespace: &str, id: ContentId) -> CampaignHash {
+        let encoded = id.encode();
+        let mut bytes = Vec::with_capacity(namespace.len() + encoded.len() + 16);
+        bytes.extend_from_slice(&(namespace.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(namespace.as_bytes());
+        bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(encoded.as_bytes());
         CampaignHash::derive("crucible.campaign-map-key.v1", &bytes)
     }
 

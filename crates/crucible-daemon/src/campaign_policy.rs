@@ -346,6 +346,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         "query-campaign-graph" => Some(CampaignServiceOperation::QueryCampaignGraph),
         "query-campaign-findings" => Some(CampaignServiceOperation::QueryCampaignFindings),
         "get-campaign-finding-object" => Some(CampaignServiceOperation::GetCampaignFindingObject),
+        "explain-campaign-attempt" => Some(CampaignServiceOperation::ExplainCampaignAttempt),
         "get-campaign-graph-object" => Some(CampaignServiceOperation::GetCampaignGraphObject),
         "query-campaign-choices" => Some(CampaignServiceOperation::QueryCampaignChoices),
         "query-campaign-frontier" => Some(CampaignServiceOperation::QueryCampaignFrontier),

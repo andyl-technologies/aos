@@ -35,7 +35,8 @@ pub use get_snapshot::{GetCampaignSnapshotRequest, GetCampaignSnapshotResponse};
 pub use pin::{PinCampaignRequest, PinCampaignResponse};
 pub use query::{
     CampaignChoiceEntry, CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
-    CampaignFindingObjectKind, CampaignGraphEntry, GetCampaignChoiceObjectRequest,
+    CampaignFindingObjectKind, CampaignGraphEntry, ExplainCampaignAttemptRequest,
+    ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
     GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
     GetCampaignFindingObjectResponse, GetCampaignFrontierObjectRequest,
     GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
@@ -154,6 +155,8 @@ pub enum CampaignServiceOperation {
     QueryCampaignFindings,
     /// Read one exact dependency named by an authenticated finding.
     GetCampaignFindingObject,
+    /// Explain one exact attempt, execution basis, proposal, and completion.
+    ExplainCampaignAttempt,
     /// Read one exact branch-request body named by the authenticated frontier.
     GetCampaignFrontierObject,
     /// Read one exact declaration or domain named by an authenticated choice.
@@ -422,6 +425,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this request's exact snapshot.
     pub fn validate_for_get_campaign_finding_object(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact campaign attempt explanation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this request's exact snapshot.
+    pub fn validate_for_explain_campaign_attempt(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1478,6 +1494,18 @@ pub trait CampaignService {
         request: &GetCampaignFindingObjectRequest,
     ) -> Result<GetCampaignFindingObjectResponse, Self::Error>;
 
+    /// Returns one authenticated attempt with its execution provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, attempt membership, provenance validation,
+    /// repository access, or response construction fails.
+    fn explain_campaign_attempt(
+        &self,
+        request: &ExplainCampaignAttemptRequest,
+    ) -> Result<ExplainCampaignAttemptResponse, Self::Error>;
+
     /// Returns one exact branch-request body authenticated by the frontier.
     ///
     /// # Errors
@@ -1837,6 +1865,33 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_get_campaign_finding_object(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Explains one attempt and validates its exact execution provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, attempt, execution basis, proposal, path,
+    /// selection, or completion state.
+    pub fn explain_campaign_attempt(
+        &self,
+        request: &ExplainCampaignAttemptRequest,
+    ) -> Result<ExplainCampaignAttemptResponse, CampaignClientError> {
+        let response = match self.service.explain_campaign_attempt(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_explain_campaign_attempt(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -2463,6 +2518,75 @@ where
         )?)
     }
 
+    fn explain_campaign_attempt(
+        &self,
+        request: &ExplainCampaignAttemptRequest,
+    ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::ExplainCampaignAttempt,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let roots = head.snapshot().roots();
+        let (attempt, attempt_proof) = self
+            .repository
+            .attempt_with_proof(roots.accounting, request.attempt())?;
+        let (admission, admission_proof) = self
+            .repository
+            .attempt_execution_basis_with_proof(roots.accounting, request.attempt())?;
+        let path = self.repository.load_branch_path(attempt.path())?;
+        let (selection, proposal, proposal_proof) = match attempt.start() {
+            crate::AttemptStart::Discover { .. } => (None, None, None),
+            crate::AttemptStart::Branch { selection, .. } => {
+                let resolved = self.repository.resolve_selection(selection)?;
+                let crate::AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    ..
+                } = admission.role()
+                else {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "campaign-attempt-branch-execution-basis-has-no-proposal",
+                    }
+                    .into());
+                };
+                let (proposal, proof) = self
+                    .repository
+                    .proposal_with_proof(roots.exploration, proposal)?;
+                (
+                    Some(resolved.selection().clone()),
+                    Some(proposal),
+                    Some(proof),
+                )
+            }
+        };
+        let (observation, observation_proof) = self
+            .repository
+            .attempt_observation_with_proof(roots.observations, request.attempt())?;
+        Ok(ExplainCampaignAttemptResponse::new(
+            request,
+            head.snapshot().clone(),
+            attempt,
+            admission,
+            path,
+            selection,
+            proposal,
+            observation,
+            attempt_proof,
+            admission_proof,
+            proposal_proof,
+            observation_proof,
+        )?)
+    }
+
     fn get_campaign_frontier_object(
         &self,
         request: &GetCampaignFrontierObjectRequest,
@@ -2893,6 +3017,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn explain_campaign_attempt(
+            &self,
+            _request: &ExplainCampaignAttemptRequest,
+        ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -3036,6 +3167,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn explain_campaign_attempt(
+            &self,
+            _request: &ExplainCampaignAttemptRequest,
+        ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -3149,6 +3287,13 @@ mod tests {
             &self,
             _request: &GetCampaignFindingObjectRequest,
         ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn explain_campaign_attempt(
+            &self,
+            _request: &ExplainCampaignAttemptRequest,
+        ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

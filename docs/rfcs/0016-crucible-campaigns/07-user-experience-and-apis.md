@@ -219,6 +219,7 @@ crucible campaign compare NAME --left SNAPSHOT --right SNAPSHOT
 crucible campaign explain NAME --snapshot SNAPSHOT --opportunity ID --request ID
 crucible campaign findings NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
 crucible campaign explain-finding NAME --snapshot SNAPSHOT --finding ID
+crucible campaign explain-attempt NAME --snapshot SNAPSHOT --attempt ID
 ```
 
 The read-only porcelain implements `status`, a one-shot resumable `watch`, and
@@ -247,8 +248,12 @@ of one exact indexed finding: its representative observation and original
 reproduction artifact. It rejects a mismatched finding, dependency kind,
 configuration artifact, or reproduction fingerprint before reporting the
 stable signature, causal identities, occurrence projection, modeled stop,
-evidence-set IDs, replay configuration, and payload profile. Proposal and
-attempt explanations plus rich filtered/aggregated inspection remain open.
+evidence-set IDs, replay configuration, and payload profile.
+`explain-attempt` performs one separately authorized proof-bearing read and
+reports the immutable attempt start and path, execution-basis cause and ordinal,
+branch selection and proposal provenance when present, plus a proved canonical
+completion or proved absence. Aggregate proposal-ranking and richer
+filtered/aggregated inspection remain open.
 
 A concise status view includes:
 

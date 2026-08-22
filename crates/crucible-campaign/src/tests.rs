@@ -287,6 +287,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.query-campaign-findings-response",
         "crucible.campaign.get-campaign-finding-object-request",
         "crucible.campaign.get-campaign-finding-object-response",
+        "crucible.campaign.explain-campaign-attempt-request",
+        "crucible.campaign.explain-campaign-attempt-response",
         "crucible.campaign.get-campaign-graph-object-request",
         "crucible.campaign.get-campaign-graph-object-response",
         "crucible.campaign.query-campaign-choices-request",
@@ -389,7 +391,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_loopback = rows
         .get("crucible.campaign.loopback-frame")
         .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));
-    assert_eq!(campaign_loopback[1], "15");
+    assert_eq!(campaign_loopback[1], "16");
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");

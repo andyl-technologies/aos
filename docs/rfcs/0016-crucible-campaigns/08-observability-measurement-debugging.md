@@ -275,6 +275,14 @@ observation child. It renders the identities needed to locate evidence and
 perform independent replay without granting arbitrary evidence or checkpoint
 body reads.
 
+The checked `ExplainCampaignAttempt` capability authenticates one attempt and
+its unique execution-basis admission in `roots.accounting`, its branch proposal
+in `roots.exploration` when present, and its canonical completion or absence in
+`roots.observations`. The returned path and selection close the semantic chain
+from branch request cause and admission ordinal through the exact edge and
+value to the resulting observation. The CLI `explain-attempt` view exposes
+those identities without granting evidence-set or checkpoint bodies.
+
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
   schedule)` reproduction artifact and verify it before publication.
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be

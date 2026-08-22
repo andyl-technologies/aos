@@ -322,6 +322,8 @@ enum CampaignCommand {
     Explain(CampaignExplainArgs),
     /// Explain one exact finding and its reproduction basis.
     ExplainFinding(CampaignFindingExplainArgs),
+    /// Explain one exact attempt, proposal, and completion basis.
+    ExplainAttempt(CampaignAttemptExplainArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
     /// Inspect one exact object named by the authenticated graph.
@@ -492,6 +494,19 @@ struct CampaignFindingExplainArgs {
     /// Exact finding whose evidence and reproduction basis are explained.
     #[arg(long, value_name = "FINDING", required = true)]
     finding: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignAttemptExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing the attempt.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact semantic attempt whose execution basis is explained.
+    #[arg(long, value_name = "ATTEMPT", required = true)]
+    attempt: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
