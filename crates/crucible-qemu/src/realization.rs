@@ -45,6 +45,91 @@ pub struct QemuVmSnapshot {
     identity: ContentHash,
 }
 
+/// Replay-oracle result bound to the exact snapshot that was compared.
+///
+/// The private source identity prevents a successful fat/thin comparison from
+/// being transplanted onto different VMState or Apache continuation metadata.
+/// This is a process-local validation capability; durable identity is minted
+/// only after [`Self::promote`] rebuilds the complete snapshot hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuReplayOracleCheck {
+    source_snapshot: ContentHash,
+    validation: QemuReplayOracleValidation,
+}
+
+impl QemuReplayOracleCheck {
+    /// Builds a source-bound result for cross-crate conformance tests.
+    ///
+    /// This constructor is unavailable in production builds because only the
+    /// replay-oracle coordinator may mint production promotion authority.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn from_unvalidated_test_result(
+        source_snapshot: ContentHash,
+        validation: QemuReplayOracleValidation,
+    ) -> Self {
+        Self {
+            source_snapshot,
+            validation,
+        }
+    }
+
+    /// Returns the exact pre-validation snapshot identity that was compared.
+    #[must_use]
+    pub const fn source_snapshot(self) -> ContentHash {
+        self.source_snapshot
+    }
+
+    /// Returns the observed fat/thin comparison outcome.
+    #[must_use]
+    pub const fn validation(self) -> QemuReplayOracleValidation {
+        self.validation
+    }
+
+    /// Promotes the compared snapshot with matching replay-oracle evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::InvalidCheckpoint`] when `snapshot`
+    /// is not the exact source of this check. Returns
+    /// [`QemuVmRealizationError::SavevmPolicy`] when the comparison was absent
+    /// or mismatched.
+    pub fn promote(
+        self,
+        snapshot: &QemuVmSnapshot,
+    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+        if snapshot.id() != self.source_snapshot {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "replay-oracle promotion",
+                message: String::from("replay-oracle result belongs to a different exact snapshot"),
+            });
+        }
+        QemuExactSnapshotPolicy::production()
+            .accept_loadvm_realized_runtime(self.validation)
+            .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
+
+        let identity = exact_snapshot_identity(
+            &snapshot.checkpoint,
+            &snapshot.host_io,
+            &snapshot.node,
+            self.validation,
+            snapshot.live_capture,
+        )
+        .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+            role: "replay-oracle promotion",
+            message: format!("cannot authenticate promoted exact snapshot: {error}"),
+        })?;
+        Ok(QemuVmSnapshot {
+            checkpoint: snapshot.checkpoint.clone(),
+            host_io: snapshot.host_io.clone(),
+            node: snapshot.node.clone(),
+            replay_oracle_validation: self.validation,
+            live_capture: snapshot.live_capture,
+            identity,
+        })
+    }
+}
+
 impl QemuVmSnapshot {
     /// Builds a snapshot whose QEMU and host-I/O halves share one identity.
     ///
@@ -655,6 +740,29 @@ pub fn check_qemu_replay_oracle(
     executor: &mut impl QemuVmRealizationExecutor,
     policy: QemuExactSnapshotPolicy,
 ) -> Result<QemuReplayOracleValidation, QemuVmRealizationError> {
+    check_qemu_replay_oracle_bound(world, config, store, executor, policy)
+        .map(QemuReplayOracleCheck::validation)
+}
+
+/// Checks a fat snapshot against thin replay and binds the result to its source.
+///
+/// Unlike [`check_qemu_replay_oracle`], the returned capability can promote
+/// only the exact snapshot retrieved and compared by this operation. A caller
+/// cannot reuse a successful comparison for different VMState, host-I/O, or
+/// scheduler continuation metadata.
+///
+/// # Errors
+///
+/// Returns [`QemuVmRealizationError`] when the exact snapshot is missing or
+/// invalid, when either realization path fails, or when either runtime claims a
+/// configuration other than `config`.
+pub fn check_qemu_replay_oracle_bound(
+    world: &World,
+    config: &Configuration,
+    store: &mut impl QemuVmRealizationStore,
+    executor: &mut impl QemuVmRealizationExecutor,
+    policy: QemuExactSnapshotPolicy,
+) -> Result<QemuReplayOracleCheck, QemuVmRealizationError> {
     let snapshot =
         store
             .exact_snapshot(config)?
@@ -662,8 +770,31 @@ pub fn check_qemu_replay_oracle(
                 role: "replay oracle",
                 message: String::from("exact snapshot required for replay-oracle check"),
             })?;
+    check_qemu_snapshot_replay_oracle_bound(world, config, &snapshot, store, executor, policy)
+}
+
+/// Checks one explicit fat snapshot against its independent thin derivation.
+///
+/// The explicit source form lets a durable checkpoint owner validate the exact
+/// root it already authenticated without asking a potentially changing cache
+/// to select that source again. Thin replay still uses `store` for proper
+/// ancestors and baked genesis and never admits `snapshot` as the target path.
+///
+/// # Errors
+///
+/// Returns [`QemuVmRealizationError`] when `snapshot` is not a complete fat
+/// checkpoint for `config`, when either realization path fails, or when either
+/// runtime claims a different configuration.
+pub fn check_qemu_snapshot_replay_oracle_bound(
+    world: &World,
+    config: &Configuration,
+    snapshot: &QemuVmSnapshot,
+    store: &mut impl QemuVmRealizationStore,
+    executor: &mut impl QemuVmRealizationExecutor,
+    policy: QemuExactSnapshotPolicy,
+) -> Result<QemuReplayOracleCheck, QemuVmRealizationError> {
     validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot")?;
-    validate_snapshot_pair(&snapshot)?;
+    validate_snapshot_pair(snapshot)?;
     if snapshot.checkpoint.kind != CheckpointKind::Fat {
         return Err(QemuVmRealizationError::InvalidCheckpoint {
             role: "exact snapshot",
@@ -674,7 +805,7 @@ pub fn check_qemu_replay_oracle(
 
     let fat_runtime = executor.load_exact_snapshot_for_replay_oracle_probe(
         config,
-        &snapshot,
+        snapshot,
         policy.authorize_loadvm_probe(),
     )?;
     validate_oracle_runtime_configuration("loadvm snapshot", &fat_runtime, config.id())?;
@@ -682,16 +813,20 @@ pub fn check_qemu_replay_oracle(
         realize_qemu_replay_oracle_thin_path(world, config.clone(), store, executor, policy)?;
     validate_oracle_runtime_configuration("thin replay", &thin_runtime, config.id())?;
 
-    if fat_runtime.id == thin_runtime.id {
-        Ok(QemuReplayOracleValidation::Match {
+    let validation = if fat_runtime.id == thin_runtime.id {
+        QemuReplayOracleValidation::Match {
             runtime_hash: fat_runtime.id,
-        })
+        }
     } else {
-        Ok(QemuReplayOracleValidation::Mismatch {
+        QemuReplayOracleValidation::Mismatch {
             fat_hash: fat_runtime.id,
             thin_hash: thin_runtime.id,
-        })
-    }
+        }
+    };
+    Ok(QemuReplayOracleCheck {
+        source_snapshot: snapshot.id(),
+        validation,
+    })
 }
 
 fn instantiate_qemu_vm_for_operation(
@@ -1898,6 +2033,56 @@ mod tests {
             to_len: 1,
             value: 0,
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn replay_oracle_promotion_is_bound_to_the_exact_compared_snapshot()
+    -> Result<(), QemuVmRealizationError> {
+        let world = world("oracle-bound-promotion");
+        let def = scenario("oracle-bound-promotion");
+        let target = config_with_decisions(def.clone(), 1);
+        let source = diskless_snapshot(
+            checkpoint_for_config("oracle-source", &target, CheckpointKind::Fat),
+            QemuReplayOracleValidation::NotRun,
+        );
+        let foreign = diskless_snapshot(
+            checkpoint_for_config("oracle-foreign", &target, CheckpointKind::Fat),
+            QemuReplayOracleValidation::NotRun,
+        );
+        let log = shared_log();
+        let mut store = scripted_store(Rc::clone(&log), &world, &def);
+        store.exact_snapshots.push((target.id(), source.clone()));
+        let mut executor = scripted_executor(log);
+
+        let check = check_qemu_replay_oracle_bound(
+            &world,
+            &target,
+            &mut store,
+            &mut executor,
+            QemuExactSnapshotPolicy,
+        )?;
+
+        assert_eq!(check.source_snapshot(), source.id());
+        assert!(matches!(
+            check.promote(&foreign),
+            Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "replay-oracle promotion",
+                ..
+            })
+        ));
+        let promoted = check.promote(&source)?;
+        assert_ne!(promoted.id(), source.id());
+        assert_eq!(promoted.checkpoint(), source.checkpoint());
+        assert_eq!(promoted.host_io(), source.host_io());
+        assert_eq!(promoted.node_continuation(), source.node_continuation());
+        assert_eq!(
+            promoted.replay_oracle_validation(),
+            QemuReplayOracleValidation::Match {
+                runtime_hash: target.id(),
+            }
+        );
 
         Ok(())
     }

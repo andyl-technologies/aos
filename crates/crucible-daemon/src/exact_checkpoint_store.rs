@@ -27,7 +27,8 @@ use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, ObjectKind, PutReceipt, StoreError,
 };
 use crucible_qemu::{
-    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuVmSnapshot, QemuVmSnapshotCodecError,
+    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuReplayOracleCheck, QemuVmRealizationError,
+    QemuVmSnapshot, QemuVmSnapshotCodecError,
 };
 use thiserror::Error;
 
@@ -224,6 +225,26 @@ impl LoadedExactCheckpoint {
     #[must_use]
     pub fn vmstate_bytes(&self) -> u64 {
         self.vmstate.logical_length()
+    }
+
+    /// Produces a no-write capture whose metadata contains a bound oracle match.
+    ///
+    /// The opaque VMState child is reused by content identity. The supplied
+    /// replay result must have been minted for this exact pre-promotion
+    /// snapshot; a result for different metadata or VMState cannot be applied.
+    /// The returned capture can enter the ordinary no-write prepare and
+    /// children-before-root publication phases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the replay result belongs to a
+    /// different snapshot or did not prove a fat/thin runtime match.
+    pub fn promote_replay_oracle_match(
+        &self,
+        check: QemuReplayOracleCheck,
+    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
+        let snapshot = check.promote(&self.snapshot)?;
+        Ok(CapturedExactCheckpoint::new(snapshot, self.vmstate.clone()))
     }
 
     /// Copies and authenticates the complete opaque VMState stream.

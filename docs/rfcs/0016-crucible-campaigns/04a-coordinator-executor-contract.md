@@ -1802,9 +1802,11 @@ spawn separately requires the same launch-resource ceiling and exact snapshot
 basis. The exact-root launcher is not an unguarded realization launcher: it can
 enter production resume only with the attempt guard's sealed child-process
 contract, and production replay admission rejects missing or mismatched oracle
-evidence before invoking it. Concrete resource-guard ownership through that
-spawn, generation and retention of matching replay-oracle evidence for live
-captures, and the complete pause/restart/resume flight remain mandatory before
+evidence before invoking it. The durable owner now authenticates the exact
+selected raw root, runs the fat/thin comparison, promotes only a source-bound
+match into a new root that reuses the VMState child, and durably replaces the
+selection. Concrete resource-guard ownership around that comparison and guarded
+spawn, plus the complete pause/restart/resume flight, remain mandatory before
 the full campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.

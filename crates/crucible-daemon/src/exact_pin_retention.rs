@@ -21,9 +21,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crucible::{Configuration, World};
 use crucible_campaign::{
     CampaignCodecError, CampaignFactId, CampaignHash, CampaignName, CampaignRepository,
     CampaignRepositoryError, ConfigurationId, ExactCheckpointId, PinRetention,
+};
+use crucible_qemu::{
+    QemuExactSnapshotPolicy, QemuReplayOracleCheck, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmRealizationStore, check_qemu_snapshot_replay_oracle_bound,
 };
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
@@ -248,6 +253,137 @@ pub struct DirectoryExactPinMaterializationStore {
     _writer_lock: File,
 }
 
+/// Durable result of replacing one selected raw checkpoint with an oracle match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactPinReplayPromotion {
+    source: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+    disposition: ExactPinSelectionDisposition,
+}
+
+impl ExactPinReplayPromotion {
+    /// Returns the exact checkpoint root compared by the replay oracle.
+    #[must_use]
+    pub const fn source(self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the new root containing matching replay-oracle evidence.
+    #[must_use]
+    pub const fn promoted(self) -> ExactCheckpointId {
+        self.promoted
+    }
+
+    /// Returns how the durable operational selection was updated.
+    #[must_use]
+    pub const fn disposition(self) -> ExactPinSelectionDisposition {
+        self.disposition
+    }
+}
+
+/// Exact semantic and campaign target for one retained replay-oracle check.
+#[derive(Clone, Copy)]
+pub struct ExactPinReplayTarget<'a> {
+    world: &'a World,
+    configuration: &'a Configuration,
+    campaign: &'a CampaignName,
+    configuration_id: ConfigurationId,
+}
+
+impl<'a> ExactPinReplayTarget<'a> {
+    /// Binds one modeled configuration to its exact campaign pin key.
+    #[must_use]
+    pub const fn new(
+        world: &'a World,
+        configuration: &'a Configuration,
+        campaign: &'a CampaignName,
+        configuration_id: ConfigurationId,
+    ) -> Self {
+        Self {
+            world,
+            configuration,
+            campaign,
+            configuration_id,
+        }
+    }
+}
+
+/// Executes fat/thin validation and promotes the selected exact root.
+pub struct ExactPinReplayValidator<'a, S, E> {
+    store: &'a mut S,
+    executor: &'a mut E,
+    policy: QemuExactSnapshotPolicy,
+}
+
+impl<'a, S, E> ExactPinReplayValidator<'a, S, E> {
+    /// Creates a validator using production exact-snapshot policy.
+    #[must_use]
+    pub fn new(store: &'a mut S, executor: &'a mut E) -> Self {
+        Self {
+            store,
+            executor,
+            policy: QemuExactSnapshotPolicy::production(),
+        }
+    }
+}
+
+impl<S, E> ExactPinReplayValidator<'_, S, E>
+where
+    S: QemuVmRealizationStore,
+    E: QemuVmRealizationExecutor,
+{
+    /// Validates and durably promotes the checkpoint selected for `target`.
+    ///
+    /// The selection fence is held only for the bounded initial lookup. The
+    /// immutable checkpoint is authenticated, the fat and thin realizations
+    /// are compared without holding operational journal authority, and the
+    /// selection owner reauthenticates the source before publishing and
+    /// replacing its root.
+    ///
+    /// The caller owns attempt resource enforcement and mandatory executor
+    /// cleanup around this operation. In production, `executor` is therefore
+    /// an attempt-scoped guarded QEMU session rather than a raw process adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] when selection or checkpoint
+    /// authentication fails, either realization path fails, fat/thin state
+    /// differs, publication fails, or durable selection replacement fails.
+    pub fn validate_and_promote(
+        &mut self,
+        repository: &CampaignRepository,
+        checkpoints: &ExactCheckpointStore,
+        selections: &mut DirectoryExactPinMaterializationStore,
+        target: ExactPinReplayTarget<'_>,
+    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError> {
+        let selected = {
+            let mut fence = selections.acquire_exact_pin_retention_fence()?;
+            fence
+                .selection(target.campaign, target.configuration_id)?
+                .ok_or_else(|| ExactPinRetentionError::MissingSelection {
+                    campaign: target.campaign.clone(),
+                    configuration: target.configuration_id,
+                })?
+        };
+        let loaded = selected.authenticate_current(repository, checkpoints)?;
+        let check = check_qemu_snapshot_replay_oracle_bound(
+            target.world,
+            target.configuration,
+            loaded.snapshot(),
+            self.store,
+            self.executor,
+            self.policy,
+        )?;
+        selections.promote_replay_oracle_match(
+            repository,
+            checkpoints,
+            target.campaign,
+            target.configuration_id,
+            check,
+        )
+    }
+}
+
 impl DirectoryExactPinMaterializationStore {
     /// Opens a durable journal and acquires its lifetime single-writer lock.
     ///
@@ -335,6 +471,59 @@ impl DirectoryExactPinMaterializationStore {
         Ok(ExactPinSelectionDisposition::Stored)
     }
 
+    /// Publishes a replay-validated replacement for the current exact selection.
+    ///
+    /// The bound oracle result is applied before any write. The replacement
+    /// reuses the source root's authenticated VMState child, publishes new
+    /// metadata and root through the ordinary children-before-root protocol,
+    /// then durably replaces the operational selection. A semantic pin change
+    /// observed after publication rejects selection; the unreachable immutable
+    /// promotion remains ordinary GC input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] when no selection exists, the source
+    /// selection is stale, the oracle result belongs to another snapshot or is
+    /// not a match, publication fails, or the replacement selection cannot be
+    /// durably stored.
+    pub fn promote_replay_oracle_match(
+        &mut self,
+        repository: &CampaignRepository,
+        checkpoints: &ExactCheckpointStore,
+        campaign: &CampaignName,
+        configuration: ConfigurationId,
+        check: QemuReplayOracleCheck,
+    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError> {
+        let source = {
+            let mut fence = self.acquire_exact_pin_retention_fence()?;
+            fence.selection(campaign, configuration)?.ok_or_else(|| {
+                ExactPinRetentionError::MissingSelection {
+                    campaign: campaign.clone(),
+                    configuration,
+                }
+            })?
+        };
+        let loaded = source.authenticate_current(repository, checkpoints)?;
+        let capture = loaded.promote_replay_oracle_match(check)?;
+        let prepared = checkpoints.prepare_capture(capture)?;
+        let publication = checkpoints.publish(&prepared)?;
+        let promoted = publication.root();
+        let replacement = ExactPinMaterializationSelection::prepare(
+            repository,
+            checkpoints,
+            campaign,
+            configuration,
+            promoted,
+        )?;
+        let disposition = self.select(replacement)?;
+
+        Ok(ExactPinReplayPromotion {
+            source: source.checkpoint(),
+            promoted,
+            disposition,
+        })
+    }
+
     /// Removes one operational selection without mutating campaign semantics.
     ///
     /// GC already ignores records whose pin fact is not current. This operation
@@ -403,6 +592,14 @@ pub enum ExactPinRetentionError {
         /// Exact modeled configuration requested by the maintenance owner.
         configuration: ConfigurationId,
     },
+    /// No operational checkpoint is selected for this exact pin.
+    #[error("campaign {campaign:?} configuration {configuration} has no selected exact checkpoint")]
+    MissingSelection {
+        /// Exact campaign whose selection was requested.
+        campaign: CampaignName,
+        /// Exact modeled configuration whose selection was requested.
+        configuration: ConfigurationId,
+    },
     /// The checkpoint materializes a different modeled configuration.
     #[error("exact checkpoint configuration mismatch: expected {expected}, got {actual}")]
     CheckpointConfigurationMismatch {
@@ -434,6 +631,9 @@ pub enum ExactPinRetentionError {
     /// Exact-checkpoint root or metadata authentication failed.
     #[error(transparent)]
     Checkpoint(#[from] ExactCheckpointStoreError),
+    /// Replay-oracle evidence was absent, mismatched, or bound elsewhere.
+    #[error(transparent)]
+    ReplayOracle(#[from] QemuVmRealizationError),
     /// A typed campaign identity in a durable record was malformed.
     #[error(transparent)]
     Codec(#[from] CampaignCodecError),

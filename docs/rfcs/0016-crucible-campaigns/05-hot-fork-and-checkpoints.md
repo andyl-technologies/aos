@@ -331,6 +331,19 @@ metadata. After daemon restart, reopening the same pinned inode treats it as
 unbound and repeats authenticated materialization from the retained root before
 exact restore.
 
+A newly captured exact root records replay-oracle state `NotRun` and is not
+eligible for resume. The single-host owner authenticates the selected root and
+compares that exact fat snapshot with an independently realized thin path. The
+comparison returns a capability bound to the source snapshot identity rather
+than an unbound boolean. A matching result publishes new snapshot metadata and
+a new exact root while reusing the already-authenticated VMState child, then
+atomically replaces the operational exact-pin selection. A mismatching,
+foreign, stale, or unavailable comparison publishes nothing through this
+promotion path and leaves the raw root non-resumable. Selection replacement
+failure may leave only the newly published immutable root unreachable and
+available for GC; it may not retarget the selection without a durable journal
+commit.
+
 The public cross-process snapshot protocol may describe RAM blocks, page or
 extent indexes, opaque artifact streams, and digests. It may not expose QEMU
 private structures. Apache storage code treats QEMU blobs as opaque bytes.
