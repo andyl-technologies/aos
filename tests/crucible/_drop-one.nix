@@ -27,6 +27,7 @@
   index,
   attrPath,
   expectAbsentSymbols ? [],
+  expectInternalBuildFailures ? [],
   # RTC clock mode for the behavioral sim-divergence probe (see _sim-diverge.nix).
   rtcClock ? "vm",
   dropOneRepository ?
@@ -35,7 +36,7 @@
     },
   buildDrv ?
     import ./_drop-one-build.nix {
-      inherit pkgs lib qemuPackage index dropOneRepository expectAbsentSymbols;
+      inherit pkgs lib qemuPackage index dropOneRepository;
       attrPath = "${attrPath}.build";
     },
   # Behavioral (sim-gated, no exported ABI symbol) patches are discriminated by
@@ -50,6 +51,15 @@
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   droppedPatch = builtins.elemAt series.patchFiles (index - 1);
   symbolsMaterial = builtins.concatStringsSep " " expectAbsentSymbols;
+  internalIdentifiersMaterial = builtins.concatStringsSep " " (
+    map (evidence: evidence.identifier) expectInternalBuildFailures
+  );
+  internalBuildEvidenceMaterial =
+    lib.concatMapStringsSep "\n" (
+      evidence: "${evidence.identifier}|${evidence.path}|${evidence.fullSourceNeedle}"
+    )
+    expectInternalBuildFailures
+    + lib.optionalString (expectInternalBuildFailures != []) "\n";
   hasSymbols = expectAbsentSymbols != [];
 in
   pkgs.mkDerivation {
@@ -61,13 +71,19 @@ in
       pkgs.binutils
       pkgs.coreutils
       pkgs.gawk
+      pkgs.git
       pkgs.grep
+      pkgs.sed
       qemuPackage
     ];
 
     DROPPED_PATCH = droppedPatch;
     DROP_INDEX = toString index;
     EXPECT_ABSENT_SYMBOLS = symbolsMaterial;
+    EXPECT_INTERNAL_IDENTIFIERS = internalIdentifiersMaterial;
+    DROP_ONE_REPOSITORY = "${dropOneRepository}";
+    passAsFile = ["internalBuildEvidenceMaterial"];
+    inherit internalBuildEvidenceMaterial;
     BUILD_DRV = "${buildDrv}";
     FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
     # Only behavioral (no-symbol) patches consult the sim-divergence probe; for
@@ -85,6 +101,7 @@ in
           export LC_ALL=C
           mkdir -p "$out"
           fail() { echo "FAIL: $*" >&2; exit 1; }
+          . ${./_drop-one-build-evidence.sh}
 
           test "$(cat "$BUILD_DRV/dropped-patch")" = "$DROPPED_PATCH" \
             || fail "build derivation names a different patch"
@@ -123,18 +140,53 @@ in
               emit
               ;;
             build-failed)
-              cp "$BUILD_DRV/failing-symbols" "$out/failing-symbols"
-              cp "$BUILD_DRV/build-diagnostics" "$out/build-diagnostics"
-              cp "$BUILD_DRV/patch-specific-build-evidence" \
-                "$out/patch-specific-build-evidence"
+              cp "$BUILD_DRV/build.log" "$out/build.log"
+              extract_drop_one_build_evidence \
+                "$out/build.log" "$out/patch-specific-build-evidence" \
+                "$out/build-diagnostics"
               test -s "$out/patch-specific-build-evidence" \
                 || fail "build failure lacks patch-specific compiler/linker evidence"
+              nm -D --defined-only "$FULL_QEMU" | gawk 'NF { print $NF }' | LC_ALL=C sort -u \
+                > "$out/full-exports"
+              validate_drop_one_build_evidence \
+                "$out/patch-specific-build-evidence" "$out/full-exports" \
+                "$EXPECT_ABSENT_SYMBOLS" "$EXPECT_INTERNAL_IDENTIFIERS" \
+                || fail "build failure evidence is not an exact manifest discriminator"
+              variant_ref=$(gawk -F= '$1 == "prepared_ref" { print $2 }' \
+                "$BUILD_DRV/prepared-ref.env")
+              test -n "$variant_ref" \
+                || fail "build failure is missing its prepared variant ref"
+              internal_source_definition_loss_verified=false
+              while IFS='|' read -r identifier source_path full_source_needle; do
+                if ! gawk -F '\t' -v expected="$identifier" \
+                  '$1 == "symbol" && $2 == expected { found = 1 } END { exit !found }' \
+                  "$out/patch-specific-build-evidence"; then
+                  continue
+                fi
+                full_internal_source="$TMPDIR/full-internal-source"
+                variant_internal_source="$TMPDIR/variant-internal-source"
+                git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
+                  show "refs/heads/patch-stack:$source_path" > "$full_internal_source" \
+                  || fail "cannot read the full-stack source for $identifier"
+                grep -Fq "$full_source_needle" "$full_internal_source" \
+                  || fail "full stack lacks the manifest internal definition for $identifier"
+                git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
+                  show "$variant_ref:$source_path" > "$variant_internal_source" \
+                  || fail "cannot read the full-minus-N source for $identifier"
+                if grep -Fq "$full_source_needle" "$variant_internal_source"; then
+                  fail "full-minus-N source still contains the internal definition for $identifier"
+                fi
+                internal_source_definition_loss_verified=true
+              done < "$internalBuildEvidenceMaterialPath"
+              gawk -F '\t' '$1 == "symbol" { print $2 }' \
+                "$out/patch-specific-build-evidence" > "$out/failing-symbols"
               grep -E '^qemu_plugin_' "$out/failing-symbols" > "$out/failing-plugin-symbols" || true
               {
                 echo "attribution_method=drop-one-build-required"
                 echo "drop_conflicts=false"
                 echo "full_minus_n_build_fails=true"
-                echo "patch_specific_build_failure_evidence=true"
+                echo "exact_manifest_build_failure_evidence=true"
+                echo "internal_source_definition_loss_verified=$internal_source_definition_loss_verified"
                 echo "failing_symbol_count=$(wc -l < "$out/failing-symbols" | tr -d ' ')"
                 echo "build_failure_references_plugin_symbols=$(test -s "$out/failing-plugin-symbols" && echo true || echo false)"
               } > "$out/attribution.env"
