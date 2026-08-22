@@ -1730,7 +1730,6 @@ impl ProductionVmLifecycleLoop {
                                 length: vmstate_length,
                                 chunks: Vec::new(),
                             },
-                            fault_checkpoint: clone_fault_checkpoint_scheduler(&fault_checkpoint)?,
                             manifest_identity,
                         },
                     );
@@ -1776,7 +1775,7 @@ impl ProductionVmLifecycleLoop {
                         .initial_lifecycle_observations_pending,
                     branch: self.branch.clone(),
                     recorded_controls: self.recorded_controls.clone(),
-                    fault_checkpoint,
+                    fault_checkpoint: Some(fault_checkpoint),
                     targets,
                     node_generations: self.node_generations.clone(),
                     node_service_states: self.node_service_states.clone(),

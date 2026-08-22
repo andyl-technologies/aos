@@ -84,12 +84,23 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
     let stream = registry
         .stream(id, session_ref, &owner, 7, holder)
         .unwrap_or_else(|error| panic!("relay stream should be lease-owned: {error}"));
+    let readable_stream = Arc::clone(&stream);
     assert_eq!(
         DebugRelayRegistry::write_stream(stream, b"gdb")
             .await
             .unwrap_or_else(|error| panic!("relay write should succeed: {error}")),
         3
     );
+    gateway
+        .await
+        .unwrap_or_else(|error| panic!("test gateway should join: {error}"));
+    {
+        let stream = readable_stream.lock().await;
+        stream
+            .readable()
+            .await
+            .unwrap_or_else(|error| panic!("relay echo should become readable: {error}"));
+    }
     assert_eq!(
         registry.read(id, session_ref, &client("foreign"), 7, holder, 16),
         Err(DebugRelayError::StaleOrForeignLease)
@@ -182,9 +193,6 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
         registry.read(id, session_ref, &owner, 8, replacement_holder, 16),
         Err(DebugRelayError::NotFound)
     );
-    gateway
-        .await
-        .unwrap_or_else(|error| panic!("test gateway should join: {error}"));
     replacement_gateway
         .await
         .unwrap_or_else(|error| panic!("replacement gateway should join: {error}"));

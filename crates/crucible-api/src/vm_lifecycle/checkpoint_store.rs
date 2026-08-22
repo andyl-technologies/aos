@@ -473,7 +473,6 @@ pub(super) fn load_exact_checkpoint_set(
                 length: target.vmstate.length,
                 chunks: target.vmstate.chunks.clone(),
             },
-            fault_checkpoint: clone_fault_checkpoint_lifecycle(&fault_checkpoint)?,
             manifest_identity: target.manifest_identity,
         };
         budget.reserve_identity_once(
@@ -484,7 +483,7 @@ pub(super) fn load_exact_checkpoint_set(
             restored.vmstate_artifact.identity,
             restored.vmstate_artifact.length,
         )?;
-        validate_exact_checkpoint_target(&node, &restored)?;
+        validate_exact_checkpoint_target(&node, &restored, fault_checkpoint.id())?;
         if targets.insert(node, restored).is_some() {
             return Err(loop_factory_error(
                 "exact checkpoint closure contains duplicate node targets",
@@ -507,7 +506,7 @@ pub(super) fn load_exact_checkpoint_set(
         initial_lifecycle_observations_pending: lifecycle.initial_lifecycle_observations_pending,
         branch: lifecycle.branch,
         recorded_controls: lifecycle.recorded_controls,
-        fault_checkpoint,
+        fault_checkpoint: Some(fault_checkpoint),
         targets,
         node_generations,
         node_service_states,
@@ -521,6 +520,10 @@ fn validate_checkpoint_set(
     scenario: ContentHash,
     checkpoint: &ProductionVmExactCheckpointSet,
 ) -> Result<(), SchedulerError> {
+    let fault_checkpoint = checkpoint
+        .fault_checkpoint
+        .as_ref()
+        .ok_or_else(|| store_error("exact checkpoint set has no production fault continuation"))?;
     if checkpoint.configuration.def.id() != scenario
         || checkpoint
             .scheduler
@@ -609,15 +612,13 @@ fn validate_checkpoint_set(
             )));
         }
         if let Some(target) = target {
-            if target.configuration != checkpoint.configuration
-                || target.fault_checkpoint.id() != checkpoint.fault_checkpoint.id()
-            {
+            if target.configuration != checkpoint.configuration {
                 return Err(store_error(format!(
                     "exact checkpoint target state disagrees for `{}`",
                     node.name
                 )));
             }
-            validate_exact_checkpoint_target(node, target)
+            validate_exact_checkpoint_target(node, target, fault_checkpoint.id())
                 .map_err(|error| store_error(error.to_string()))?;
         }
     }
@@ -1117,6 +1118,8 @@ fn manifest_and_objects(
     let lifecycle_state = encode_lifecycle(checkpoint)?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint
+        .as_ref()
+        .ok_or_else(|| store_error("exact checkpoint set has no production fault continuation"))?
         .to_canonical_bytes_with_limit(resource_limits.fat_checkpoint_bytes)
         .map_err(|error| store_error(format!("encode fault continuation: {error}")))?;
     let mut snapshots = BTreeMap::new();

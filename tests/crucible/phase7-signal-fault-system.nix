@@ -176,6 +176,22 @@ in
             --target-dir "$target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
+            --lib checkpoint::bounded_cbor::tests \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib node_set_sequence_restore_rejects_late_invalid_node_without_partial_mutation \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
             --lib fault_action_sink \
             -- --test-threads=1
           cargo test \

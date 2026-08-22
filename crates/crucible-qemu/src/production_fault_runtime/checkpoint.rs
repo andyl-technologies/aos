@@ -35,12 +35,17 @@ impl ProductionFaultRuntime {
             .as_ref()
             .map(|runtime| runtime.checkpoint().clone());
         let host = self.host.state().clone();
-        let qemu_fingerprints =
-            qemu_node_map(nodes.execution_fingerprints()?, self.resource_limits)?;
-        let qemu_fault_sequences =
-            qemu_node_map(nodes.fault_command_sequences(), self.resource_limits)?;
-        let qemu_fault_event_sequences =
-            qemu_node_map(nodes.fault_event_sequences(), self.resource_limits)?;
+        let qemu_fingerprints = qemu_fingerprint_map(nodes, self.resource_limits)?;
+        let qemu_fault_sequences = qemu_sequence_map(
+            nodes.fault_command_sequence_entries(),
+            nodes.len(),
+            self.resource_limits,
+        )?;
+        let qemu_fault_event_sequences = qemu_sequence_map(
+            nodes.fault_event_sequence_entries(),
+            nodes.len(),
+            self.resource_limits,
+        )?;
         validate_pending_qemu_event_sequences(
             &self.pending_qemu_events,
             &qemu_fault_event_sequences,
@@ -233,26 +238,62 @@ impl ProductionFaultRuntime {
     }
 }
 
-fn qemu_node_map<V>(
-    values: BTreeMap<NodeId, V>,
+pub(super) fn qemu_fingerprint_map(
+    nodes: &mut QemuNodeSet,
     limits: FaultResourceLimits,
-) -> Result<QemuNodeMap<V>, ProductionFaultRuntimeError> {
-    let count = values.len();
-    limits.reserve(
-        "nodes",
-        0,
-        u64::try_from(count).map_err(|_| FaultResourceLimitError::Representation {
-            field: "nodes",
-            value: u64::MAX,
-        })?,
-    )?;
+) -> Result<QemuNodeMap<ContentHash>, ProductionFaultRuntimeError> {
+    let count = nodes.len();
+    admit_qemu_node_count(count, limits)?;
     let mut mapped = QemuNodeMap::new();
-    for (node, value) in values {
+    for observed in nodes.execution_fingerprint_entries() {
+        let (node, fingerprint) = observed?;
         mapped
-            .try_insert(node, value)
+            .try_insert(try_clone_node_id(node, limits)?, fingerprint)
             .map_err(|_| checkpoint_collection_allocation("nodes", count, limits))?;
     }
     Ok(mapped)
+}
+
+fn qemu_sequence_map<'a>(
+    values: impl Iterator<Item = (&'a NodeId, u64)>,
+    count: usize,
+    limits: FaultResourceLimits,
+) -> Result<QemuNodeMap<u64>, ProductionFaultRuntimeError> {
+    admit_qemu_node_count(count, limits)?;
+    let mut mapped = QemuNodeMap::new();
+    for (node, value) in values {
+        mapped
+            .try_insert(try_clone_node_id(node, limits)?, value)
+            .map_err(|_| checkpoint_collection_allocation("nodes", count, limits))?;
+    }
+    Ok(mapped)
+}
+
+fn admit_qemu_node_count(
+    count: usize,
+    limits: FaultResourceLimits,
+) -> Result<(), ProductionFaultRuntimeError> {
+    limits
+        .reserve(
+            "nodes",
+            0,
+            u64::try_from(count).map_err(|_| FaultResourceLimitError::Representation {
+                field: "nodes",
+                value: u64::MAX,
+            })?,
+        )
+        .map_err(ProductionFaultRuntimeError::from)
+}
+
+fn try_clone_node_id(
+    node: &NodeId,
+    limits: FaultResourceLimits,
+) -> Result<NodeId, ProductionFaultRuntimeError> {
+    let mut name = String::new();
+    name.try_reserve_exact(node.name.len())
+        .map_err(|_| checkpoint_collection_allocation("nodes", 1, limits))?;
+    name.push_str(&node.name);
+    Ok(NodeId { name })
 }
 
 fn checkpoint_collection_allocation(

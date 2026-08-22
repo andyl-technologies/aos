@@ -124,10 +124,7 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
-        validate_pending_qemu_event_sequences(
-            &self.pending_qemu_events,
-            &nodes.fault_event_sequences(),
-        )?;
+        validate_pending_qemu_event_sequences(&self.pending_qemu_events, nodes)?;
         let mut observations = Vec::new();
         let mut lifecycle_decisions = BTreeMap::new();
         for (node, events) in &self.pending_qemu_events {

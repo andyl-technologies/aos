@@ -3,7 +3,7 @@
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::BoundedVec;
+use super::{BoundedCborError, BoundedVec, collection_resource};
 
 /// A canonically ordered set backed by one fallibly grown vector.
 pub(crate) struct BoundedSet<T, const MAX: u64> {
@@ -30,16 +30,19 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
     ///
     /// # Errors
     ///
-    /// Returns [`std::collections::TryReserveError`] when a new value cannot be
-    /// reserved.
-    pub(crate) fn try_insert(
-        &mut self,
-        value: T,
-    ) -> Result<bool, std::collections::TryReserveError> {
+    /// Returns [`BoundedCborError::ResourceLimit`] when a new value would
+    /// exceed the compiled entry ceiling or its storage cannot be reserved.
+    pub(crate) fn try_insert(&mut self, value: T) -> Result<bool, BoundedCborError> {
         match self.values.binary_search(&value) {
             Ok(_index) => Ok(false),
             Err(index) => {
-                self.values.try_reserve(1)?;
+                let current = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+                if current >= MAX {
+                    return Err(collection_resource("bounded CBOR set", current, 1, MAX));
+                }
+                self.values
+                    .try_reserve(1)
+                    .map_err(|_| collection_resource("bounded CBOR set", current, 1, MAX))?;
                 self.values.insert(index, value);
                 Ok(true)
             }
@@ -57,11 +60,18 @@ impl<T: Clone, const MAX: u64> BoundedSet<T, MAX> {
     ///
     /// # Errors
     ///
-    /// Returns [`std::collections::TryReserveError`] if the destination cannot
-    /// be reserved.
-    pub(crate) fn try_clone(&self) -> Result<Self, std::collections::TryReserveError> {
+    /// Returns [`BoundedCborError::ResourceLimit`] if the destination cannot be
+    /// reserved.
+    pub(crate) fn try_clone(&self) -> Result<Self, BoundedCborError> {
         let mut values = Vec::new();
-        values.try_reserve_exact(self.values.len())?;
+        values.try_reserve_exact(self.values.len()).map_err(|_| {
+            collection_resource(
+                "bounded CBOR set",
+                0,
+                u64::try_from(self.values.len()).unwrap_or(u64::MAX),
+                MAX,
+            )
+        })?;
         values.extend(self.values.iter().cloned());
         Ok(Self { values })
     }
