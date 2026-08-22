@@ -1939,6 +1939,19 @@ impl crate::ExecutorControlService for SupervisorExecutor {
     }
 }
 
+impl crate::ExecutorResumeService for SupervisorExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &crate::ResumeAttemptExecutionRequest,
+    ) -> Result<crate::ResumeAttemptExecutionResponse, Self::Error> {
+        crate::ResumeAttemptExecutionResponse::new(
+            request,
+            crate::ResumeAttemptExecutionDisposition::NotCurrent,
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
 #[test]
 fn planner_driver_rejects_invalid_static_configuration_without_repository_writes() {
     let (repository, _, _, blobs, planner_authority, _) = authorized_fixture();

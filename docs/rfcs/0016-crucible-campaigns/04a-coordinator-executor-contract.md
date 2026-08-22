@@ -1321,10 +1321,15 @@ executor continues charging physical capacity until the worker acknowledges
 exit. `already-completed` is independently authenticated and incorporated by
 the observation owner.
 
-The implementor-facing Rust executor traits currently implement submit,
-status, checkpoint, and cancellation with this vocabulary. The strict resume
-messages and exact-response validator are implemented; their service,
-supervisor, worker, and loopback wiring remains an explicit next checkpoint.
+The implementor-facing Rust executor traits implement submit, status,
+checkpoint, cancellation, and resume with this vocabulary. Resume admission is
+wired through the durable supervisor, bounded worker pool, strict loopback, and
+campaign driver. The durable attempt record retains the exact resume request
+basis and input checkpoint through every later phase, and the worker receives
+that checkpoint only as operational context. A worker MUST restore that exact
+authenticated root or fail before guest work; the current QEMU runner fails
+closed until exact-root materialization is composed with its guarded live
+session.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
 `ExecutorClient` wraps both direct and future RPC services and rejects a
@@ -1346,7 +1351,7 @@ remains the next implementation checkpoint.
 The bounded loopback binding is:
 
 ```text
-ExecutorLoopbackFrameV4 = magic[8] | kind:u8 | reserved[3] |
+ExecutorLoopbackFrameV5 = magic[8] | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 
 kind = submit-attempt-request(1) | submit-attempt-response(2) |
@@ -1356,8 +1361,10 @@ kind = submit-attempt-request(1) | submit-attempt-response(2) |
        cancel-attempt-execution-request(9) |
        cancel-attempt-execution-response(10) |
        checkpoint-attempt-execution-request(11) |
-       checkpoint-attempt-execution-response(12)
-magic = "CRUCEX04"
+       checkpoint-attempt-execution-response(12) |
+       resume-attempt-execution-request(13) |
+       resume-attempt-execution-response(14)
+magic = "CRUCEX05"
 ```
 
 The body limit is 4 KiB and is checked before allocation. Reserved bytes must
@@ -1376,13 +1383,16 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV3 = magic | lineage_id | attempt_id |
+AttemptStateRecordV4 = magic | lineage_id | attempt_id |
                        execution_basis_digest |
+                       execution_origin(initial |
+                         exact-checkpoint(assignment_id, request_digest,
+                           prior_execution_id, exact_checkpoint_id)) |
                        (running | observation-publishing |
                         checkpoint-requested | checkpoint-publishing | paused |
                         completed | canceled) |
                        daemon_epoch | execution_id |
-                       observation_id? | exact_checkpoint_id? |
+                       observation_id? | output_exact_checkpoint_id? |
                        checksum
 ```
 
@@ -1399,7 +1409,9 @@ load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
 
 `checkpoint-publishing` and `paused` records are durable GC roots for their
-exact checkpoint IDs. Restart replaces a stale checkpoint-requested execution
+exact output checkpoint IDs. Every phase of a resumed incarnation also retains
+its exact input checkpoint as a GC root until that incarnation reaches durable
+retirement. Restart replaces a stale checkpoint-requested execution
 with a new-epoch recovery execution and keeps the checkpoint request signal
 sticky. It likewise preserves the exact expected root while recovering stale
 checkpoint publication; a regenerated candidate MUST have that ID and cannot

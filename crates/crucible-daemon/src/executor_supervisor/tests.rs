@@ -346,6 +346,89 @@ fn checkpoint_publication_restart_preserves_the_expected_root() {
 }
 
 #[test]
+fn paused_execution_resumes_from_the_exact_root_and_survives_restart() {
+    let first_epoch = daemon_epoch(0x2d);
+    let capacity = ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity");
+    let mut first = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        first_epoch,
+        capacity,
+    );
+    let initial = request(0x1d, 0x3d, first_epoch, resources(1, 2048, 4096));
+    let prior_execution = accepted_execution(
+        &first
+            .submit_attempt(&initial)
+            .expect("accept initial execution"),
+    );
+    let queued = first.next_queued().expect("initial execution token");
+    first
+        .checkpoint_attempt_execution(
+            &CheckpointAttemptExecutionRequest::new(&initial, prior_execution)
+                .expect("checkpoint request"),
+        )
+        .expect("request checkpoint");
+    let root = checkpoint(0x79);
+    assert_eq!(
+        first
+            .stage_checkpoint_publication(&queued, root)
+            .expect("stage exact root"),
+        CheckpointPublicationOutcome::Staged
+    );
+    assert_eq!(
+        first
+            .complete_checkpoint(&queued, root)
+            .expect("complete exact root"),
+        CheckpointCompletionOutcome::Paused
+    );
+
+    let resumed_assignment = request(0x1e, 0x3d, first_epoch, resources(1, 2048, 4096));
+    let resume = ResumeAttemptExecutionRequest::new(&resumed_assignment, prior_execution, root)
+        .expect("resume request");
+    let resumed_execution = match first
+        .resume_attempt_execution(&resume)
+        .expect("resume exact root")
+        .disposition()
+    {
+        ResumeAttemptExecutionDisposition::Accepted { execution } => execution,
+        other => panic!("unexpected resume disposition: {other:?}"),
+    };
+    let resumed = first.next_queued().expect("resumed execution token");
+    assert_eq!(resumed.execution(), resumed_execution);
+    assert_eq!(resumed.origin().checkpoint(), Some(root));
+
+    let ledger = first.into_ledger();
+    let second_epoch = daemon_epoch(0x2e);
+    let mut second =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, second_epoch, capacity);
+    let restart_submit = request(0x1f, 0x3d, second_epoch, resources(1, 2048, 4096));
+    assert_eq!(
+        second
+            .submit_attempt(&restart_submit)
+            .expect("restart discovers paused origin")
+            .disposition(),
+        SubmitAttemptDisposition::AlreadyPaused {
+            execution: prior_execution,
+            checkpoint: root,
+        }
+    );
+
+    let restarted_assignment = request(0x20, 0x3d, second_epoch, resources(1, 2048, 4096));
+    let restarted_resume =
+        ResumeAttemptExecutionRequest::new(&restarted_assignment, prior_execution, root)
+            .expect("restart resume request");
+    assert!(matches!(
+        second
+            .resume_attempt_execution(&restarted_resume)
+            .expect("restart resumes the same root")
+            .disposition(),
+        ResumeAttemptExecutionDisposition::Accepted { .. }
+    ));
+    let restarted = second.next_queued().expect("restart execution token");
+    assert_eq!(restarted.origin().checkpoint(), Some(root));
+}
+
+#[test]
 fn cancellation_requires_the_exact_runtime_basis_before_signaling() {
     let epoch = daemon_epoch(0x25);
     let mut supervisor = LocalExecutorSupervisor::new(

@@ -20,13 +20,14 @@ use crucible_campaign::{
     ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationId,
     ControlRequest, CoverageProjection, DaemonEpoch, ExactRational, ExecutionRetentionIntent,
     ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection, ExecutorService,
-    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
-    ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
-    RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, WorkerSlotId,
+    ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, ExplorerPolicy,
+    FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
+    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -253,6 +254,15 @@ impl<S: ExecutorControlService> ExecutorControlService for CountingExecutorServi
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
         self.inner.cancel_attempt_execution(request)
+    }
+}
+
+impl<S: ExecutorResumeService> ExecutorResumeService for CountingExecutorService<S> {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.inner.resume_attempt_execution(request)
     }
 }
 

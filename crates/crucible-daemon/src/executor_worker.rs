@@ -9,9 +9,9 @@
 
 use crucible_campaign::{
     Attempt, AttemptResourceLimits, AttemptStart, BranchPath, CampaignExecutorStore,
-    CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExecutionRetentionIntent,
-    ExecutorRejection, ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact,
-    SubmitAttemptRequest,
+    CampaignLineage, CampaignRepositoryError, ConfigurationArtifact, ExactCheckpointId,
+    ExecutionRetentionIntent, ExecutorRejection, ObservationCandidate, ObservationId,
+    ResolvedSelection, ScenarioArtifact, SubmitAttemptRequest,
 };
 
 use crate::{
@@ -81,18 +81,23 @@ impl AttemptExecutionInput {
     }
 }
 
-/// Operational limits and cancellation state for one guest execution.
+/// Operational limits, control state, and restore root for one guest execution.
 ///
 /// This context is deliberately separate from [`AttemptExecutionInput`]. It
 /// contains no assignment ID or daemon epoch and must not influence canonical
 /// child or observation bytes. The runner uses it only to enforce local
-/// resource ceilings and interrupt work.
+/// resource ceilings, interrupt work, and select the exact durable checkpoint
+/// for a resumed incarnation. A model MUST either restore
+/// [`Self::resume_checkpoint`] exactly or fail before beginning guest work; it
+/// must never silently restart a resumed attempt from its original
+/// configuration.
 #[derive(Clone, Debug)]
 pub struct AttemptExecutionContext {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
+    resume_checkpoint: Option<ExactCheckpointId>,
 }
 
 impl AttemptExecutionContext {
@@ -109,7 +114,18 @@ impl AttemptExecutionContext {
             retention,
             cancellation,
             checkpoint_request,
+            resume_checkpoint: None,
         }
+    }
+
+    /// Attaches the exact durable root from which this execution must resume.
+    #[must_use]
+    pub(crate) const fn with_resume_checkpoint(
+        mut self,
+        checkpoint: Option<ExactCheckpointId>,
+    ) -> Self {
+        self.resume_checkpoint = checkpoint;
+        self
     }
 
     /// Returns the hard resource ceilings admitted for this execution.
@@ -136,11 +152,18 @@ impl AttemptExecutionContext {
         &self.checkpoint_request
     }
 
+    /// Returns the exact restore root for a resumed execution incarnation.
+    #[must_use]
+    pub const fn resume_checkpoint(&self) -> Option<ExactCheckpointId> {
+        self.resume_checkpoint
+    }
+
     /// Returns whether another context names the exact same execution contract.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
         self.resources == other.resources
             && self.retention == other.retention
+            && self.resume_checkpoint == other.resume_checkpoint
             && self.cancellation.same_incarnation(&other.cancellation)
             && self
                 .checkpoint_request
@@ -156,7 +179,9 @@ pub trait AttemptExecutionModel {
     /// Executes one authenticated attempt and returns its complete immutable result.
     ///
     /// Implementations may choose hot fork, exact restore, or thin replay. The
-    /// choice is operational and must not change the canonical candidate.
+    /// choice is operational and must not change the canonical candidate. When
+    /// `context.resume_checkpoint()` is present, the implementation must begin
+    /// from that exact authenticated root or return an error before guest work.
     ///
     /// # Errors
     ///
@@ -319,7 +344,8 @@ where
             queued.request().retention(),
             queued.cancellation().clone(),
             queued.checkpoint_request().clone(),
-        );
+        )
+        .with_resume_checkpoint(queued.origin().checkpoint());
         let product = self
             .model
             .execute(&input, &context)

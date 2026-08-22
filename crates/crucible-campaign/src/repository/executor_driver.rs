@@ -13,7 +13,8 @@ use crate::{
     CancelAttemptExecutionRequest, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
     ExecutorClient, ExecutorClientError, ExecutorControlService, ExecutorRejection,
-    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    ExecutorResumeService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
 };
 
 /// Coordinator-owned bounded driver for one local executor component.
@@ -100,7 +101,7 @@ impl<S> CampaignExecutorDriver<S> {
         worker_slot: WorkerSlotId,
     ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
     where
-        S: ExecutorStatusService,
+        S: ExecutorResumeService,
     {
         let (head, state) = self.repository.head_with_state(campaign)?;
         let reservation = match self.queue.reservation_for_slot(worker_slot) {
@@ -186,7 +187,12 @@ impl<S> CampaignExecutorDriver<S> {
             .filter(|active| active.reservation == reservation)
             .cloned()
         {
-            return self.poll_execution(campaign, worker_slot, active);
+            return self.poll_execution(
+                campaign,
+                worker_slot,
+                active,
+                state == CampaignState::Running,
+            );
         }
         self.active_executions.remove(&worker_slot);
 
@@ -244,6 +250,16 @@ impl<S> CampaignExecutorDriver<S> {
                 execution,
                 checkpoint,
             } => {
+                if state == CampaignState::Running {
+                    return self.resume_paused(
+                        campaign,
+                        worker_slot,
+                        reservation,
+                        request,
+                        execution,
+                        checkpoint,
+                    );
+                }
                 self.active_executions.insert(
                     worker_slot,
                     ActiveExecutionPoll {
@@ -544,9 +560,10 @@ impl<S> CampaignExecutorDriver<S> {
         campaign: &str,
         worker_slot: WorkerSlotId,
         active: ActiveExecutionPoll,
+        resume_allowed: bool,
     ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
     where
-        S: ExecutorStatusService,
+        S: ExecutorResumeService,
     {
         let query = GetAttemptExecutionRequest::new(&active.request, active.execution)?;
         let response = self
@@ -564,6 +581,16 @@ impl<S> CampaignExecutorDriver<S> {
                 })
             }
             GetAttemptExecutionDisposition::Paused { checkpoint } => {
+                if resume_allowed {
+                    return self.resume_paused(
+                        campaign,
+                        worker_slot,
+                        active.reservation,
+                        active.request,
+                        active.execution,
+                        checkpoint,
+                    );
+                }
                 Ok(CampaignExecutorStepOutcome::Checkpointed {
                     attempt: active.reservation.attempt(),
                     execution: active.execution,
@@ -592,6 +619,131 @@ impl<S> CampaignExecutorDriver<S> {
             }
         }
     }
+
+    fn resume_paused(
+        &mut self,
+        campaign: &str,
+        worker_slot: WorkerSlotId,
+        reservation: AttemptReservation,
+        prior_request: SubmitAttemptRequest,
+        prior_execution: ExecutionId,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<CampaignExecutorStepOutcome, CampaignExecutorDriverError<S::Error>>
+    where
+        S: ExecutorResumeService,
+    {
+        let assignment = resume_assignment_for_reservation(
+            reservation,
+            prior_request.lineage(),
+            self.resources,
+            self.retention,
+            prior_execution,
+            checkpoint,
+        )?;
+        let resumed_assignment = SubmitAttemptRequest::new(
+            assignment,
+            reservation.daemon_epoch(),
+            prior_request.lineage(),
+            reservation.attempt(),
+            self.resources,
+            self.retention,
+        )?;
+        let request =
+            ResumeAttemptExecutionRequest::new(&resumed_assignment, prior_execution, checkpoint)?;
+        let response = self
+            .executor
+            .resume_attempt_execution(&request)
+            .map_err(CampaignExecutorDriverError::Executor)?;
+        match response.disposition() {
+            ResumeAttemptExecutionDisposition::Accepted { execution }
+            | ResumeAttemptExecutionDisposition::AlreadyRunning { execution } => {
+                let newly_accepted = matches!(
+                    response.disposition(),
+                    ResumeAttemptExecutionDisposition::Accepted { .. }
+                );
+                self.active_executions.insert(
+                    worker_slot,
+                    ActiveExecutionPoll {
+                        reservation,
+                        request: resumed_assignment,
+                        execution,
+                    },
+                );
+                Ok(CampaignExecutorStepOutcome::Running {
+                    attempt: reservation.attempt(),
+                    execution,
+                    newly_accepted,
+                })
+            }
+            ResumeAttemptExecutionDisposition::AlreadyCompleted { observation } => {
+                let observation_record = self.repository.load_observation(observation)?;
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result =
+                    self.repository
+                        .publish_observation(campaign, expected, &observation_record)?;
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Incorporated(result))
+            }
+            ResumeAttemptExecutionDisposition::AlreadyCanceled
+            | ResumeAttemptExecutionDisposition::NotCurrent => {
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::AssignmentRenewed {
+                    attempt: reservation.attempt(),
+                })
+            }
+            ResumeAttemptExecutionDisposition::Rejected {
+                reason:
+                    reason @ (ExecutorRejection::Backpressure | ExecutorRejection::UnavailableInput),
+            } => {
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::RetryScheduled {
+                    attempt: reservation.attempt(),
+                    reason,
+                })
+            }
+            ResumeAttemptExecutionDisposition::Rejected {
+                reason: ExecutorRejection::ConflictingAssignment,
+            } => {
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::AssignmentRenewed {
+                    attempt: reservation.attempt(),
+                })
+            }
+            ResumeAttemptExecutionDisposition::Rejected {
+                reason: ExecutorRejection::Unauthorized,
+            } => Ok(CampaignExecutorStepOutcome::Blocked {
+                attempt: reservation.attempt(),
+                reason: ExecutorRejection::Unauthorized,
+            }),
+            ResumeAttemptExecutionDisposition::Rejected { reason } => {
+                if reason != ExecutorRejection::Incompatible {
+                    return Ok(CampaignExecutorStepOutcome::Blocked {
+                        attempt: reservation.attempt(),
+                        reason,
+                    });
+                }
+                let expected = self.repository.head(campaign)?.snapshot_id();
+                let result = self.repository.close_attempt_non_modeled(
+                    campaign,
+                    expected,
+                    reservation.attempt(),
+                    NonModeledAttemptDisposition::PermanentlyIncompatible,
+                )?;
+                self.queue.release(reservation)?;
+                self.active_executions.remove(&worker_slot);
+                self.reset_scan();
+                Ok(CampaignExecutorStepOutcome::Closed(result))
+            }
+        }
+    }
 }
 
 fn assignment_for_reservation(
@@ -617,6 +769,30 @@ fn assignment_for_reservation(
     });
     let digest =
         CampaignHash::derive("crucible.campaign.local-attempt-assignment.v1", &basis).as_bytes();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[0] |= 0x80;
+    AssignmentId::from_bytes(bytes)
+}
+
+fn resume_assignment_for_reservation(
+    reservation: AttemptReservation,
+    lineage: CampaignLineageId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+    prior_execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+) -> Result<AssignmentId, CampaignCodecError> {
+    let initial = assignment_for_reservation(reservation, lineage, resources, retention)?;
+    let mut basis = Vec::new();
+    basis.extend_from_slice(&initial.as_bytes());
+    basis.extend_from_slice(&prior_execution.as_bytes());
+    basis.extend_from_slice(checkpoint.content_id().encode().as_bytes());
+    let digest = CampaignHash::derive(
+        "crucible.campaign.local-attempt-resume-assignment.v1",
+        &basis,
+    )
+    .as_bytes();
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     bytes[0] |= 0x80;

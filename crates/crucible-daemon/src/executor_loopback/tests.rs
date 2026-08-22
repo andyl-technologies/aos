@@ -13,11 +13,12 @@ use crucible_campaign::{
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
-    ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet, ExecutorClient,
-    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
+    ExactCheckpointId, ExecutionId, ExecutionRetentionIntent, ExecutorCapabilitySet,
+    ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService, ExecutorDescription,
     ExecutorMaterializationCapability, ExecutorRejection, ExecutorStatusService,
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    SubmitAttemptDisposition,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
 };
 
 use super::*;
@@ -103,6 +104,19 @@ impl ExecutorControlService for CapabilityExecutor {
             CancelAttemptExecutionDisposition::AlreadyCanceled,
         )
         .expect("bounded cancellation response"))
+    }
+}
+
+impl ExecutorResumeService for CapabilityExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        Ok(ResumeAttemptExecutionResponse::new(
+            request,
+            ResumeAttemptExecutionDisposition::AlreadyCanceled,
+        )
+        .expect("bounded resume response"))
     }
 }
 
@@ -308,6 +322,51 @@ fn direct_and_loopback_checkpoint_requests_are_identical() {
 }
 
 #[test]
+fn direct_and_loopback_resume_requests_are_identical() {
+    let (description, report) = capability_fixture();
+    let assignment = request(0x1c);
+    let checkpoint = ExactCheckpointId::parse(&format!(
+        "crucible.executor.exact-checkpoint-root@exact-manifest.2.{}",
+        encode_hex(&[0x64; 32]),
+    ))
+    .expect("checkpoint");
+    let resume_request = ResumeAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x64; 16]).expect("prior execution"),
+        checkpoint,
+    )
+    .expect("resume request");
+    let direct = ExecutorClient::new(CapabilityExecutor {
+        description: description.clone(),
+        report: report.clone(),
+    })
+    .resume_attempt_execution(&resume_request)
+    .expect("direct resume request");
+
+    let (client_stream, mut server_stream) = UnixStream::pair().expect("loopback pair");
+    let server = thread::spawn(move || {
+        let mut service = CapabilityExecutor {
+            description,
+            report,
+        };
+        serve_loopback_executor_component_once(
+            &mut server_stream,
+            &mut service,
+            LoopbackExecutorTimeouts::default(),
+        )
+        .expect("serve resume request");
+    });
+    let loopback = ExecutorClient::new(
+        LoopbackExecutorService::new(client_stream).expect("configure client deadlines"),
+    )
+    .resume_attempt_execution(&resume_request)
+    .expect("loopback resume request");
+    server.join().expect("server thread");
+
+    assert_eq!(loopback, direct);
+}
+
+#[test]
 fn frame_header_and_canonical_body_have_one_exact_encoding() {
     let request = request(0x12);
     let body = request.canonical_bytes();
@@ -322,7 +381,7 @@ fn frame_header_and_canonical_body_have_one_exact_encoding() {
 
     let mut encoded = vec![0; FRAME_HEADER_BYTES + body.len()];
     reader.read_exact(&mut encoded).expect("read exact frame");
-    assert_eq!(&encoded[..8], b"CRUCEX04");
+    assert_eq!(&encoded[..8], b"CRUCEX05");
     assert_eq!(encoded[8], SUBMIT_ATTEMPT_REQUEST_KIND);
     assert_eq!(&encoded[9..12], &[0, 0, 0]);
     assert_eq!(

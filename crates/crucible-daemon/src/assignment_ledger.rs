@@ -31,11 +31,13 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
+const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v3";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v4";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
@@ -91,6 +93,35 @@ pub struct AttemptExecutionKey {
     attempt: AttemptId,
 }
 
+/// Durable operational origin of one local execution incarnation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttemptExecutionOrigin {
+    /// Execution begins from the immutable attempt's starting configuration.
+    Initial,
+    /// Execution resumes from one exact durable paused root.
+    ExactCheckpoint {
+        /// Idempotent assignment identity for the resume operation.
+        assignment: AssignmentId,
+        /// Digest of every canonical resume-request field.
+        request_digest: CampaignHash,
+        /// Execution incarnation that produced the paused root.
+        prior_execution: ExecutionId,
+        /// Exact checkpoint from which execution must resume.
+        checkpoint: ExactCheckpointId,
+    },
+}
+
+impl AttemptExecutionOrigin {
+    /// Returns the exact resume checkpoint, when this is a resumed execution.
+    #[must_use]
+    pub const fn checkpoint(self) -> Option<ExactCheckpointId> {
+        match self {
+            Self::Initial => None,
+            Self::ExactCheckpoint { checkpoint, .. } => Some(checkpoint),
+        }
+    }
+}
+
 impl AttemptExecutionKey {
     /// Builds the runtime key for one exact lineage and semantic attempt.
     #[must_use]
@@ -118,6 +149,8 @@ pub enum AttemptRuntimeState {
     Running {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -127,6 +160,8 @@ pub enum AttemptRuntimeState {
     CheckpointRequested {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -136,6 +171,8 @@ pub enum AttemptRuntimeState {
     CheckpointPublishing {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -147,6 +184,8 @@ pub enum AttemptRuntimeState {
     Paused {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the paused execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -158,6 +197,8 @@ pub enum AttemptRuntimeState {
     Publishing {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -169,6 +210,8 @@ pub enum AttemptRuntimeState {
     Completed {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the completed execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -180,6 +223,8 @@ pub enum AttemptRuntimeState {
     Canceled {
         /// Digest of lineage, attempt, resources, and retention.
         execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
         /// Daemon incarnation that admitted the canceled execution.
         daemon_epoch: DaemonEpoch,
         /// Process-local execution identity.
@@ -213,6 +258,20 @@ impl AttemptRuntimeState {
             | Self::Canceled {
                 execution_basis, ..
             } => execution_basis,
+        }
+    }
+
+    /// Returns the durable origin of this execution incarnation.
+    #[must_use]
+    pub const fn origin(self) -> AttemptExecutionOrigin {
+        match self {
+            Self::Running { origin, .. }
+            | Self::CheckpointRequested { origin, .. }
+            | Self::CheckpointPublishing { origin, .. }
+            | Self::Paused { origin, .. }
+            | Self::Publishing { origin, .. }
+            | Self::Completed { origin, .. }
+            | Self::Canceled { origin, .. } => origin,
         }
     }
 
@@ -273,6 +332,12 @@ impl AttemptRuntimeState {
             | Self::Canceled { .. } => None,
         }
     }
+
+    /// Returns the retained input root of a resumed execution, when present.
+    #[must_use]
+    pub const fn origin_checkpoint(self) -> Option<ExactCheckpointId> {
+        self.origin().checkpoint()
+    }
 }
 
 /// Result of conditionally publishing one immutable assignment record.
@@ -287,6 +352,11 @@ pub enum AssignmentPublish {
 }
 
 /// Result of conditionally replacing one attempt runtime state.
+// The conflict value deliberately remains inline and `Copy`: this bounded
+// operational result crosses every ledger backend, and allocating merely to
+// shrink the successful discriminant would add a new failure mode to CAS
+// reconciliation. AttemptRuntimeState has a fixed 16 KiB encoded ceiling.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptStateCas {
     /// The requested state became durable.
@@ -400,6 +470,15 @@ impl AssignmentRetentionSummary {
             visitor(AssignmentRetentionRoot::Observation(observation))?;
         }
         if let Some(checkpoint) = state.checkpoint() {
+            self.checkpoint_roots = self
+                .checkpoint_roots
+                .checked_add(1)
+                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+            visitor(AssignmentRetentionRoot::ExactCheckpoint(checkpoint))?;
+        }
+        if let Some(checkpoint) = state.origin_checkpoint()
+            && state.checkpoint() != Some(checkpoint)
+        {
             self.checkpoint_roots = self
                 .checkpoint_roots
                 .checked_add(1)
@@ -686,6 +765,11 @@ impl AssignmentLedger for MemoryAssignmentLedger {
     ) -> Result<(), Self::Error> {
         for state in self.attempts.values().copied() {
             if let Some(checkpoint) = state.checkpoint() {
+                visitor(checkpoint);
+            }
+            if let Some(checkpoint) = state.origin_checkpoint()
+                && state.checkpoint() != Some(checkpoint)
+            {
                 visitor(checkpoint);
             }
         }
@@ -1025,6 +1109,11 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
             if let Some(checkpoint) = state.checkpoint() {
                 visitor(checkpoint);
             }
+            if let Some(checkpoint) = state.origin_checkpoint()
+                && state.checkpoint() != Some(checkpoint)
+            {
+                visitor(checkpoint);
+            }
         })
     }
 }
@@ -1101,6 +1190,7 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
     push_bytes(&mut payload, key.lineage.to_text().as_bytes());
     push_bytes(&mut payload, key.attempt.to_text().as_bytes());
     payload.extend_from_slice(&state.execution_basis().as_bytes());
+    encode_attempt_origin(&mut payload, state.origin());
     match state {
         AttemptRuntimeState::Running {
             daemon_epoch,
@@ -1182,6 +1272,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
+        (payload, ATTEMPT_STATE_MAGIC_V3)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
         (payload, ATTEMPT_STATE_MAGIC_V2)
     } else {
@@ -1195,55 +1287,109 @@ fn decode_attempt_state(
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
+    let origin = if magic == ATTEMPT_STATE_MAGIC {
+        decode_attempt_origin(&mut cursor)?
+    } else {
+        AttemptExecutionOrigin::Initial
+    };
     let tag = cursor.byte()?;
     let daemon_epoch = DaemonEpoch::from_bytes(cursor.fixed()?)?;
     let execution = ExecutionId::from_bytes(cursor.fixed()?)?;
     let state = match tag {
         0 => AttemptRuntimeState::Running {
             execution_basis,
+            origin,
             daemon_epoch,
             execution,
         },
         1 => AttemptRuntimeState::Completed {
             execution_basis,
+            origin,
             daemon_epoch,
             execution,
             observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
         },
         2 => AttemptRuntimeState::Canceled {
             execution_basis,
+            origin,
             daemon_epoch,
             execution,
         },
-        3 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V2 => {
+        3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V3
+            || magic == ATTEMPT_STATE_MAGIC_V2 =>
+        {
             AttemptRuntimeState::Publishing {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution,
                 observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
             }
         }
-        4 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointRequested {
-            execution_basis,
-            daemon_epoch,
-            execution,
-        },
-        5 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointPublishing {
-            execution_basis,
-            daemon_epoch,
-            execution,
-            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-        },
-        6 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::Paused {
-            execution_basis,
-            daemon_epoch,
-            execution,
-            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-        },
+        4 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+            AttemptRuntimeState::CheckpointRequested {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+            }
+        }
+        5 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+            AttemptRuntimeState::CheckpointPublishing {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            }
+        }
+        6 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+            AttemptRuntimeState::Paused {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution,
+                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            }
+        }
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
     cursor.finish()?;
     Ok((AttemptExecutionKey::new(lineage, attempt), state))
+}
+
+fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecutionOrigin) {
+    match origin {
+        AttemptExecutionOrigin::Initial => payload.push(0),
+        AttemptExecutionOrigin::ExactCheckpoint {
+            assignment,
+            request_digest,
+            prior_execution,
+            checkpoint,
+        } => {
+            payload.push(1);
+            payload.extend_from_slice(&assignment.as_bytes());
+            payload.extend_from_slice(&request_digest.as_bytes());
+            payload.extend_from_slice(&prior_execution.as_bytes());
+            push_bytes(payload, checkpoint.to_text().as_bytes());
+        }
+    }
+}
+
+fn decode_attempt_origin(
+    cursor: &mut RecordCursor<'_>,
+) -> Result<AttemptExecutionOrigin, AssignmentLedgerError> {
+    match cursor.byte()? {
+        0 => Ok(AttemptExecutionOrigin::Initial),
+        1 => Ok(AttemptExecutionOrigin::ExactCheckpoint {
+            assignment: AssignmentId::from_bytes(cursor.fixed()?)?,
+            request_digest: CampaignHash::from_bytes(cursor.fixed()?),
+            prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+        }),
+        _ => Err(corrupt("attempt-state-origin-unknown-tag")),
+    }
 }
 
 fn parse_typed<T>(

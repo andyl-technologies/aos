@@ -75,8 +75,8 @@ pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
     AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
-    AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptRuntimeState, AttemptStateCas,
-    DirectoryAssignmentLedger, MemoryAssignmentLedger,
+    AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
+    AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger, MemoryAssignmentLedger,
 };
 pub use campaign_bootstrap::{
     CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,

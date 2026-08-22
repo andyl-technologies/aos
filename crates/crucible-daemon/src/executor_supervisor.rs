@@ -18,14 +18,16 @@ use crucible_campaign::{
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
     CheckpointAttemptExecutionResponse, DaemonEpoch, ExactCheckpointId, ExecutionId,
-    ExecutorControlService, ExecutorRejection, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    ObservationId, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    ExecutorControlService, ExecutorRejection, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, ObservationId, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 use crate::{
     AssignmentLedger, AssignmentPublish, AssignmentRecord, AttemptExecutionKey,
-    AttemptRuntimeState, AttemptStateCas,
+    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas,
 };
 
 const MAX_CANCELLATION_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
@@ -233,6 +235,7 @@ impl ExecutorAvailability {
 pub struct QueuedAttempt {
     execution: ExecutionId,
     request: SubmitAttemptRequest,
+    origin: AttemptExecutionOrigin,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
 }
@@ -248,6 +251,12 @@ impl QueuedAttempt {
     #[must_use]
     pub const fn request(&self) -> &SubmitAttemptRequest {
         &self.request
+    }
+
+    /// Returns whether execution starts initially or from an exact checkpoint.
+    #[must_use]
+    pub const fn origin(&self) -> AttemptExecutionOrigin {
+        self.origin
     }
 
     /// Returns the process-local cancellation signal for the guest runner.
@@ -506,6 +515,7 @@ pub enum LocalExecutorError<E> {
 #[derive(Clone, Debug)]
 struct ActiveExecution {
     request: SubmitAttemptRequest,
+    origin: AttemptExecutionOrigin,
     cancellation: ExecutionCancellation,
     checkpoint_request: ExecutionCheckpointRequest,
     worker_in_flight: bool,
@@ -673,6 +683,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
                 return Some(QueuedAttempt {
                     execution,
                     request: active.request.clone(),
+                    origin: active.origin,
                     cancellation: active.cancellation.clone(),
                     checkpoint_request: active.checkpoint_request.clone(),
                 });
@@ -687,11 +698,9 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
     /// queue entries are ignored.
     pub fn requeue(&mut self, queued: QueuedAttempt) {
         let execution = queued.execution;
-        if self
-            .active
-            .get(&execution)
-            .is_some_and(|active| active.request == queued.request)
-            && !self.queued.contains(&execution)
+        if self.active.get(&execution).is_some_and(|active| {
+            active.request == queued.request && active.origin == queued.origin
+        }) && !self.queued.contains(&execution)
         {
             if let Some(active) = self.active.get_mut(&execution) {
                 active.worker_in_flight = false;
@@ -813,6 +822,7 @@ where
         match current {
             AttemptRuntimeState::Running {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
@@ -828,6 +838,7 @@ where
                 }
                 let next = AttemptRuntimeState::CheckpointRequested {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                 };
@@ -908,11 +919,13 @@ where
         match current {
             AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution,
             } if daemon_epoch == self.daemon_epoch && execution == queued.execution => {
                 let next = AttemptRuntimeState::CheckpointPublishing {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                     checkpoint,
@@ -983,6 +996,7 @@ where
         match current {
             AttemptRuntimeState::CheckpointPublishing {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution,
                 checkpoint: current_checkpoint,
@@ -992,6 +1006,7 @@ where
                 }
                 let next = AttemptRuntimeState::Paused {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                     checkpoint,
@@ -1055,11 +1070,13 @@ where
         match current {
             AttemptRuntimeState::Running {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution,
             }
             | AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution,
             } if execution_basis == queued.request.execution_basis_digest()
@@ -1068,6 +1085,7 @@ where
             {
                 let next = AttemptRuntimeState::Publishing {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                     observation,
@@ -1278,6 +1296,7 @@ where
         let basis = queued.request.execution_basis_digest();
         let active_matches = self.active.get(&queued.execution).is_some_and(|active| {
             active.request == queued.request
+                && active.origin == queued.origin
                 && AttemptExecutionKey::new(active.request.lineage(), active.request.attempt())
                     == key
         });
@@ -1293,11 +1312,13 @@ where
                     execution_basis,
                     daemon_epoch,
                     execution,
+                    ..
                 }
                 | AttemptRuntimeState::CheckpointRequested {
                     execution_basis,
                     daemon_epoch,
                     execution,
+                    ..
                 }
                 | AttemptRuntimeState::CheckpointPublishing {
                     execution_basis,
@@ -1327,11 +1348,13 @@ where
                     execution_basis,
                     daemon_epoch,
                     execution,
+                    ..
                 } => {
                     execution_basis == basis
                         && execution == queued.execution
                         && daemon_epoch == queued.request.daemon_epoch()
                         && daemon_epoch == self.daemon_epoch
+                        && state.origin() == queued.origin
                 }
             });
         if !durable_matches {
@@ -1414,6 +1437,7 @@ where
             }
             AttemptRuntimeState::Publishing {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
                 observation: staged_observation,
@@ -1436,6 +1460,7 @@ where
                     .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
                 let next = AttemptRuntimeState::Completed {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                     observation,
@@ -1498,34 +1523,40 @@ where
             }
             AttemptRuntimeState::Running {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
             }
             | AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
             }
             | AttemptRuntimeState::CheckpointPublishing {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
                 ..
             }
             | AttemptRuntimeState::Paused {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
                 ..
             }
             | AttemptRuntimeState::Publishing {
                 execution_basis,
+                origin,
                 daemon_epoch,
                 execution: current_execution,
                 ..
             } if daemon_epoch == self.daemon_epoch && current_execution == execution => {
                 let next = AttemptRuntimeState::Canceled {
                     execution_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                 };
@@ -1556,6 +1587,285 @@ where
         }
         let validation = self.validator.validate(request);
         self.submit_after_validation(request, validation)
+    }
+
+    fn resume(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, LocalExecutorError<L::Error>> {
+        let assignment = request.assignment_request()?;
+        let validation = self.validator.validate(&assignment);
+        self.resume_after_validation(request, validation)
+    }
+
+    pub(crate) fn resume_after_validation(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+        validation: Result<(), ExecutorRejection>,
+    ) -> Result<ResumeAttemptExecutionResponse, LocalExecutorError<L::Error>> {
+        let assignment = request.assignment_request()?;
+        if request.daemon_epoch() != self.daemon_epoch {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected {
+                    reason: ExecutorRejection::Unauthorized,
+                },
+            )
+            .map_err(Into::into);
+        }
+        if let Err(reason) = validation {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected { reason },
+            )
+            .map_err(Into::into);
+        }
+        if !self.capacity.supports(request.resources()) {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected {
+                    reason: ExecutorRejection::Incompatible,
+                },
+            )
+            .map_err(Into::into);
+        }
+
+        let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+        let Some(current) = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?
+        else {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::NotCurrent,
+            )
+            .map_err(Into::into);
+        };
+        let execution_basis = request.execution_basis_digest();
+        let request_digest = request.request_digest();
+        let resume_origin_matches = |origin: AttemptExecutionOrigin| {
+            matches!(
+                origin,
+                AttemptExecutionOrigin::ExactCheckpoint {
+                    prior_execution,
+                    checkpoint,
+                    ..
+                } if prior_execution == request.prior_execution()
+                    && checkpoint == request.checkpoint()
+            )
+        };
+        if matches!(
+            current.origin(),
+            AttemptExecutionOrigin::ExactCheckpoint {
+                assignment,
+                request_digest: current_digest,
+                ..
+            } if assignment == request.assignment() && current_digest != request_digest
+        ) {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected {
+                    reason: ExecutorRejection::ConflictingAssignment,
+                },
+            )
+            .map_err(Into::into);
+        }
+
+        if current.execution_basis() == execution_basis && resume_origin_matches(current.origin()) {
+            match current {
+                AttemptRuntimeState::Completed { observation, .. } => {
+                    let disposition =
+                        match self.validator.validate_completion(&assignment, observation) {
+                            Ok(()) => {
+                                ResumeAttemptExecutionDisposition::AlreadyCompleted { observation }
+                            }
+                            Err(CompletionValidationFailure::UnavailableInput) => {
+                                ResumeAttemptExecutionDisposition::Rejected {
+                                    reason: ExecutorRejection::UnavailableInput,
+                                }
+                            }
+                            Err(CompletionValidationFailure::Unauthorized) => {
+                                ResumeAttemptExecutionDisposition::Rejected {
+                                    reason: ExecutorRejection::Unauthorized,
+                                }
+                            }
+                            Err(CompletionValidationFailure::Incompatible) => {
+                                ResumeAttemptExecutionDisposition::Rejected {
+                                    reason: ExecutorRejection::Incompatible,
+                                }
+                            }
+                        };
+                    return ResumeAttemptExecutionResponse::new(request, disposition)
+                        .map_err(Into::into);
+                }
+                AttemptRuntimeState::Canceled { .. } => {
+                    return ResumeAttemptExecutionResponse::new(
+                        request,
+                        ResumeAttemptExecutionDisposition::AlreadyCanceled,
+                    )
+                    .map_err(Into::into);
+                }
+                AttemptRuntimeState::Running { execution, .. }
+                | AttemptRuntimeState::CheckpointRequested { execution, .. }
+                | AttemptRuntimeState::CheckpointPublishing { execution, .. }
+                | AttemptRuntimeState::Publishing { execution, .. }
+                    if current.daemon_epoch() == self.daemon_epoch
+                        && self.active.contains_key(&execution) =>
+                {
+                    return ResumeAttemptExecutionResponse::new(
+                        request,
+                        ResumeAttemptExecutionDisposition::AlreadyRunning { execution },
+                    )
+                    .map_err(Into::into);
+                }
+                AttemptRuntimeState::Paused { .. } => {}
+                AttemptRuntimeState::Running { .. }
+                | AttemptRuntimeState::CheckpointRequested { .. }
+                | AttemptRuntimeState::CheckpointPublishing { .. }
+                | AttemptRuntimeState::Publishing { .. } => {
+                    if !self.has_capacity(request.resources()) {
+                        return ResumeAttemptExecutionResponse::new(
+                            request,
+                            ResumeAttemptExecutionDisposition::Rejected {
+                                reason: ExecutorRejection::Backpressure,
+                            },
+                        )
+                        .map_err(Into::into);
+                    }
+                    let execution = self.allocate_execution_id()?;
+                    let origin = AttemptExecutionOrigin::ExactCheckpoint {
+                        assignment: request.assignment(),
+                        request_digest,
+                        prior_execution: request.prior_execution(),
+                        checkpoint: request.checkpoint(),
+                    };
+                    let next = match current {
+                        AttemptRuntimeState::Running { .. } => AttemptRuntimeState::Running {
+                            execution_basis,
+                            origin,
+                            daemon_epoch: self.daemon_epoch,
+                            execution,
+                        },
+                        AttemptRuntimeState::CheckpointRequested { .. } => {
+                            AttemptRuntimeState::CheckpointRequested {
+                                execution_basis,
+                                origin,
+                                daemon_epoch: self.daemon_epoch,
+                                execution,
+                            }
+                        }
+                        AttemptRuntimeState::CheckpointPublishing { checkpoint, .. } => {
+                            AttemptRuntimeState::CheckpointPublishing {
+                                execution_basis,
+                                origin,
+                                daemon_epoch: self.daemon_epoch,
+                                execution,
+                                checkpoint,
+                            }
+                        }
+                        AttemptRuntimeState::Publishing { observation, .. } => {
+                            AttemptRuntimeState::Publishing {
+                                execution_basis,
+                                origin,
+                                daemon_epoch: self.daemon_epoch,
+                                execution,
+                                observation,
+                            }
+                        }
+                        AttemptRuntimeState::Paused { .. }
+                        | AttemptRuntimeState::Completed { .. }
+                        | AttemptRuntimeState::Canceled { .. } => {
+                            return Err(LocalExecutorError::LedgerInvariant {
+                                reason: "resume recovery phase changed during classification",
+                            });
+                        }
+                    };
+                    let advance = self.advance_attempt(key, current, Some(next))?;
+                    match next {
+                        AttemptRuntimeState::CheckpointRequested { .. }
+                        | AttemptRuntimeState::CheckpointPublishing { .. } => {
+                            self.reserve_checkpoint_recovery(&assignment, execution, origin)?;
+                        }
+                        AttemptRuntimeState::Running { .. }
+                        | AttemptRuntimeState::Publishing { .. } => {
+                            self.reserve(&assignment, execution, origin)?;
+                        }
+                        AttemptRuntimeState::Paused { .. }
+                        | AttemptRuntimeState::Completed { .. }
+                        | AttemptRuntimeState::Canceled { .. } => {
+                            return Err(LocalExecutorError::LedgerInvariant {
+                                reason: "resume recovery produced a terminal phase",
+                            });
+                        }
+                    }
+                    if let AttemptAdvance::CommittedAfterError(error) = advance {
+                        return Err(LocalExecutorError::Ledger(error));
+                    }
+                    return ResumeAttemptExecutionResponse::new(
+                        request,
+                        ResumeAttemptExecutionDisposition::Accepted { execution },
+                    )
+                    .map_err(Into::into);
+                }
+            }
+        }
+
+        let AttemptRuntimeState::Paused {
+            execution: prior_execution,
+            checkpoint,
+            ..
+        } = current
+        else {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::NotCurrent,
+            )
+            .map_err(Into::into);
+        };
+        if current.execution_basis() != execution_basis
+            || prior_execution != request.prior_execution()
+            || checkpoint != request.checkpoint()
+        {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::NotCurrent,
+            )
+            .map_err(Into::into);
+        }
+        if !self.has_capacity(request.resources()) {
+            return ResumeAttemptExecutionResponse::new(
+                request,
+                ResumeAttemptExecutionDisposition::Rejected {
+                    reason: ExecutorRejection::Backpressure,
+                },
+            )
+            .map_err(Into::into);
+        }
+
+        let execution = self.allocate_execution_id()?;
+        let origin = AttemptExecutionOrigin::ExactCheckpoint {
+            assignment: request.assignment(),
+            request_digest,
+            prior_execution,
+            checkpoint,
+        };
+        let running = AttemptRuntimeState::Running {
+            execution_basis,
+            origin,
+            daemon_epoch: self.daemon_epoch,
+            execution,
+        };
+        let advance = self.advance_attempt(key, current, Some(running))?;
+        self.reserve(&assignment, execution, origin)?;
+        if let AttemptAdvance::CommittedAfterError(error) = advance {
+            return Err(LocalExecutorError::Ledger(error));
+        }
+        ResumeAttemptExecutionResponse::new(
+            request,
+            ResumeAttemptExecutionDisposition::Accepted { execution },
+        )
+        .map_err(Into::into)
     }
 
     fn assignment_response(
@@ -1600,11 +1910,37 @@ where
             .ledger
             .load_attempt(key)
             .map_err(LocalExecutorError::Ledger)?;
+        if let Some(state) = prior
+            && state.execution_basis() == execution_basis
+            && matches!(
+                state,
+                AttemptRuntimeState::Running { .. }
+                    | AttemptRuntimeState::CheckpointRequested { .. }
+                    | AttemptRuntimeState::CheckpointPublishing { .. }
+                    | AttemptRuntimeState::Publishing { .. }
+            )
+            && !(state.daemon_epoch() == self.daemon_epoch
+                && self.active.contains_key(&state.execution()))
+            && let AttemptExecutionOrigin::ExactCheckpoint {
+                prior_execution,
+                checkpoint,
+                ..
+            } = state.origin()
+        {
+            return self.persist_response(
+                request,
+                SubmitAttemptDisposition::AlreadyPaused {
+                    execution: prior_execution,
+                    checkpoint,
+                },
+            );
+        }
         match prior {
             Some(AttemptRuntimeState::CheckpointRequested {
                 execution_basis: current_basis,
                 daemon_epoch,
                 execution,
+                ..
             })
             | Some(AttemptRuntimeState::CheckpointPublishing {
                 execution_basis: current_basis,
@@ -1637,6 +1973,7 @@ where
             Some(
                 requested @ AttemptRuntimeState::CheckpointRequested {
                     execution_basis: current_basis,
+                    origin,
                     ..
                 },
             ) if current_basis == execution_basis => {
@@ -1651,12 +1988,13 @@ where
                 let recovery_execution = self.allocate_execution_id()?;
                 let recovery = AttemptRuntimeState::CheckpointRequested {
                     execution_basis: current_basis,
+                    origin,
                     daemon_epoch: self.daemon_epoch,
                     execution: recovery_execution,
                 };
                 let advance = self.advance_attempt(key, requested, Some(recovery))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
-                    self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                    self.reserve_checkpoint_recovery(request, recovery_execution, origin)?;
                     return Err(LocalExecutorError::Ledger(error));
                 }
                 let response = self.persist_response(
@@ -1665,12 +2003,13 @@ where
                         execution: recovery_execution,
                     },
                 );
-                self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                self.reserve_checkpoint_recovery(request, recovery_execution, origin)?;
                 return response;
             }
             Some(
                 publishing @ AttemptRuntimeState::CheckpointPublishing {
                     execution_basis: current_basis,
+                    origin,
                     checkpoint,
                     ..
                 },
@@ -1686,13 +2025,14 @@ where
                 let recovery_execution = self.allocate_execution_id()?;
                 let recovery = AttemptRuntimeState::CheckpointPublishing {
                     execution_basis: current_basis,
+                    origin,
                     daemon_epoch: self.daemon_epoch,
                     execution: recovery_execution,
                     checkpoint,
                 };
                 let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
-                    self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                    self.reserve_checkpoint_recovery(request, recovery_execution, origin)?;
                     return Err(LocalExecutorError::Ledger(error));
                 }
                 let response = self.persist_response(
@@ -1701,7 +2041,7 @@ where
                         execution: recovery_execution,
                     },
                 );
-                self.reserve_checkpoint_recovery(request, recovery_execution)?;
+                self.reserve_checkpoint_recovery(request, recovery_execution, origin)?;
                 return response;
             }
             Some(AttemptRuntimeState::Publishing {
@@ -1721,6 +2061,7 @@ where
             Some(
                 publishing @ AttemptRuntimeState::Publishing {
                     execution_basis: current_basis,
+                    origin,
                     daemon_epoch,
                     execution,
                     observation,
@@ -1730,6 +2071,7 @@ where
                     Ok(()) => {
                         let completed = AttemptRuntimeState::Completed {
                             execution_basis: current_basis,
+                            origin,
                             daemon_epoch,
                             execution,
                             observation,
@@ -1756,13 +2098,14 @@ where
                         let recovery_execution = self.allocate_execution_id()?;
                         let recovery = AttemptRuntimeState::Publishing {
                             execution_basis: current_basis,
+                            origin,
                             daemon_epoch: self.daemon_epoch,
                             execution: recovery_execution,
                             observation,
                         };
                         let advance = self.advance_attempt(key, publishing, Some(recovery))?;
                         if let AttemptAdvance::CommittedAfterError(error) = advance {
-                            self.reserve(request, recovery_execution)?;
+                            self.reserve(request, recovery_execution, origin)?;
                             return Err(LocalExecutorError::Ledger(error));
                         }
                         let response = self.persist_response(
@@ -1771,7 +2114,7 @@ where
                                 execution: recovery_execution,
                             },
                         );
-                        self.reserve(request, recovery_execution)?;
+                        self.reserve(request, recovery_execution, origin)?;
                         return response;
                     }
                     Err(CompletionValidationFailure::Unauthorized) => {
@@ -1833,6 +2176,7 @@ where
                 execution_basis: current_basis,
                 daemon_epoch,
                 execution,
+                ..
             })
             | Some(AttemptRuntimeState::Publishing {
                 execution_basis: current_basis,
@@ -1911,12 +2255,13 @@ where
         let execution = self.allocate_execution_id()?;
         let running = AttemptRuntimeState::Running {
             execution_basis,
+            origin: AttemptExecutionOrigin::Initial,
             daemon_epoch: self.daemon_epoch,
             execution,
         };
         let advance = self.advance_attempt_optional(key, prior, Some(running))?;
         if let AttemptAdvance::CommittedAfterError(error) = advance {
-            self.reserve(request, execution)?;
+            self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
             return Err(LocalExecutorError::Ledger(error));
         }
         let response =
@@ -1924,7 +2269,7 @@ where
         // State is durable before response publication. Even when publication
         // is indeterminate, retain and run the prepared work so a response that
         // did become visible can never name an execution the daemon abandoned.
-        self.reserve(request, execution)?;
+        self.reserve(request, execution, AttemptExecutionOrigin::Initial)?;
         response
     }
 
@@ -2021,6 +2366,7 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
         execution: ExecutionId,
+        origin: AttemptExecutionOrigin,
     ) -> Result<(), LocalExecutorError<L::Error>> {
         let resources = request.resources();
         let used = UsedCapacity {
@@ -2055,6 +2401,7 @@ where
             execution,
             ActiveExecution {
                 request: request.clone(),
+                origin,
                 cancellation: ExecutionCancellation::default(),
                 checkpoint_request: ExecutionCheckpointRequest::default(),
                 worker_in_flight: false,
@@ -2069,8 +2416,9 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
         execution: ExecutionId,
+        origin: AttemptExecutionOrigin,
     ) -> Result<(), LocalExecutorError<L::Error>> {
-        self.reserve(request, execution)?;
+        self.reserve(request, execution, origin)?;
         let active = self
             .active
             .get(&execution)
@@ -2310,6 +2658,19 @@ where
             CancelAttemptExecutionDisposition::NotCurrent
         };
         CancelAttemptExecutionResponse::new(request, disposition).map_err(Into::into)
+    }
+}
+
+impl<L, V> ExecutorResumeService for LocalExecutorSupervisor<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.resume(request)
     }
 }
 

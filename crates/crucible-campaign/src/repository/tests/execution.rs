@@ -5,9 +5,11 @@ use crate::{
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExecutorClient,
-    ExecutorControlService, ExecutorService, ExecutorStatusService, FindingKind, FindingSignature,
-    FindingTarget, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse,
+    ExactCheckpointId, ExecutorControlService, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, FindingKind, FindingSignature, FindingTarget,
+    GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -48,6 +50,16 @@ impl ExecutorStatusService for CompletingExecutor {
     }
 }
 
+impl ExecutorResumeService for CompletingExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
 struct RejectingExecutor {
     reason: ExecutorRejection,
 }
@@ -84,6 +96,16 @@ impl ExecutorStatusService for DeferringExecutor {
     }
 }
 
+impl ExecutorResumeService for DeferringExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
+            .map_err(|_| "response encoding")
+    }
+}
+
 impl ExecutorService for RejectingExecutor {
     type Error = &'static str;
 
@@ -111,9 +133,77 @@ impl ExecutorStatusService for RejectingExecutor {
     }
 }
 
+impl ExecutorResumeService for RejectingExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(
+            request,
+            ResumeAttemptExecutionDisposition::Rejected {
+                reason: self.reason,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
 struct CancellableExecutor {
     execution: ExecutionId,
     cancel_requests: Vec<CancelAttemptExecutionRequest>,
+}
+
+struct PausedResumeExecutor {
+    prior_execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+    resumed_execution: ExecutionId,
+    submit_requests: Vec<SubmitAttemptRequest>,
+    resume_requests: Vec<ResumeAttemptExecutionRequest>,
+}
+
+impl ExecutorService for PausedResumeExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.submit_requests.push(request.clone());
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::AlreadyPaused {
+                execution: self.prior_execution,
+                checkpoint: self.checkpoint,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorStatusService for PausedResumeExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        GetAttemptExecutionResponse::new(request, GetAttemptExecutionDisposition::Running)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorResumeService for PausedResumeExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.resume_requests.push(request.clone());
+        ResumeAttemptExecutionResponse::new(
+            request,
+            ResumeAttemptExecutionDisposition::Accepted {
+                execution: self.resumed_execution,
+            },
+        )
+        .map_err(|_| "response encoding")
+    }
 }
 
 impl ExecutorService for CancellableExecutor {
@@ -161,6 +251,16 @@ impl ExecutorControlService for CancellableExecutor {
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
         self.cancel_requests.push(request.clone());
         CancelAttemptExecutionResponse::new(request, CancelAttemptExecutionDisposition::Canceled)
+            .map_err(|_| "response encoding")
+    }
+}
+
+impl ExecutorResumeService for CancellableExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        ResumeAttemptExecutionResponse::new(request, ResumeAttemptExecutionDisposition::NotCurrent)
             .map_err(|_| "response encoding")
     }
 }
@@ -1392,6 +1492,72 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
         }
     }
     assert_eq!(restarted.reservation_count(), 0);
+}
+
+#[test]
+fn campaign_executor_driver_resumes_the_exact_paused_root() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "executor-driver-exact-resume",
+    );
+    let resume = command(
+        "executor-driver-exact-resume-start",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    repository
+        .apply_control("executor-driver-exact-resume", &resume)
+        .expect("start campaign");
+    let prior_execution = ExecutionId::from_bytes([0x94; 16]).expect("prior execution");
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        2,
+        b"executor-driver-resume-root",
+    ))
+    .expect("checkpoint");
+    let resumed_execution = ExecutionId::from_bytes([0x95; 16]).expect("resumed execution");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = PausedResumeExecutor {
+        prior_execution,
+        checkpoint,
+        resumed_execution,
+        submit_requests: Vec::new(),
+        resume_requests: Vec::new(),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0x96; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver");
+
+    assert_eq!(
+        driver
+            .step("executor-driver-exact-resume", WorkerSlotId::new(0))
+            .expect("resume paused assignment"),
+        CampaignExecutorStepOutcome::Running {
+            attempt: admitted.attempt,
+            execution: resumed_execution,
+            newly_accepted: true,
+        }
+    );
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.submit_requests.len(), 1);
+    assert_eq!(service.resume_requests.len(), 1);
+    let resumed = &service.resume_requests[0];
+    assert_eq!(resumed.prior_execution(), prior_execution);
+    assert_eq!(resumed.checkpoint(), checkpoint);
+    assert_eq!(resumed.execution_basis_digest(), service.submit_requests[0].execution_basis_digest());
+    assert_ne!(resumed.assignment(), service.submit_requests[0].assignment());
 }
 
 #[test]

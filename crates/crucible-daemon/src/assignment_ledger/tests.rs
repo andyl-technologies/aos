@@ -28,17 +28,20 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
     let execution_basis = request.execution_basis_digest();
     let running = AttemptRuntimeState::Running {
         execution_basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x51),
     };
     let completed = AttemptRuntimeState::Completed {
         execution_basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x51),
         observation: observation(0x71),
     };
     let publishing = AttemptRuntimeState::Publishing {
         execution_basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x51),
         observation: observation(0x71),
@@ -180,22 +183,26 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
     let checkpoint = checkpoint(0x78);
     let running = AttemptRuntimeState::Running {
         execution_basis: basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
     };
     let requested = AttemptRuntimeState::CheckpointRequested {
         execution_basis: basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
     };
     let publishing = AttemptRuntimeState::CheckpointPublishing {
         execution_basis: basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
         checkpoint,
     };
     let paused = AttemptRuntimeState::Paused {
         execution_basis: basis,
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
         checkpoint,
@@ -242,6 +249,63 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
         .visit_observation_roots(&mut |root| observations.push(root))
         .expect("stream observation roots");
     assert!(observations.is_empty());
+}
+
+#[test]
+fn resumed_origin_round_trips_and_retains_input_and_output_roots() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x19, 0x39, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let input = checkpoint(0x79);
+    let output = checkpoint(0x7a);
+    let origin = AttemptExecutionOrigin::ExactCheckpoint {
+        assignment: request.assignment(),
+        request_digest: CampaignHash::derive("crucible.test.resume-origin.v1", b"resume"),
+        prior_execution: execution(0x59),
+        checkpoint: input,
+    };
+    let running = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        origin,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x5a),
+    };
+    let publishing = AttemptRuntimeState::CheckpointPublishing {
+        execution_basis: request.execution_basis_digest(),
+        origin,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x5a),
+        checkpoint: output,
+    };
+
+    {
+        let mut ledger =
+            DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(running))
+                .expect("publish resumed running state"),
+            AttemptStateCas::Advanced
+        );
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, Some(running), Some(publishing))
+                .expect("publish resumed checkpoint state"),
+            AttemptStateCas::Advanced
+        );
+    }
+
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
+    assert_eq!(
+        ledger.load_attempt(key).expect("load resumed state"),
+        Some(publishing)
+    );
+    let mut roots = Vec::new();
+    ledger
+        .visit_checkpoint_roots(&mut |checkpoint| roots.push(checkpoint))
+        .expect("visit resumed checkpoint roots");
+    roots.sort();
+    assert_eq!(roots, vec![input, output]);
 }
 
 #[test]
@@ -311,6 +375,7 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
     let first_key = AttemptExecutionKey::new(first.lineage(), first.attempt());
     let first_state = AttemptRuntimeState::Publishing {
         execution_basis: first.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: first.daemon_epoch(),
         execution: execution(0x61),
         observation: observation(0x81),
@@ -319,6 +384,7 @@ fn memory_retention_inventory_is_generation_bound_and_single_pass() {
     let second_key = AttemptExecutionKey::new(second.lineage(), second.attempt());
     let second_state = AttemptRuntimeState::CheckpointPublishing {
         execution_basis: second.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: second.daemon_epoch(),
         execution: execution(0x62),
         checkpoint: checkpoint(0x82),
@@ -430,12 +496,14 @@ fn directory_retention_generation_survives_restart_and_distinguishes_aba() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let publishing = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x63),
         observation: observation(0x83),
     };
     let running = AttemptRuntimeState::Running {
         execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x63),
     };
@@ -506,6 +574,7 @@ fn directory_retention_inventory_rejects_misplaced_attempt_records() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x64),
         observation: observation(0x84),
@@ -552,6 +621,7 @@ fn directory_ledger_reads_legacy_v1_attempt_state() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Completed {
         execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x55),
         observation: observation(0x75),
@@ -586,6 +656,7 @@ fn directory_ledger_reads_legacy_v2_publishing_state() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution: execution(0x56),
         observation: observation(0x76),
@@ -605,6 +676,41 @@ fn directory_ledger_reads_legacy_v2_publishing_state() {
     fs::create_dir_all(path.parent().expect("attempt-state parent"))
         .expect("create legacy attempt-state parent");
     fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy attempt state"),
+        Some(state)
+    );
+}
+
+#[test]
+fn directory_ledger_reads_legacy_v3_paused_state_as_initial_origin() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x17, 0x37, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x57),
+        checkpoint: checkpoint(0x77),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V3);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    payload.push(6);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x57).as_bytes());
+    push_bytes(&mut payload, checkpoint(0x77).to_text().as_bytes());
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3))
         .expect("write legacy attempt state");
 
     assert_eq!(
