@@ -66,6 +66,22 @@ const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
 /// Maximum number of trigger batches admitted at one scheduler boundary.
 const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
+#[cfg(test)]
+fn duplicate_network_fault_checkpoint_fixture(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+    plan: &crucible::model::FaultSignalPlan,
+) -> ProductionFaultRuntimeCheckpoint {
+    let bytes = checkpoint
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("checkpoint fixture should encode: {error}"));
+    ProductionFaultRuntimeCheckpoint::from_canonical_bytes(
+        &bytes,
+        plan,
+        ContentHash::from_bytes(b"production-availability-drop"),
+    )
+    .unwrap_or_else(|error| panic!("checkpoint fixture should decode: {error}"))
+}
+
 /// Immutable artifacts and bounds for local production QEMU execution.
 #[derive(Clone)]
 pub struct ProductionVmLifecycleConfig {
@@ -89,7 +105,6 @@ pub struct ProductionVmLifecycleConfig {
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
-    restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     validate_guest_asset_references: bool,
 }
 
@@ -120,7 +135,6 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
                 "world_artifacts_configured",
                 &self.world_artifacts.is_some(),
             )
-            .field("restore_checkpoint", &self.restore_checkpoint.is_some())
             .finish()
     }
 }
@@ -189,7 +203,7 @@ struct ProductionVmDebugRuntimeEvidence {
     runtime: Option<RuntimeState>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
     counter: u64,
@@ -197,7 +211,6 @@ struct ProductionVmExactCheckpointTarget {
     snapshot: QemuVmSnapshot,
     overlay_artifact: ProductionCheckpointArtifact,
     vmstate_artifact: ProductionCheckpointArtifact,
-    fault_checkpoint: ProductionFaultRuntimeCheckpoint,
     manifest_identity: crucible::ContentHash,
 }
 
@@ -215,7 +228,7 @@ enum ProductionCheckpointArtifactSource {
     ChunkStore(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
@@ -229,7 +242,7 @@ struct ProductionVmExactCheckpointSet {
     initial_lifecycle_observations_pending: bool,
     branch: Option<ProductionVmBranchConfig>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
-    fault_checkpoint: ProductionFaultRuntimeCheckpoint,
+    fault_checkpoint: Option<ProductionFaultRuntimeCheckpoint>,
     targets: BTreeMap<NodeId, ProductionVmExactCheckpointTarget>,
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
@@ -253,35 +266,6 @@ fn validate_exact_checkpoint_artifact(
     if observed != artifact.identity {
         return Err(loop_factory_error(format!(
             "exact checkpoint {role} artifact failed content authentication"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_exact_checkpoint_target(
-    node: &NodeId,
-    target: &ProductionVmExactCheckpointTarget,
-) -> Result<(), LifecycleApiError> {
-    validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
-    validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
-    let observed = ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v1",
-        &format!(
-            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
-            target.configuration.id().to_hex(),
-            node.name,
-            target.counter,
-            target.scheduler_time.ticks,
-            target.snapshot.id().to_hex(),
-            target.fault_checkpoint.id().to_hex(),
-            target.overlay_artifact.identity.to_hex(),
-            target.vmstate_artifact.identity.to_hex(),
-        ),
-    );
-    if observed != target.manifest_identity {
-        return Err(loop_factory_error(format!(
-            "exact checkpoint target for `{}` failed manifest authentication",
-            node.name
         )));
     }
     Ok(())
@@ -815,9 +799,7 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
             "durable production continuation does not match checkpoint model state",
         ));
     }
-    let mut restore_config = config.clone();
-    restore_config.restore_checkpoint = Some(restored);
-    build_production_vm_lifecycle_loop(scenario, source, &restore_config)
+    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, Some(restored))
 }
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
@@ -836,6 +818,15 @@ pub fn build_production_vm_lifecycle_loop(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, None)
+}
+
+fn build_production_vm_lifecycle_loop_with_restore(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let network_implementations = fault_implementation::network_effect_implementation_registry()
         .map_err(|error| {
@@ -858,7 +849,6 @@ pub fn build_production_vm_lifecycle_loop(
             "derive production host fault capabilities from implementations: {error}"
         ))
     })?;
-    let restore_checkpoint = config.restore_checkpoint.clone();
     let checkpoint_dag =
         checkpoint_store::checkpoint_dag_store(&config.run_state_root, scenario.id());
     if let Some(checkpoint) = &restore_checkpoint
@@ -965,7 +955,14 @@ pub fn build_production_vm_lifecycle_loop(
             )));
         }
         if let Some(target) = restore_target {
-            validate_exact_checkpoint_target(&vm.id, target)?;
+            let fault_identity = restore_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
+                .map(ProductionFaultRuntimeCheckpoint::id)
+                .ok_or_else(|| {
+                    loop_factory_error("exact checkpoint target lost its fault continuation")
+                })?;
+            validate_exact_checkpoint_target(&vm.id, target, fault_identity)?;
             copy_exact_checkpoint_artifact(
                 &target.overlay_artifact,
                 &node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
@@ -1176,7 +1173,10 @@ pub fn build_production_vm_lifecycle_loop(
                     vm.id.name
                 )));
             }
-            let Some(expected_fingerprint) = target.fault_checkpoint.qemu_fingerprint(&vm.id)
+            let Some(expected_fingerprint) = restore_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
+                .and_then(|checkpoint| checkpoint.qemu_fingerprint(&vm.id))
             else {
                 let _ = SimulationBackend::shutdown(&mut backend);
                 return Err(loop_factory_error(format!(
@@ -1349,16 +1349,7 @@ pub fn build_production_vm_lifecycle_loop(
         network_interceptor,
         pending_network_outputs,
         restored_committed_frontier,
-    ) = if let Some(checkpoint) = &restore_checkpoint {
-        if checkpoint
-            .targets
-            .values()
-            .any(|target| target.fault_checkpoint.id() != checkpoint.fault_checkpoint.id())
-        {
-            return Err(loop_factory_error(
-                "production exact checkpoint targets disagree on the fault continuation",
-            ));
-        }
+    ) = if let Some(checkpoint) = &mut restore_checkpoint {
         for (node, target) in &checkpoint.targets {
             let scheduler_time = scheduler.scheduler_time_for_node(node).map_err(|error| {
                 loop_factory_error(format!(
@@ -1374,11 +1365,14 @@ pub fn build_production_vm_lifecycle_loop(
             }
         }
         let mut pending_outputs = Vec::new();
+        let fault_checkpoint = checkpoint.fault_checkpoint.take().ok_or_else(|| {
+            loop_factory_error("production exact checkpoint lost its fault continuation")
+        })?;
         let (interceptor, committed_frontier) = ProductionFaultNetworkInterceptor::restore(
             signal_plan,
             signal_artifacts,
             scenario.id(),
-            checkpoint.fault_checkpoint.clone(),
+            fault_checkpoint,
             host_fault_manifests.clone(),
             &mut backends,
             source.world().fault_topology().clone(),

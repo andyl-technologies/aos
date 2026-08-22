@@ -1698,7 +1698,6 @@ impl ProductionVmLifecycleLoop {
                         snapshot: capture.snapshot.clone(),
                         overlay_artifact,
                         vmstate_artifact,
-                        fault_checkpoint: fault_checkpoint.clone(),
                         manifest_identity,
                     },
                 );
@@ -1731,7 +1730,7 @@ impl ProductionVmLifecycleLoop {
                 initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
                 branch: self.branch.clone(),
                 recorded_controls: self.recorded_controls.clone(),
-                fault_checkpoint,
+                fault_checkpoint: Some(fault_checkpoint),
                 targets,
                 node_generations: self.node_generations.clone(),
                 node_service_states: self.node_service_states.clone(),

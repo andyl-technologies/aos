@@ -56,6 +56,16 @@ impl ContentHash {
         canonical::content_hash_from_canonical_material(domain, material)
     }
 
+    /// Computes a canonical-material hash from lowercase hexadecimal bytes.
+    ///
+    /// This is byte-for-byte equivalent to hexadecimal-encoding `bytes` and
+    /// passing that string to [`Self::from_canonical_material`], without
+    /// allocating the intermediate string.
+    #[must_use]
+    pub fn from_canonical_hex_bytes(domain: &str, bytes: &[u8]) -> Self {
+        canonical::content_hash_from_canonical_hex_bytes(domain, bytes)
+    }
+
     /// Renders this content address as 64 lowercase hexadecimal characters.
     #[must_use]
     pub fn to_hex(self) -> String {

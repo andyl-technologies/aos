@@ -14,6 +14,9 @@ pub enum FaultEventError {
     /// Durable drained-event record is not in canonical form.
     #[error("noncanonical durable fault-event checkpoint")]
     CheckpointCanonical,
+    /// Durable drained-event record allocation was refused.
+    #[error("durable fault-event checkpoint allocation failed")]
+    CheckpointAllocation,
     /// Event header length is invalid.
     #[error("invalid fault-event header length")]
     HeaderLength,

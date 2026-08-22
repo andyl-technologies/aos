@@ -1,12 +1,85 @@
 //! Resource admission and error translation for production fault checkpoints.
 
 use crucible::model::{FaultResourceLimitError, FaultResourceLimits, FaultRuntimeError};
+use crucible::{BackendNetworkOutputCodecError, SchedulerNetworkCheckpointCodecError};
 
 use super::{
     MAX_BYTES, MAX_EVENT_RECORDS, ProductionFaultRuntimeCheckpoint,
     ProductionFaultRuntimeCheckpointCodecError,
 };
 use crate::checkpoint::bounded_cbor::BoundedCborError;
+use crate::production_fault_runtime::ProductionFaultRuntimeError;
+
+pub(super) struct CheckpointConstructionBudget {
+    configured: u64,
+    current: u64,
+}
+
+impl CheckpointConstructionBudget {
+    pub(super) fn new(maximum: u64) -> Self {
+        Self {
+            configured: maximum.min(MAX_BYTES),
+            current: 0,
+        }
+    }
+
+    pub(super) fn remaining(&self) -> u64 {
+        self.configured.saturating_sub(self.current)
+    }
+
+    pub(super) const fn current(&self) -> u64 {
+        self.current
+    }
+
+    pub(super) fn allocation_error(
+        &self,
+        current: u64,
+        requested: usize,
+    ) -> ProductionFaultRuntimeCheckpointCodecError {
+        resource_limit(
+            "production fault checkpoint",
+            current,
+            u64::try_from(requested).unwrap_or(u64::MAX),
+            self.configured,
+            MAX_BYTES,
+        )
+    }
+
+    pub(super) fn admit(
+        &mut self,
+        requested: usize,
+    ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+        let requested = u64::try_from(requested).map_err(|_| {
+            resource_limit(
+                "production fault checkpoint",
+                self.current,
+                u64::MAX,
+                self.configured,
+                MAX_BYTES,
+            )
+        })?;
+        let total = self.current.checked_add(requested).ok_or_else(|| {
+            resource_limit(
+                "production fault checkpoint",
+                self.current,
+                requested,
+                self.configured,
+                MAX_BYTES,
+            )
+        })?;
+        if total > self.configured {
+            return Err(resource_limit(
+                "production fault checkpoint",
+                self.current,
+                requested,
+                self.configured,
+                MAX_BYTES,
+            ));
+        }
+        self.current = total;
+        Ok(())
+    }
+}
 
 pub(super) fn map_bounded_cbor_error(
     error: BoundedCborError,
@@ -61,6 +134,63 @@ pub(super) fn map_host_error(
         FaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
         _ => ProductionFaultRuntimeCheckpointCodecError::Host,
     }
+}
+
+pub(super) fn map_runtime_error(
+    error: FaultRuntimeError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        FaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Runtime,
+    }
+}
+
+pub(super) fn map_identity_error(
+    error: ProductionFaultRuntimeError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        ProductionFaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Invalid,
+    }
+}
+
+pub(super) fn map_scheduler_network_error(
+    error: SchedulerNetworkCheckpointCodecError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        SchedulerNetworkCheckpointCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Network,
+    }
+}
+
+pub(super) fn map_backend_network_output_error(
+    error: BackendNetworkOutputCodecError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        BackendNetworkOutputCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Network,
+    }
+}
+
+pub(super) fn checkpoint_runtime_bytes(
+    runtime: &crucible::model::FaultRuntimeCheckpoint,
+    maximum: u64,
+) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
+    runtime
+        .canonical_bytes_with_limit(maximum)
+        .map_err(map_runtime_error)
 }
 
 pub(super) fn host_resource_limits(

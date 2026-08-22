@@ -9,6 +9,9 @@ use std::fmt;
 
 use super::{ContentHash, EffectKind, EffectLifetime, FaultAdapter, FaultPhase, FaultTargetKind};
 
+mod target_canonical;
+pub use target_canonical::FaultCanonicalMaterialError;
+
 /// Maximum bytes in an author-supplied fault identifier.
 pub const FAULT_ID_MAX_BYTES: usize = 96;
 
@@ -282,14 +285,6 @@ pub enum ResolvedFaultTarget {
 }
 
 impl ResolvedFaultTarget {
-    /// Returns the exact stable target material used by content identities.
-    #[must_use]
-    pub fn canonical_material(&self) -> String {
-        let mut material = String::new();
-        self.append_canonical(&mut material);
-        material
-    }
-
     /// Returns the registered target kind.
     #[must_use]
     pub const fn kind(&self) -> FaultTargetKind {
@@ -371,111 +366,6 @@ impl ResolvedFaultTarget {
             _ => {}
         }
         Ok(())
-    }
-
-    pub(super) fn append_canonical(&self, material: &mut String) {
-        material.push_str(self.kind().as_str());
-        material.push(':');
-        match self {
-            Self::NetworkInterface {
-                endpoint,
-                interface,
-            } => push_ids(material, &[endpoint, interface]),
-            Self::NetworkSegment { segment, direction } => {
-                push_ids(material, &[segment]);
-                push_text(material, direction.as_str());
-            }
-            Self::NetworkMedium { medium, resource } => push_ids(material, &[medium, resource]),
-            Self::NetworkQueue { owner, queue } => push_ids(material, &[owner, queue]),
-            Self::NetworkForwarder { forwarder } => push_ids(material, &[forwarder]),
-            Self::NetworkPath {
-                path_version,
-                direction,
-            } => {
-                push_ids(material, &[path_version]);
-                push_text(material, direction.as_str());
-            }
-            Self::NetworkAttachment {
-                endpoint,
-                interface,
-                attachment,
-            } => push_ids(material, &[endpoint, interface, attachment]),
-            Self::NetworkContact {
-                plan,
-                endpoint_a,
-                endpoint_b,
-                contact,
-            } => push_ids(material, &[plan, endpoint_a, endpoint_b, contact]),
-            Self::BlockDevice { device } | Self::NinePDevice { device } => {
-                push_text(material, &device.to_hex());
-            }
-            Self::BlockRange {
-                device,
-                start_byte,
-                length_bytes,
-            } => {
-                push_text(material, &device.to_hex());
-                push_u64(material, *start_byte);
-                push_u64(material, *length_bytes);
-            }
-            Self::StorageController {
-                controller,
-                namespace_or_path,
-            } => push_ids(material, &[controller, namespace_or_path]),
-            Self::StorageArray {
-                array,
-                member_or_path,
-            } => push_ids(material, &[array, member_or_path]),
-            Self::Node { node } => push_ids(material, &[node]),
-            Self::Vcpu { node, vcpu } => {
-                push_ids(material, &[node]);
-                push_u64(material, u64::from(*vcpu));
-            }
-            Self::Register {
-                node,
-                vcpu,
-                architecture,
-                register,
-                first_bit,
-                bit_count,
-            } => {
-                push_ids(material, &[node, architecture, register]);
-                push_u64(material, u64::from(*vcpu));
-                push_u64(material, u64::from(*first_bit));
-                push_u64(material, u64::from(*bit_count));
-            }
-            Self::MemoryRange {
-                node,
-                address_space,
-                guest_address,
-                vcpu,
-                length_bytes,
-            } => {
-                push_ids(material, &[node, address_space]);
-                push_u64(material, *guest_address);
-                push_u64(material, vcpu.map_or(u64::MAX, u64::from));
-                push_u64(material, *length_bytes);
-            }
-            Self::Interrupt {
-                node,
-                controller,
-                source,
-                target_vcpu,
-                vector,
-            } => {
-                push_ids(material, &[node, controller, source]);
-                push_u64(material, u64::from(*target_vcpu));
-                push_u64(material, u64::from(*vector));
-            }
-            Self::ClockSource { node, source } => push_ids(material, &[node, source]),
-            Self::Accelerator { node, device } => push_ids(material, &[node, device]),
-        }
-    }
-}
-
-fn push_ids(material: &mut String, ids: &[&FaultObjectId]) {
-    for id in ids {
-        push_text(material, id.as_str());
     }
 }
 
@@ -1587,103 +1477,5 @@ impl fmt::Display for FaultContractError {
 impl Error for FaultContractError {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn id(value: &str) -> FaultObjectId {
-        match FaultObjectId::parse(value) {
-            Ok(id) => id,
-            Err(error) => panic!("test identifier must be valid: {error}"),
-        }
-    }
-
-    fn opportunity(result: Result<FaultOpportunity, FaultContractError>) -> FaultOpportunity {
-        match result {
-            Ok(opportunity) => opportunity,
-            Err(error) => panic!("test opportunity must be valid: {error}"),
-        }
-    }
-
-    #[test]
-    fn opportunity_identity_changes_for_every_identity_field() {
-        let target = ResolvedFaultTarget::NetworkSegment {
-            segment: id("uplink"),
-            direction: FaultDirection::AToB,
-        };
-        let build = |sequence, phase, protocol_expansion_path| {
-            FaultOpportunity::new(
-                target.clone(),
-                FaultOperation::NetworkTraverse,
-                phase,
-                FaultCoordinate {
-                    virtual_nanos: 42,
-                    retired_instructions: None,
-                },
-                sequence,
-                Some(FaultDirection::AToB),
-                OpportunityPayload::NetworkFrame {
-                    producer: id("sender"),
-                    destination: id("receiver"),
-                    producer_sequence: 7,
-                    protocol_expansion_path,
-                    generated_response_depth: 0,
-                    generated_response_cause: None,
-                    forwarding_mutation_path: Vec::new(),
-                    length_bytes: 1_500,
-                    payload_digest: ContentHash::from_bytes(b"frame"),
-                },
-            )
-        };
-        let first = opportunity(build(1, FaultPhase::Resolve, Vec::new()));
-        let equal = opportunity(build(1, FaultPhase::Resolve, Vec::new()));
-        let next = opportunity(build(2, FaultPhase::Resolve, Vec::new()));
-        let delivered = opportunity(build(1, FaultPhase::Deliver, Vec::new()));
-        let fragment = opportunity(build(1, FaultPhase::Resolve, vec![0]));
-        assert_eq!(first.id(), equal.id());
-        assert_ne!(first.id(), next.id());
-        assert_ne!(first.id(), delivered.id());
-        assert_ne!(first.id(), fragment.id());
-    }
-
-    #[test]
-    fn opportunity_rejects_cross_adapter_operation() {
-        let result = FaultOpportunity::new(
-            ResolvedFaultTarget::Node { node: id("node-a") },
-            FaultOperation::StorageRead,
-            FaultPhase::Resolve,
-            FaultCoordinate {
-                virtual_nanos: 0,
-                retired_instructions: Some(0),
-            },
-            0,
-            None,
-            OpportunityPayload::None,
-        );
-        let error = match result {
-            Ok(_) => panic!("cross-adapter operation must fail"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error,
-            FaultContractError::AdapterMismatch {
-                target: FaultAdapter::Node,
-                operation: FaultAdapter::Storage,
-            }
-        );
-    }
-
-    #[test]
-    fn malformed_resolved_targets_fail_before_hashing() {
-        let target = ResolvedFaultTarget::BlockRange {
-            device: ContentHash::from_bytes(b"disk"),
-            start_byte: u64::MAX,
-            length_bytes: 2,
-        };
-        assert_eq!(
-            target.validate(),
-            Err(FaultContractError::InvalidTarget {
-                kind: FaultTargetKind::BlockRange,
-            })
-        );
-    }
-}
+#[path = "opportunity/tests.rs"]
+mod tests;

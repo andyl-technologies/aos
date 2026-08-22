@@ -49,6 +49,44 @@ fn link_snapshot_codec_round_trips_complete_state() {
     );
 }
 
+#[test]
+fn link_snapshot_codec_enforces_authored_aggregate_limit() {
+    let snapshot = link(LinkFaults::none()).snapshot();
+    let bytes = ok(snapshot.canonical_bytes());
+    let maximum = u64::try_from(bytes.len() - 1).unwrap_or(u64::MAX);
+
+    assert!(matches!(
+        snapshot.canonical_bytes_with_limit(maximum),
+        Err(LinkSnapshotCodecError::ResourceLimit {
+            field: "link snapshot bytes",
+            current,
+            requested,
+            configured,
+            hard: 1_073_741_824,
+        }) if current.saturating_add(requested) > maximum && configured == maximum
+    ));
+    assert!(matches!(
+        LinkSnapshot::from_canonical_bytes_with_limit(&bytes, maximum),
+        Err(LinkSnapshotCodecError::ResourceLimit {
+            field: "link snapshot bytes",
+            current: 0,
+            requested,
+            configured,
+            hard: 1_073_741_824,
+        }) if requested == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            && configured == maximum
+    ));
+
+    assert_eq!(
+        ok(snapshot.canonical_length_with_limit(u64::try_from(bytes.len()).unwrap_or(u64::MAX))),
+        bytes.len()
+    );
+    assert_eq!(
+        ok(snapshot.canonical_bytes_with_limit(u64::try_from(bytes.len()).unwrap_or(u64::MAX))),
+        bytes
+    );
+}
+
 // ---- construction: latency floor (IO-33) ----
 
 #[test]

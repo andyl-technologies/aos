@@ -10,6 +10,14 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
     let snapshot = device.snapshot();
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(BlockSnapshot::from_canonical_bytes(&bytes)), snapshot);
+    assert!(matches!(
+        snapshot.to_canonical_bytes_with_limit(1),
+        Err(BlockSnapshotCodecError::ResourceLimit {
+            field: "I/O-core snapshot bytes",
+            configured: 1,
+            ..
+        })
+    ));
 
     let configured = u64::try_from(bytes.len() - 1)
         .unwrap_or_else(|error| panic!("fixture length is representable: {error}"));

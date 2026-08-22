@@ -2,6 +2,10 @@
 
 use super::*;
 
+mod codec_support;
+
+use codec_support::*;
+
 /// The device half of a network link's `MaterializedState` ([IO-23], [IO-26]).
 ///
 /// Captures the link's clock cursor, base latency, floor, effective fault table,
@@ -46,8 +50,30 @@ impl LinkSnapshot {
     /// Returns [`LinkSnapshotCodecError`] when the snapshot violates the live
     /// link invariants or a bounded collection or frame payload is too large.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, LinkSnapshotCodecError> {
-        validate_link_snapshot(self)?;
+        self.canonical_bytes_with_limit(u64::try_from(HARD_LINK_SNAPSHOT_BYTES).unwrap_or(u64::MAX))
+    }
+
+    /// Encodes the directed-link continuation under an authored byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkSnapshotCodecError`] under the same conditions as
+    /// [`Self::canonical_bytes`], and when the representation exceeds `maximum`.
+    pub fn canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, LinkSnapshotCodecError> {
+        let encoded_length = self.canonical_length_with_limit(maximum)?;
         let mut bytes = Vec::new();
+        bytes.try_reserve_exact(encoded_length).map_err(|_| {
+            link_snapshot_resource(
+                "link snapshot bytes",
+                0,
+                encoded_length,
+                link_snapshot_configured(maximum),
+                HARD_LINK_SNAPSHOT_BYTES,
+            )
+        })?;
         bytes.extend_from_slice(LINK_SNAPSHOT_MAGIC);
         put_link_u64(&mut bytes, self.current_icount);
         bytes.push(self.shift_bits);
@@ -99,7 +125,24 @@ impl LinkSnapshot {
             });
             write_link_blob(&mut bytes, &pending.response.payload)?;
         }
+        if bytes.len() != encoded_length {
+            return Err(LinkSnapshotCodecError::Noncanonical);
+        }
         Ok(bytes)
+    }
+
+    /// Returns the exact canonical representation length under an authored bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkSnapshotCodecError`] when the snapshot is invalid, a field
+    /// is over its bound, or the representation exceeds `maximum`.
+    pub fn canonical_length_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<usize, LinkSnapshotCodecError> {
+        validate_link_snapshot(self)?;
+        link_snapshot_encoded_length(self, maximum)
     }
 
     /// Decodes and validates one complete directed-link continuation.
@@ -110,6 +153,33 @@ impl LinkSnapshot {
     /// or over-limit values, noncanonical ordering, invalid live-link state, or
     /// trailing bytes.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, LinkSnapshotCodecError> {
+        Self::from_canonical_bytes_with_limit(
+            bytes,
+            u64::try_from(HARD_LINK_SNAPSHOT_BYTES).unwrap_or(u64::MAX),
+        )
+    }
+
+    /// Decodes a directed-link continuation under an authored byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkSnapshotCodecError`] under the same conditions as
+    /// [`Self::from_canonical_bytes`], and before decoding when `bytes` exceeds
+    /// `maximum`.
+    pub fn from_canonical_bytes_with_limit(
+        bytes: &[u8],
+        maximum: u64,
+    ) -> Result<Self, LinkSnapshotCodecError> {
+        let configured = link_snapshot_configured(maximum);
+        if bytes.len() > configured {
+            return Err(link_snapshot_resource(
+                "link snapshot bytes",
+                0,
+                bytes.len(),
+                configured,
+                HARD_LINK_SNAPSHOT_BYTES,
+            ));
+        }
         let mut reader = LinkSnapshotReader::new(bytes)?;
         let current_icount = reader.u64("current icount")?;
         let shift_bits = reader.byte("shift bits")?;
@@ -121,13 +191,14 @@ impl LinkSnapshot {
         let jitter_window_ns = reader.u64("jitter window")?;
         let reorder_window_ns = reader.u64("reorder window")?;
         let bandwidth_count = reader.count("bandwidth caps")?;
-        let mut bandwidth_bits_per_sec = Vec::with_capacity(bandwidth_count);
+        let mut bandwidth_bits_per_sec = link_snapshot_vector("bandwidth caps", bandwidth_count)?;
         for _ in 0..bandwidth_count {
             bandwidth_bits_per_sec.push(reader.u64("bandwidth cap")?);
         }
         let loss = reader.probability("loss probability")?;
         let loss_count = reader.count("additional loss probabilities")?;
-        let mut additional_loss = Vec::with_capacity(loss_count);
+        let mut additional_loss =
+            link_snapshot_vector("additional loss probabilities", loss_count)?;
         for _ in 0..loss_count {
             additional_loss.push(reader.probability("additional loss probability")?);
         }
@@ -135,7 +206,8 @@ impl LinkSnapshot {
         let duplicate_gap_ns = reader.u64("duplicate gap")?;
         let corrupt = reader.probability("corruption probability")?;
         let corruption_count = reader.count("corruption strategies")?;
-        let mut corruption_strategies = Vec::with_capacity(corruption_count);
+        let mut corruption_strategies =
+            link_snapshot_vector("corruption strategies", corruption_count)?;
         for _ in 0..corruption_count {
             corruption_strategies.push(match reader.byte("corruption strategy")? {
                 1 => LinkCorruptionStrategy::BitFlip {
@@ -152,7 +224,7 @@ impl LinkSnapshot {
         let lookahead_recompute_pending = reader.boolean("lookahead recompute")?;
         let rng_position = reader.u64("RNG position")?;
         let inflight_count = reader.count("in-flight frames")?;
-        let mut inflight = Vec::with_capacity(inflight_count);
+        let mut inflight = link_snapshot_vector("in-flight frames", inflight_count)?;
         for _ in 0..inflight_count {
             let delivery_icount = reader.u64("delivery icount")?;
             let pending_src_node = reader.u32("delivery source")?;
@@ -163,7 +235,20 @@ impl LinkSnapshot {
                 2 => ResponseStatus::Error,
                 _ => return Err(LinkSnapshotCodecError::Malformed("response status")),
             };
-            let payload = reader.blob("frame payload")?.to_vec();
+            let payload_bytes = reader.blob("frame payload")?;
+            let mut payload = Vec::new();
+            payload
+                .try_reserve_exact(payload_bytes.len())
+                .map_err(|_| {
+                    link_snapshot_resource(
+                        "frame payload",
+                        0,
+                        payload_bytes.len(),
+                        crucible_shmem::MAX_FRAME_DATA,
+                        crucible_shmem::MAX_FRAME_DATA,
+                    )
+                })?;
+            payload.extend_from_slice(payload_bytes);
             inflight.push(PendingResponse::from_parts(
                 delivery_icount,
                 pending_src_node,
@@ -197,7 +282,7 @@ impl LinkSnapshot {
             inflight,
         };
         validate_link_snapshot(&snapshot)?;
-        if snapshot.canonical_bytes()?.as_slice() != bytes {
+        if snapshot.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(LinkSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
@@ -206,6 +291,7 @@ impl LinkSnapshot {
 
 const LINK_SNAPSHOT_MAGIC: &[u8] = b"crucible.link-snapshot.v1\0";
 const HARD_LINK_SNAPSHOT_ENTRIES: usize = 65_536;
+const HARD_LINK_SNAPSHOT_BYTES: usize = 1 << 30;
 
 /// Failure to encode or decode a durable directed-link continuation.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -216,13 +302,21 @@ pub enum LinkSnapshotCodecError {
     /// A field is truncated or carries an unknown tag.
     #[error("malformed link snapshot field `{0}`")]
     Malformed(&'static str),
-    /// A collection exceeds its compiled hard bound.
-    #[error("link snapshot collection `{field}` exceeds hard limit {hard}")]
-    Limit {
-        /// Collection whose bound was exceeded.
+    /// A representation or allocation exceeds its active resource ceiling.
+    #[error(
+        "link snapshot `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
+    )]
+    ResourceLimit {
+        /// Field whose bound was exceeded.
         field: &'static str,
+        /// Units already retained by the operation.
+        current: u64,
+        /// Additional units requested.
+        requested: u64,
+        /// Active configured ceiling.
+        configured: u64,
         /// Compiled hard ceiling.
-        hard: usize,
+        hard: u64,
     },
     /// The stored representation is not canonical.
     #[error("noncanonical link snapshot")]
@@ -238,20 +332,37 @@ fn validate_link_snapshot(snapshot: &LinkSnapshot) -> Result<(), LinkSnapshotCod
         || snapshot.faults.additional_loss.len() > HARD_LINK_SNAPSHOT_ENTRIES
         || snapshot.faults.corruption_strategies.len() > HARD_LINK_SNAPSHOT_ENTRIES
     {
-        return Err(LinkSnapshotCodecError::Limit {
-            field: "snapshot entries",
-            hard: HARD_LINK_SNAPSHOT_ENTRIES,
-        });
+        return Err(link_snapshot_resource(
+            "snapshot entries",
+            0,
+            snapshot
+                .inflight
+                .len()
+                .max(snapshot.faults.bandwidth_bits_per_sec.len())
+                .max(snapshot.faults.additional_loss.len())
+                .max(snapshot.faults.corruption_strategies.len()),
+            HARD_LINK_SNAPSHOT_ENTRIES,
+            HARD_LINK_SNAPSHOT_ENTRIES,
+        ));
     }
     if snapshot
         .inflight
         .iter()
         .any(|pending| pending.response.payload.len() > crucible_shmem::MAX_FRAME_DATA)
     {
-        return Err(LinkSnapshotCodecError::Limit {
-            field: "frame payload",
-            hard: crucible_shmem::MAX_FRAME_DATA,
-        });
+        let requested = snapshot
+            .inflight
+            .iter()
+            .map(|pending| pending.response.payload.len())
+            .max()
+            .unwrap_or(0);
+        return Err(link_snapshot_resource(
+            "frame payload",
+            0,
+            requested,
+            crucible_shmem::MAX_FRAME_DATA,
+            crucible_shmem::MAX_FRAME_DATA,
+        ));
     }
     if snapshot
         .inflight
@@ -269,12 +380,20 @@ fn validate_link_snapshot(snapshot: &LinkSnapshot) -> Result<(), LinkSnapshotCod
     {
         return Err(LinkSnapshotCodecError::Noncanonical);
     }
-    let normalized = NetLink::restore(snapshot)
-        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?
-        .snapshot();
-    if normalized != *snapshot {
-        return Err(LinkSnapshotCodecError::Noncanonical);
+    if snapshot.floor_ns == 0 || snapshot.base_latency_ns < snapshot.floor_ns {
+        return Err(LinkSnapshotCodecError::Device(
+            DeviceError::LinkLatencyBelowFloor {
+                base_latency_ns: snapshot.base_latency_ns,
+                floor_ns: snapshot.floor_ns,
+            }
+            .to_string(),
+        ));
     }
+    let mut clock = VirtualClock::new(snapshot.shift_bits)
+        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;
+    clock
+        .advance_to(snapshot.current_icount)
+        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;
     Ok(())
 }
 
@@ -285,14 +404,22 @@ fn write_probability(bytes: &mut Vec<u8>, probability: crate::fault::Probability
 
 fn write_link_count(bytes: &mut Vec<u8>, count: usize) -> Result<(), LinkSnapshotCodecError> {
     if count > HARD_LINK_SNAPSHOT_ENTRIES {
-        return Err(LinkSnapshotCodecError::Limit {
-            field: "snapshot entries",
-            hard: HARD_LINK_SNAPSHOT_ENTRIES,
-        });
+        return Err(link_snapshot_resource(
+            "snapshot entries",
+            0,
+            count,
+            HARD_LINK_SNAPSHOT_ENTRIES,
+            HARD_LINK_SNAPSHOT_ENTRIES,
+        ));
     }
-    let count = u32::try_from(count).map_err(|_| LinkSnapshotCodecError::Limit {
-        field: "snapshot entries",
-        hard: HARD_LINK_SNAPSHOT_ENTRIES,
+    let count = u32::try_from(count).map_err(|_| {
+        link_snapshot_resource(
+            "snapshot entries",
+            0,
+            count,
+            HARD_LINK_SNAPSHOT_ENTRIES,
+            HARD_LINK_SNAPSHOT_ENTRIES,
+        )
     })?;
     put_link_u32(bytes, count);
     Ok(())
@@ -300,16 +427,24 @@ fn write_link_count(bytes: &mut Vec<u8>, count: usize) -> Result<(), LinkSnapsho
 
 fn write_link_blob(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), LinkSnapshotCodecError> {
     if value.len() > crucible_shmem::MAX_FRAME_DATA {
-        return Err(LinkSnapshotCodecError::Limit {
-            field: "frame payload",
-            hard: crucible_shmem::MAX_FRAME_DATA,
-        });
+        return Err(link_snapshot_resource(
+            "frame payload",
+            0,
+            value.len(),
+            crucible_shmem::MAX_FRAME_DATA,
+            crucible_shmem::MAX_FRAME_DATA,
+        ));
     }
     put_link_u32(
         bytes,
-        u32::try_from(value.len()).map_err(|_| LinkSnapshotCodecError::Limit {
-            field: "frame payload",
-            hard: crucible_shmem::MAX_FRAME_DATA,
+        u32::try_from(value.len()).map_err(|_| {
+            link_snapshot_resource(
+                "frame payload",
+                0,
+                value.len(),
+                crucible_shmem::MAX_FRAME_DATA,
+                crucible_shmem::MAX_FRAME_DATA,
+            )
         })?,
     );
     bytes.extend_from_slice(value);
@@ -392,10 +527,13 @@ impl<'a> LinkSnapshotReader<'a> {
         let count = usize::try_from(self.u32(field)?)
             .map_err(|_| LinkSnapshotCodecError::Malformed(field))?;
         if count > HARD_LINK_SNAPSHOT_ENTRIES {
-            return Err(LinkSnapshotCodecError::Limit {
+            return Err(link_snapshot_resource(
                 field,
-                hard: HARD_LINK_SNAPSHOT_ENTRIES,
-            });
+                0,
+                count,
+                HARD_LINK_SNAPSHOT_ENTRIES,
+                HARD_LINK_SNAPSHOT_ENTRIES,
+            ));
         }
         Ok(count)
     }
@@ -404,10 +542,13 @@ impl<'a> LinkSnapshotReader<'a> {
         let length = usize::try_from(self.u32(field)?)
             .map_err(|_| LinkSnapshotCodecError::Malformed(field))?;
         if length > crucible_shmem::MAX_FRAME_DATA {
-            return Err(LinkSnapshotCodecError::Limit {
+            return Err(link_snapshot_resource(
                 field,
-                hard: crucible_shmem::MAX_FRAME_DATA,
-            });
+                0,
+                length,
+                crucible_shmem::MAX_FRAME_DATA,
+                crucible_shmem::MAX_FRAME_DATA,
+            ));
         }
         let end = self
             .offset

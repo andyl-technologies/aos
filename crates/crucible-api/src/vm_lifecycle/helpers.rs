@@ -3,6 +3,36 @@
 use super::*;
 use std::io::Read;
 
+pub(super) fn validate_exact_checkpoint_target(
+    node: &NodeId,
+    target: &ProductionVmExactCheckpointTarget,
+    fault_identity: ContentHash,
+) -> Result<(), LifecycleApiError> {
+    validate_exact_checkpoint_artifact(&target.overlay_artifact, "root overlay")?;
+    validate_exact_checkpoint_artifact(&target.vmstate_artifact, "VMState")?;
+    let observed = ContentHash::from_canonical_material(
+        "crucible.production-vm-exact-checkpoint.v1",
+        &format!(
+            "configuration={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\nvmstate={}",
+            target.configuration.id().to_hex(),
+            node.name,
+            target.counter,
+            target.scheduler_time.ticks,
+            target.snapshot.id().to_hex(),
+            fault_identity.to_hex(),
+            target.overlay_artifact.identity.to_hex(),
+            target.vmstate_artifact.identity.to_hex(),
+        ),
+    );
+    if observed != target.manifest_identity {
+        return Err(loop_factory_error(format!(
+            "exact checkpoint target for `{}` failed manifest authentication",
+            node.name
+        )));
+    }
+    Ok(())
+}
+
 pub(super) const fn production_guest_architecture(
     architecture: crucible::VmArchitecture,
 ) -> ProductionGuestArchitecture {

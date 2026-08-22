@@ -35,15 +35,24 @@ impl ProductionFaultRuntime {
             .as_ref()
             .map(|runtime| runtime.checkpoint().clone());
         let host = self.host.state().clone();
-        let qemu_fingerprints = nodes.execution_fingerprints()?;
-        let qemu_fault_sequences = nodes.fault_command_sequences();
-        let qemu_fault_event_sequences = nodes.fault_event_sequences();
+        let qemu_fingerprints = qemu_fingerprint_map(nodes, self.resource_limits)?;
+        let qemu_fault_sequences = qemu_sequence_map(
+            nodes.fault_command_sequence_entries(),
+            nodes.len(),
+            self.resource_limits,
+        )?;
+        let qemu_fault_event_sequences = qemu_sequence_map(
+            nodes.fault_event_sequence_entries(),
+            nodes.len(),
+            self.resource_limits,
+        )?;
         validate_pending_qemu_event_sequences(
             &self.pending_qemu_events,
             &qemu_fault_event_sequences,
         )?;
         let identity = production_checkpoint_identity(
             self.plan_id,
+            self.resource_limits,
             runtime.as_ref(),
             &host,
             &qemu_fingerprints,
@@ -63,13 +72,79 @@ impl ProductionFaultRuntime {
             qemu_fingerprints,
             qemu_fault_sequences,
             qemu_fault_event_sequences,
-            qemu_issued_actions: self.qemu_issued_actions.clone(),
-            qemu_action_commits: self.qemu_action_commits.clone(),
-            qemu_active_rule_ids: self.qemu_active_rule_ids.clone(),
+            qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
+                |identity| Ok(*identity),
+                |action| {
+                    try_clone_action(action, || {
+                        checkpoint_collection_allocation(
+                            "event_records",
+                            self.qemu_issued_actions.len(),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_issued_actions.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
+            qemu_action_commits: self.qemu_action_commits.try_clone_with(
+                |identity| Ok(*identity),
+                |commit| Ok(*commit),
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_action_commits.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
+            qemu_active_rule_ids: self.qemu_active_rule_ids.try_clone_with(
+                |identity| Ok(*identity),
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_active_rule_ids.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
-            pending_qemu_events: self.pending_qemu_events.clone(),
+            pending_qemu_events: self.pending_qemu_events.try_clone_with(
+                |node| {
+                    try_clone_ledger_node_id(node, || {
+                        checkpoint_collection_allocation(
+                            "nodes",
+                            self.pending_qemu_events.len(),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                |events| {
+                    try_clone_fault_events(events, || {
+                        checkpoint_collection_allocation(
+                            "event_records",
+                            self.pending_qemu_events
+                                .values()
+                                .map(Vec::len)
+                                .fold(0_usize, usize::saturating_add),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                || {
+                    checkpoint_collection_allocation(
+                        "nodes",
+                        self.pending_qemu_events.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
             identity,
         })
     }
@@ -97,6 +172,7 @@ impl ProductionFaultRuntime {
         checkpoint.network_state = Some(network_state);
         checkpoint.identity = production_checkpoint_identity(
             self.plan_id,
+            self.resource_limits,
             checkpoint.runtime.as_ref(),
             &checkpoint.host,
             &checkpoint.qemu_fingerprints,
@@ -202,4 +278,80 @@ impl ProductionFaultRuntime {
             .as_ref()
             .map(OwnedFaultExecutionRuntime::scenario_seed)
     }
+}
+
+pub(super) fn qemu_fingerprint_map(
+    nodes: &mut QemuNodeSet,
+    limits: FaultResourceLimits,
+) -> Result<QemuNodeMap<ContentHash>, ProductionFaultRuntimeError> {
+    let count = nodes.len();
+    admit_qemu_node_count(count, limits)?;
+    let mut mapped = QemuNodeMap::new();
+    for observed in nodes.execution_fingerprint_entries() {
+        let (node, fingerprint) = observed?;
+        mapped
+            .try_insert(try_clone_node_id(node, limits)?, fingerprint)
+            .map_err(|_| checkpoint_collection_allocation("nodes", count, limits))?;
+    }
+    Ok(mapped)
+}
+
+fn qemu_sequence_map<'a>(
+    values: impl Iterator<Item = (&'a NodeId, u64)>,
+    count: usize,
+    limits: FaultResourceLimits,
+) -> Result<QemuNodeMap<u64>, ProductionFaultRuntimeError> {
+    admit_qemu_node_count(count, limits)?;
+    let mut mapped = QemuNodeMap::new();
+    for (node, value) in values {
+        mapped
+            .try_insert(try_clone_node_id(node, limits)?, value)
+            .map_err(|_| checkpoint_collection_allocation("nodes", count, limits))?;
+    }
+    Ok(mapped)
+}
+
+fn admit_qemu_node_count(
+    count: usize,
+    limits: FaultResourceLimits,
+) -> Result<(), ProductionFaultRuntimeError> {
+    limits
+        .reserve(
+            "nodes",
+            0,
+            u64::try_from(count).map_err(|_| FaultResourceLimitError::Representation {
+                field: "nodes",
+                value: u64::MAX,
+            })?,
+        )
+        .map_err(ProductionFaultRuntimeError::from)
+}
+
+fn try_clone_node_id(
+    node: &NodeId,
+    limits: FaultResourceLimits,
+) -> Result<NodeId, ProductionFaultRuntimeError> {
+    let mut name = String::new();
+    name.try_reserve_exact(node.name.len())
+        .map_err(|_| checkpoint_collection_allocation("nodes", 1, limits))?;
+    name.push_str(&node.name);
+    Ok(NodeId { name })
+}
+
+fn checkpoint_collection_allocation(
+    field: &'static str,
+    requested: usize,
+    limits: FaultResourceLimits,
+) -> ProductionFaultRuntimeError {
+    let requested = u64::try_from(requested).unwrap_or(u64::MAX);
+    FaultResourceLimitError::Exceeded {
+        field,
+        current: 0,
+        requested,
+        configured: limits.configured(field).unwrap_or(0),
+        hard: FaultResourceLimits::compiled_maximum()
+            .configured(field)
+            .unwrap_or(0),
+    }
+    .into()
 }

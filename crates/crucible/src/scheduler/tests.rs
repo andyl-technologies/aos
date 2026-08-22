@@ -6,6 +6,8 @@ use crate::{
     BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
 };
 
+#[path = "tests/network_checkpoint.rs"]
+mod network_checkpoint;
 #[path = "tests/ordering.rs"]
 mod ordering;
 #[path = "tests/production_backend.rs"]
