@@ -34,7 +34,8 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    QemuLiveNodeStepGateConfig, QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
+    QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuLiveNodeStepSchedule,
+    run_qemu_live_node_step_gate,
 };
 
 #[cfg(target_os = "linux")]
@@ -66,6 +67,7 @@ fn run() -> Result<(), String> {
     }
 
     let mut config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
+        .with_fingerprint(QemuLaunchPluginSwitch::On)
         .with_schedule(schedule_from_env()?)
         .with_completion_timeout(Duration::from_secs(env_u64(
             "CRUCIBLE_NODE_STEP_TIMEOUT_SECS",

@@ -40,8 +40,9 @@ use crucible::{
 };
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    DEFAULT_VMSTATE_FILE_NAME, ProductionFaultRuntime, QemuLiveNodeStepGateConfig, QemuNodeSet,
-    launch_qemu_live_node, launch_qemu_live_node_exact_snapshot,
+    DEFAULT_VMSTATE_FILE_NAME, ProductionFaultRuntime, QemuLaunchPluginSwitch,
+    QemuLiveNodeStepGateConfig, QemuNodeSet, launch_qemu_live_node,
+    launch_qemu_live_node_exact_snapshot,
 };
 
 #[cfg(target_os = "linux")]
@@ -92,6 +93,7 @@ fn run() -> Result<(), String> {
             .with_initrd(initrd)
             .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet")
             .with_vm_shape(128, 1, 0)
+            .with_fingerprint(QemuLaunchPluginSwitch::On)
             .with_accelerator()
             .with_console_capture()
             .with_second_run_host_load(false);

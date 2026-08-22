@@ -17,6 +17,7 @@
   doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
 
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -31,8 +32,6 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
-  crucibleCargoDepsHash = sourceStringConst "Crucible cargo deps hash" "  cargoDepsHash = \"" cruciblePackageNix;
-  pluginCargoDepsHash = sourceStringConst "plugin cargo deps hash" "      hash = \"" pluginPackageNix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
     sourceConst
@@ -150,9 +149,6 @@
     ]
     ++ lib.optionals (manifest.crucible.source.sourceStoreHash != sourceStoreHash) [
       "release manifest source store hash ${manifest.crucible.source.sourceStoreHash} does not match filtered source hash ${sourceStoreHash}"
-    ]
-    ++ lib.optionals (pluginCargoDepsHash != crucibleCargoDepsHash) [
-      "crucible-qemu-plugin cargo deps hash ${pluginCargoDepsHash} does not match Crucible workspace hash ${crucibleCargoDepsHash}"
     ]
     ++ lib.optionals (manifest.qemu.version != qemuPackageMetadataProbe.series.qemuVersion) [
       "release manifest QEMU version ${manifest.qemu.version} does not match QEMU series ${qemuPackageMetadataProbe.series.qemuVersion}"
@@ -363,6 +359,10 @@
         needle = "hash = cargoDepsHash;";
       }
       {
+        label = "cargo deps hash comes from the shared pin";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
+      }
+      {
         label = "release manifest env installed";
         needle = "$out/share/aos/crucible/release-manifest.env";
       }
@@ -404,7 +404,7 @@
       }
       {
         label = "plugin cargo deps hash";
-        needle = "hash = \"${crucibleCargoDepsHash}\";";
+        needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/_source.nix" sourceNix [

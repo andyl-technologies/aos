@@ -227,6 +227,44 @@ fn empty_plan_checkpoint_preserves_custom_resource_identity() {
 }
 
 #[test]
+fn production_checkpoint_preserves_runtime_resource_limit_coordinates() {
+    let target = ResolvedFaultTarget::NetworkSegment {
+        segment: object_id("resource-limit-segment"),
+        direction: FaultDirection::AToB,
+    };
+    let plan = availability_plan(
+        &target,
+        FaultPhase::Admit,
+        NetworkAvailabilityState::Down,
+        NetworkInFlightPolicy::Drop,
+        NetworkInFlightPolicy::Drop,
+    );
+    let mut nodes = QemuNodeSet::new();
+    let runtime = ProductionFaultRuntime::new(
+        plan,
+        Some(Arc::new(NoArtifacts)),
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"runtime-resource-limit"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("resource-limit runtime should initialize: {error}"));
+    let checkpoint = runtime
+        .checkpoint(&mut nodes)
+        .unwrap_or_else(|error| panic!("resource-limit checkpoint should capture: {error}"));
+
+    assert!(matches!(
+        checkpoint.to_canonical_bytes_with_limit(1),
+        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "fat_checkpoint_bytes",
+            configured: 1,
+            hard: 68_719_476_736,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn production_availability_survives_checkpoint_restore() {
     let target = ResolvedFaultTarget::NetworkSegment {
         segment: object_id("segment-left-right"),

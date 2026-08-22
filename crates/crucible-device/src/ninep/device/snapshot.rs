@@ -184,10 +184,12 @@ impl NinepSnapshot {
         maximum: u64,
     ) -> Result<Vec<u8>, NinepSnapshotCodecError> {
         admit_ninep_snapshot_resources(self)?;
-        validate_ninep_snapshot(self)?;
+        validate_ninep_snapshot(self, maximum)?;
         let wire = NinepSnapshotEncodeWire {
             core: bounded_bytes(
-                self.core.canonical_bytes().map_err(map_io_core_error)?,
+                self.core
+                    .canonical_bytes_with_limit(maximum.min(MAX_NINEP_SNAPSHOT_BYTES))
+                    .map_err(map_io_core_error)?,
                 "9p I/O core bytes",
             )?,
             server: NinepServerEncodeWire {
@@ -251,8 +253,11 @@ impl NinepSnapshot {
             map_decode_error(error).map_or(NinepSnapshotCodecError::Malformed, map_resource_error)
         })?;
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes(wire.core.as_slice())
-                .map_err(map_io_core_error)?,
+            core: IoCoreSnapshot::from_canonical_bytes_with_limit(
+                wire.core.as_slice(),
+                maximum.min(MAX_NINEP_SNAPSHOT_BYTES),
+            )
+            .map_err(map_io_core_error)?,
             server: decode_server(wire.server)?,
             latency: NinepLatency::new(wire.latency[0], wire.latency[1], wire.latency[2]),
             require_fault_directives: wire.require_fault_directives,
@@ -262,7 +267,7 @@ impl NinepSnapshot {
             session_epoch: wire.session_epoch,
         };
         admit_ninep_snapshot_resources(&snapshot)?;
-        validate_ninep_snapshot(&snapshot)?;
+        validate_ninep_snapshot(&snapshot, maximum)?;
         if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(NinepSnapshotCodecError::Noncanonical);
         }
@@ -394,8 +399,14 @@ fn resource_limit(
     }
 }
 
-fn validate_ninep_snapshot(snapshot: &NinepSnapshot) -> Result<(), NinepSnapshotCodecError> {
-    snapshot.core.canonical_bytes().map_err(map_io_core_error)?;
+fn validate_ninep_snapshot(
+    snapshot: &NinepSnapshot,
+    maximum: u64,
+) -> Result<(), NinepSnapshotCodecError> {
+    snapshot
+        .core
+        .canonical_length_with_limit(maximum.min(MAX_NINEP_SNAPSHOT_BYTES))
+        .map_err(map_io_core_error)?;
     snapshot
         .visibility
         .validate()

@@ -215,7 +215,8 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     };
     runtime
         .pending_qemu_events
-        .insert(node.clone(), vec![event.clone()]);
+        .try_insert(node.clone(), vec![event.clone()])
+        .unwrap_or_else(|error| panic!("pending event fixture should allocate: {error}"));
 
     let result = runtime.drain_qemu_observations(
         &mut nodes,
@@ -234,21 +235,17 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     let mut second = event.clone();
     second.header.event_sequence = 2;
     let sequences = BTreeMap::from([(node.clone(), 3)]);
-    assert!(
-        validate_pending_qemu_event_sequences(
-            &BTreeMap::from([(node.clone(), vec![event.clone(), second.clone()])]),
-            &sequences,
-        )
-        .is_ok()
-    );
+    let mut pending = PendingQemuEventMap::new();
+    pending
+        .try_insert(node.clone(), vec![event.clone(), second.clone()])
+        .unwrap_or_else(|error| panic!("pending sequence fixture should allocate: {error}"));
+    assert!(validate_pending_qemu_event_sequences(&pending, &sequences).is_ok());
     second.header.event_sequence = 3;
-    assert!(
-        validate_pending_qemu_event_sequences(
-            &BTreeMap::from([(node, vec![event, second])]),
-            &sequences,
-        )
-        .is_err()
-    );
+    let mut noncontiguous = PendingQemuEventMap::new();
+    noncontiguous
+        .try_insert(node, vec![event, second])
+        .unwrap_or_else(|error| panic!("noncontiguous fixture should allocate: {error}"));
+    assert!(validate_pending_qemu_event_sequences(&noncontiguous, &sequences).is_err());
 }
 
 #[test]
@@ -260,16 +257,36 @@ fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
     let observations = vec![pending_qemu_observation(), pending_qemu_observation()];
 
     assert!(
-        validate_production_event_state(&[], &[], &observations, &[], &BTreeMap::new(), limits,)
-            .is_err()
+        validate_production_event_state(
+            &[],
+            &[],
+            &observations,
+            &[],
+            &PendingQemuEventMap::new(),
+            limits,
+        )
+        .is_err()
     );
 }
 
 #[test]
 fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
     let original = pending_qemu_observation();
-    let original_material = observation_identity_material(&original)
+    let limits = FaultResourceLimits::default();
+    let original_material = observation_identity_material(&original, limits)
         .unwrap_or_else(|error| panic!("observation should encode: {error}"));
+    let target = original
+        .target
+        .as_ref()
+        .unwrap_or_else(|| panic!("observation fixture should carry a target"));
+    let mut target_bytes = Vec::new();
+    target_bytes
+        .try_reserve_exact(target.canonical_material_length())
+        .unwrap_or_else(|error| panic!("target fixture reservation should succeed: {error}"));
+    target
+        .append_canonical_material_bytes(&mut target_bytes)
+        .unwrap_or_else(|error| panic!("reserved target fixture should encode: {error}"));
+    assert_eq!(target_bytes, target.canonical_material().as_bytes());
 
     let mut changed_kind = original.clone();
     changed_kind.kind = FaultObservationKind::FaultOpportunity;
@@ -282,9 +299,53 @@ fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
 
     for changed in [changed_kind, changed_binding, changed_target] {
         assert_ne!(
-            observation_identity_material(&changed)
+            observation_identity_material(&changed, limits)
                 .unwrap_or_else(|error| panic!("changed observation should encode: {error}")),
             original_material
         );
     }
+}
+
+#[test]
+fn pending_qemu_observation_identity_reserves_before_growth() {
+    let observation = pending_qemu_observation();
+    let limits = FaultResourceLimits {
+        event_log_bytes: 1,
+        ..FaultResourceLimits::default()
+    };
+
+    assert!(matches!(
+        observation_identity_material(&observation, limits),
+        Err(ProductionFaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "event_log_bytes",
+                current: 0,
+                requested,
+                configured: 1,
+                hard: 274_877_906_944,
+            }
+        )) if requested > 1
+    ));
+}
+
+#[test]
+fn pending_observation_reports_the_exhausted_checkpoint_resource() {
+    let observation = pending_qemu_observation();
+    let limits = FaultResourceLimits {
+        fat_checkpoint_bytes: 64,
+        ..FaultResourceLimits::default()
+    };
+
+    assert!(matches!(
+        observation_identity_material_at_checkpoint_offset(&observation, limits, 63),
+        Err(ProductionFaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "fat_checkpoint_bytes",
+                current: 63,
+                requested,
+                configured: 64,
+                hard: 68_719_476_736,
+            }
+        )) if requested > 1
+    ));
 }

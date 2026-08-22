@@ -11,15 +11,26 @@ use std::io::{self, Write};
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+#[path = "bounded_cbor/map.rs"]
+mod map;
+pub(crate) use map::BoundedMap;
+#[path = "bounded_cbor/set.rs"]
+mod set;
+pub(crate) use set::BoundedSet;
+
 /// RFC-0014's compiled hard ceiling for one fat checkpoint artifact.
 pub(crate) const HARD_FAT_CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 /// Failure to admit or serialize a bounded CBOR envelope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum BoundedCborError {
     /// Serialization encountered a value that CBOR cannot represent.
+    #[error("malformed bounded CBOR checkpoint envelope")]
     Malformed,
     /// The encoded form or its allocation exceeds an active resource ceiling.
+    #[error(
+        "bounded CBOR resource `{field}` exceeds its bound: current={current}, requested={requested}, configured={configured}, hard={hard}"
+    )]
     ResourceLimit {
         field: &'static str,
         current: u64,
@@ -118,9 +129,6 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                         }
                         break;
                     }
-                    let Some(value) = sequence.next_element()? else {
-                        break;
-                    };
                     if values.len() == values.capacity() {
                         values.try_reserve(1).map_err(|_| {
                             serde::de::Error::custom(resource_message(
@@ -132,6 +140,9 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                             ))
                         })?;
                     }
+                    let Some(value) = sequence.next_element()? else {
+                        break;
+                    };
                     values.push(value);
                 }
                 Ok(BoundedVec { values })
@@ -227,6 +238,21 @@ fn resource(
     }
 }
 
+fn collection_resource(
+    field: &'static str,
+    current: u64,
+    requested: u64,
+    maximum: u64,
+) -> BoundedCborError {
+    BoundedCborError::ResourceLimit {
+        field,
+        current,
+        requested,
+        configured: maximum,
+        hard: maximum,
+    }
+}
+
 fn resource_message(
     field: &'static str,
     current: u64,
@@ -244,6 +270,7 @@ fn parse_resource_message(message: &str) -> Option<BoundedCborError> {
     }
     let field = match fields.next()? {
         "bounded CBOR sequence" => "bounded CBOR sequence",
+        "bounded CBOR map" => "bounded CBOR map",
         _ => return None,
     };
     let current = fields.next()?.parse().ok()?;
@@ -346,39 +373,5 @@ impl Write for ReservedWriter<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_sequence_rejects_hostile_declared_length_before_allocation() {
-        let mut encoded = vec![0x9b];
-        encoded.extend_from_slice(&u64::MAX.to_be_bytes());
-
-        let error = match ciborium::de::from_reader::<BoundedVec<u8, 4>, _>(encoded.as_slice()) {
-            Ok(_) => panic!("hostile declared length must be rejected"),
-            Err(error) => map_decode_error(error),
-        };
-        assert_eq!(
-            error,
-            BoundedCborError::ResourceLimit {
-                field: "bounded CBOR sequence",
-                current: 0,
-                requested: u64::MAX,
-                configured: 4,
-                hard: 4,
-            }
-        );
-    }
-
-    #[test]
-    fn bounded_sequence_round_trips_without_changing_cbor_shape() {
-        let bounded = BoundedVec::<u8, 4>::new(vec![1, 2, 3])
-            .unwrap_or_else(|error| panic!("admit fixture: {error:?}"));
-        let mut encoded = Vec::new();
-        ciborium::ser::into_writer(&bounded, &mut encoded)
-            .unwrap_or_else(|error| panic!("encode fixture: {error}"));
-        let decoded = ciborium::de::from_reader::<BoundedVec<u8, 4>, _>(encoded.as_slice())
-            .unwrap_or_else(|error| panic!("decode fixture: {error}"));
-        assert_eq!(decoded.into_inner(), vec![1, 2, 3]);
-    }
-}
+#[path = "bounded_cbor/tests.rs"]
+mod tests;
