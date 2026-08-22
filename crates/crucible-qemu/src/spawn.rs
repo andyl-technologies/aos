@@ -23,6 +23,10 @@ use crate::{
     QemuNodeChild,
 };
 
+mod materialization;
+use materialization::PreparedVmStateMaterialization;
+pub use materialization::{QemuVmStateBinding, QemuVmStateMaterialization};
+
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
@@ -73,6 +77,7 @@ pub struct QemuPreparedRunDirectory {
     vmstate_identity: PinnedFileIdentity,
     launch_resources: crate::QemuLaunchResourceRequirements,
     admitted_ceiling: (u32, u64, u64),
+    vmstate_materialization: PreparedVmStateMaterialization,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,13 +114,13 @@ impl QemuPreparedRunDirectory {
         contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
         validate_guarded_launch_resources(command, contract)?;
-        Self::open_admitted(command, path.as_ref(), contract)
+        Self::open_admitted(command, path.as_ref(), contract.admitted_resource_ceiling())
     }
 
     fn open_admitted(
         command: &QemuLaunchCommand,
         path: &Path,
-        contract: &QemuChildProcessContract,
+        admitted_ceiling: (u32, u64, u64),
     ) -> Result<Self, QemuSpawnError> {
         let path = path.to_owned();
         let directory = open(
@@ -156,7 +161,8 @@ impl QemuPreparedRunDirectory {
             vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
             vmstate,
             launch_resources: command.resource_requirements(),
-            admitted_ceiling: contract.admitted_resource_ceiling(),
+            admitted_ceiling,
+            vmstate_materialization: PreparedVmStateMaterialization::Provisioned,
         })
     }
 
@@ -167,6 +173,11 @@ impl QemuPreparedRunDirectory {
     }
 
     fn revalidate(&self) -> Result<(), QemuSpawnError> {
+        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
         let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
             operation: "reinspect prepared QEMU run directory",
             source: source.into(),
@@ -184,6 +195,15 @@ impl QemuPreparedRunDirectory {
             return Err(QemuSpawnError::PreparedVmStateChanged {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
+        }
+        if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
+            let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
+            if actual != bytes {
+                return Err(QemuSpawnError::PreparedVmStateIncomplete {
+                    expected: bytes,
+                    actual,
+                });
+            }
         }
         let named_vmstate = open_prepared_vmstate(&self.directory, &self.path)?;
         let named_metadata = fstat(&named_vmstate).map_err(|source| QemuSpawnError::Io {
@@ -595,6 +615,36 @@ pub enum QemuSpawnError {
     /// The command or admitted ceiling differs from directory preparation.
     #[error("prepared QEMU run directory is bound to a different launch admission")]
     PreparedLaunchAdmissionChanged,
+    /// The exact VMState image has an invalid declared byte length.
+    #[error("prepared exact-VMState length {length} is outside the admitted maximum {maximum}")]
+    PreparedVmStateLength {
+        /// Declared exact checkpoint bytes.
+        length: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        maximum: u64,
+    },
+    /// The exact VMState image is absent or a replacement remains incomplete.
+    #[error("prepared exact-VMState materialization is not ready: {path}")]
+    PreparedVmStateNotReady {
+        /// Pinned VMState path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The materialized exact VMState is shorter or longer than declared.
+    #[error("prepared exact-VMState is incomplete: expected {expected} bytes, found {actual}")]
+    PreparedVmStateIncomplete {
+        /// Declared complete checkpoint length.
+        expected: u64,
+        /// Bytes written or found in the pinned file.
+        actual: u64,
+    },
+    /// The committed VMState file belongs to another exact-checkpoint root.
+    #[error("prepared exact-VMState binding mismatch: expected {expected:?}, found {actual:?}")]
+    PreparedVmStateBindingMismatch {
+        /// Root-derived binding requested by the exact restore.
+        expected: QemuVmStateBinding,
+        /// Root-derived binding whose authenticated bytes were committed.
+        actual: QemuVmStateBinding,
+    },
     /// The guarded child would retain root or a supervisor credential.
     #[error(
         "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"

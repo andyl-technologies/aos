@@ -28,7 +28,7 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
-use crate::{ExactCheckpointStore, ExactCheckpointStoreError};
+use crate::{ExactCheckpointStore, ExactCheckpointStoreError, LoadedExactCheckpoint};
 
 /// Registered schema for one durable exact-pin materialization selection.
 pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA: &str =
@@ -80,35 +80,55 @@ impl ExactPinMaterializationSelection {
         configuration: ConfigurationId,
         checkpoint: ExactCheckpointId,
     ) -> Result<Self, ExactPinRetentionError> {
-        let mut pin_fact = None;
-        repository.visit_pin_retention_roots(campaign.as_str(), &mut |record| {
-            if record.request().change.configuration() == configuration
-                && record.retention() == PinRetention::Exact
-            {
-                pin_fact = Some(record.fact());
-            }
-        })?;
-        let pin_fact = pin_fact.ok_or(ExactPinRetentionError::PinNotExact {
-            campaign: campaign.clone(),
-            configuration,
-        })?;
+        Self::prepare_with_checkpoint(repository, checkpoints, campaign, configuration, checkpoint)
+            .map(|(selection, _loaded)| selection)
+    }
 
-        let loaded = checkpoints.load(checkpoint)?;
-        let checkpoint_configuration = ConfigurationId::from_hash(CampaignHash::from_bytes(
-            loaded.snapshot().checkpoint().configuration.bytes,
-        ));
-        if checkpoint_configuration != configuration {
-            return Err(ExactPinRetentionError::CheckpointConfigurationMismatch {
-                expected: configuration,
-                actual: checkpoint_configuration,
+    /// Reauthenticates this durable selection against the current exact pin.
+    ///
+    /// The returned checkpoint has a fully authenticated root, metadata child,
+    /// and bounded reopenable VMState stream. A restore owner must still retain
+    /// its campaign resume precondition while turning the immutable selection
+    /// into a live execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] if the current semantic pin is
+    /// absent or changed, the checkpoint materializes another configuration,
+    /// or campaign/checkpoint authentication fails.
+    pub fn authenticate_current(
+        &self,
+        repository: &CampaignRepository,
+        checkpoints: &ExactCheckpointStore,
+    ) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
+        let current = current_exact_pin_fact(repository, &self.campaign, self.configuration)?;
+        if current != self.pin_fact {
+            return Err(ExactPinRetentionError::StaleSelection {
+                recorded: self.pin_fact,
+                current,
             });
         }
-        Ok(Self {
-            campaign: campaign.clone(),
-            configuration,
-            pin_fact,
-            checkpoint,
-        })
+        load_checkpoint_for_configuration(checkpoints, self.checkpoint, self.configuration)
+    }
+
+    fn prepare_with_checkpoint(
+        repository: &CampaignRepository,
+        checkpoints: &ExactCheckpointStore,
+        campaign: &CampaignName,
+        configuration: ConfigurationId,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<(Self, LoadedExactCheckpoint), ExactPinRetentionError> {
+        let pin_fact = current_exact_pin_fact(repository, campaign, configuration)?;
+        let loaded = load_checkpoint_for_configuration(checkpoints, checkpoint, configuration)?;
+        Ok((
+            Self {
+                campaign: campaign.clone(),
+                configuration,
+                pin_fact,
+                checkpoint,
+            },
+            loaded,
+        ))
     }
 
     /// Returns the campaign whose current pin projection owns the selection.
@@ -134,6 +154,43 @@ impl ExactPinMaterializationSelection {
     pub const fn checkpoint(&self) -> ExactCheckpointId {
         self.checkpoint
     }
+}
+
+fn current_exact_pin_fact(
+    repository: &CampaignRepository,
+    campaign: &CampaignName,
+    configuration: ConfigurationId,
+) -> Result<CampaignFactId, ExactPinRetentionError> {
+    let mut pin_fact = None;
+    repository.visit_pin_retention_roots(campaign.as_str(), &mut |record| {
+        if record.request().change.configuration() == configuration
+            && record.retention() == PinRetention::Exact
+        {
+            pin_fact = Some(record.fact());
+        }
+    })?;
+    pin_fact.ok_or_else(|| ExactPinRetentionError::PinNotExact {
+        campaign: campaign.clone(),
+        configuration,
+    })
+}
+
+fn load_checkpoint_for_configuration(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    configuration: ConfigurationId,
+) -> Result<LoadedExactCheckpoint, ExactPinRetentionError> {
+    let loaded = checkpoints.load(checkpoint)?;
+    let checkpoint_configuration = ConfigurationId::from_hash(CampaignHash::from_bytes(
+        loaded.snapshot().checkpoint().configuration.bytes,
+    ));
+    if checkpoint_configuration != configuration {
+        return Err(ExactPinRetentionError::CheckpointConfigurationMismatch {
+            expected: configuration,
+            actual: checkpoint_configuration,
+        });
+    }
+    Ok(loaded)
 }
 
 /// Result of one idempotent exact-pin materialization selection.
@@ -353,6 +410,14 @@ pub enum ExactPinRetentionError {
         expected: ConfigurationId,
         /// Configuration authenticated from checkpoint metadata.
         actual: ConfigurationId,
+    },
+    /// A durable materialization selection names an earlier exact-pin fact.
+    #[error("exact-pin materialization selection is stale: recorded {recorded}, current {current}")]
+    StaleSelection {
+        /// Pin fact authenticated when the selection was stored.
+        recorded: CampaignFactId,
+        /// Latest exact-pin fact for the same configuration.
+        current: CampaignFactId,
     },
     /// The bounded operational journal has no capacity for another key.
     #[error("exact-pin materialization selection limit exceeded")]

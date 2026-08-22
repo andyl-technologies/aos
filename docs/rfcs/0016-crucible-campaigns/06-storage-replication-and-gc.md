@@ -792,6 +792,16 @@ write. The selected value binds the campaign name, configuration, latest
 accepted pin fact, and exact-checkpoint root. It is operational owner state and
 does not advance the campaign ref or alter modeled campaign identity.
 
+Resume treats that record as a selection, not as timeless authorization. It
+loads the record under the journal fence, releases the fence before blob I/O,
+and requires the selected pin fact still to be the latest exact-pin fact for
+the same campaign/configuration. It then reauthenticates the complete checkpoint
+root and metadata and streams the opaque child into a fail-closed pinned
+run-directory transaction. A stale selection is rejected before destination
+mutation. The resume owner retains the snapshot-preconditioned campaign
+lifecycle decision while consuming the resulting exact snapshot binding; GC
+retention alone never authorizes guest execution.
+
 The registered
 `crucible.executor.exact-pin-materialization-selection` schema v1 is stored at
 `<journal>/records/<first-two-key-hex>/<key-hex>`. One journal admits at most
