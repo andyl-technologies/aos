@@ -28,6 +28,8 @@
 //! publishes immutable observation candidates; [`executor_pool`] owns the
 //! fixed worker threads and their short supervisor reconciliation phases;
 //! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
+//! [`exact_checkpoint_restore`] authenticates current exact-pin selections and
+//! streams their VMState into fail-closed guarded launch authorities;
 //! [`exact_pin_retention`] binds current exact semantic pins to authenticated
 //! durable checkpoint materializations for generation-fenced GC;
 //! [`crucible_artifact`] strictly
@@ -57,6 +59,8 @@ pub mod crucible_artifact;
 pub mod crucible_execution;
 pub mod crucible_qemu_runner;
 pub mod crucible_qemu_session;
+#[cfg(target_os = "linux")]
+pub mod exact_checkpoint_restore;
 pub mod exact_checkpoint_store;
 pub mod exact_pin_retention;
 pub mod executor_capability;
@@ -143,6 +147,10 @@ pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
     QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
+};
+#[cfg(target_os = "linux")]
+pub use exact_checkpoint_restore::{
+    ExactCheckpointRestoreError, MaterializedExactCheckpoint, materialize_selected_exact_checkpoint,
 };
 pub use exact_checkpoint_store::{
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,

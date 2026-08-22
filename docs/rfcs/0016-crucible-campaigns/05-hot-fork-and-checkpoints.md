@@ -311,6 +311,26 @@ all been observed. The first implementation streams the complete qcow2 object;
 extent manifests and changed-state capture remain the required hot-path
 optimization rather than a correctness precondition.
 
+The single-host restore transaction pins the pre-provisioned run directory and
+VMState inode before copying. A valid declared length is checked against the
+attempt's aggregate writable-byte reservation before truncation. Beginning the
+copy marks the destination unavailable for launch; only an exact-length,
+authenticated, file-synchronized completion records the aggregate
+`ExactCheckpointId` root binding, which covers both `QemuVmSnapshot` metadata
+and the opaque VMState child. The exact launcher MUST require that binding
+immediately before guarded spawn; metadata identity alone is insufficient. An
+interrupted or failed copy remains
+unready rather than falling back to the previously provisioned image, and a
+replacement attempt restarts from byte zero. This operational binding is not a
+new content identity and does not alter the immutable checkpoint root. Derive
+`binding` by applying canonical `ContentHash` material hashing with domain
+`crucible.executor.exact-vmstate-restore-binding.v1` to the lowercase
+hexadecimal encoding of the typed `ExactCheckpointId`'s 32-byte digest.
+The binding marker is process-local authority rather than trusted on-disk
+metadata. After daemon restart, reopening the same pinned inode treats it as
+unbound and repeats authenticated materialization from the retained root before
+exact restore.
+
 The public cross-process snapshot protocol may describe RAM blocks, page or
 extent indexes, opaque artifact streams, and digests. It may not expose QEMU
 private structures. Apache storage code treats QEMU blobs as opaque bytes.

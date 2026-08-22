@@ -2191,6 +2191,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
+ "crucible-shmem",
  "rustix 1.1.4",
  "serde",
  "tempfile",

@@ -282,6 +282,12 @@ impl ExecutionCancellation {
     fn cancel(&self) {
         self.canceled.store(true, Ordering::Release);
     }
+
+    /// Requests cancellation from a crate-internal regression fixture.
+    #[cfg(test)]
+    pub(crate) fn cancel_for_test(&self) {
+        self.cancel();
+    }
 }
 
 /// Cloneable process-local exact-checkpoint request for one execution.

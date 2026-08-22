@@ -306,7 +306,7 @@ pub use single_vm_fingerprint::{
 #[cfg(target_os = "linux")]
 pub use spawn::{
     QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError, QemuSpawnHostResources,
-    QemuSpawnSetupResources, QemuSpawnedChild,
+    QemuSpawnSetupResources, QemuSpawnedChild, QemuVmStateBinding, QemuVmStateMaterialization,
     spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };

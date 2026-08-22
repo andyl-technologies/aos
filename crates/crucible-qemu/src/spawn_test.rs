@@ -453,6 +453,31 @@ fn guarded_preparation_rejects_underprovisioned_launch_before_run_directory_acce
 }
 
 #[test]
+fn materialization_preparation_rejects_before_run_directory_access() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let missing_run_directory = std::env::temp_dir().join(format!(
+        "crucible-missing-materialization-run-directory-{}-{}",
+        std::process::id(),
+        unique_temp_suffix()
+    ));
+
+    assert!(matches!(
+        QemuPreparedRunDirectory::open_for_materialization(
+            &command,
+            &missing_run_directory,
+            u32::MAX,
+            1,
+            u64::MAX,
+        ),
+        Err(QemuSpawnError::LaunchResources {
+            source: crate::QemuLaunchResourceError::ResidentBytes { admitted: 1, .. }
+        })
+    ));
+    assert!(!missing_run_directory.exists());
+    Ok(())
+}
+
+#[test]
 fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
     let wide_contract = wide_test_process_contract()?;
@@ -482,6 +507,108 @@ fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), B
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
+    Ok(())
+}
+
+#[test]
+fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&vmstate_path, b"provisioned")?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "exact-a").bytes,
+    );
+    let payload = b"authenticated exact VMState";
+
+    let mut materialization =
+        prepared.begin_exact_vmstate_materialization(binding, u64::try_from(payload.len())?)?;
+    materialization.write_all(payload)?;
+    materialization.finish()?;
+
+    prepared.require_exact_vmstate(binding)?;
+    prepared.revalidate()?;
+    assert_eq!(std::fs::read(vmstate_path)?, payload);
+    let other = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "exact-b").bytes,
+    );
+    assert!(matches!(
+        prepared.require_exact_vmstate(other),
+        Err(QemuSpawnError::PreparedVmStateBindingMismatch {
+            expected,
+            actual,
+        }) if expected == other && actual == binding
+    ));
+    Ok(())
+}
+
+#[test]
+fn interrupted_exact_vmstate_materialization_blocks_guarded_launch_until_replaced()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&vmstate_path, b"provisioned")?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "interrupted").bytes,
+    );
+
+    {
+        let mut materialization = prepared.begin_exact_vmstate_materialization(binding, 4)?;
+        materialization.write_all(b"ab")?;
+    }
+    assert!(matches!(
+        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+            &command, &prepared, 4096, &contract,
+        ),
+        Err(QemuSpawnError::PreparedVmStateNotReady { .. })
+    ));
+
+    let mut replacement = prepared.begin_exact_vmstate_materialization(binding, 4)?;
+    replacement.write_all(b"abcd")?;
+    replacement.finish()?;
+    prepared.require_exact_vmstate(binding)?;
+    prepared.revalidate()?;
+    Ok(())
+}
+
+#[test]
+fn exact_vmstate_length_rejection_precedes_destination_mutation() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let maximum = command.resource_requirements().minimum_writable_bytes();
+    let (_cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let contract = QemuChildProcessContract::for_test_with_resources(
+        cgroup_write,
+        cancellation,
+        u32::MAX,
+        u64::MAX,
+        maximum,
+    );
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&vmstate_path, b"unchanged")?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "oversized").bytes,
+    );
+
+    assert!(matches!(
+        prepared.begin_exact_vmstate_materialization(binding, maximum.saturating_add(1)),
+        Err(QemuSpawnError::PreparedVmStateLength {
+            length,
+            maximum: admitted,
+        }) if length == maximum.saturating_add(1) && admitted == maximum
+    ));
+    prepared.revalidate()?;
+    assert_eq!(std::fs::read(vmstate_path)?, b"unchanged");
     Ok(())
 }
 

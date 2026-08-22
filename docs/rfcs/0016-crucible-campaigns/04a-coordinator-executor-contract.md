@@ -1787,8 +1787,21 @@ worker result and publication APIs use linear captured, prepared, staged, and
 published tokens, so a storage or compare-exchange error never requires
 rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
-reservation until the executor reports durable pause. Resume materialization
-remains mandatory before the full campaign/QEMU flight may claim completion.
+reservation until the executor reports durable pause. On resume, the daemon
+loads the selected exact-checkpoint root under the exact-pin inventory fence,
+releases that fence, reauthenticates the recorded pin fact against the current
+semantic projection, and streams the VMState child through a pinned
+run-directory transaction. The destination becomes unlaunchable before its
+first truncate, accepts no more than the declared/admitted bytes, and becomes
+eligible for exact restore only after authenticated EOF, exact length, file
+sync, retained-inode validation, and binding to the aggregate snapshot
+metadata plus VMState child through the selected `ExactCheckpointId` root.
+Cancellation, corruption, a short copy, or a dropped writer leaves
+the authority unready; a later exact retry must replace it completely. Guarded
+spawn separately requires the same launch-resource ceiling and exact snapshot
+basis. Concrete resource-guard ownership through that spawn and the complete
+pause/restart/resume flight remain mandatory before the full campaign/QEMU
+gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

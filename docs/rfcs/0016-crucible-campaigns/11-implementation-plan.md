@@ -341,7 +341,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the session converts a winning sticky request into a guarded exact capture,
   and the fixed pool carries that linear capture through no-write preparation,
   root staging, immutable publication, and durable pause without rerunning the
-  guest. Resume materialization remains open.
+  guest. Resume now reauthenticates the selected current exact pin and complete
+  checkpoint, streams opaque VMState through a length-bounded pinned-file
+  transaction, and records a selected-root binding over metadata plus VMState
+  only after authenticated EOF and file sync; interruption leaves guarded
+  launch fail-closed. Concrete
+  resource-guard ownership through warm restore and lifecycle resume remains
+  open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -363,7 +369,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact snapshot while retaining the paused process and resource guard;
   exact request/response, durable handoff, root-before-write phase tokens,
   restart root preservation, GC enumeration, captured-result propagation, and
-  paused-capacity replacement are implemented. Resume materialization remains
+  paused-capacity replacement are implemented. Exact-pin selection
+  reauthentication and fail-closed VMState resume materialization are
+  implemented; guarded QEMU launch/session and campaign lifecycle resume remain
   open. The fixed worker pool and its linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:
