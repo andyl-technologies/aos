@@ -35,12 +35,12 @@ This RFC separates five concerns that the current schema and console partly
 conflate:
 
 1. A **surface** is the stable logical identity and protocol namespace.
-2. A **placement** stores some or all of a surface on one storage binding and
+2. A **placement** stores some or all of a surface on one binding and
    prefix. A surface may have several placements from the start; a separate
    per-surface authority record selects and reconciles its single writer.
-3. A **network boundary** carries revisioned, observed transport/trusted-ingress
-   posture. A **delivery endpoint** is an immutable-identity typed DNS/IP
-   client origin pinned to one boundary, and a **delivery route** maps one
+3. A **network policy** carries revisioned, observed transport/trusted-ingress
+   posture. A **endpoint** is an immutable-identity typed DNS/IP
+   client origin pinned to one boundary, and a **route** maps one
    endpoint generation and base path to a surface, either
    directly, through AOS Hub, or through an externally protected network or
    gateway. Every valid route implements the same machine-path protocol.
@@ -54,7 +54,7 @@ The resulting topology is:
 
 ```text
                                 signed consumer cache stack
-                    Registry --------------------------------> Delivery route
+                    Registry --------------------------------> Route
                        |                                              |
                        | release artifact sets                        v
                        |                                      Binary cache
@@ -68,9 +68,9 @@ The resulting topology is:
                  |
                  +---- write authority ---- desired/observed placement generation
                  |
-                 +---- placement A ---- storage binding A + prefix
-                 +---- placement B ---- storage binding B + prefix
-                 +---- placement C ---- storage binding C + prefix
+                 +---- placement A ---- binding A + prefix
+                 +---- placement B ---- binding B + prefix
+                 +---- placement C ---- binding C + prefix
                  |
                  +---- route 1: cdn.example/path       -> gateway rev -> placement A (direct)
                  +---- route 2: hub.example/path       -> placement policy (Hub proxy)
@@ -113,9 +113,9 @@ fixture matrix described by the operator runbook.
 The current implementation has the right raw concepts but gives several rows
 more than one meaning:
 
-- `registries.storage_binding_id` and `binary_caches.storage_binding_id` permit only
+- `registries.binding_id` and `binary_caches.binding_id` permit only
   one placement.
-- `frontends` can target a registry, cache, or storage binding; binding rows are
+- `frontends` can target a registry, cache, or binding; binding rows are
   inherited through a per-resource advertise toggle.
 - `cache_registry_links` combines retention with a legacy `advertised` bit,
   while the signed registry configuration is the actual consumer cache stack.

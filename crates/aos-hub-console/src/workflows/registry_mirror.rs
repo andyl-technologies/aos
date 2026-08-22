@@ -9,7 +9,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::{ApiClient, TransportError};
 
@@ -307,7 +307,7 @@ fn MirrorStatus(mirror: aos_proto_types::RegistryMirror) -> impl IntoView {
             </div>
             <div>
                 <span>"Observed commit"</span>
-                <code>{display_or(&mirror.observed_commit, "not synchronized")}</code>
+                {if mirror.observed_commit.is_empty() { view! { <span>"not synchronized"</span> }.into_any() } else { view! { <HashValue value=mirror.observed_commit/> }.into_any() }}
             </div>
             <div>
                 <span>"Last synchronization"</span>
@@ -474,14 +474,6 @@ fn default_string(value: String, fallback: &str) -> String {
         fallback.to_string()
     } else {
         value
-    }
-}
-
-fn display_or(value: &str, fallback: &str) -> String {
-    if value.is_empty() {
-        fallback.to_string()
-    } else {
-        value.to_string()
     }
 }
 

@@ -12,7 +12,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::{ApiClient, TransportError};
 
@@ -306,7 +306,7 @@ fn SigningKeyCard(signing_key: aos_proto_types::SigningKey) -> impl IntoView {
                 </div>
                 <div>
                     <span>"Fingerprint"</span>
-                    <code>{generation.public_key_fingerprint}</code>
+                    <HashValue value=generation.public_key_fingerprint/>
                 </div>
                 <div>
                     <span>"Version"</span>

@@ -2,7 +2,7 @@ CREATE TABLE hub_schema_identity(
   identity TEXT PRIMARY KEY
 );
 INSERT INTO hub_schema_identity(identity)
-VALUES ('aos-hub/topology-hard-cutover/1');
+VALUES ('aos-hub/topology-hard-cutover/2');
 -- Replay admission for the repository-owned hardened-egress gateway. Every
 -- gateway replica must use the same strongly-consistent database. The primary
 -- key is the atomic single-use boundary; admission commits before any upstream
@@ -594,7 +594,7 @@ CREATE TABLE publish_leases(
   holder_token_id TEXT NOT NULL,
   deadline INTEGER NOT NULL
 );
-CREATE TABLE storage_bindings(
+CREATE TABLE bindings(
   id INTEGER PRIMARY KEY,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -663,8 +663,8 @@ CREATE TABLE storage_bindings(
          AND length(signing_region) > 0
          AND access_mode IN('public', 'private')))
 );
-CREATE TABLE storage_binding_credential_revisions(
-  storage_binding_id INTEGER NOT NULL REFERENCES storage_bindings(id) ON DELETE CASCADE,
+CREATE TABLE binding_credential_revisions(
+  binding_id INTEGER NOT NULL REFERENCES bindings(id) ON DELETE CASCADE,
   purpose KEYTEXT16 NOT NULL,
   generation INTEGER NOT NULL,
   secret_version_ref KEYTEXT128 NOT NULL,
@@ -674,8 +674,8 @@ CREATE TABLE storage_binding_credential_revisions(
   credential_fingerprint KEYTEXT64 NOT NULL, -- required SHA-256 hex of resolved secret
   created_by KEYTEXT128 NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY(storage_binding_id, purpose, generation),
-  UNIQUE(storage_binding_id, purpose, secret_version_ref),
+  PRIMARY KEY(binding_id, purpose, generation),
+  UNIQUE(binding_id, purpose, secret_version_ref),
   CHECK(purpose IN('read', 'write', 'delete', 'list', 'presign')),
   CHECK(generation > 0),
   CHECK(validation_state IN('unknown', 'validating', 'valid', 'invalid', 'retired')),
@@ -683,18 +683,18 @@ CREATE TABLE storage_binding_credential_revisions(
 OR(validation_state IN('valid', 'invalid', 'retired') AND validated_at IS NOT NULL)),
   CHECK(validation_state = 'invalid' OR validation_error IS NULL)
 );
-CREATE TABLE storage_binding_credential_heads(
-  storage_binding_id INTEGER NOT NULL,
+CREATE TABLE binding_credential_heads(
+  binding_id INTEGER NOT NULL,
   purpose KEYTEXT16 NOT NULL,
   current_generation INTEGER NOT NULL,
   resource_version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY(storage_binding_id, purpose),
-  FOREIGN KEY(storage_binding_id, purpose, current_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  PRIMARY KEY(binding_id, purpose),
+  FOREIGN KEY(binding_id, purpose, current_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
-CREATE TABLE storage_binding_consumer_scopes(
-  storage_binding_id INTEGER NOT NULL REFERENCES storage_bindings(id) ON DELETE CASCADE,
+CREATE TABLE binding_consumer_scopes(
+  binding_id INTEGER NOT NULL REFERENCES bindings(id) ON DELETE CASCADE,
   consumer_scope_key KEYTEXT64 NOT NULL REFERENCES authorization_scopes(scope_key) ON DELETE CASCADE,
   grant_generation INTEGER NOT NULL,
   grant_kind KEYTEXT32 NOT NULL,
@@ -704,8 +704,8 @@ CREATE TABLE storage_binding_consumer_scopes(
   revoked_by KEYTEXT128,
   revoked_at INTEGER,
   resource_version INTEGER NOT NULL DEFAULT 1,
-  PRIMARY KEY(storage_binding_id, consumer_scope_key),
-  UNIQUE(storage_binding_id, consumer_scope_key, grant_generation, state),
+  PRIMARY KEY(binding_id, consumer_scope_key),
+  UNIQUE(binding_id, consumer_scope_key, grant_generation, state),
   CHECK(grant_generation > 0),
   CHECK(grant_kind IN('owner', 'instance_default', 'explicit')),
   CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
@@ -817,8 +817,8 @@ CREATE TABLE registry_index_publication_state(
   FOREIGN KEY(publication_id, registry_id)
   REFERENCES registry_publications(publication_id, registry_id)
 );
-CREATE TABLE storage_binding_write_revisions(
-  storage_binding_id INTEGER NOT NULL REFERENCES storage_bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+CREATE TABLE binding_write_revisions(
+  binding_id INTEGER NOT NULL REFERENCES bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
   revision INTEGER NOT NULL,
   write_credential_version_ref KEYTEXT128 NOT NULL,
   writes_supported INTEGER NOT NULL,
@@ -828,36 +828,36 @@ CREATE TABLE storage_binding_write_revisions(
   created_at INTEGER NOT NULL,
   write_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'write',
   write_credential_generation INTEGER NOT NULL,
-  PRIMARY KEY(storage_binding_id, revision),
-  UNIQUE(storage_binding_id, revision_fingerprint),
+  PRIMARY KEY(binding_id, revision),
+  UNIQUE(binding_id, revision_fingerprint),
   CHECK(revision > 0),
   CHECK(write_credential_purpose = 'write'),
   CHECK(writes_supported IN(0, 1)),
   CHECK(conditional_writes_supported IN(0, 1)),
   CHECK(conditional_writes_supported = 0 OR writes_supported = 1),
-  FOREIGN KEY(storage_binding_id, write_credential_purpose, write_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  FOREIGN KEY(binding_id, write_credential_purpose, write_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
   ON DELETE RESTRICT ON UPDATE RESTRICT
 );
-CREATE TABLE storage_binding_write_state(
-  storage_binding_id INTEGER PRIMARY KEY REFERENCES storage_bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+CREATE TABLE binding_write_state(
+  binding_id INTEGER PRIMARY KEY REFERENCES bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
   current_write_revision INTEGER,
   resource_version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL,
-  FOREIGN KEY(storage_binding_id, current_write_revision)
-  REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  FOREIGN KEY(binding_id, current_write_revision)
+  REFERENCES binding_write_revisions(binding_id, revision)
   ON DELETE RESTRICT ON UPDATE RESTRICT
 );
-CREATE TABLE storage_binding_write_observations(
-  storage_binding_id INTEGER NOT NULL,
+CREATE TABLE binding_write_observations(
+  binding_id INTEGER NOT NULL,
   revision INTEGER NOT NULL,
   state KEYTEXT32 NOT NULL,
   validated_at INTEGER,
   error LONGTEXT,
   observation_version INTEGER NOT NULL DEFAULT 1,
-  PRIMARY KEY(storage_binding_id, revision),
-  FOREIGN KEY(storage_binding_id, revision)
-  REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  PRIMARY KEY(binding_id, revision),
+  FOREIGN KEY(binding_id, revision)
+  REFERENCES binding_write_revisions(binding_id, revision)
   ON DELETE CASCADE ON UPDATE RESTRICT,
   CHECK(state IN('unknown', 'validating', 'valid', 'invalid')),
   CHECK((state IN('unknown', 'validating') AND validated_at IS NULL)
@@ -870,7 +870,7 @@ CREATE TABLE surface_placements(
   registry_id INTEGER REFERENCES registries(id) ON DELETE CASCADE,
   cache_id INTEGER REFERENCES binary_caches(id) ON DELETE CASCADE,
   name KEYTEXT64 NOT NULL,
-  storage_binding_id INTEGER NOT NULL REFERENCES storage_bindings(id),
+  binding_id INTEGER NOT NULL REFERENCES bindings(id),
   consumer_scope_key KEYTEXT64 NOT NULL,
   binding_grant_generation INTEGER NOT NULL,
   binding_grant_state KEYTEXT16 NOT NULL DEFAULT 'active',
@@ -900,7 +900,7 @@ AND hash_range_start IS NULL AND hash_range_end IS NULL)),
   CHECK(kind <> 'archive' OR desired_read_enabled = 0),
   CHECK(write_spec_version > 0),
   CHECK(requires_conditional_writes IN(0, 1)),
-  UNIQUE(storage_binding_id, prefix),
+  UNIQUE(binding_id, prefix),
   UNIQUE(registry_id, name),
   UNIQUE(cache_id, name),
   UNIQUE(id, registry_id),
@@ -912,11 +912,11 @@ AND hash_range_start IS NULL AND hash_range_end IS NULL)),
   UNIQUE(id, cache_id, kind, hash_range_start, hash_range_end),
   UNIQUE(id, registry_id, write_spec_version),
   UNIQUE(id, cache_id, write_spec_version),
-  UNIQUE(id, storage_binding_id),
-  UNIQUE(id, storage_binding_id, prefix),
-  UNIQUE(id, storage_binding_id, write_spec_version)
-  ,FOREIGN KEY(storage_binding_id, consumer_scope_key, binding_grant_generation, binding_grant_state)
-  REFERENCES storage_binding_consumer_scopes(storage_binding_id, consumer_scope_key, grant_generation, state)
+  UNIQUE(id, binding_id),
+  UNIQUE(id, binding_id, prefix),
+  UNIQUE(id, binding_id, write_spec_version)
+  ,FOREIGN KEY(binding_id, consumer_scope_key, binding_grant_generation, binding_grant_state)
+  REFERENCES binding_consumer_scopes(binding_id, consumer_scope_key, grant_generation, state)
   ON DELETE RESTRICT ON UPDATE RESTRICT,
   CHECK(binding_grant_state = 'active')
 );
@@ -959,15 +959,15 @@ CREATE TABLE registry_placement_publication_watermarks(
 CREATE TABLE surface_placement_write_capabilities(
   placement_id INTEGER NOT NULL,
   placement_write_spec_version INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_write_revision INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY(placement_id, placement_write_spec_version, binding_write_revision),
-  FOREIGN KEY(placement_id, storage_binding_id, placement_write_spec_version)
-  REFERENCES surface_placements(id, storage_binding_id, write_spec_version)
+  FOREIGN KEY(placement_id, binding_id, placement_write_spec_version)
+  REFERENCES surface_placements(id, binding_id, write_spec_version)
   ON DELETE CASCADE ON UPDATE RESTRICT,
-  FOREIGN KEY(storage_binding_id, binding_write_revision)
-  REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  FOREIGN KEY(binding_id, binding_write_revision)
+  REFERENCES binding_write_revisions(binding_id, revision)
   ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 CREATE TABLE surface_write_authorities(
@@ -1044,7 +1044,7 @@ CREATE VIEW surface_placement_effective AS
            p.registry_id,
            p.cache_id,
            p.name,
-           p.storage_binding_id,
+           p.binding_id,
            p.prefix,
            CASE WHEN a.observed_placement_id = p.id THEN 'primary'
                 WHEN p.kind = 'complete' THEN 'replica'
@@ -1102,14 +1102,14 @@ CREATE VIEW surface_placement_effective AS
       ON pc.placement_id = a.observed_placement_id
      AND pc.placement_write_spec_version = a.observed_write_spec_version
      AND pc.binding_write_revision = a.observed_binding_write_revision
-    LEFT JOIN storage_binding_write_revisions bwr
-      ON bwr.storage_binding_id = pc.storage_binding_id
+    LEFT JOIN binding_write_revisions bwr
+      ON bwr.binding_id = pc.binding_id
      AND bwr.revision = pc.binding_write_revision
-    LEFT JOIN storage_binding_write_observations bwo
-      ON bwo.storage_binding_id = bwr.storage_binding_id
+    LEFT JOIN binding_write_observations bwo
+      ON bwo.binding_id = bwr.binding_id
      AND bwo.revision = bwr.revision
-/* surface_placement_effective(id,registry_id,cache_id,name,storage_binding_id,prefix,derived_role,state,completeness,hash_range_start,hash_range_end,mutable_publication_id,effective_read_enabled,effective_write_enabled,read_order,created_at,updated_at,resource_version,kind,desired_state,desired_read_enabled,write_spec_version,requires_conditional_writes,observed_at,observation_version,watermark_resource_version,watermark_pending_publication_id,write_authority_id,authority_desired_placement_id,authority_observed_placement_id,authority_desired_write_spec_version,authority_observed_write_spec_version,authority_desired_binding_write_revision,authority_observed_binding_write_revision,authority_desired_generation,authority_observed_generation,authority_reconciliation_state) */;
-CREATE TABLE network_boundaries(
+/* surface_placement_effective(id,registry_id,cache_id,name,binding_id,prefix,derived_role,state,completeness,hash_range_start,hash_range_end,mutable_publication_id,effective_read_enabled,effective_write_enabled,read_order,created_at,updated_at,resource_version,kind,desired_state,desired_read_enabled,write_spec_version,requires_conditional_writes,observed_at,observation_version,watermark_resource_version,watermark_pending_publication_id,write_authority_id,authority_desired_placement_id,authority_observed_placement_id,authority_desired_write_spec_version,authority_observed_write_spec_version,authority_desired_binding_write_revision,authority_observed_binding_write_revision,authority_desired_generation,authority_observed_generation,authority_reconciliation_state) */;
+CREATE TABLE network_policies(
   id KEYTEXT64 PRIMARY KEY,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   owner_scope_key KEYTEXT64 NOT NULL,
@@ -1125,8 +1125,8 @@ CREATE TABLE network_boundaries(
   CHECK(kind IN('public', 'vpn', 'vpc', 'tunnel', 'source_allowlist', 'trusted_ingress')),
   CHECK(kind <> 'public' OR(id = 'instance:public' AND owner_scope_key = 'instance' AND org_id IS NULL))
 );
-CREATE TABLE network_boundary_revisions(
-  boundary_id KEYTEXT64 NOT NULL REFERENCES network_boundaries(id) ON DELETE CASCADE,
+CREATE TABLE network_policy_revisions(
+  boundary_id KEYTEXT64 NOT NULL REFERENCES network_policies(id) ON DELETE CASCADE,
   revision INTEGER NOT NULL,
   protected_transport_required INTEGER NOT NULL,
   trusted_ingress_kind KEYTEXT32 NOT NULL,
@@ -1142,7 +1142,7 @@ CREATE TABLE network_boundary_revisions(
   CHECK(protected_transport_required IN(0, 1)),
   CHECK(trusted_ingress_kind IN('none', 'mtls', 'signed_assertion'))
 );
-CREATE TABLE network_boundary_observations(
+CREATE TABLE network_policy_observations(
   boundary_id KEYTEXT64 NOT NULL,
   revision INTEGER NOT NULL,
   state KEYTEXT16 NOT NULL,
@@ -1152,12 +1152,12 @@ CREATE TABLE network_boundary_observations(
   error LONGTEXT,
   PRIMARY KEY(boundary_id, revision),
   FOREIGN KEY(boundary_id, revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision) ON DELETE CASCADE,
+  REFERENCES network_policy_revisions(boundary_id, revision) ON DELETE CASCADE,
   CHECK(state IN('unknown', 'declared', 'probing', 'verified', 'degraded', 'failed')),
   CHECK(protected_transport_observed IN(0, 1)),
   CHECK(state = 'failed' OR error IS NULL)
 );
-CREATE TABLE network_boundary_revision_lifecycle(
+CREATE TABLE network_policy_revision_lifecycle(
   boundary_id KEYTEXT64 NOT NULL,
   revision INTEGER NOT NULL,
   state KEYTEXT16 NOT NULL,
@@ -1169,26 +1169,26 @@ CREATE TABLE network_boundary_revision_lifecycle(
   PRIMARY KEY(boundary_id, revision),
   UNIQUE(boundary_id, revision, state),
   FOREIGN KEY(boundary_id, revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision) ON DELETE CASCADE,
+  REFERENCES network_policy_revisions(boundary_id, revision) ON DELETE CASCADE,
   CHECK(state IN('staged', 'activating', 'active', 'retiring', 'retired')),
   CHECK(activation_mode IN('overlap', 'coordinated', 'system')),
   CHECK((state IN('staged', 'activating') AND activated_at IS NULL AND retired_at IS NULL)
 OR(state IN('active', 'retiring') AND activated_at IS NOT NULL AND retired_at IS NULL)
 OR(state = 'retired' AND activated_at IS NOT NULL AND retired_at IS NOT NULL))
 );
-CREATE TABLE network_boundary_defaults(
-  boundary_id KEYTEXT64 PRIMARY KEY REFERENCES network_boundaries(id) ON DELETE CASCADE,
+CREATE TABLE network_policy_defaults(
+  boundary_id KEYTEXT64 PRIMARY KEY REFERENCES network_policies(id) ON DELETE CASCADE,
   revision INTEGER NOT NULL,
   state KEYTEXT16 NOT NULL DEFAULT 'active',
   resource_version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL,
   UNIQUE(boundary_id, revision, state),
   FOREIGN KEY(boundary_id, revision, state)
-  REFERENCES network_boundary_revision_lifecycle(boundary_id, revision, state),
+  REFERENCES network_policy_revision_lifecycle(boundary_id, revision, state),
   CHECK(state = 'active')
 );
-CREATE TABLE network_boundary_consumer_scopes(
-  boundary_id KEYTEXT64 NOT NULL REFERENCES network_boundaries(id) ON DELETE CASCADE,
+CREATE TABLE network_policy_consumer_scopes(
+  boundary_id KEYTEXT64 NOT NULL REFERENCES network_policies(id) ON DELETE CASCADE,
   consumer_scope_key KEYTEXT64 NOT NULL REFERENCES authorization_scopes(scope_key) ON DELETE CASCADE,
   grant_generation INTEGER NOT NULL,
   grant_kind KEYTEXT32 NOT NULL,
@@ -1280,9 +1280,9 @@ AND published_at IS NULL AND error IS NOT NULL)),
   FOREIGN KEY(registry_id, consumer_scope_key) REFERENCES registries(id, owner_scope_key),
   FOREIGN KEY(cache_id, consumer_scope_key) REFERENCES binary_caches(id, owner_scope_key),
   FOREIGN KEY(local_boundary_id, local_boundary_revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision),
+  REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(local_boundary_id, consumer_scope_key)
-  REFERENCES network_boundary_consumer_scopes(boundary_id, consumer_scope_key)
+  REFERENCES network_policy_consumer_scopes(boundary_id, consumer_scope_key)
 );
 CREATE TABLE placement_policy_heads(
   policy_id KEYTEXT64 PRIMARY KEY REFERENCES placement_policies(id) ON DELETE CASCADE,
@@ -1900,11 +1900,11 @@ CREATE TABLE topology_event_outbox(
   CHECK(resource_generation_key >= 0),
   CHECK(length(payload_json) <= 1048576),
   CHECK(actor_kind IN('user', 'service_account', 'key', 'system')),
-  CHECK(resource_kind IN('organization', 'project', 'storage_binding',
+  CHECK(resource_kind IN('organization', 'project', 'binding',
     'registry', 'binary_cache', 'placement', 'domain',
-    'network_boundary', 'delivery_endpoint', 'storage_gateway', 'delivery_route',
+    'network_policy', 'endpoint', 'gateway', 'route',
     'placement_policy', 'retention_subscription', 'population_target',
-    'cache_gc_generation', 'storage_binding_credential', 'webhook'))
+    'cache_gc_generation', 'binding_credential', 'webhook'))
 );
 CREATE INDEX topology_event_outbox_pending_idx
 ON topology_event_outbox(materialized_at, occurred_at, event_id);
@@ -1930,20 +1930,20 @@ CREATE TABLE topology_operations(
   CHECK(state IN('pending', 'running', 'succeeded', 'failed', 'cancelled')),
   CHECK(control_permission IN('read', 'publish', 'channel.advance', 'keys.manage',
     'tokens.self', 'tokens.manage', 'members.manage', 'registry.configure',
-    'storage.manage', 'storage_binding.read', 'storage_binding.manage',
-    'storage_binding.grant', 'placement.read', 'placement.manage',
+    'storage.manage', 'binding.read', 'binding.manage',
+    'binding.grant', 'placement.read', 'placement.manage',
     'placement_policy.read', 'placement_policy.manage', 'domain.read',
-    'domain.manage', 'network_boundary.read', 'network_boundary.manage',
-    'network_boundary.grant', 'delivery_endpoint.read',
-    'delivery_endpoint.manage', 'delivery_endpoint.grant',
-    'storage_gateway.read', 'storage_gateway.manage', 'storage_gateway.grant',
+    'domain.manage', 'network_policy.read', 'network_policy.manage',
+    'network_policy.grant', 'endpoint.read',
+    'endpoint.manage', 'endpoint.grant',
+    'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
     'validation.repair', 'audit.read', 'iam.admin')),
   CHECK(primary_target_kind IN('registry', 'binary_cache', 'placement', 'domain',
-    'network_boundary', 'delivery_endpoint', 'storage_gateway', 'delivery_route',
+    'network_policy', 'endpoint', 'gateway', 'route',
     'placement_policy', 'retention_subscription', 'population_target',
-    'cache_gc_generation', 'storage_binding')),
+    'cache_gc_generation', 'binding')),
   CHECK(primary_target_generation_key >= 0),
   CHECK(progress_current >= 0),
   CHECK(progress_total IS NULL OR progress_total >= progress_current),
@@ -1974,19 +1974,19 @@ CREATE TABLE operation_secondary_targets(
   UNIQUE(operation_id, role, target_kind, stable_id),
   CHECK(role IN('source', 'destination', 'placement', 'policy', 'subscription', 'generation')),
   CHECK(target_kind IN('registry', 'binary_cache', 'placement', 'domain',
-    'network_boundary', 'delivery_endpoint', 'storage_gateway', 'delivery_route',
+    'network_policy', 'endpoint', 'gateway', 'route',
     'placement_policy', 'retention_subscription', 'population_target',
-    'cache_gc_generation', 'storage_binding')),
+    'cache_gc_generation', 'binding')),
   CHECK(generation_key >= 0),
   CHECK(control_permission IN('read', 'publish', 'channel.advance', 'keys.manage',
     'tokens.self', 'tokens.manage', 'members.manage', 'registry.configure',
-    'storage.manage', 'storage_binding.read', 'storage_binding.manage',
-    'storage_binding.grant', 'placement.read', 'placement.manage',
+    'storage.manage', 'binding.read', 'binding.manage',
+    'binding.grant', 'placement.read', 'placement.manage',
     'placement_policy.read', 'placement_policy.manage', 'domain.read',
-    'domain.manage', 'network_boundary.read', 'network_boundary.manage',
-    'network_boundary.grant', 'delivery_endpoint.read',
-    'delivery_endpoint.manage', 'delivery_endpoint.grant',
-    'storage_gateway.read', 'storage_gateway.manage', 'storage_gateway.grant',
+    'domain.manage', 'network_policy.read', 'network_policy.manage',
+    'network_policy.grant', 'endpoint.read',
+    'endpoint.manage', 'endpoint.grant',
+    'gateway.read', 'gateway.manage', 'gateway.grant',
     'route.read', 'route.manage', 'topology.reconcile', 'cache.retention.manage',
     'cache.gc.plan', 'cache.gc.execute', 'cache.lease.self',
     'validation.repair', 'audit.read', 'iam.admin'))
@@ -2064,9 +2064,9 @@ ON topology_plans(
   plan_kind,
   request_idempotency_key
 );
-CREATE UNIQUE INDEX storage_bindings_stable_idx ON storage_bindings(stable_id);
-CREATE UNIQUE INDEX storage_bindings_scope_idx
-ON storage_bindings(
+CREATE UNIQUE INDEX bindings_stable_idx ON bindings(stable_id);
+CREATE UNIQUE INDEX bindings_scope_idx
+ON bindings(
   id,
   owner_scope_key
 );
@@ -2111,7 +2111,7 @@ CREATE TABLE domain_probe_observations(
   observed_at INTEGER NOT NULL,
   UNIQUE(domain_id, evidence_digest)
 );
-CREATE TABLE delivery_endpoints(
+CREATE TABLE endpoints(
   id KEYTEXT64 PRIMARY KEY,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   owner_scope_key KEYTEXT64 NOT NULL,
@@ -2120,7 +2120,7 @@ CREATE TABLE delivery_endpoints(
   ipv4_bytes BLOB,
   ipv6_bytes BLOB,
   effective_port INTEGER NOT NULL,
-  network_boundary_id KEYTEXT64 NOT NULL,
+  network_policy_id KEYTEXT64 NOT NULL,
   cleartext_acknowledged_at INTEGER,
   desired_generation INTEGER,
   endpoint_identity_digest KEYTEXT128 NOT NULL UNIQUE,
@@ -2128,7 +2128,7 @@ CREATE TABLE delivery_endpoints(
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(id, owner_scope_key),
-  UNIQUE(id, network_boundary_id),
+  UNIQUE(id, network_policy_id),
   CHECK((CASE WHEN domain_id IS NULL THEN 0 ELSE 1 END)
 +(CASE WHEN ipv4_bytes IS NULL THEN 0 ELSE 1 END)
 +(CASE WHEN ipv6_bytes IS NULL THEN 0 ELSE 1 END) = 1),
@@ -2136,13 +2136,13 @@ CREATE TABLE delivery_endpoints(
   CHECK(effective_port > 0 AND effective_port <= 65535),
   CHECK(scheme = 'https' OR cleartext_acknowledged_at IS NOT NULL),
   FOREIGN KEY(domain_id, owner_scope_key) REFERENCES domains(id, owner_scope_key),
-  FOREIGN KEY(network_boundary_id, owner_scope_key)
-  REFERENCES network_boundary_consumer_scopes(boundary_id, consumer_scope_key)
+  FOREIGN KEY(network_policy_id, owner_scope_key)
+  REFERENCES network_policy_consumer_scopes(boundary_id, consumer_scope_key)
 );
-CREATE TABLE delivery_endpoint_revisions(
+CREATE TABLE endpoint_revisions(
   endpoint_id KEYTEXT64 NOT NULL,
   generation INTEGER NOT NULL,
-  network_boundary_id KEYTEXT64 NOT NULL,
+  network_policy_id KEYTEXT64 NOT NULL,
   boundary_revision INTEGER NOT NULL,
   ingress_kind KEYTEXT16 NOT NULL,
   listener_configuration LONGTEXT NOT NULL,
@@ -2153,11 +2153,11 @@ CREATE TABLE delivery_endpoint_revisions(
   created_at INTEGER NOT NULL,
   PRIMARY KEY(endpoint_id, generation),
   UNIQUE(endpoint_id, generation, ingress_kind),
-  UNIQUE(endpoint_id, generation, network_boundary_id, boundary_revision),
-  FOREIGN KEY(endpoint_id, network_boundary_id)
-  REFERENCES delivery_endpoints(id, network_boundary_id) ON DELETE CASCADE,
-  FOREIGN KEY(network_boundary_id, boundary_revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision),
+  UNIQUE(endpoint_id, generation, network_policy_id, boundary_revision),
+  FOREIGN KEY(endpoint_id, network_policy_id)
+  REFERENCES endpoints(id, network_policy_id) ON DELETE CASCADE,
+  FOREIGN KEY(network_policy_id, boundary_revision)
+  REFERENCES network_policy_revisions(boundary_id, revision),
   CHECK(generation > 0),
   CHECK(ingress_kind IN('hub', 'external', 'layer7'))
 );
@@ -2172,12 +2172,12 @@ CREATE TABLE domain_probe_challenges(
   expires_at INTEGER NOT NULL,
   PRIMARY KEY(operation_id, target_generation, attempt),
   FOREIGN KEY(endpoint_id, endpoint_generation)
-    REFERENCES delivery_endpoint_revisions(endpoint_id, generation) ON DELETE CASCADE,
+    REFERENCES endpoint_revisions(endpoint_id, generation) ON DELETE CASCADE,
   CHECK(target_generation > 0),
   CHECK(attempt >= 0 AND attempt < 3),
   CHECK(expires_at > issued_at)
 );
-CREATE TABLE delivery_endpoint_observations(
+CREATE TABLE endpoint_observations(
   endpoint_id KEYTEXT64 PRIMARY KEY,
   observed_generation INTEGER,
   boundary_id KEYTEXT64 NOT NULL,
@@ -2188,15 +2188,15 @@ CREATE TABLE delivery_endpoint_observations(
   observed_at INTEGER NOT NULL,
   error LONGTEXT,
   FOREIGN KEY(endpoint_id, boundary_id)
-  REFERENCES delivery_endpoints(id, network_boundary_id) ON DELETE CASCADE,
+  REFERENCES endpoints(id, network_policy_id) ON DELETE CASCADE,
   FOREIGN KEY(endpoint_id, observed_generation, boundary_id, boundary_revision)
-  REFERENCES delivery_endpoint_revisions(endpoint_id, generation, network_boundary_id, boundary_revision),
+  REFERENCES endpoint_revisions(endpoint_id, generation, network_policy_id, boundary_revision),
   CHECK(state IN('unknown', 'declared', 'probing', 'healthy', 'degraded', 'failed')),
   CHECK((observed_generation IS NULL AND boundary_revision IS NULL AND state = 'unknown')
 OR(observed_generation IS NOT NULL AND boundary_revision IS NOT NULL)),
   CHECK(state = 'failed' OR error IS NULL)
 );
-CREATE TABLE delivery_endpoint_generation_observations(
+CREATE TABLE endpoint_generation_observations(
   endpoint_id KEYTEXT64 NOT NULL,
   observed_generation INTEGER NOT NULL,
   boundary_id KEYTEXT64 NOT NULL,
@@ -2208,12 +2208,12 @@ CREATE TABLE delivery_endpoint_generation_observations(
   error LONGTEXT,
   PRIMARY KEY(endpoint_id, observed_generation),
   FOREIGN KEY(endpoint_id, observed_generation, boundary_id, boundary_revision)
-  REFERENCES delivery_endpoint_revisions(endpoint_id, generation, network_boundary_id, boundary_revision)
+  REFERENCES endpoint_revisions(endpoint_id, generation, network_policy_id, boundary_revision)
   ON DELETE CASCADE,
   CHECK(state IN('declared', 'probing', 'healthy', 'degraded', 'failed')),
   CHECK(state = 'failed' OR error IS NULL)
 );
-CREATE TABLE delivery_endpoint_route_scopes(
+CREATE TABLE endpoint_route_scopes(
   endpoint_id KEYTEXT64 NOT NULL,
   endpoint_generation INTEGER NOT NULL,
   consumer_scope_key KEYTEXT64 NOT NULL REFERENCES authorization_scopes(scope_key) ON DELETE CASCADE,
@@ -2228,13 +2228,13 @@ CREATE TABLE delivery_endpoint_route_scopes(
   PRIMARY KEY(endpoint_id, endpoint_generation, consumer_scope_key),
   UNIQUE(endpoint_id, endpoint_generation, consumer_scope_key, grant_generation, state),
   FOREIGN KEY(endpoint_id, endpoint_generation)
-  REFERENCES delivery_endpoint_revisions(endpoint_id, generation) ON DELETE CASCADE,
+  REFERENCES endpoint_revisions(endpoint_id, generation) ON DELETE CASCADE,
   CHECK(grant_generation > 0),
   CHECK(grant_kind IN('owner', 'instance_default', 'explicit')),
   CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
 OR(state = 'revoked' AND revoked_by IS NOT NULL AND revoked_at IS NOT NULL))
 );
-CREATE TABLE storage_gateways(
+CREATE TABLE gateways(
   id KEYTEXT64 PRIMARY KEY,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   owner_scope_key KEYTEXT64 NOT NULL,
@@ -2252,23 +2252,23 @@ CREATE TABLE storage_gateways(
   CHECK(reconciliation_state IN('pending', 'reconciling', 'ready', 'failed')),
   CHECK(observed_generation IS NULL OR desired_generation IS NOT NULL)
 );
-CREATE TABLE storage_gateway_path_reservations(
+CREATE TABLE gateway_path_reservations(
   reservation_id KEYTEXT64 PRIMARY KEY,
-  gateway_id KEYTEXT64 NOT NULL REFERENCES storage_gateways(id),
-  endpoint_id KEYTEXT64 NOT NULL REFERENCES delivery_endpoints(id),
+  gateway_id KEYTEXT64 NOT NULL REFERENCES gateways(id),
+  endpoint_id KEYTEXT64 NOT NULL REFERENCES endpoints(id),
   client_base_path KEYTEXT512 NOT NULL,
   resource_version INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   UNIQUE(endpoint_id, client_base_path),
   UNIQUE(reservation_id, gateway_id, endpoint_id, client_base_path)
 );
-CREATE TABLE storage_gateway_revisions(
+CREATE TABLE gateway_revisions(
   gateway_id KEYTEXT64 NOT NULL,
   generation INTEGER NOT NULL,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   owner_scope_key KEYTEXT64 NOT NULL,
   path_reservation_id KEYTEXT64 NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   endpoint_id KEYTEXT64 NOT NULL,
   endpoint_generation INTEGER NOT NULL,
   endpoint_ingress_kind KEYTEXT16 NOT NULL,
@@ -2287,21 +2287,21 @@ CREATE TABLE storage_gateway_revisions(
   created_at INTEGER NOT NULL,
   PRIMARY KEY(gateway_id, generation),
   UNIQUE(gateway_id, generation, endpoint_id, endpoint_generation,
-storage_binding_id, client_base_path, access_policy_digest),
+binding_id, client_base_path, access_policy_digest),
   UNIQUE(gateway_id, generation, owner_scope_key),
-  FOREIGN KEY(gateway_id, owner_scope_key) REFERENCES storage_gateways(id, owner_scope_key),
-  FOREIGN KEY(storage_binding_id, owner_scope_key)
-  REFERENCES storage_binding_consumer_scopes(storage_binding_id, consumer_scope_key),
+  FOREIGN KEY(gateway_id, owner_scope_key) REFERENCES gateways(id, owner_scope_key),
+  FOREIGN KEY(binding_id, owner_scope_key)
+  REFERENCES binding_consumer_scopes(binding_id, consumer_scope_key),
   FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
-  REFERENCES delivery_endpoint_revisions(endpoint_id, generation, ingress_kind),
+  REFERENCES endpoint_revisions(endpoint_id, generation, ingress_kind),
   FOREIGN KEY(endpoint_id, endpoint_generation, owner_scope_key)
-  REFERENCES delivery_endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
+  REFERENCES endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
   FOREIGN KEY(access_boundary_id, access_boundary_revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision),
+  REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(access_boundary_id, owner_scope_key)
-  REFERENCES network_boundary_consumer_scopes(boundary_id, consumer_scope_key),
+  REFERENCES network_policy_consumer_scopes(boundary_id, consumer_scope_key),
   FOREIGN KEY(path_reservation_id, gateway_id, endpoint_id, client_base_path)
-  REFERENCES storage_gateway_path_reservations(reservation_id, gateway_id, endpoint_id, client_base_path),
+  REFERENCES gateway_path_reservations(reservation_id, gateway_id, endpoint_id, client_base_path),
   CHECK(generation > 0),
   CHECK(endpoint_ingress_kind IN('external', 'layer7')),
   CHECK(access_policy_kind IN('public', 'external_provider', 'private_network')),
@@ -2315,7 +2315,7 @@ OR(access_policy_kind = 'private_network' AND access_boundary_id IS NOT NULL
 AND access_boundary_revision IS NOT NULL AND external_provider_kind IS NULL
 AND external_provider_resource_id IS NULL AND external_provider_revision IS NULL))
 );
-CREATE TABLE storage_gateway_revision_route_scopes(
+CREATE TABLE gateway_revision_route_scopes(
   gateway_id KEYTEXT64 NOT NULL,
   generation INTEGER NOT NULL,
   consumer_scope_key KEYTEXT64 NOT NULL REFERENCES authorization_scopes(scope_key) ON DELETE CASCADE,
@@ -2330,13 +2330,13 @@ CREATE TABLE storage_gateway_revision_route_scopes(
   PRIMARY KEY(gateway_id, generation, consumer_scope_key),
   UNIQUE(gateway_id, generation, consumer_scope_key, grant_generation, state),
   FOREIGN KEY(gateway_id, generation)
-  REFERENCES storage_gateway_revisions(gateway_id, generation) ON DELETE CASCADE,
+  REFERENCES gateway_revisions(gateway_id, generation) ON DELETE CASCADE,
   CHECK(grant_generation > 0),
   CHECK(grant_kind IN('owner', 'instance_default', 'explicit')),
   CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
 OR(state = 'revoked' AND revoked_by IS NOT NULL AND revoked_at IS NOT NULL))
 );
-CREATE TABLE storage_gateway_revision_events(
+CREATE TABLE gateway_revision_events(
   event_id KEYTEXT64 PRIMARY KEY,
   gateway_id KEYTEXT64 NOT NULL,
   generation INTEGER NOT NULL,
@@ -2346,12 +2346,12 @@ CREATE TABLE storage_gateway_revision_events(
   occurred_at INTEGER NOT NULL,
   UNIQUE(gateway_id, generation),
   FOREIGN KEY(gateway_id, generation)
-  REFERENCES storage_gateway_revisions(gateway_id, generation),
+  REFERENCES gateway_revisions(gateway_id, generation),
   FOREIGN KEY(gateway_id, generation, gateway_resource_version)
-  REFERENCES storage_gateways(id, desired_generation, resource_version),
+  REFERENCES gateways(id, desired_generation, resource_version),
   CHECK(transition = 'desired')
 );
-CREATE TABLE delivery_route_url_reservations(
+CREATE TABLE route_url_reservations(
   id KEYTEXT64 PRIMARY KEY,
   digest_scheme KEYTEXT32 NOT NULL,
   reservation_key_version INTEGER NOT NULL,
@@ -2361,7 +2361,7 @@ CREATE TABLE delivery_route_url_reservations(
   CHECK(digest_scheme = 'hmac_sha256_v1'),
   CHECK(length(reservation_digest) = 32)
 );
-CREATE TABLE delivery_route_replacements(
+CREATE TABLE route_replacements(
   successor_route_id KEYTEXT64 PRIMARY KEY,
   predecessor_route_id KEYTEXT64 NOT NULL UNIQUE,
   predecessor_resource_version INTEGER NOT NULL,
@@ -2369,17 +2369,17 @@ CREATE TABLE delivery_route_replacements(
   CHECK(successor_route_id <> predecessor_route_id),
   CHECK(predecessor_resource_version > 0)
 );
-CREATE TABLE delivery_routes(
+CREATE TABLE routes(
   id KEYTEXT64 PRIMARY KEY,
-  url_reservation_id KEYTEXT64 NOT NULL REFERENCES delivery_route_url_reservations(id),
+  url_reservation_id KEYTEXT64 NOT NULL REFERENCES route_url_reservations(id),
   resource_version INTEGER NOT NULL DEFAULT 1,
   endpoint_id KEYTEXT64 NOT NULL,
   endpoint_generation INTEGER NOT NULL,
   endpoint_ingress_kind KEYTEXT16 NOT NULL,
   consumer_scope_key KEYTEXT64 NOT NULL,
-  storage_gateway_id KEYTEXT64,
+  gateway_id KEYTEXT64,
   gateway_generation INTEGER,
-  target_storage_binding_id INTEGER,
+  target_binding_id INTEGER,
   gateway_client_base_path KEYTEXT512,
   target_placement_prefix KEYTEXT512,
   base_path KEYTEXT512 NOT NULL,
@@ -2424,8 +2424,8 @@ AND external_provider_revision IS NULL)),
 AND placement_id IS NOT NULL AND target_placement_kind = 'complete'
 AND placement_policy_revision_id IS NULL
 AND placement_policy_revision_state IS NULL
-AND storage_gateway_id IS NOT NULL AND gateway_generation IS NOT NULL
-AND target_storage_binding_id IS NOT NULL
+AND gateway_id IS NOT NULL AND gateway_generation IS NOT NULL
+AND target_binding_id IS NOT NULL
 AND gateway_client_base_path IS NOT NULL AND target_placement_prefix IS NOT NULL)
 OR(mode IN('hub_proxy', 'hub_redirect') AND endpoint_ingress_kind IN('hub', 'layer7')
 AND ((placement_id IS NOT NULL AND target_placement_kind = 'complete'
@@ -2434,8 +2434,8 @@ AND placement_policy_revision_state IS NULL)
 OR(placement_id IS NULL AND target_placement_kind IS NULL
 AND placement_policy_revision_id IS NOT NULL
 AND placement_policy_revision_state = 'published'))
-AND storage_gateway_id IS NULL AND gateway_generation IS NULL
-AND target_storage_binding_id IS NULL AND gateway_client_base_path IS NULL
+AND gateway_id IS NULL AND gateway_generation IS NULL
+AND target_binding_id IS NULL AND gateway_client_base_path IS NULL
 AND target_placement_prefix IS NULL)),
   CHECK(serves_git = 1 OR serves_cache = 1 OR serves_web = 1),
   CHECK(enabled IN(0, 1)),
@@ -2444,13 +2444,13 @@ AND target_placement_prefix IS NULL)),
   UNIQUE(id, cache_id),
   UNIQUE(id, access_policy_digest),
   UNIQUE(id, registry_id, endpoint_id, endpoint_generation, placement_id,
-storage_gateway_id, gateway_generation),
+gateway_id, gateway_generation),
   UNIQUE(id, cache_id, endpoint_id, endpoint_generation, placement_id,
-storage_gateway_id, gateway_generation),
+gateway_id, gateway_generation),
   FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key)
-  REFERENCES delivery_endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
+  REFERENCES endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
   FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
-  REFERENCES delivery_endpoint_revisions(endpoint_id, generation, ingress_kind),
+  REFERENCES endpoint_revisions(endpoint_id, generation, ingress_kind),
   FOREIGN KEY(registry_id, consumer_scope_key) REFERENCES registries(id, owner_scope_key),
   FOREIGN KEY(cache_id, consumer_scope_key) REFERENCES binary_caches(id, owner_scope_key),
   FOREIGN KEY(placement_id, registry_id) REFERENCES surface_placements(id, registry_id),
@@ -2464,24 +2464,24 @@ placement_policy_revision_state)
 placement_policy_revision_state)
   REFERENCES placement_policy_revisions(id, cache_id, state),
   FOREIGN KEY(access_boundary_id, access_boundary_revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision),
+  REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(access_boundary_id, consumer_scope_key)
-  REFERENCES network_boundary_consumer_scopes(boundary_id, consumer_scope_key),
-  FOREIGN KEY(placement_id, target_storage_binding_id, target_placement_prefix)
-  REFERENCES surface_placements(id, storage_binding_id, prefix),
-  FOREIGN KEY(storage_gateway_id, gateway_generation, consumer_scope_key)
-  REFERENCES storage_gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key),
-  FOREIGN KEY(storage_gateway_id, gateway_generation, endpoint_id,
-endpoint_generation, target_storage_binding_id,
+  REFERENCES network_policy_consumer_scopes(boundary_id, consumer_scope_key),
+  FOREIGN KEY(placement_id, target_binding_id, target_placement_prefix)
+  REFERENCES surface_placements(id, binding_id, prefix),
+  FOREIGN KEY(gateway_id, gateway_generation, consumer_scope_key)
+  REFERENCES gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key),
+  FOREIGN KEY(gateway_id, gateway_generation, endpoint_id,
+endpoint_generation, target_binding_id,
 gateway_client_base_path, access_policy_digest)
-  REFERENCES storage_gateway_revisions(gateway_id, generation, endpoint_id,
-endpoint_generation, storage_binding_id, client_base_path,
+  REFERENCES gateway_revisions(gateway_id, generation, endpoint_id,
+endpoint_generation, binding_id, client_base_path,
 access_policy_digest)
 );
-CREATE INDEX delivery_routes_registry_idx ON delivery_routes(registry_id, id);
-CREATE INDEX delivery_routes_cache_idx ON delivery_routes(cache_id, id);
-CREATE TABLE delivery_route_configurations(
-  delivery_route_id KEYTEXT64 NOT NULL,
+CREATE INDEX routes_registry_idx ON routes(registry_id, id);
+CREATE INDEX routes_cache_idx ON routes(cache_id, id);
+CREATE TABLE route_configurations(
+  route_id KEYTEXT64 NOT NULL,
   registry_id INTEGER,
   cache_id INTEGER,
   configuration_generation INTEGER NOT NULL,
@@ -2490,16 +2490,16 @@ CREATE TABLE delivery_route_configurations(
   canonical_configuration_json LONGTEXT NOT NULL,
   created_by KEYTEXT128 NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY(delivery_route_id, configuration_generation),
-  UNIQUE(delivery_route_id, registry_id, configuration_generation, configuration_digest),
-  UNIQUE(delivery_route_id, cache_id, configuration_generation, configuration_digest),
+  PRIMARY KEY(route_id, configuration_generation),
+  UNIQUE(route_id, registry_id, configuration_generation, configuration_digest),
+  UNIQUE(route_id, cache_id, configuration_generation, configuration_digest),
   CHECK((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
 +(CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
-  FOREIGN KEY(delivery_route_id, registry_id) REFERENCES delivery_routes(id, registry_id),
-  FOREIGN KEY(delivery_route_id, cache_id) REFERENCES delivery_routes(id, cache_id)
+  FOREIGN KEY(route_id, registry_id) REFERENCES routes(id, registry_id),
+  FOREIGN KEY(route_id, cache_id) REFERENCES routes(id, cache_id)
 );
-CREATE TABLE delivery_route_heads(
-  delivery_route_id KEYTEXT64 PRIMARY KEY REFERENCES delivery_routes(id) ON DELETE CASCADE,
+CREATE TABLE route_heads(
+  route_id KEYTEXT64 PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
   registry_id INTEGER,
   cache_id INTEGER,
   configuration_generation INTEGER NOT NULL,
@@ -2507,28 +2507,28 @@ CREATE TABLE delivery_route_heads(
   access_policy_digest KEYTEXT128 NOT NULL,
   CHECK((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
 +(CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
-  UNIQUE(delivery_route_id, registry_id, configuration_generation, configuration_digest),
-  UNIQUE(delivery_route_id, cache_id, configuration_generation, configuration_digest),
-  UNIQUE(delivery_route_id, configuration_generation, configuration_digest,
+  UNIQUE(route_id, registry_id, configuration_generation, configuration_digest),
+  UNIQUE(route_id, cache_id, configuration_generation, configuration_digest),
+  UNIQUE(route_id, configuration_generation, configuration_digest,
 access_policy_digest),
-  FOREIGN KEY(delivery_route_id, registry_id, configuration_generation,
+  FOREIGN KEY(route_id, registry_id, configuration_generation,
 configuration_digest)
-  REFERENCES delivery_route_configurations(delivery_route_id, registry_id,
+  REFERENCES route_configurations(route_id, registry_id,
 configuration_generation, configuration_digest),
-  FOREIGN KEY(delivery_route_id, cache_id, configuration_generation,
+  FOREIGN KEY(route_id, cache_id, configuration_generation,
 configuration_digest)
-  REFERENCES delivery_route_configurations(delivery_route_id, cache_id,
+  REFERENCES route_configurations(route_id, cache_id,
 configuration_generation, configuration_digest),
-  FOREIGN KEY(delivery_route_id, access_policy_digest)
-  REFERENCES delivery_routes(id, access_policy_digest)
+  FOREIGN KEY(route_id, access_policy_digest)
+  REFERENCES routes(id, access_policy_digest)
 );
 CREATE TABLE delivery_attestation_nonces(
-  delivery_route_id KEYTEXT64 NOT NULL,
+  route_id KEYTEXT64 NOT NULL,
   route_configuration_digest KEYTEXT128 NOT NULL,
   nonce_digest KEYTEXT128 NOT NULL,
   expires_at INTEGER NOT NULL,
   accepted_at INTEGER NOT NULL,
-  PRIMARY KEY(delivery_route_id, route_configuration_digest, nonce_digest),
+  PRIMARY KEY(route_id, route_configuration_digest, nonce_digest),
   CHECK(length(route_configuration_digest) = 64),
   CHECK(length(nonce_digest) = 64),
   CHECK(expires_at >= accepted_at),
@@ -2536,12 +2536,12 @@ CREATE TABLE delivery_attestation_nonces(
 );
 CREATE INDEX delivery_attestation_nonces_expiry_idx
 ON delivery_attestation_nonces(expires_at);
-CREATE TABLE canonical_routes(
+CREATE TABLE route_advertisements(
   id INTEGER PRIMARY KEY,
   registry_id INTEGER REFERENCES registries(id) ON DELETE CASCADE,
   cache_id INTEGER REFERENCES binary_caches(id) ON DELETE CASCADE,
   audience KEYTEXT16 NOT NULL,
-  delivery_route_id KEYTEXT64 NOT NULL,
+  route_id KEYTEXT64 NOT NULL,
   resource_version INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -2550,11 +2550,11 @@ CREATE TABLE canonical_routes(
   CHECK(audience IN('git', 'nix_cache', 'web')),
   UNIQUE(registry_id, audience),
   UNIQUE(cache_id, audience),
-  FOREIGN KEY(delivery_route_id, registry_id) REFERENCES delivery_routes(id, registry_id),
-  FOREIGN KEY(delivery_route_id, cache_id) REFERENCES delivery_routes(id, cache_id)
+  FOREIGN KEY(route_id, registry_id) REFERENCES routes(id, registry_id),
+  FOREIGN KEY(route_id, cache_id) REFERENCES routes(id, cache_id)
 );
-CREATE TABLE delivery_route_observations(
-  delivery_route_id KEYTEXT64 PRIMARY KEY,
+CREATE TABLE route_observations(
+  route_id KEYTEXT64 PRIMARY KEY,
   registry_id INTEGER,
   cache_id INTEGER,
   configuration_generation INTEGER NOT NULL,
@@ -2562,23 +2562,23 @@ CREATE TABLE delivery_route_observations(
   state KEYTEXT16 NOT NULL,
   observed_at INTEGER NOT NULL,
   error LONGTEXT,
-  FOREIGN KEY(delivery_route_id, registry_id, configuration_generation, configuration_digest)
-  REFERENCES delivery_route_heads(delivery_route_id, registry_id, configuration_generation, configuration_digest),
-  FOREIGN KEY(delivery_route_id, cache_id, configuration_generation, configuration_digest)
-  REFERENCES delivery_route_heads(delivery_route_id, cache_id, configuration_generation, configuration_digest),
+  FOREIGN KEY(route_id, registry_id, configuration_generation, configuration_digest)
+  REFERENCES route_heads(route_id, registry_id, configuration_generation, configuration_digest),
+  FOREIGN KEY(route_id, cache_id, configuration_generation, configuration_digest)
+  REFERENCES route_heads(route_id, cache_id, configuration_generation, configuration_digest),
   CHECK(state IN('unknown', 'probing', 'healthy', 'degraded', 'unreachable', 'declared')),
   CHECK(state IN('degraded', 'unreachable') OR error IS NULL)
 );
-CREATE TABLE delivery_route_access_observations(
-  delivery_route_id KEYTEXT64 PRIMARY KEY,
+CREATE TABLE route_access_observations(
+  route_id KEYTEXT64 PRIMARY KEY,
   configuration_generation INTEGER NOT NULL,
   configuration_digest KEYTEXT128 NOT NULL,
   access_policy_digest KEYTEXT128 NOT NULL,
   state KEYTEXT16 NOT NULL,
   observed_at INTEGER NOT NULL,
   error LONGTEXT,
-  FOREIGN KEY(delivery_route_id, configuration_generation, configuration_digest, access_policy_digest)
-  REFERENCES delivery_route_heads(delivery_route_id, configuration_generation, configuration_digest, access_policy_digest),
+  FOREIGN KEY(route_id, configuration_generation, configuration_digest, access_policy_digest)
+  REFERENCES route_heads(route_id, configuration_generation, configuration_digest, access_policy_digest),
   CHECK(state IN('unknown', 'probing', 'verified', 'degraded', 'failed')),
   CHECK(state IN('degraded', 'failed') OR error IS NULL)
 );
@@ -2589,20 +2589,20 @@ CREATE TABLE registry_cache_stack_entries(
   resolved_priority INTEGER NOT NULL,
   mirror_group_id KEYTEXT128,
   cache_id INTEGER REFERENCES binary_caches(id),
-  delivery_route_id KEYTEXT64,
+  route_id KEYTEXT64,
   route_configuration_generation INTEGER,
   route_configuration_digest KEYTEXT128,
   indexed_commit KEYTEXT128 NOT NULL,
   PRIMARY KEY(registry_id, stack_path),
-  CHECK((cache_id IS NULL AND delivery_route_id IS NULL
+  CHECK((cache_id IS NULL AND route_id IS NULL
 AND route_configuration_generation IS NULL
 AND route_configuration_digest IS NULL)
-OR(cache_id IS NOT NULL AND delivery_route_id IS NOT NULL
+OR(cache_id IS NOT NULL AND route_id IS NOT NULL
 AND route_configuration_generation IS NOT NULL
 AND route_configuration_digest IS NOT NULL)),
-  FOREIGN KEY(delivery_route_id, cache_id, route_configuration_generation,
+  FOREIGN KEY(route_id, cache_id, route_configuration_generation,
 route_configuration_digest)
-  REFERENCES delivery_route_configurations(delivery_route_id, cache_id,
+  REFERENCES route_configurations(route_id, cache_id,
 configuration_generation, configuration_digest)
 );
 CREATE TABLE consumer_cache_publication_intents(
@@ -2610,20 +2610,20 @@ CREATE TABLE consumer_cache_publication_intents(
   registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
   committed_url LONGTEXT NOT NULL,
   cache_id INTEGER REFERENCES binary_caches(id),
-  delivery_route_id KEYTEXT64,
+  route_id KEYTEXT64,
   route_configuration_generation INTEGER,
   route_configuration_digest KEYTEXT128,
   created_at INTEGER NOT NULL,
   PRIMARY KEY(change_id, committed_url),
-  CHECK((cache_id IS NULL AND delivery_route_id IS NULL
+  CHECK((cache_id IS NULL AND route_id IS NULL
 AND route_configuration_generation IS NULL
 AND route_configuration_digest IS NULL)
-OR(cache_id IS NOT NULL AND delivery_route_id IS NOT NULL
+OR(cache_id IS NOT NULL AND route_id IS NOT NULL
 AND route_configuration_generation IS NOT NULL
 AND route_configuration_digest IS NOT NULL)),
-  FOREIGN KEY(delivery_route_id, cache_id, route_configuration_generation,
+  FOREIGN KEY(route_id, cache_id, route_configuration_generation,
 route_configuration_digest)
-  REFERENCES delivery_route_configurations(delivery_route_id, cache_id,
+  REFERENCES route_configurations(route_id, cache_id,
 configuration_generation, configuration_digest)
 );
 CREATE TABLE release_artifact_snapshots(
@@ -2732,7 +2732,7 @@ CREATE TABLE cache_write_tickets(
   placement_id INTEGER NOT NULL,
   placement_resource_version INTEGER NOT NULL,
   placement_write_spec_version INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
   binding_write_revision INTEGER NOT NULL,
   write_credential_purpose KEYTEXT16 NOT NULL,
@@ -2790,12 +2790,12 @@ OR(quota_org_id IS NOT NULL AND quota_state <> 'none')),
   CHECK(expires_at > created_at AND resource_version > 0),
   CHECK(recovery_attempts >= 0 AND recovery_after >= 0),
   FOREIGN KEY(placement_id, cache_id) REFERENCES surface_placements(id, cache_id),
-  FOREIGN KEY(storage_binding_id, binding_write_revision)
-  REFERENCES storage_binding_write_revisions(storage_binding_id, revision),
-  FOREIGN KEY(storage_binding_id, write_credential_purpose, write_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation),
-  FOREIGN KEY(storage_binding_id, presign_credential_purpose, presign_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  FOREIGN KEY(binding_id, binding_write_revision)
+  REFERENCES binding_write_revisions(binding_id, revision),
+  FOREIGN KEY(binding_id, write_credential_purpose, write_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation),
+  FOREIGN KEY(binding_id, presign_credential_purpose, presign_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
 CREATE TABLE cache_write_ticket_parts(
   ticket_id KEYTEXT64 NOT NULL REFERENCES cache_write_tickets(ticket_id) ON DELETE CASCADE,
@@ -2846,7 +2846,7 @@ CREATE TABLE cache_inventory_placement_scans(
   generation INTEGER NOT NULL,
   placement_id INTEGER NOT NULL,
   placement_resource_version INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
   content_digest KEYTEXT128,
   object_count INTEGER,
@@ -2997,8 +2997,8 @@ CREATE TABLE placement_delivery_manifest_heads(
   FOREIGN KEY(manifest_id, placement_id, cache_id)
   REFERENCES placement_delivery_manifests(manifest_id, placement_id, cache_id)
 );
-CREATE TABLE direct_delivery_route_evidence(
-  delivery_route_id KEYTEXT64 PRIMARY KEY,
+CREATE TABLE direct_route_evidence(
+  route_id KEYTEXT64 PRIMARY KEY,
   registry_id INTEGER,
   cache_id INTEGER,
   configuration_generation INTEGER NOT NULL,
@@ -3006,22 +3006,22 @@ CREATE TABLE direct_delivery_route_evidence(
   endpoint_id KEYTEXT64 NOT NULL,
   endpoint_generation INTEGER NOT NULL,
   placement_id INTEGER NOT NULL,
-  storage_gateway_id KEYTEXT64 NOT NULL,
+  gateway_id KEYTEXT64 NOT NULL,
   gateway_generation INTEGER NOT NULL,
   publication_manifest_id KEYTEXT64 NOT NULL,
   observed_at INTEGER NOT NULL,
-  FOREIGN KEY(delivery_route_id, registry_id, configuration_generation, configuration_digest)
-  REFERENCES delivery_route_heads(delivery_route_id, registry_id, configuration_generation, configuration_digest),
-  FOREIGN KEY(delivery_route_id, cache_id, configuration_generation, configuration_digest)
-  REFERENCES delivery_route_heads(delivery_route_id, cache_id, configuration_generation, configuration_digest),
+  FOREIGN KEY(route_id, registry_id, configuration_generation, configuration_digest)
+  REFERENCES route_heads(route_id, registry_id, configuration_generation, configuration_digest),
+  FOREIGN KEY(route_id, cache_id, configuration_generation, configuration_digest)
+  REFERENCES route_heads(route_id, cache_id, configuration_generation, configuration_digest),
   FOREIGN KEY(publication_manifest_id, placement_id, registry_id)
   REFERENCES placement_delivery_manifests(manifest_id, placement_id, registry_id),
   FOREIGN KEY(publication_manifest_id, placement_id, cache_id)
   REFERENCES placement_delivery_manifests(manifest_id, placement_id, cache_id)
 );
-CREATE TABLE storage_binding_scope_grant_pins(
+CREATE TABLE binding_scope_grant_pins(
   pin_id KEYTEXT64 PRIMARY KEY,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   consumer_scope_key KEYTEXT64 NOT NULL,
   grant_generation INTEGER NOT NULL,
   grant_state KEYTEXT16 NOT NULL DEFAULT 'active',
@@ -3030,13 +3030,13 @@ CREATE TABLE storage_binding_scope_grant_pins(
   target_generation_key INTEGER NOT NULL,
   target_configuration_digest KEYTEXT128 NOT NULL,
   resource_version INTEGER NOT NULL DEFAULT 1,
-  UNIQUE(storage_binding_id, consumer_scope_key, target_kind, target_stable_id,
+  UNIQUE(binding_id, consumer_scope_key, target_kind, target_stable_id,
 target_generation_key, target_configuration_digest),
-  FOREIGN KEY(storage_binding_id, consumer_scope_key, grant_generation, grant_state)
-  REFERENCES storage_binding_consumer_scopes(storage_binding_id, consumer_scope_key, grant_generation, state),
+  FOREIGN KEY(binding_id, consumer_scope_key, grant_generation, grant_state)
+  REFERENCES binding_consumer_scopes(binding_id, consumer_scope_key, grant_generation, state),
   CHECK(grant_state = 'active')
 );
-CREATE TABLE delivery_endpoint_scope_grant_pins(
+CREATE TABLE endpoint_scope_grant_pins(
   pin_id KEYTEXT64 PRIMARY KEY,
   endpoint_id KEYTEXT64 NOT NULL,
   endpoint_generation INTEGER NOT NULL,
@@ -3051,10 +3051,10 @@ CREATE TABLE delivery_endpoint_scope_grant_pins(
   UNIQUE(endpoint_id, endpoint_generation, consumer_scope_key, target_kind,
 target_stable_id, target_generation_key, target_configuration_digest),
   FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key, grant_generation, grant_state)
-  REFERENCES delivery_endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key, grant_generation, state),
+  REFERENCES endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key, grant_generation, state),
   CHECK(grant_state = 'active')
 );
-CREATE TABLE storage_gateway_scope_grant_pins(
+CREATE TABLE gateway_scope_grant_pins(
   pin_id KEYTEXT64 PRIMARY KEY,
   gateway_id KEYTEXT64 NOT NULL,
   generation INTEGER NOT NULL,
@@ -3069,10 +3069,10 @@ CREATE TABLE storage_gateway_scope_grant_pins(
   UNIQUE(gateway_id, generation, consumer_scope_key, target_kind,
 target_stable_id, target_generation_key, target_configuration_digest),
   FOREIGN KEY(gateway_id, generation, consumer_scope_key, grant_generation, grant_state)
-  REFERENCES storage_gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key, grant_generation, state),
+  REFERENCES gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key, grant_generation, state),
   CHECK(grant_state = 'active')
 );
-CREATE TABLE network_boundary_serving_pins(
+CREATE TABLE network_policy_serving_pins(
   pin_id KEYTEXT64 PRIMARY KEY,
   boundary_id KEYTEXT64 NOT NULL,
   revision INTEGER NOT NULL,
@@ -3090,9 +3090,9 @@ CREATE TABLE network_boundary_serving_pins(
   UNIQUE(boundary_id, revision, usage_kind, target_kind, target_stable_id,
 target_generation_key, target_configuration_digest),
   FOREIGN KEY(boundary_id, revision)
-  REFERENCES network_boundary_revisions(boundary_id, revision),
+  REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(boundary_id, consumer_scope_key, grant_generation, grant_state)
-  REFERENCES network_boundary_consumer_scopes(boundary_id, consumer_scope_key, grant_generation, state),
+  REFERENCES network_policy_consumer_scopes(boundary_id, consumer_scope_key, grant_generation, state),
   CHECK(grant_state = 'active')
 );
 CREATE TABLE consumer_scope_grant_events(
@@ -3108,7 +3108,7 @@ CREATE TABLE consumer_scope_grant_events(
   actor_id KEYTEXT128 NOT NULL,
   occurred_at INTEGER NOT NULL,
   request_id KEYTEXT128 NOT NULL,
-  CHECK(resource_kind IN('storage_binding', 'network_boundary', 'delivery_endpoint', 'storage_gateway')),
+  CHECK(resource_kind IN('binding', 'network_policy', 'endpoint', 'gateway')),
   CHECK(transition IN('granted', 'revoked', 'regranted')),
   CHECK(resulting_state IN('active', 'revoked')),
   CHECK(grant_generation > 0)
@@ -3118,28 +3118,28 @@ CREATE TABLE topology_defaults(
   scope_kind KEYTEXT16 NOT NULL,
   org_id INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
   scope_key KEYTEXT64 NOT NULL UNIQUE,
-  storage_binding_id INTEGER,
+  binding_id INTEGER,
   domain_id INTEGER,
-  delivery_endpoint_id KEYTEXT64,
-  delivery_endpoint_generation INTEGER,
-  storage_gateway_id KEYTEXT64,
-  storage_gateway_generation INTEGER,
+  endpoint_id KEYTEXT64,
+  endpoint_generation INTEGER,
+  gateway_id KEYTEXT64,
+  gateway_generation INTEGER,
   resource_version INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CHECK((scope_kind = 'instance' AND org_id IS NULL AND scope_key = 'instance')
 OR(scope_kind = 'organization' AND org_id IS NOT NULL)),
-  CHECK((delivery_endpoint_id IS NULL AND delivery_endpoint_generation IS NULL)
-OR(delivery_endpoint_id IS NOT NULL AND delivery_endpoint_generation IS NOT NULL)),
-  CHECK((storage_gateway_id IS NULL AND storage_gateway_generation IS NULL)
-OR(storage_gateway_id IS NOT NULL AND storage_gateway_generation IS NOT NULL)),
-  FOREIGN KEY(storage_binding_id, scope_key)
-  REFERENCES storage_binding_consumer_scopes(storage_binding_id, consumer_scope_key),
+  CHECK((endpoint_id IS NULL AND endpoint_generation IS NULL)
+OR(endpoint_id IS NOT NULL AND endpoint_generation IS NOT NULL)),
+  CHECK((gateway_id IS NULL AND gateway_generation IS NULL)
+OR(gateway_id IS NOT NULL AND gateway_generation IS NOT NULL)),
+  FOREIGN KEY(binding_id, scope_key)
+  REFERENCES binding_consumer_scopes(binding_id, consumer_scope_key),
   FOREIGN KEY(domain_id, scope_key) REFERENCES domains(id, owner_scope_key),
-  FOREIGN KEY(delivery_endpoint_id, delivery_endpoint_generation, scope_key)
-  REFERENCES delivery_endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
-  FOREIGN KEY(storage_gateway_id, storage_gateway_generation, scope_key)
-  REFERENCES storage_gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key)
+  FOREIGN KEY(endpoint_id, endpoint_generation, scope_key)
+  REFERENCES endpoint_route_scopes(endpoint_id, endpoint_generation, consumer_scope_key),
+  FOREIGN KEY(gateway_id, gateway_generation, scope_key)
+  REFERENCES gateway_revision_route_scopes(gateway_id, generation, consumer_scope_key)
 );
 CREATE UNIQUE INDEX topology_defaults_org_idx ON topology_defaults(org_id);
 CREATE UNIQUE INDEX orgs_creation_plan_idx ON orgs(creation_plan_id);
@@ -3356,9 +3356,9 @@ CREATE TABLE cache_gc_generation_placements(
   placement_id INTEGER NOT NULL,
   placement_resource_version INTEGER NOT NULL,
   placement_name KEYTEXT64 NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
-  storage_binding_stable_id KEYTEXT64 NOT NULL,
-  storage_binding_resource_version INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
+  binding_stable_id KEYTEXT64 NOT NULL,
+  binding_resource_version INTEGER NOT NULL,
   prefix KEYTEXT512 NOT NULL,
   placement_kind KEYTEXT32 NOT NULL,
   desired_state KEYTEXT32 NOT NULL,
@@ -3366,7 +3366,7 @@ CREATE TABLE cache_gc_generation_placements(
   requires_conditional_writes INTEGER NOT NULL,
   PRIMARY KEY(cache_id, generation_id, placement_id),
   CHECK(placement_resource_version > 0),
-  CHECK(storage_binding_resource_version > 0),
+  CHECK(binding_resource_version > 0),
   CHECK(write_spec_version > 0),
   CHECK(requires_conditional_writes IN(0, 1)),
   FOREIGN KEY(generation_id, cache_id)
@@ -3490,7 +3490,7 @@ CREATE TABLE cache_gc_plan_actions(
   expected_hash KEYTEXT128,
   expected_size INTEGER,
   expected_inventory_generation INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
   delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
@@ -3502,15 +3502,15 @@ CREATE TABLE cache_gc_plan_actions(
   CHECK(phase IN('narinfo', 'nar')),
   CHECK(expected_size IS NULL OR expected_size >= 0),
   CHECK(expected_inventory_generation > 0),
-  CHECK(storage_binding_id > 0 AND binding_resource_version > 0
+  CHECK(binding_id > 0 AND binding_resource_version > 0
     AND delete_credential_generation > 0),
   CHECK(delete_credential_purpose = 'delete'),
   CHECK(estimated_reclaimable_bytes >= 0),
   FOREIGN KEY(plan_id, cache_id) REFERENCES cache_gc_plans(plan_id, cache_id),
   FOREIGN KEY(surface_object_id, cache_id) REFERENCES surface_objects(id, cache_id),
   FOREIGN KEY(placement_id, cache_id) REFERENCES surface_placements(id, cache_id),
-  FOREIGN KEY(storage_binding_id, delete_credential_purpose, delete_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  FOREIGN KEY(binding_id, delete_credential_purpose, delete_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
 CREATE TABLE cache_gc_plan_object_actions(
   cache_id INTEGER NOT NULL,
@@ -3548,7 +3548,7 @@ CREATE TABLE object_deletion_jobs(
   expected_hash KEYTEXT128,
   expected_size INTEGER,
   expected_inventory_generation INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
   delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
@@ -3572,7 +3572,7 @@ CREATE TABLE object_deletion_jobs(
   CHECK(operation_target_kind = 'binary_cache'),
   CHECK(expected_size IS NULL OR expected_size >= 0),
   CHECK(expected_inventory_generation > 0),
-  CHECK(storage_binding_id > 0 AND binding_resource_version > 0
+  CHECK(binding_id > 0 AND binding_resource_version > 0
     AND delete_credential_generation > 0),
   CHECK(state IN('preparing', 'pending', 'running', 'failed', 'blocked',
 'succeeded', 'abandoned', 'cancelled')),
@@ -3594,8 +3594,8 @@ OR(state IN('succeeded', 'abandoned', 'cancelled') AND active_slot IS NULL)),
   FOREIGN KEY(surface_object_id, cache_id) REFERENCES surface_objects(id, cache_id),
   FOREIGN KEY(placement_id, cache_id) REFERENCES surface_placements(id, cache_id),
   CHECK(delete_credential_purpose = 'delete'),
-  FOREIGN KEY(storage_binding_id, delete_credential_purpose, delete_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  FOREIGN KEY(binding_id, delete_credential_purpose, delete_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
 CREATE INDEX object_deletion_jobs_due_idx
 ON object_deletion_jobs(state, next_attempt_at, job_id);
@@ -3624,7 +3624,7 @@ CREATE TABLE object_deletion_attempt_receipts(
   expected_hash KEYTEXT128,
   expected_size INTEGER,
   expected_inventory_generation INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
+  binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
   delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
@@ -3643,7 +3643,7 @@ CREATE TABLE object_deletion_attempt_receipts(
   CHECK(expected_size IS NULL OR expected_size >= 0),
   CHECK(response_size IS NULL OR response_size >= 0),
   CHECK(expected_inventory_generation > 0),
-  CHECK(storage_binding_id > 0 AND binding_resource_version > 0
+  CHECK(binding_id > 0 AND binding_resource_version > 0
     AND delete_credential_generation > 0),
   CHECK(delete_credential_purpose = 'delete'),
   CHECK(state IN('requested', 'responded', 'finalized')),
@@ -3666,8 +3666,8 @@ CREATE TABLE object_deletion_attempt_receipts(
   REFERENCES surface_objects(id, cache_id),
   FOREIGN KEY(placement_id, cache_id)
   REFERENCES surface_placements(id, cache_id),
-  FOREIGN KEY(storage_binding_id, delete_credential_purpose, delete_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
+  FOREIGN KEY(binding_id, delete_credential_purpose, delete_credential_generation)
+  REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
 CREATE INDEX object_deletion_attempt_receipts_job_idx
 ON object_deletion_attempt_receipts(cache_id, job_id, attempt_number);
@@ -3762,7 +3762,7 @@ VALUES ('instance', 'instance', NULL, NULL, 'instance', 0);
 INSERT INTO authorization_scope_ancestors
   (descendant_scope_key, ancestor_scope_key, depth)
 VALUES ('instance', 'instance', 0);
-INSERT INTO network_boundaries
+INSERT INTO network_policies
   (id, org_id, owner_scope_key, name, kind, identity_spec_json,
    identity_fingerprint, resource_version, created_at, updated_at)
 VALUES
@@ -3770,7 +3770,7 @@ VALUES
    '{"kind":"public"}',
    'a45d7088ef1cb3f42b0f7c1284e56a781daabc736ecce73134b8e4f53078c08d',
    1, 0, 0);
-INSERT INTO network_boundary_revisions
+INSERT INTO network_policy_revisions
   (boundary_id, revision, protected_transport_required,
    trusted_ingress_kind, trusted_ingress_configuration,
    source_allowlist_cidrs, probe_location_configuration, content_digest,
@@ -3779,18 +3779,18 @@ VALUES
   ('instance:public', 1, 0, 'none', '{}', NULL, '',
    '04f0d6f002c20c3711ec06812007e824b6c56782afd71288992894e5c5dce0cd',
    'system:schema', 0);
-INSERT INTO network_boundary_revision_lifecycle
+INSERT INTO network_policy_revision_lifecycle
   (boundary_id, revision, state, activation_mode, consumer_version,
    activated_at, retired_at, resource_version)
 VALUES ('instance:public', 1, 'active', 'system', 0, 0, NULL, 1);
-INSERT INTO network_boundary_defaults
+INSERT INTO network_policy_defaults
   (boundary_id, revision, state, resource_version, updated_at)
 VALUES ('instance:public', 1, 'active', 1, 0);
-INSERT INTO network_boundary_observations
+INSERT INTO network_policy_observations
   (boundary_id, revision, state, protected_transport_observed,
    trusted_ingress_observed, observed_at, error)
 VALUES ('instance:public', 1, 'verified', 0, 'none', 0, NULL);
-INSERT INTO network_boundary_consumer_scopes
+INSERT INTO network_policy_consumer_scopes
   (boundary_id, consumer_scope_key, grant_generation, grant_kind, state,
    granted_by, granted_at, revoked_by, revoked_at, resource_version)
 VALUES
@@ -3801,6 +3801,6 @@ INSERT INTO consumer_scope_grant_events
    consumer_scope_key, grant_generation, transition, previous_state,
    resulting_state, actor_id, occurred_at, request_id)
 VALUES
-  ('grant-event:instance-public-instance', 'network_boundary',
+  ('grant-event:instance-public-instance', 'network_policy',
    'instance:public', 0, 'instance', 1, 'granted', NULL, 'active',
    'system:schema', 0, 'schema:instance-public');

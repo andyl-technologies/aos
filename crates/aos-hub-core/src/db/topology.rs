@@ -36,8 +36,8 @@ fn automatic_route_probe_operation_id(
 /// One immutable purpose-scoped storage credential revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageCredentialRevisionRecord {
-    /// Owning storage binding database id.
-    pub storage_binding_id: i64,
+    /// Owning binding database id.
+    pub binding_id: i64,
     /// Credential purpose: read, write, delete, list, or presign.
     pub purpose: String,
     /// Monotonic purpose-local generation.
@@ -105,27 +105,27 @@ pub struct ConsumerScopeGrantPinRecord {
 /// A grant-bearing topology resource and its authorization granularity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantResource<'a> {
-    /// Stable storage binding grant.
-    StorageBinding {
+    /// Stable binding grant.
+    Binding {
         /// Numeric binding id.
         id: i64,
         /// Stable public binding id used in events.
         stable_id: &'a str,
     },
-    /// Stable NetworkBoundary grant.
-    NetworkBoundary {
+    /// Stable NetworkPolicy grant.
+    NetworkPolicy {
         /// Stable boundary id.
         id: &'a str,
     },
     /// Exact endpoint generation grant.
-    DeliveryEndpoint {
+    Endpoint {
         /// Stable endpoint id.
         id: &'a str,
         /// Exact endpoint generation.
         generation: i64,
     },
-    /// Exact storage gateway generation grant.
-    StorageGateway {
+    /// Exact gateway generation grant.
+    Gateway {
         /// Stable gateway id.
         id: &'a str,
         /// Exact gateway generation.
@@ -136,35 +136,33 @@ pub enum GrantResource<'a> {
 impl GrantResource<'_> {
     fn kind(self) -> &'static str {
         match self {
-            Self::StorageBinding { .. } => "storage_binding",
-            Self::NetworkBoundary { .. } => "network_boundary",
-            Self::DeliveryEndpoint { .. } => "delivery_endpoint",
-            Self::StorageGateway { .. } => "storage_gateway",
+            Self::Binding { .. } => "binding",
+            Self::NetworkPolicy { .. } => "network_policy",
+            Self::Endpoint { .. } => "endpoint",
+            Self::Gateway { .. } => "gateway",
         }
     }
 
     fn stable_id(self) -> String {
         match self {
-            Self::StorageBinding { stable_id, .. } => stable_id.to_owned(),
-            Self::NetworkBoundary { id }
-            | Self::DeliveryEndpoint { id, .. }
-            | Self::StorageGateway { id, .. } => id.to_owned(),
+            Self::Binding { stable_id, .. } => stable_id.to_owned(),
+            Self::NetworkPolicy { id } | Self::Endpoint { id, .. } | Self::Gateway { id, .. } => {
+                id.to_owned()
+            }
         }
     }
 
     fn generation(self) -> i64 {
         match self {
-            Self::StorageBinding { .. } | Self::NetworkBoundary { .. } => 0,
-            Self::DeliveryEndpoint { generation, .. } | Self::StorageGateway { generation, .. } => {
-                generation
-            }
+            Self::Binding { .. } | Self::NetworkPolicy { .. } => 0,
+            Self::Endpoint { generation, .. } | Self::Gateway { generation, .. } => generation,
         }
     }
 }
 
-/// One storage gateway identity and desired/observed generation pointers.
+/// One gateway identity and desired/observed generation pointers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageGatewayRecord {
+pub struct GatewayRecord {
     /// Stable public id.
     pub id: String,
     /// Exact owner scope.
@@ -187,11 +185,11 @@ pub struct StorageGatewayRecord {
     pub updated_at: i64,
 }
 
-/// Closed immutable storage gateway generation input.
+/// Closed immutable gateway generation input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageGatewayRevisionSpec {
-    /// Storage binding database id.
-    pub storage_binding_id: i64,
+pub struct GatewayRevisionSpec {
+    /// Binding database id.
+    pub binding_id: i64,
     /// Exact endpoint identity.
     pub endpoint_id: String,
     /// Exact endpoint generation.
@@ -202,9 +200,9 @@ pub struct StorageGatewayRevisionSpec {
     pub origin_prefix: String,
     /// public, external_provider, or private_network.
     pub access_policy_kind: String,
-    /// Exact private-network boundary.
+    /// Exact private-network policy.
     pub access_boundary_id: Option<String>,
-    /// Exact private-network boundary revision.
+    /// Exact private-network policy revision.
     pub access_boundary_revision: Option<i64>,
     /// External access-provider kind.
     pub external_provider_kind: Option<String>,
@@ -218,7 +216,7 @@ pub struct StorageGatewayRevisionSpec {
 
 /// Exact source grant sealed by a gateway-generation update plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageGatewayGrantCarryForward {
+pub struct GatewayGrantCarryForward {
     /// Consumer scope copied into the new generation.
     pub consumer_scope_key: String,
     /// Source grant lifecycle generation.
@@ -229,7 +227,7 @@ pub struct StorageGatewayGrantCarryForward {
 
 /// One immutable storage-gateway generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageGatewayRevisionRecord {
+pub struct GatewayRevisionRecord {
     /// Stable gateway identity.
     pub gateway_id: String,
     /// Monotonic gateway-local generation.
@@ -237,7 +235,7 @@ pub struct StorageGatewayRevisionRecord {
     /// Exact owner scope.
     pub owner_scope_key: String,
     /// Immutable revision body.
-    pub spec: StorageGatewayRevisionSpec,
+    pub spec: GatewayRevisionSpec,
     /// Endpoint ingress kind pinned by the endpoint generation.
     pub endpoint_ingress_kind: String,
     /// Stable access-policy digest.
@@ -252,7 +250,7 @@ pub struct StorageGatewayRevisionRecord {
 
 /// One current direct route rendered through a gateway generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageGatewayRoutePreviewRecord {
+pub struct GatewayRoutePreviewRecord {
     /// Current immutable canonical URL.
     pub canonical_url: String,
     /// Placement name targeted by the route.
@@ -263,7 +261,7 @@ pub struct StorageGatewayRoutePreviewRecord {
 
 /// One route identity and current immutable configuration pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryRouteRecord {
+pub struct RouteRecord {
     /// Stable public id.
     pub id: String,
     /// Current configuration generation.
@@ -292,9 +290,9 @@ pub struct DeliveryRouteRecord {
 
 /// Complete current immutable route configuration and controller observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryRouteSnapshotRecord {
+pub struct RouteSnapshotRecord {
     /// Normalized configuration selected by the route head.
-    pub spec: DeliveryRouteSpec,
+    pub spec: RouteSpec,
     /// Immutable canonical rendered URL.
     pub canonical_url: String,
     /// Controller observation state.
@@ -307,7 +305,7 @@ pub struct DeliveryRouteSnapshotRecord {
 
 /// Exact desired route snapshot consumed by an observation provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryRouteReconciliationTarget {
+pub struct RouteReconciliationTarget {
     /// Stable route identity.
     pub id: String,
     /// Immutable desired generation.
@@ -336,10 +334,10 @@ pub struct DeliveryRouteReconciliationTarget {
     pub publication_manifest_id: Option<String>,
 }
 
-/// Immutable ready canonical route identity safe to carry through a plan.
+/// Immutable ready route advertisement identity safe to carry through a plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReadyCanonicalRouteIdentity {
+pub struct ReadyRouteAdvertisementIdentity {
     /// Stable route identity.
     pub route_id: String,
     /// Exact immutable configuration generation.
@@ -350,7 +348,7 @@ pub struct ReadyCanonicalRouteIdentity {
     pub canonical_url: String,
 }
 
-/// A typed request host used to resolve inbound delivery routes.
+/// A typed request host used to resolve inbound routes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboundEndpointHost {
     /// Canonical DNS hostname.
@@ -361,9 +359,9 @@ pub enum InboundEndpointHost {
     Ipv6(Vec<u8>),
 }
 
-/// One enabled delivery route whose endpoint identity matches an HTTP request.
+/// One enabled route whose endpoint identity matches an HTTP request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InboundDeliveryRouteRecord {
+pub struct InboundRouteRecord {
     /// Stable route identity.
     pub id: String,
     /// Exact immutable configuration generation selected by the route head.
@@ -380,9 +378,9 @@ pub struct InboundDeliveryRouteRecord {
     pub mode: String,
     /// Access policy variant enforced at the Hub boundary.
     pub access_policy_kind: String,
-    /// Exact private-network boundary, when applicable.
+    /// Exact private-network policy, when applicable.
     pub access_boundary_id: Option<String>,
-    /// Exact private-network boundary revision, when applicable.
+    /// Exact private-network policy revision, when applicable.
     pub access_boundary_revision: Option<i64>,
     /// Stable external-provider kind, when applicable.
     pub external_provider_kind: Option<String>,
@@ -404,15 +402,15 @@ pub struct InboundDeliveryRouteRecord {
     pub ready: bool,
 }
 
-/// One canonical route selection for a surface audience.
+/// One route advertisement selection for a surface audience.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalRouteRecord {
+pub struct RouteAdvertisementRecord {
     /// Registry or binary-cache surface.
     pub surface: SurfaceTarget,
     /// `git`, `nix_cache`, or `web`.
     pub audience: String,
     /// Stable selected delivery-route id.
-    pub delivery_route_id: String,
+    pub route_id: String,
     /// Optimistic concurrency version.
     pub resource_version: i64,
     /// Creation time.
@@ -423,7 +421,7 @@ pub struct CanonicalRouteRecord {
 
 /// Complete normalized route configuration used for create/update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeliveryRouteSpec {
+pub struct RouteSpec {
     /// Exact consumer scope.
     pub consumer_scope_key: String,
     /// Exact endpoint identity.
@@ -453,11 +451,11 @@ pub struct DeliveryRouteSpec {
     /// Exact external provider revision.
     pub external_provider_revision: Option<String>,
     /// Direct route gateway.
-    pub storage_gateway_id: Option<String>,
+    pub gateway_id: Option<String>,
     /// Exact gateway generation.
     pub gateway_generation: Option<i64>,
     /// Direct target binding.
-    pub target_storage_binding_id: Option<i64>,
+    pub target_binding_id: Option<i64>,
     /// Direct gateway client base path.
     pub gateway_client_base_path: Option<String>,
     /// Direct placement prefix.
@@ -491,8 +489,8 @@ pub struct RegistryCacheStackEntryRecord {
     pub mirror_group_id: Option<String>,
     /// Hub-managed binary cache, or `None` for an external cache.
     pub cache_id: Option<i64>,
-    /// Exact delivery route that materialized a managed-cache URL.
-    pub delivery_route_id: Option<String>,
+    /// Exact route that materialized a managed-cache URL.
+    pub route_id: Option<String>,
     /// Exact immutable route generation.
     pub route_configuration_generation: Option<i64>,
     /// Exact immutable route configuration digest.
@@ -556,7 +554,7 @@ fn join_route_segments(base: &str, prefix: &str) -> Result<String> {
     normalize_base_path(&format!("{base}/{prefix}"))
 }
 
-fn validate_storage_gateway_revision_spec(spec: &StorageGatewayRevisionSpec) -> Result<()> {
+fn validate_gateway_revision_spec(spec: &GatewayRevisionSpec) -> Result<()> {
     let private_shape = spec.access_boundary_id.is_some()
         && spec.access_boundary_revision.is_some()
         && spec.external_provider_kind.is_none()
@@ -583,7 +581,7 @@ fn validate_storage_gateway_revision_spec(spec: &StorageGatewayRevisionSpec) -> 
             | ("external_provider", false, true, false)
             | ("public", false, false, true)
     ) {
-        bail!("storage gateway access policy has an invalid closed variant shape");
+        bail!("gateway access policy has an invalid closed variant shape");
     }
     let policy: serde_json::Value = serde_json::from_str(&spec.access_policy_json)
         .context("gateway access policy is not valid JSON")?;
@@ -593,7 +591,7 @@ fn validate_storage_gateway_revision_spec(spec: &StorageGatewayRevisionSpec) -> 
     Ok(())
 }
 
-fn validate_delivery_route_spec(spec: &DeliveryRouteSpec) -> Result<String> {
+fn validate_route_spec(spec: &RouteSpec) -> Result<String> {
     let base_path = normalize_base_path(&spec.base_path)?;
     if !(spec.serves_git || spec.serves_cache || spec.serves_web) {
         bail!("route must serve at least one audience");
@@ -610,16 +608,16 @@ fn validate_delivery_route_spec(spec: &DeliveryRouteSpec) -> Result<String> {
         bail!("route access-policy digest does not match its canonical JSON");
     }
     let direct = spec.mode == "direct";
-    let direct_shape = spec.storage_gateway_id.is_some()
+    let direct_shape = spec.gateway_id.is_some()
         && spec.gateway_generation.is_some()
-        && spec.target_storage_binding_id.is_some()
+        && spec.target_binding_id.is_some()
         && spec.gateway_client_base_path.is_some()
         && spec.target_placement_prefix.is_some()
         && spec.placement_id.is_some()
         && spec.placement_policy_revision_id.is_none();
-    let hub_shape = spec.storage_gateway_id.is_none()
+    let hub_shape = spec.gateway_id.is_none()
         && spec.gateway_generation.is_none()
-        && spec.target_storage_binding_id.is_none()
+        && spec.target_binding_id.is_none()
         && spec.gateway_client_base_path.is_none()
         && spec.target_placement_prefix.is_none()
         && (spec.placement_id.is_some() ^ spec.placement_policy_revision_id.is_some());
@@ -672,7 +670,7 @@ impl Database {
         self.backend
             .query(
                 "SELECT DISTINCT reservation_key_version
-                   FROM delivery_route_url_reservations
+                   FROM route_url_reservations
                   ORDER BY reservation_key_version",
                 &[],
             )
@@ -692,24 +690,24 @@ impl Database {
         resource: GrantResource<'_>,
     ) -> Result<Vec<ConsumerScopeGrantRecord>> {
         let (sql, params) = match resource {
-            GrantResource::StorageBinding { id, .. } => (
-                "SELECT consumer_scope_key FROM storage_binding_consumer_scopes
-                 WHERE storage_binding_id = ?1 ORDER BY consumer_scope_key",
+            GrantResource::Binding { id, .. } => (
+                "SELECT consumer_scope_key FROM binding_consumer_scopes
+                 WHERE binding_id = ?1 ORDER BY consumer_scope_key",
                 vals![id],
             ),
-            GrantResource::NetworkBoundary { id } => (
-                "SELECT consumer_scope_key FROM network_boundary_consumer_scopes
+            GrantResource::NetworkPolicy { id } => (
+                "SELECT consumer_scope_key FROM network_policy_consumer_scopes
                  WHERE boundary_id = ?1 ORDER BY consumer_scope_key",
                 vals![id],
             ),
-            GrantResource::DeliveryEndpoint { id, generation } => (
-                "SELECT consumer_scope_key FROM delivery_endpoint_route_scopes
+            GrantResource::Endpoint { id, generation } => (
+                "SELECT consumer_scope_key FROM endpoint_route_scopes
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                  ORDER BY consumer_scope_key",
                 vals![id, generation],
             ),
-            GrantResource::StorageGateway { id, generation } => (
-                "SELECT consumer_scope_key FROM storage_gateway_revision_route_scopes
+            GrantResource::Gateway { id, generation } => (
+                "SELECT consumer_scope_key FROM gateway_revision_route_scopes
                  WHERE gateway_id = ?1 AND generation = ?2 ORDER BY consumer_scope_key",
                 vals![id, generation],
             ),
@@ -760,16 +758,16 @@ impl Database {
         resource: GrantResource<'_>,
         consumer_scope_key: &str,
     ) -> Result<Vec<ConsumerScopeGrantPinRecord>> {
-        if let GrantResource::StorageBinding { id, .. } = resource {
+        if let GrantResource::Binding { id, .. } = resource {
             let mut records = Vec::new();
             for row in self
                 .backend
                 .query(
-                    "SELECT id, name, write_spec_version, storage_binding_id, prefix,
+                    "SELECT id, name, write_spec_version, binding_id, prefix,
                             kind, desired_state, desired_read_enabled, read_order,
                             resource_version
                        FROM surface_placements
-                      WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                      WHERE binding_id = ?1 AND consumer_scope_key = ?2
                         AND binding_grant_state = 'active'
                       ORDER BY id",
                     &vals![id, consumer_scope_key],
@@ -780,7 +778,7 @@ impl Database {
                 let name: String = row.get(1)?;
                 let generation: i64 = row.get(2)?;
                 let canonical = serde_json::to_vec(&serde_json::json!({
-                    "storage_binding_id": row.get::<i64>(3)?,
+                    "binding_id": row.get::<i64>(3)?,
                     "prefix": row.get::<String>(4)?,
                     "kind": row.get::<String>(5)?,
                     "desired_state": row.get::<String>(6)?,
@@ -802,8 +800,8 @@ impl Database {
                     "SELECT pin_id, target_kind, target_stable_id,
                             target_generation_key, target_configuration_digest,
                             resource_version
-                       FROM storage_binding_scope_grant_pins
-                      WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                       FROM binding_scope_grant_pins
+                      WHERE binding_id = ?1 AND consumer_scope_key = ?2
                       ORDER BY target_kind, target_stable_id, target_generation_key",
                     &vals![id, consumer_scope_key],
                 )
@@ -822,44 +820,44 @@ impl Database {
             return Ok(records);
         }
         let (sql, params) = match resource {
-            GrantResource::StorageBinding { .. } => unreachable!("handled above"),
-            GrantResource::NetworkBoundary { id } => (
+            GrantResource::Binding { .. } => unreachable!("handled above"),
+            GrantResource::NetworkPolicy { id } => (
                 "SELECT pin.pin_id, pin.target_kind, pin.target_stable_id,
                         pin.target_generation_key, pin.target_configuration_digest,
                         CASE pin.target_kind
                           WHEN 'endpoint' THEN (SELECT resource_version
-                            FROM delivery_endpoints WHERE id = pin.target_stable_id)
+                            FROM endpoints WHERE id = pin.target_stable_id)
                           WHEN 'route' THEN (SELECT resource_version
-                            FROM delivery_routes WHERE id = pin.target_stable_id)
+                            FROM routes WHERE id = pin.target_stable_id)
                         END
-                   FROM network_boundary_serving_pins pin
+                   FROM network_policy_serving_pins pin
                   WHERE boundary_id = ?1 AND consumer_scope_key = ?2
                   ORDER BY pin.pin_id",
                 vals![id, consumer_scope_key],
             ),
-            GrantResource::DeliveryEndpoint { id, generation } => (
+            GrantResource::Endpoint { id, generation } => (
                 "SELECT pin.pin_id, pin.target_kind, pin.target_stable_id,
                         pin.target_generation_key, pin.target_configuration_digest,
                         CASE pin.target_kind
                           WHEN 'listener' THEN (SELECT resource_version
-                            FROM delivery_endpoints WHERE id = pin.endpoint_id)
+                            FROM endpoints WHERE id = pin.endpoint_id)
                           WHEN 'route' THEN (SELECT resource_version
-                            FROM delivery_routes WHERE id = pin.target_stable_id)
+                            FROM routes WHERE id = pin.target_stable_id)
                         END
-                   FROM delivery_endpoint_scope_grant_pins pin
+                   FROM endpoint_scope_grant_pins pin
                   WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                     AND consumer_scope_key = ?3
                   ORDER BY pin.pin_id",
                 vals![id, generation, consumer_scope_key],
             ),
-            GrantResource::StorageGateway { id, generation } => (
+            GrantResource::Gateway { id, generation } => (
                 "SELECT pin.pin_id, pin.target_kind, pin.target_stable_id,
                         pin.target_generation_key, pin.target_configuration_digest,
                         CASE pin.target_kind
                           WHEN 'route' THEN (SELECT resource_version
-                            FROM delivery_routes WHERE id = pin.target_stable_id)
+                            FROM routes WHERE id = pin.target_stable_id)
                         END
-                   FROM storage_gateway_scope_grant_pins pin
+                   FROM gateway_scope_grant_pins pin
                   WHERE gateway_id = ?1 AND generation = ?2 AND consumer_scope_key = ?3
                   ORDER BY pin.pin_id",
                 vals![id, generation, consumer_scope_key],
@@ -945,7 +943,7 @@ impl Database {
              resource_version = resource_version + 1, updated_at = ?3
              WHERE id = ?1 AND resource_version = ?2 AND deleted_at IS NULL
                AND NOT EXISTS (SELECT 1 FROM surface_placements p WHERE p.cache_id = ?1)
-               AND NOT EXISTS (SELECT 1 FROM delivery_routes r WHERE r.cache_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.cache_id = ?1)
                AND NOT EXISTS (SELECT 1 FROM cache_retention_subscriptions s
                  WHERE s.cache_id = ?1 AND s.retired_at IS NULL)
                AND NOT EXISTS (SELECT 1 FROM cache_population_targets t
@@ -969,9 +967,9 @@ impl Database {
     ///
     /// Returns an error for an invalid purpose, empty reference/fingerprint,
     /// unknown binding, or database failure.
-    pub async fn set_storage_binding_credential(
+    pub async fn set_binding_credential(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         secret_version_ref: &str,
         credential_fingerprint: &str,
@@ -987,9 +985,9 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT COALESCE(MAX(generation), 0) + 1
-                 FROM storage_binding_credential_revisions
-                 WHERE storage_binding_id = ?1 AND purpose = ?2",
-                &vals![storage_binding_id, purpose],
+                 FROM binding_credential_revisions
+                 WHERE binding_id = ?1 AND purpose = ?2",
+                &vals![binding_id, purpose],
             )
             .await?
             .context("credential generation query returned no row")?
@@ -998,13 +996,13 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_revisions
-                     (storage_binding_id, purpose, generation, secret_version_ref,
+                    "INSERT INTO binding_credential_revisions
+                     (binding_id, purpose, generation, secret_version_ref,
                       validation_state, credential_fingerprint, created_by, created_at)
                      SELECT ?1, ?2, ?3, ?4, 'unknown', ?5, ?6, ?7
-                     WHERE EXISTS (SELECT 1 FROM storage_bindings WHERE id = ?1)",
+                     WHERE EXISTS (SELECT 1 FROM bindings WHERE id = ?1)",
                     vals![
-                        storage_binding_id,
+                        binding_id,
                         purpose,
                         generation,
                         secret_version_ref,
@@ -1015,15 +1013,15 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_heads
-                     (storage_binding_id, purpose, current_generation, resource_version, updated_at)
+                    "INSERT INTO binding_credential_heads
+                     (binding_id, purpose, current_generation, resource_version, updated_at)
                      VALUES (?1, ?2, ?3, 1, ?4)
-                     ON CONFLICT(storage_binding_id, purpose) DO UPDATE SET
+                     ON CONFLICT(binding_id, purpose) DO UPDATE SET
                        current_generation = excluded.current_generation,
-                       resource_version = storage_binding_credential_heads.resource_version + 1,
+                       resource_version = binding_credential_heads.resource_version + 1,
                        updated_at = excluded.updated_at
                      WHERE NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
-                       WHERE ticket.storage_binding_id = excluded.storage_binding_id
+                       WHERE ticket.binding_id = excluded.binding_id
                          AND (ticket.write_credential_purpose = excluded.purpose
                            OR (excluded.purpose = 'presign'
                              AND ticket.presign_credential_generation IS NOT NULL))
@@ -1033,14 +1031,14 @@ impl Database {
                        AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                          JOIN surface_placements placement
                            ON placement.id = job.placement_id
-                         WHERE placement.storage_binding_id = excluded.storage_binding_id
+                         WHERE placement.binding_id = excluded.binding_id
                            AND excluded.purpose = 'delete' AND job.active_slot = 1)",
-                    vals![storage_binding_id, purpose, generation, now],
+                    vals![binding_id, purpose, generation, now],
                 )
                 .expecting(1),
             ])
             .await?;
-        self.storage_binding_credential(storage_binding_id, purpose, generation)
+        self.binding_credential(binding_id, purpose, generation)
             .await?
             .context("created storage credential revision disappeared")
     }
@@ -1050,25 +1048,25 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_credential(
+    pub async fn binding_credential(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         generation: i64,
     ) -> Result<Option<StorageCredentialRevisionRecord>> {
         self.backend
             .query_opt(
-                "SELECT storage_binding_id, purpose, generation, secret_version_ref,
+                "SELECT binding_id, purpose, generation, secret_version_ref,
                  validation_state, validated_at, validation_error, credential_fingerprint,
-                 created_at FROM storage_binding_credential_revisions
-                 WHERE storage_binding_id = ?1 AND purpose = ?2 AND generation = ?3",
-                &vals![storage_binding_id, purpose, generation],
+                 created_at FROM binding_credential_revisions
+                 WHERE binding_id = ?1 AND purpose = ?2 AND generation = ?3",
+                &vals![binding_id, purpose, generation],
             )
             .await?
             .as_ref()
             .map(|row| {
                 Ok(StorageCredentialRevisionRecord {
-                    storage_binding_id: row.get(0)?,
+                    binding_id: row.get(0)?,
                     purpose: row.get(1)?,
                     generation: row.get(2)?,
                     secret_version_ref: row.get(3)?,
@@ -1141,9 +1139,9 @@ impl Database {
         let event_id = format!("grant-event:{}", Uuid::new_v4().simple());
         let resource_id = resource.stable_id();
         let (mutation_sql, mutation_params) = match (resource, current.as_ref()) {
-            (GrantResource::StorageBinding { id, .. }, None) => (
-                "INSERT INTO storage_binding_consumer_scopes
-                 (storage_binding_id, consumer_scope_key, grant_generation, grant_kind, state,
+            (GrantResource::Binding { id, .. }, None) => (
+                "INSERT INTO binding_consumer_scopes
+                 (binding_id, consumer_scope_key, grant_generation, grant_kind, state,
                   granted_by, granted_at, resource_version)
                  SELECT ?1, a.scope_key, 1, ?3, 'active', ?4, ?5, 1
                  FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
@@ -1152,12 +1150,12 @@ impl Database {
                    AND (a.kind = 'instance' OR o.deleted_at IS NULL)",
                 vals![id, consumer_scope_key, grant_kind, actor, now],
             ),
-            (GrantResource::StorageBinding { id, .. }, Some(grant)) => (
-                "UPDATE storage_binding_consumer_scopes SET
+            (GrantResource::Binding { id, .. }, Some(grant)) => (
+                "UPDATE binding_consumer_scopes SET
                    grant_generation = ?3, grant_kind = ?4, state = 'active',
                    granted_by = ?5, granted_at = ?6, revoked_by = NULL, revoked_at = NULL,
                    resource_version = resource_version + 1
-                 WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                 WHERE binding_id = ?1 AND consumer_scope_key = ?2
                    AND grant_generation = ?7 AND resource_version = ?8 AND state = 'revoked'
                    AND EXISTS (SELECT 1 FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
                      WHERE a.scope_key = ?2
@@ -1174,8 +1172,8 @@ impl Database {
                     grant.resource_version
                 ],
             ),
-            (GrantResource::NetworkBoundary { id }, None) => (
-                "INSERT INTO network_boundary_consumer_scopes
+            (GrantResource::NetworkPolicy { id }, None) => (
+                "INSERT INTO network_policy_consumer_scopes
                  (boundary_id, consumer_scope_key, grant_generation, grant_kind, state,
                   granted_by, granted_at, resource_version)
                  SELECT ?1, a.scope_key, 1, ?3, 'active', ?4, ?5, 1
@@ -1185,8 +1183,8 @@ impl Database {
                    AND (a.kind = 'instance' OR o.deleted_at IS NULL)",
                 vals![id, consumer_scope_key, grant_kind, actor, now],
             ),
-            (GrantResource::NetworkBoundary { id }, Some(grant)) => (
-                "UPDATE network_boundary_consumer_scopes SET
+            (GrantResource::NetworkPolicy { id }, Some(grant)) => (
+                "UPDATE network_policy_consumer_scopes SET
                    grant_generation = ?3, grant_kind = ?4, state = 'active',
                    granted_by = ?5, granted_at = ?6, revoked_by = NULL, revoked_at = NULL,
                    resource_version = resource_version + 1
@@ -1207,8 +1205,8 @@ impl Database {
                     grant.resource_version
                 ],
             ),
-            (GrantResource::DeliveryEndpoint { id, generation }, None) => (
-                "INSERT INTO delivery_endpoint_route_scopes
+            (GrantResource::Endpoint { id, generation }, None) => (
+                "INSERT INTO endpoint_route_scopes
                  (endpoint_id, endpoint_generation, consumer_scope_key, grant_generation,
                   grant_kind, state, granted_by, granted_at, resource_version)
                  SELECT ?1, ?2, a.scope_key, 1, ?4, 'active', ?5, ?6, 1
@@ -1218,8 +1216,8 @@ impl Database {
                    AND (a.kind = 'instance' OR o.deleted_at IS NULL)",
                 vals![id, generation, consumer_scope_key, grant_kind, actor, now],
             ),
-            (GrantResource::DeliveryEndpoint { id, generation }, Some(grant)) => (
-                "UPDATE delivery_endpoint_route_scopes SET
+            (GrantResource::Endpoint { id, generation }, Some(grant)) => (
+                "UPDATE endpoint_route_scopes SET
                    grant_generation = ?4, grant_kind = ?5, state = 'active',
                    granted_by = ?6, granted_at = ?7, revoked_by = NULL, revoked_at = NULL,
                    resource_version = resource_version + 1
@@ -1241,8 +1239,8 @@ impl Database {
                     grant.resource_version
                 ],
             ),
-            (GrantResource::StorageGateway { id, generation }, None) => (
-                "INSERT INTO storage_gateway_revision_route_scopes
+            (GrantResource::Gateway { id, generation }, None) => (
+                "INSERT INTO gateway_revision_route_scopes
                  (gateway_id, generation, consumer_scope_key, grant_generation, grant_kind,
                   state, granted_by, granted_at, resource_version)
                  SELECT ?1, ?2, a.scope_key, 1, ?4, 'active', ?5, ?6, 1
@@ -1252,8 +1250,8 @@ impl Database {
                    AND (a.kind = 'instance' OR o.deleted_at IS NULL)",
                 vals![id, generation, consumer_scope_key, grant_kind, actor, now],
             ),
-            (GrantResource::StorageGateway { id, generation }, Some(grant)) => (
-                "UPDATE storage_gateway_revision_route_scopes SET
+            (GrantResource::Gateway { id, generation }, Some(grant)) => (
+                "UPDATE gateway_revision_route_scopes SET
                    grant_generation = ?4, grant_kind = ?5, state = 'active',
                    granted_by = ?6, granted_at = ?7, revoked_by = NULL, revoked_at = NULL,
                    resource_version = resource_version + 1
@@ -1347,49 +1345,79 @@ impl Database {
         let event_id = format!("grant-event:{}", Uuid::new_v4().simple());
         let now = unix_now();
         let (update_sql, params) = match resource {
-            GrantResource::StorageBinding { id, .. } => (
-                "UPDATE storage_binding_consumer_scopes SET state = 'revoked', revoked_by = ?4,
+            GrantResource::Binding { id, .. } => (
+                "UPDATE binding_consumer_scopes SET state = 'revoked', revoked_by = ?4,
                  revoked_at = ?5, resource_version = resource_version + 1
-                 WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                 WHERE binding_id = ?1 AND consumer_scope_key = ?2
                    AND resource_version = ?3 AND state = 'active'
-                   AND NOT EXISTS (SELECT 1 FROM storage_binding_scope_grant_pins
-                     WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                   AND NOT EXISTS (SELECT 1 FROM binding_scope_grant_pins
+                     WHERE binding_id = ?1 AND consumer_scope_key = ?2
                        AND grant_generation = ?6)
                    AND NOT EXISTS (SELECT 1 FROM surface_placements
-                     WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2
+                     WHERE binding_id = ?1 AND consumer_scope_key = ?2
                        AND binding_grant_generation = ?6
                        AND binding_grant_state = 'active')",
-                vals![id, consumer_scope_key, expected_version, actor, now, current.grant_generation],
+                vals![
+                    id,
+                    consumer_scope_key,
+                    expected_version,
+                    actor,
+                    now,
+                    current.grant_generation
+                ],
             ),
-            GrantResource::NetworkBoundary { id } => (
-                "UPDATE network_boundary_consumer_scopes SET state = 'revoked', revoked_by = ?4,
+            GrantResource::NetworkPolicy { id } => (
+                "UPDATE network_policy_consumer_scopes SET state = 'revoked', revoked_by = ?4,
                  revoked_at = ?5, resource_version = resource_version + 1
                  WHERE boundary_id = ?1 AND consumer_scope_key = ?2
                    AND resource_version = ?3 AND state = 'active'
-                   AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                   AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                      WHERE boundary_id = ?1 AND consumer_scope_key = ?2
                        AND grant_generation = ?6)",
-                vals![id, consumer_scope_key, expected_version, actor, now, current.grant_generation],
+                vals![
+                    id,
+                    consumer_scope_key,
+                    expected_version,
+                    actor,
+                    now,
+                    current.grant_generation
+                ],
             ),
-            GrantResource::DeliveryEndpoint { id, generation } => (
-                "UPDATE delivery_endpoint_route_scopes SET state = 'revoked', revoked_by = ?5,
+            GrantResource::Endpoint { id, generation } => (
+                "UPDATE endpoint_route_scopes SET state = 'revoked', revoked_by = ?5,
                  revoked_at = ?6, resource_version = resource_version + 1
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?2 AND consumer_scope_key = ?3
                    AND resource_version = ?4 AND state = 'active'
-                   AND NOT EXISTS (SELECT 1 FROM delivery_endpoint_scope_grant_pins
+                   AND NOT EXISTS (SELECT 1 FROM endpoint_scope_grant_pins
                      WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                        AND consumer_scope_key = ?3 AND grant_generation = ?7)",
-                vals![id, generation, consumer_scope_key, expected_version, actor, now, current.grant_generation],
+                vals![
+                    id,
+                    generation,
+                    consumer_scope_key,
+                    expected_version,
+                    actor,
+                    now,
+                    current.grant_generation
+                ],
             ),
-            GrantResource::StorageGateway { id, generation } => (
-                "UPDATE storage_gateway_revision_route_scopes SET state = 'revoked', revoked_by = ?5,
+            GrantResource::Gateway { id, generation } => (
+                "UPDATE gateway_revision_route_scopes SET state = 'revoked', revoked_by = ?5,
                  revoked_at = ?6, resource_version = resource_version + 1
                  WHERE gateway_id = ?1 AND generation = ?2 AND consumer_scope_key = ?3
                    AND resource_version = ?4 AND state = 'active'
-                   AND NOT EXISTS (SELECT 1 FROM storage_gateway_scope_grant_pins
+                   AND NOT EXISTS (SELECT 1 FROM gateway_scope_grant_pins
                      WHERE gateway_id = ?1 AND generation = ?2
                        AND consumer_scope_key = ?3 AND grant_generation = ?7)",
-                vals![id, generation, consumer_scope_key, expected_version, actor, now, current.grant_generation],
+                vals![
+                    id,
+                    generation,
+                    consumer_scope_key,
+                    expected_version,
+                    actor,
+                    now,
+                    current.grant_generation
+                ],
             ),
         };
         self.backend
@@ -1431,27 +1459,27 @@ impl Database {
         consumer_scope_key: &str,
     ) -> Result<Option<ConsumerScopeGrantRecord>> {
         let (sql, params) = match resource {
-            GrantResource::StorageBinding { id, .. } => (
+            GrantResource::Binding { id, .. } => (
                 "SELECT grant_generation, grant_kind, state, granted_by, granted_at,
-                 revoked_by, revoked_at, resource_version FROM storage_binding_consumer_scopes
-                 WHERE storage_binding_id = ?1 AND consumer_scope_key = ?2",
+                 revoked_by, revoked_at, resource_version FROM binding_consumer_scopes
+                 WHERE binding_id = ?1 AND consumer_scope_key = ?2",
                 vals![id, consumer_scope_key],
             ),
-            GrantResource::NetworkBoundary { id } => (
+            GrantResource::NetworkPolicy { id } => (
                 "SELECT grant_generation, grant_kind, state, granted_by, granted_at,
-                 revoked_by, revoked_at, resource_version FROM network_boundary_consumer_scopes
+                 revoked_by, revoked_at, resource_version FROM network_policy_consumer_scopes
                  WHERE boundary_id = ?1 AND consumer_scope_key = ?2",
                 vals![id, consumer_scope_key],
             ),
-            GrantResource::DeliveryEndpoint { id, generation } => (
+            GrantResource::Endpoint { id, generation } => (
                 "SELECT grant_generation, grant_kind, state, granted_by, granted_at,
-                 revoked_by, revoked_at, resource_version FROM delivery_endpoint_route_scopes
+                 revoked_by, revoked_at, resource_version FROM endpoint_route_scopes
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?2 AND consumer_scope_key = ?3",
                 vals![id, generation, consumer_scope_key],
             ),
-            GrantResource::StorageGateway { id, generation } => (
+            GrantResource::Gateway { id, generation } => (
                 "SELECT grant_generation, grant_kind, state, granted_by, granted_at,
-                 revoked_by, revoked_at, resource_version FROM storage_gateway_revision_route_scopes
+                 revoked_by, revoked_at, resource_version FROM gateway_revision_route_scopes
                  WHERE gateway_id = ?1 AND generation = ?2 AND consumer_scope_key = ?3",
                 vals![id, generation, consumer_scope_key],
             ),
@@ -1479,25 +1507,25 @@ impl Database {
             .transpose()
     }
 
-    /// Creates a storage gateway and immutable generation one.
+    /// Creates a gateway and immutable generation one.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid closed policy/path fields, missing exact
     /// grants, a path reservation collision, or database failure.
-    pub async fn create_storage_gateway(
+    pub async fn create_gateway(
         &self,
         id: &str,
         owner_scope_key: &str,
         org_id: Option<i64>,
-        spec: &StorageGatewayRevisionSpec,
+        spec: &GatewayRevisionSpec,
         actor: &str,
-    ) -> Result<StorageGatewayRecord> {
+    ) -> Result<GatewayRecord> {
         validate_stable_id(id, "gateway id")?;
         validate_scope(owner_scope_key)?;
         let client_base_path = normalize_base_path(&spec.client_base_path)?;
         let origin_prefix = normalize_base_path(&spec.origin_prefix)?;
-        validate_storage_gateway_revision_spec(spec)?;
+        validate_gateway_revision_spec(spec)?;
         let access_policy_digest = sha256_hex(&spec.access_policy_json);
         let canonical = canonical_json(spec)?;
         let content_digest = sha256_hex(&canonical);
@@ -1505,8 +1533,8 @@ impl Database {
         let now = unix_now();
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.storage_gateway.created",
-            "resource_kind": "storage_gateway",
+            "type": "topology.gateway.created",
+            "resource_kind": "gateway",
             "resource_stable_id": id,
             "resource_generation": 1,
             "resource_version": 1,
@@ -1514,20 +1542,20 @@ impl Database {
         self.backend
             .batch(&[
                 Statement::new(
-                    "INSERT INTO storage_gateways (id, org_id, owner_scope_key, enabled,
+                    "INSERT INTO gateways (id, org_id, owner_scope_key, enabled,
                  reconciliation_state, created_at, updated_at)
                  VALUES (?1, ?2, ?3, 0, 'pending', ?4, ?4)",
                     vals![id, org_id, owner_scope_key, now],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_path_reservations
+                    "INSERT INTO gateway_path_reservations
                  (reservation_id, gateway_id, endpoint_id, client_base_path, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                     vals![reservation_id, id, spec.endpoint_id, client_base_path, now],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_revisions (gateway_id, generation, org_id,
-                 owner_scope_key, path_reservation_id, storage_binding_id, endpoint_id,
+                    "INSERT INTO gateway_revisions (gateway_id, generation, org_id,
+                 owner_scope_key, path_reservation_id, binding_id, endpoint_id,
                  endpoint_generation, endpoint_ingress_kind, client_base_path, origin_prefix,
                  access_policy_kind, access_boundary_id, access_boundary_revision,
                  external_provider_kind, external_provider_resource_id,
@@ -1535,12 +1563,12 @@ impl Database {
                  access_policy_json, access_policy_digest, content_digest, created_by, created_at)
                  SELECT ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, er.ingress_kind, ?8, ?9,
                    ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
-                 FROM delivery_endpoint_revisions er
+                 FROM endpoint_revisions er
                  WHERE er.endpoint_id = ?6 AND er.generation = ?7
                    AND er.ingress_kind IN ('external', 'layer7')
-                   AND EXISTS (SELECT 1 FROM storage_binding_consumer_scopes
-                     WHERE storage_binding_id = ?5 AND consumer_scope_key = ?3 AND state = 'active')
-                   AND EXISTS (SELECT 1 FROM delivery_endpoint_route_scopes
+                   AND EXISTS (SELECT 1 FROM binding_consumer_scopes
+                     WHERE binding_id = ?5 AND consumer_scope_key = ?3 AND state = 'active')
+                   AND EXISTS (SELECT 1 FROM endpoint_route_scopes
                      WHERE endpoint_id = ?6 AND endpoint_generation = ?7
                        AND consumer_scope_key = ?3 AND state = 'active')",
                     vals![
@@ -1548,7 +1576,7 @@ impl Database {
                         org_id,
                         owner_scope_key,
                         reservation_id,
-                        spec.storage_binding_id,
+                        spec.binding_id,
                         spec.endpoint_id,
                         spec.endpoint_generation,
                         client_base_path,
@@ -1567,20 +1595,20 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "UPDATE storage_gateways SET desired_generation = 1 WHERE id = ?1",
+                    "UPDATE gateways SET desired_generation = 1 WHERE id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_revision_route_scopes
+                    "INSERT INTO gateway_revision_route_scopes
                  (gateway_id, generation, consumer_scope_key, grant_generation, grant_kind,
                   state, granted_by, granted_at, resource_version)
                  SELECT ?1, 1, ?2, 1, 'owner', 'active', ?3, ?4, 1
-                 WHERE EXISTS (SELECT 1 FROM storage_gateway_revisions
+                 WHERE EXISTS (SELECT 1 FROM gateway_revisions
                    WHERE gateway_id = ?1 AND generation = 1)",
                     vals![id, owner_scope_key, actor, now],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_revision_events
+                    "INSERT INTO gateway_revision_events
                      (event_id, gateway_id, generation, gateway_resource_version,
                       transition, actor_id, occurred_at)
                      VALUES (?1, ?2, 1, 1, 'desired', ?3, ?4)",
@@ -1593,9 +1621,9 @@ impl Database {
                 ),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.storage_gateway.created",
+                    event_name: "topology.gateway.created",
                     owner_scope_key,
-                    resource_kind: "storage_gateway",
+                    resource_kind: "gateway",
                     resource_stable_id: id,
                     resource_generation_key: 1,
                     actor_kind: "key",
@@ -1606,28 +1634,28 @@ impl Database {
                 }),
             ])
             .await?;
-        self.storage_gateway(id)
+        self.gateway(id)
             .await?
             .context("created gateway disappeared")
     }
 
-    /// Returns a storage gateway identity and its desired/observed pointers.
+    /// Returns a gateway identity and its desired/observed pointers.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_gateway(&self, id: &str) -> Result<Option<StorageGatewayRecord>> {
+    pub async fn gateway(&self, id: &str) -> Result<Option<GatewayRecord>> {
         self.backend
             .query_opt(
                 "SELECT id, owner_scope_key, enabled, desired_generation, observed_generation,
              reconciliation_state, reconciliation_error, resource_version, created_at, updated_at
-             FROM storage_gateways WHERE id = ?1",
+             FROM gateways WHERE id = ?1",
                 &vals![id],
             )
             .await?
             .as_ref()
             .map(|row| {
-                Ok(StorageGatewayRecord {
+                Ok(GatewayRecord {
                     id: row.get(0)?,
                     owner_scope_key: row.get(1)?,
                     enabled: row.get(2)?,
@@ -1643,25 +1671,22 @@ impl Database {
             .transpose()
     }
 
-    /// Lists storage gateways, optionally restricted to one storage binding.
+    /// Lists gateways, optionally restricted to one binding.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn list_storage_gateways(
-        &self,
-        storage_binding_id: Option<i64>,
-    ) -> Result<Vec<StorageGatewayRecord>> {
-        let rows = if let Some(storage_binding_id) = storage_binding_id {
+    pub async fn list_gateways(&self, binding_id: Option<i64>) -> Result<Vec<GatewayRecord>> {
+        let rows = if let Some(binding_id) = binding_id {
             self.backend
                 .query(
                     "SELECT g.id, g.owner_scope_key, g.enabled, g.desired_generation,
                      g.observed_generation, g.reconciliation_state, g.reconciliation_error,
                      g.resource_version, g.created_at, g.updated_at
-                     FROM storage_gateways g JOIN storage_gateway_revisions r
+                     FROM gateways g JOIN gateway_revisions r
                        ON r.gateway_id = g.id AND r.generation = g.desired_generation
-                     WHERE r.storage_binding_id = ?1 ORDER BY g.id",
-                    &vals![storage_binding_id],
+                     WHERE r.binding_id = ?1 ORDER BY g.id",
+                    &vals![binding_id],
                 )
                 .await?
         } else {
@@ -1670,14 +1695,14 @@ impl Database {
                     "SELECT id, owner_scope_key, enabled, desired_generation,
                      observed_generation, reconciliation_state, reconciliation_error,
                      resource_version, created_at, updated_at
-                     FROM storage_gateways ORDER BY id",
+                     FROM gateways ORDER BY id",
                     &[],
                 )
                 .await?
         };
         rows.iter()
             .map(|row| {
-                Ok(StorageGatewayRecord {
+                Ok(GatewayRecord {
                     id: row.get(0)?,
                     owner_scope_key: row.get(1)?,
                     enabled: row.get(2)?,
@@ -1693,7 +1718,7 @@ impl Database {
             .collect()
     }
 
-    /// Enables or disables a storage gateway under optimistic concurrency.
+    /// Enables or disables a gateway under optimistic concurrency.
     ///
     /// Enabling requires the desired generation to be reconciled and ready.
     ///
@@ -1701,7 +1726,7 @@ impl Database {
     ///
     /// Returns an error for a stale version, unreconciled enable, missing
     /// gateway, or database failure.
-    pub async fn set_storage_gateway_enabled(
+    pub async fn set_gateway_enabled(
         &self,
         id: &str,
         enabled: bool,
@@ -1709,21 +1734,18 @@ impl Database {
         actor_kind: &str,
         actor_id: Option<i64>,
         actor_label: &str,
-    ) -> Result<StorageGatewayRecord> {
-        let gateway = self
-            .storage_gateway(id)
-            .await?
-            .context("storage gateway does not exist")?;
+    ) -> Result<GatewayRecord> {
+        let gateway = self.gateway(id).await?.context("gateway does not exist")?;
         let now = unix_now();
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let event_name = if enabled {
-            "topology.storage_gateway.enabled"
+            "topology.gateway.enabled"
         } else {
-            "topology.storage_gateway.disabled"
+            "topology.gateway.disabled"
         };
         let payload = serde_json::to_string(&serde_json::json!({
             "type": event_name,
-            "resource_kind": "storage_gateway",
+            "resource_kind": "gateway",
             "resource_stable_id": id,
             "resource_generation": gateway.desired_generation.unwrap_or_default(),
             "resource_version": expected_resource_version + 1,
@@ -1731,7 +1753,7 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "UPDATE storage_gateways SET enabled = ?2,
+                    "UPDATE gateways SET enabled = ?2,
                  resource_version = resource_version + 1, updated_at = ?3
                  WHERE id = ?1 AND resource_version = ?4
                    AND (?2 = 0 OR (desired_generation = observed_generation
@@ -1743,7 +1765,7 @@ impl Database {
                     event_id: &event_id,
                     event_name,
                     owner_scope_key: &gateway.owner_scope_key,
-                    resource_kind: "storage_gateway",
+                    resource_kind: "gateway",
                     resource_stable_id: id,
                     resource_generation_key: gateway.desired_generation.unwrap_or_default(),
                     actor_kind,
@@ -1754,17 +1776,17 @@ impl Database {
                 }),
             ])
             .await?;
-        self.storage_gateway(id)
+        self.gateway(id)
             .await?
-            .context("updated storage gateway disappeared")
+            .context("updated gateway disappeared")
     }
 
-    /// Deletes a disabled, unreferenced storage gateway under CAS.
+    /// Deletes a disabled, unreferenced gateway under CAS.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delete_storage_gateway(
+    pub async fn delete_gateway(
         &self,
         id: &str,
         expected_resource_version: i64,
@@ -1772,15 +1794,12 @@ impl Database {
         actor_id: Option<i64>,
         actor_label: &str,
     ) -> Result<bool> {
-        let gateway = self
-            .storage_gateway(id)
-            .await?
-            .context("storage gateway does not exist")?;
+        let gateway = self.gateway(id).await?.context("gateway does not exist")?;
         let now = unix_now();
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.storage_gateway.deleted",
-            "resource_kind": "storage_gateway",
+            "type": "topology.gateway.deleted",
+            "resource_kind": "gateway",
             "resource_stable_id": id,
             "resource_generation": gateway.desired_generation.unwrap_or_default(),
             "resource_version": expected_resource_version,
@@ -1788,27 +1807,27 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM storage_gateways WHERE id = ?1 AND resource_version = ?2
+                    "DELETE FROM gateways WHERE id = ?1 AND resource_version = ?2
                  AND enabled = 0
-                 AND NOT EXISTS (SELECT 1 FROM delivery_routes
-                   WHERE storage_gateway_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM routes
+                   WHERE gateway_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM topology_defaults
-                   WHERE storage_gateway_id = ?1)
+                   WHERE gateway_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM topology_operations o
                    WHERE o.state IN ('pending', 'running') AND (
-                     (o.primary_target_kind = 'storage_gateway'
+                     (o.primary_target_kind = 'gateway'
                        AND o.primary_target_stable_id = ?1)
                      OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                        WHERE t.operation_id = o.operation_id
-                         AND t.target_kind = 'storage_gateway' AND t.stable_id = ?1)))",
+                         AND t.target_kind = 'gateway' AND t.stable_id = ?1)))",
                     vals![id, expected_resource_version],
                 )
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &event_id,
-                    event_name: "topology.storage_gateway.deleted",
+                    event_name: "topology.gateway.deleted",
                     owner_scope_key: &gateway.owner_scope_key,
-                    resource_kind: "storage_gateway",
+                    resource_kind: "gateway",
                     resource_stable_id: id,
                     resource_generation_key: gateway.desired_generation.unwrap_or_default(),
                     actor_kind,
@@ -1819,7 +1838,7 @@ impl Database {
                 }),
             ])
             .await?;
-        Ok(self.storage_gateway(id).await?.is_none())
+        Ok(self.gateway(id).await?.is_none())
     }
 
     /// Returns one immutable storage-gateway generation.
@@ -1827,32 +1846,32 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn storage_gateway_revision(
+    pub async fn gateway_revision(
         &self,
         gateway_id: &str,
         generation: i64,
-    ) -> Result<Option<StorageGatewayRevisionRecord>> {
+    ) -> Result<Option<GatewayRevisionRecord>> {
         self.backend
             .query_opt(
-                "SELECT gateway_id, generation, owner_scope_key, storage_binding_id,
+                "SELECT gateway_id, generation, owner_scope_key, binding_id,
                  endpoint_id, endpoint_generation, endpoint_ingress_kind,
                  client_base_path, origin_prefix, access_policy_kind,
                  access_boundary_id, access_boundary_revision, external_provider_kind,
                  external_provider_resource_id, external_provider_revision,
                  access_policy_json, access_policy_digest, content_digest,
                  created_by, created_at
-                 FROM storage_gateway_revisions
+                 FROM gateway_revisions
                  WHERE gateway_id = ?1 AND generation = ?2",
                 &vals![gateway_id, generation],
             )
             .await?
             .map(|row| {
-                Ok(StorageGatewayRevisionRecord {
+                Ok(GatewayRevisionRecord {
                     gateway_id: row.get(0)?,
                     generation: row.get(1)?,
                     owner_scope_key: row.get(2)?,
-                    spec: StorageGatewayRevisionSpec {
-                        storage_binding_id: row.get(3)?,
+                    spec: GatewayRevisionSpec {
+                        binding_id: row.get(3)?,
                         endpoint_id: row.get(4)?,
                         endpoint_generation: row.get(5)?,
                         client_base_path: row.get(7)?,
@@ -1884,33 +1903,33 @@ impl Database {
     ///
     /// Returns an error for an invalid closed revision, stale gateway version,
     /// missing exact grants, path collision, or database failure.
-    pub async fn revise_storage_gateway(
+    pub async fn revise_gateway(
         &self,
         gateway_id: &str,
-        spec: &StorageGatewayRevisionSpec,
-        owner_grant: &StorageGatewayGrantCarryForward,
-        carry_forward_grants: &[StorageGatewayGrantCarryForward],
+        spec: &GatewayRevisionSpec,
+        owner_grant: &GatewayGrantCarryForward,
+        carry_forward_grants: &[GatewayGrantCarryForward],
         expected_resource_version: i64,
         actor: &str,
         request_id: &str,
-    ) -> Result<StorageGatewayRecord> {
-        validate_storage_gateway_revision_spec(spec)?;
+    ) -> Result<GatewayRecord> {
+        validate_gateway_revision_spec(spec)?;
         let gateway = self
-            .storage_gateway(gateway_id)
+            .gateway(gateway_id)
             .await?
-            .context("storage gateway does not exist")?;
+            .context("gateway does not exist")?;
         if gateway.resource_version != expected_resource_version {
-            bail!("storage gateway resource version is stale");
+            bail!("gateway resource version is stale");
         }
         let previous = gateway
             .desired_generation
-            .context("storage gateway has no desired generation")?;
+            .context("gateway has no desired generation")?;
         let generation = previous + 1;
         if owner_grant.consumer_scope_key != gateway.owner_scope_key
             || owner_grant.grant_generation <= 0
             || owner_grant.resource_version <= 0
         {
-            bail!("plan-sealed storage gateway owner grant is invalid");
+            bail!("plan-sealed gateway owner grant is invalid");
         }
         let mut carried_scopes = std::collections::BTreeSet::new();
         for grant in carry_forward_grants {
@@ -1935,7 +1954,7 @@ impl Database {
         let now = unix_now();
         let mut statements = vec![
             Statement::new(
-                "INSERT INTO storage_gateway_path_reservations
+                "INSERT INTO gateway_path_reservations
                      (reservation_id, gateway_id, endpoint_id, client_base_path, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                 vals![
@@ -1948,8 +1967,8 @@ impl Database {
             )
             .unchecked(),
             Statement::new(
-                "INSERT INTO storage_gateway_revisions (gateway_id, generation, org_id,
-                     owner_scope_key, path_reservation_id, storage_binding_id, endpoint_id,
+                "INSERT INTO gateway_revisions (gateway_id, generation, org_id,
+                     owner_scope_key, path_reservation_id, binding_id, endpoint_id,
                      endpoint_generation, endpoint_ingress_kind, client_base_path, origin_prefix,
                      access_policy_kind, access_boundary_id, access_boundary_revision,
                      external_provider_kind, external_provider_resource_id,
@@ -1958,21 +1977,21 @@ impl Database {
                      SELECT g.id, ?2, g.org_id, g.owner_scope_key, ?3, ?4, ?5, ?6,
                             er.ingress_kind, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                             ?15, ?16, ?17, ?18, ?19
-                     FROM storage_gateways g JOIN delivery_endpoint_revisions er
+                     FROM gateways g JOIN endpoint_revisions er
                        ON er.endpoint_id = ?5 AND er.generation = ?6
                      WHERE g.id = ?1 AND g.resource_version = ?20
                        AND er.ingress_kind IN ('external', 'layer7')
-                       AND EXISTS (SELECT 1 FROM storage_binding_consumer_scopes s
-                         WHERE s.storage_binding_id = ?4
+                       AND EXISTS (SELECT 1 FROM binding_consumer_scopes s
+                         WHERE s.binding_id = ?4
                            AND s.consumer_scope_key = g.owner_scope_key AND s.state = 'active')
-                       AND EXISTS (SELECT 1 FROM delivery_endpoint_route_scopes s
+                       AND EXISTS (SELECT 1 FROM endpoint_route_scopes s
                          WHERE s.endpoint_id = ?5 AND s.endpoint_generation = ?6
                            AND s.consumer_scope_key = g.owner_scope_key AND s.state = 'active')",
                 vals![
                     gateway_id,
                     generation,
                     reservation_id,
-                    spec.storage_binding_id,
+                    spec.binding_id,
                     spec.endpoint_id,
                     spec.endpoint_generation,
                     client_base_path,
@@ -1993,25 +2012,25 @@ impl Database {
             )
             .unchecked(),
             Statement::new(
-                "UPDATE storage_gateways SET desired_generation = ?2,
+                "UPDATE gateways SET desired_generation = ?2,
                      reconciliation_state = 'pending', reconciliation_error = NULL,
                      resource_version = resource_version + 1, updated_at = ?3
                      WHERE id = ?1 AND resource_version = ?4 AND EXISTS (
-                       SELECT 1 FROM storage_gateway_revisions
+                       SELECT 1 FROM gateway_revisions
                        WHERE gateway_id = ?1 AND generation = ?2)",
                 vals![gateway_id, generation, now, expected_resource_version],
             )
             .unchecked(),
             Statement::new(
-                "INSERT INTO storage_gateway_revision_route_scopes
+                "INSERT INTO gateway_revision_route_scopes
                      (gateway_id, generation, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      SELECT ?1, ?2, consumer_scope_key, 1, 'owner', 'active', ?4, ?5, 1
-                     FROM storage_gateway_revision_route_scopes
+                     FROM gateway_revision_route_scopes
                      WHERE gateway_id = ?1 AND generation = ?3
                        AND consumer_scope_key = ?6 AND grant_kind = 'owner' AND state = 'active'
                        AND grant_generation = ?7 AND resource_version = ?8
-                       AND EXISTS (SELECT 1 FROM storage_gateways
+                       AND EXISTS (SELECT 1 FROM gateways
                          WHERE id = ?1 AND desired_generation = ?2
                            AND resource_version = ?9)",
                 vals![
@@ -2032,7 +2051,7 @@ impl Database {
                      (event_id, resource_kind, resource_stable_id, resource_generation_key,
                       consumer_scope_key, grant_generation, transition, previous_state,
                       resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'storage_gateway', ?2, ?3, ?4, 1, 'granted', NULL,
+                     VALUES (?1, 'gateway', ?2, ?3, ?4, 1, 'granted', NULL,
                        'active', ?5, ?6, ?7)",
                 vals![
                     format!("grant-event:{}", Uuid::new_v4().simple()),
@@ -2046,7 +2065,7 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
-                "INSERT INTO storage_gateway_revision_events
+                "INSERT INTO gateway_revision_events
                      (event_id, gateway_id, generation, gateway_resource_version,
                       transition, actor_id, occurred_at)
                      VALUES (?1, ?2, ?3, ?4, 'desired', ?5, ?6)",
@@ -2064,16 +2083,16 @@ impl Database {
         for grant in carry_forward_grants {
             statements.push(
                 Statement::new(
-                    "INSERT INTO storage_gateway_revision_route_scopes
+                    "INSERT INTO gateway_revision_route_scopes
                      (gateway_id, generation, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      SELECT ?1, ?2, consumer_scope_key, 1, grant_kind, 'active', ?4, ?5, 1
-                     FROM storage_gateway_revision_route_scopes
+                     FROM gateway_revision_route_scopes
                      WHERE gateway_id = ?1 AND generation = ?3
                        AND consumer_scope_key = ?6 AND grant_kind = 'explicit'
                        AND state = 'active' AND grant_generation = ?7
                        AND resource_version = ?8
-                       AND EXISTS (SELECT 1 FROM storage_gateways
+                       AND EXISTS (SELECT 1 FROM gateways
                          WHERE id = ?1 AND desired_generation = ?2
                            AND resource_version = ?9)",
                     vals![
@@ -2096,7 +2115,7 @@ impl Database {
                      (event_id, resource_kind, resource_stable_id, resource_generation_key,
                       consumer_scope_key, grant_generation, transition, previous_state,
                       resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'storage_gateway', ?2, ?3, ?4, 1, 'granted', NULL,
+                     VALUES (?1, 'gateway', ?2, ?3, ?4, 1, 'granted', NULL,
                        'active', ?5, ?6, ?7)",
                     vals![
                         format!("grant-event:{}", Uuid::new_v4().simple()),
@@ -2113,8 +2132,8 @@ impl Database {
         }
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.storage_gateway.revised",
-            "resource_kind": "storage_gateway",
+            "type": "topology.gateway.revised",
+            "resource_kind": "gateway",
             "resource_stable_id": gateway_id,
             "resource_generation": generation,
             "resource_version": next_resource_version,
@@ -2122,9 +2141,9 @@ impl Database {
         statements.push(Database::topology_event_statement(
             &crate::db::NewTopologyEvent {
                 event_id: &topology_event_id,
-                event_name: "topology.storage_gateway.revised",
+                event_name: "topology.gateway.revised",
                 owner_scope_key: &gateway.owner_scope_key,
-                resource_kind: "storage_gateway",
+                resource_kind: "gateway",
                 resource_stable_id: gateway_id,
                 resource_generation_key: generation,
                 actor_kind: "key",
@@ -2135,9 +2154,9 @@ impl Database {
             },
         ));
         self.backend.checked_batch(&statements).await?;
-        self.storage_gateway(gateway_id)
+        self.gateway(gateway_id)
             .await?
-            .context("revised storage gateway disappeared")
+            .context("revised gateway disappeared")
     }
 
     /// Records controller reconciliation for the exact desired generation.
@@ -2146,26 +2165,26 @@ impl Database {
     ///
     /// Returns an error for an invalid state, stale gateway version/generation,
     /// missing generation, or database failure.
-    pub async fn observe_storage_gateway(
+    pub async fn observe_gateway(
         &self,
         gateway_id: &str,
         generation: i64,
         state: &str,
         error: Option<&str>,
         expected_resource_version: i64,
-    ) -> Result<StorageGatewayRecord> {
+    ) -> Result<GatewayRecord> {
         if !matches!(state, "ready" | "failed") || (state == "ready" && error.is_some()) {
             bail!("gateway observation must be ready without error or failed");
         }
         let affected = self
-            .storage_gateway(gateway_id)
+            .gateway(gateway_id)
             .await?
-            .context("storage gateway does not exist")?;
+            .context("gateway does not exist")?;
         let now = unix_now();
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.storage_gateway.reconciled",
-            "resource_kind": "storage_gateway",
+            "type": "topology.gateway.reconciled",
+            "resource_kind": "gateway",
             "resource_stable_id": gateway_id,
             "resource_generation": generation,
             "resource_version": expected_resource_version + 1,
@@ -2174,11 +2193,11 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "UPDATE storage_gateways SET observed_generation = ?2,
+                    "UPDATE gateways SET observed_generation = ?2,
                  reconciliation_state = ?3, reconciliation_error = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
                  WHERE id = ?1 AND desired_generation = ?2 AND resource_version = ?6
-                   AND EXISTS (SELECT 1 FROM storage_gateway_revisions
+                   AND EXISTS (SELECT 1 FROM gateway_revisions
                      WHERE gateway_id = ?1 AND generation = ?2)",
                     vals![
                         gateway_id,
@@ -2192,9 +2211,9 @@ impl Database {
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &event_id,
-                    event_name: "topology.storage_gateway.reconciled",
+                    event_name: "topology.gateway.reconciled",
                     owner_scope_key: &affected.owner_scope_key,
-                    resource_kind: "storage_gateway",
+                    resource_kind: "gateway",
                     resource_stable_id: gateway_id,
                     resource_generation_key: generation,
                     actor_kind: "system",
@@ -2205,9 +2224,9 @@ impl Database {
                 }),
             ])
             .await?;
-        self.storage_gateway(gateway_id)
+        self.gateway(gateway_id)
             .await?
-            .context("observed storage gateway disappeared")
+            .context("observed gateway disappeared")
     }
 
     /// Lists current direct routes pinned to one exact gateway generation.
@@ -2215,29 +2234,29 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn storage_gateway_route_preview(
+    pub async fn gateway_route_preview(
         &self,
         gateway_id: &str,
         generation: i64,
-    ) -> Result<Vec<StorageGatewayRoutePreviewRecord>> {
+    ) -> Result<Vec<GatewayRoutePreviewRecord>> {
         self.backend
             .query(
                 "SELECT c.canonical_rendered_url, p.name, r.base_path
-                   FROM delivery_routes r
-                   JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                   JOIN delivery_route_configurations c
-                     ON c.delivery_route_id = h.delivery_route_id
+                   FROM routes r
+                   JOIN route_heads h ON h.route_id = r.id
+                   JOIN route_configurations c
+                     ON c.route_id = h.route_id
                     AND c.configuration_generation = h.configuration_generation
                     AND c.configuration_digest = h.configuration_digest
                    JOIN surface_placements p ON p.id = r.placement_id
-                  WHERE r.storage_gateway_id = ?1 AND r.gateway_generation = ?2
+                  WHERE r.gateway_id = ?1 AND r.gateway_generation = ?2
                   ORDER BY c.canonical_rendered_url, r.id",
                 &vals![gateway_id, generation],
             )
             .await?
             .iter()
             .map(|row| {
-                Ok(StorageGatewayRoutePreviewRecord {
+                Ok(GatewayRoutePreviewRecord {
                     canonical_url: row.get(0)?,
                     placement_name: row.get(1)?,
                     base_path: row.get(2)?,
@@ -2258,13 +2277,13 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for an invalid typed host/port or database failure.
-    pub async fn inbound_delivery_routes(
+    pub async fn inbound_routes(
         &self,
         host: &InboundEndpointHost,
         effective_port: u16,
         scheme: &str,
         ingress_kind: &str,
-    ) -> Result<Vec<InboundDeliveryRouteRecord>> {
+    ) -> Result<Vec<InboundRouteRecord>> {
         if !matches!(scheme, "http" | "https") {
             bail!("delivery request scheme must be http or https");
         }
@@ -2326,18 +2345,18 @@ impl Database {
                           AND ao.access_policy_digest = r.access_policy_digest
                           AND ao.state = 'verified'
                           AND (r.mode <> 'direct' OR EXISTS (
-                            SELECT 1 FROM direct_delivery_route_evidence de
+                            SELECT 1 FROM direct_route_evidence de
                             JOIN placement_delivery_manifest_heads mh
                               ON mh.placement_id = de.placement_id
                              AND mh.manifest_id = de.publication_manifest_id
-                            JOIN storage_gateways g ON g.id = de.storage_gateway_id
-                            WHERE de.delivery_route_id = r.id
+                            JOIN gateways g ON g.id = de.gateway_id
+                            WHERE de.route_id = r.id
                               AND de.configuration_generation = h.configuration_generation
                               AND de.configuration_digest = h.configuration_digest
                               AND de.endpoint_id = r.endpoint_id
                               AND de.endpoint_generation = r.endpoint_generation
                               AND de.placement_id = r.placement_id
-                              AND de.storage_gateway_id = r.storage_gateway_id
+                              AND de.gateway_id = r.gateway_id
                               AND de.gateway_generation = r.gateway_generation
                               AND g.enabled = 1
                               AND g.desired_generation = de.gateway_generation
@@ -2349,37 +2368,37 @@ impl Database {
                             AND abo.protected_transport_observed = abr.protected_transport_required
                             AND abo.trusted_ingress_observed = abr.trusted_ingress_kind))
                          THEN 1 ELSE 0 END
-             FROM delivery_routes r
-             JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-             JOIN delivery_endpoints e ON e.id = r.endpoint_id
-             JOIN delivery_endpoint_revisions er
+             FROM routes r
+             JOIN route_heads h ON h.route_id = r.id
+             JOIN endpoints e ON e.id = r.endpoint_id
+             JOIN endpoint_revisions er
                ON er.endpoint_id = r.endpoint_id
               AND er.generation = r.endpoint_generation
-             JOIN network_boundary_revisions ebr
-               ON ebr.boundary_id = er.network_boundary_id
+             JOIN network_policy_revisions ebr
+               ON ebr.boundary_id = er.network_policy_id
               AND ebr.revision = er.boundary_revision
-             JOIN network_boundary_revision_lifecycle ebrl
+             JOIN network_policy_revision_lifecycle ebrl
                ON ebrl.boundary_id = ebr.boundary_id
               AND ebrl.revision = ebr.revision
-             JOIN network_boundary_observations ebo
+             JOIN network_policy_observations ebo
                ON ebo.boundary_id = ebr.boundary_id
               AND ebo.revision = ebr.revision
-             LEFT JOIN network_boundary_revisions abr
+             LEFT JOIN network_policy_revisions abr
                ON abr.boundary_id = r.access_boundary_id
               AND abr.revision = r.access_boundary_revision
-             LEFT JOIN network_boundary_revision_lifecycle abrl
+             LEFT JOIN network_policy_revision_lifecycle abrl
                ON abrl.boundary_id = abr.boundary_id
               AND abrl.revision = abr.revision
-             LEFT JOIN network_boundary_observations abo
+             LEFT JOIN network_policy_observations abo
                ON abo.boundary_id = abr.boundary_id
               AND abo.revision = abr.revision
              LEFT JOIN domains d ON d.id = e.domain_id
              LEFT JOIN registries reg ON reg.id = r.registry_id
              LEFT JOIN binary_caches cache ON cache.id = r.cache_id
-             LEFT JOIN delivery_endpoint_observations eo ON eo.endpoint_id = e.id
-             LEFT JOIN delivery_route_observations ro ON ro.delivery_route_id = r.id
-             LEFT JOIN delivery_route_access_observations ao
-               ON ao.delivery_route_id = r.id
+             LEFT JOIN endpoint_observations eo ON eo.endpoint_id = e.id
+             LEFT JOIN route_observations ro ON ro.route_id = r.id
+             LEFT JOIN route_access_observations ao
+               ON ao.route_id = r.id
              WHERE {host_predicate} AND e.effective_port = ?2
                AND e.scheme = ?3 AND er.ingress_kind = ?4
                AND r.enabled = 1
@@ -2406,7 +2425,7 @@ impl Database {
                     (None, Some(id)) => SurfaceTarget::BinaryCache(id),
                     _ => bail!("inbound route has an invalid surface identity"),
                 };
-                Ok(InboundDeliveryRouteRecord {
+                Ok(InboundRouteRecord {
                     id: row.get(0)?,
                     configuration_generation: row.get(17)?,
                     configuration_digest: row.get(18)?,
@@ -2474,12 +2493,12 @@ impl Database {
         let affected = self
             .backend
             .execute(
-                "INSERT INTO delivery_attestation_nonces (delivery_route_id,
+                "INSERT INTO delivery_attestation_nonces (route_id,
                     route_configuration_digest, nonce_digest, expires_at, accepted_at)
                  SELECT ?1, ?2, ?3, ?4, ?5
-                 WHERE EXISTS (SELECT 1 FROM delivery_route_heads
-                   WHERE delivery_route_id = ?1 AND configuration_digest = ?2)
-                 ON CONFLICT(delivery_route_id, route_configuration_digest, nonce_digest)
+                 WHERE EXISTS (SELECT 1 FROM route_heads
+                   WHERE route_id = ?1 AND configuration_digest = ?2)
+                 ON CONFLICT(route_id, route_configuration_digest, nonce_digest)
                  DO NOTHING",
                 &vals![
                     route_id,
@@ -2493,7 +2512,7 @@ impl Database {
         Ok(affected == 1)
     }
 
-    /// Returns whether a typed host belongs to any delivery endpoint identity.
+    /// Returns whether a typed host belongs to any endpoint identity.
     ///
     /// Scheme and port are intentionally ignored. Once a host is dedicated to
     /// delivery, a request on the wrong listener must fail closed instead of
@@ -2502,7 +2521,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for an invalid typed address or database failure.
-    pub async fn delivery_endpoint_host_exists(&self, host: &InboundEndpointHost) -> Result<bool> {
+    pub async fn endpoint_host_exists(&self, host: &InboundEndpointHost) -> Result<bool> {
         let (predicate, value) = match host {
             InboundEndpointHost::Domain(hostname) if !hostname.is_empty() => (
                 "d.hostname = ?1",
@@ -2528,7 +2547,7 @@ impl Database {
             .backend
             .query_opt(
                 &format!(
-                    "SELECT 1 FROM delivery_endpoints e
+                    "SELECT 1 FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id
                      WHERE {predicate}"
                 ),
@@ -2550,18 +2569,18 @@ impl Database {
     /// Returns an error for an invalid closed route shape, URL reservation
     /// collision, missing exact grants/targets, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_delivery_route(
+    pub async fn create_route(
         &self,
         id: &str,
         surface: SurfaceTarget,
-        spec: &DeliveryRouteSpec,
+        spec: &RouteSpec,
         canonical_rendered_url: &str,
         reservation_key_version: i64,
         reservation_digest: &[u8],
         reservation_candidates: &[(i64, Vec<u8>)],
         predecessor: Option<(&str, i64)>,
         actor: &str,
-    ) -> Result<DeliveryRouteRecord> {
+    ) -> Result<RouteRecord> {
         validate_stable_id(id, "route id")?;
         if reservation_key_version <= 0
             || reservation_digest.len() != 32
@@ -2582,7 +2601,7 @@ impl Database {
         {
             bail!("route reservation candidate versions must be unique");
         }
-        let base_path = validate_delivery_route_spec(spec)?;
+        let base_path = validate_route_spec(spec)?;
         if matches!(surface, SurfaceTarget::BinaryCache(_)) && spec.serves_git {
             bail!("a binary-cache route cannot serve Git");
         }
@@ -2593,16 +2612,16 @@ impl Database {
             bail!("invalid route mode");
         }
         let direct = spec.mode == "direct";
-        let direct_shape = spec.storage_gateway_id.is_some()
+        let direct_shape = spec.gateway_id.is_some()
             && spec.gateway_generation.is_some()
-            && spec.target_storage_binding_id.is_some()
+            && spec.target_binding_id.is_some()
             && spec.gateway_client_base_path.is_some()
             && spec.target_placement_prefix.is_some()
             && spec.placement_id.is_some()
             && spec.placement_policy_revision_id.is_none();
-        let hub_shape = spec.storage_gateway_id.is_none()
+        let hub_shape = spec.gateway_id.is_none()
             && spec.gateway_generation.is_none()
-            && spec.target_storage_binding_id.is_none()
+            && spec.target_binding_id.is_none()
             && spec.gateway_client_base_path.is_none()
             && spec.target_placement_prefix.is_none()
             && (spec.placement_id.is_some() ^ spec.placement_policy_revision_id.is_some());
@@ -2651,7 +2670,7 @@ impl Database {
                 bail!("a pinned route target must be a complete placement");
             }
             if direct {
-                if Some(placement.storage_binding_id) != spec.target_storage_binding_id
+                if Some(placement.binding_id) != spec.target_binding_id
                     || Some(placement.prefix.as_str()) != spec.target_placement_prefix.as_deref()
                     || join_route_segments(
                         spec.gateway_client_base_path.as_deref().unwrap_or_default(),
@@ -2690,7 +2709,7 @@ impl Database {
             "accessPolicyDigest": spec.access_policy_digest,
             "endpointId": spec.endpoint_id,
             "endpointGeneration": spec.endpoint_generation,
-            "gatewayId": spec.storage_gateway_id,
+            "gatewayId": spec.gateway_id,
             "gatewayGeneration": spec.gateway_generation,
             "externalProviderKind": spec.external_provider_kind,
             "externalProviderResourceId": spec.external_provider_resource_id,
@@ -2701,13 +2720,13 @@ impl Database {
         let (registry_id, cache_id) = surface.ids();
         let now = unix_now();
         let endpoint = self
-            .delivery_endpoint(&spec.endpoint_id)
+            .endpoint(&spec.endpoint_id)
             .await?
             .context("route endpoint does not exist")?;
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_route.created",
-            "resource_kind": "delivery_route",
+            "type": "topology.route.created",
+            "resource_kind": "route",
             "resource_stable_id": id,
             "resource_generation": 1,
             "resource_version": 1,
@@ -2729,10 +2748,10 @@ impl Database {
         }
         let reservation_statement = Statement::new(
             format!(
-                "INSERT INTO delivery_route_url_reservations
+                "INSERT INTO route_url_reservations
                  (id, digest_scheme, reservation_key_version, reservation_digest, created_at)
                  SELECT ?1, 'hmac_sha256_v1', ?2, ?3, ?4
-                 WHERE NOT EXISTS (SELECT 1 FROM delivery_route_url_reservations WHERE {})",
+                 WHERE NOT EXISTS (SELECT 1 FROM route_url_reservations WHERE {})",
                 collision_terms.join(" OR ")
             ),
             reservation_params,
@@ -2741,9 +2760,9 @@ impl Database {
             .batch(&[
                 reservation_statement,
                 Statement::new(
-                    "INSERT INTO delivery_routes (id, url_reservation_id, resource_version,
+                    "INSERT INTO routes (id, url_reservation_id, resource_version,
                  endpoint_id, endpoint_generation, endpoint_ingress_kind, consumer_scope_key,
-                 storage_gateway_id, gateway_generation, target_storage_binding_id,
+                 gateway_id, gateway_generation, target_binding_id,
                  gateway_client_base_path, target_placement_prefix, base_path, registry_id,
                  cache_id, mode, access_policy_kind, access_boundary_id,
                  access_boundary_revision, external_provider_kind,
@@ -2756,11 +2775,11 @@ impl Database {
                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                    ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32
                  WHERE ?33 IS NULL OR EXISTS (
-                   SELECT 1 FROM delivery_routes predecessor
+                   SELECT 1 FROM routes predecessor
                    WHERE predecessor.id = ?33 AND predecessor.resource_version = ?34
                      AND predecessor.enabled = 1
                      AND (predecessor.registry_id = ?13 OR predecessor.cache_id = ?14)
-                     AND NOT EXISTS (SELECT 1 FROM delivery_route_replacements replacement
+                     AND NOT EXISTS (SELECT 1 FROM route_replacements replacement
                        WHERE replacement.predecessor_route_id = predecessor.id))",
                     vals![
                         id,
@@ -2769,9 +2788,9 @@ impl Database {
                         spec.endpoint_generation,
                         spec.endpoint_ingress_kind,
                         spec.consumer_scope_key,
-                        spec.storage_gateway_id,
+                        spec.gateway_id,
                         spec.gateway_generation,
-                        spec.target_storage_binding_id,
+                        spec.target_binding_id,
                         spec.gateway_client_base_path,
                         spec.target_placement_prefix,
                         base_path,
@@ -2800,11 +2819,11 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_replacements
+                    "INSERT INTO route_replacements
                      (successor_route_id, predecessor_route_id,
                       predecessor_resource_version, created_at)
                      SELECT ?1, ?2, ?3, ?4 WHERE ?2 IS NOT NULL
-                       AND EXISTS (SELECT 1 FROM delivery_routes WHERE id = ?1)",
+                       AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
                     vals![
                         id,
                         predecessor.map(|value| value.0),
@@ -2813,11 +2832,11 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_configurations (delivery_route_id, registry_id,
+                    "INSERT INTO route_configurations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest,
                  canonical_rendered_url, canonical_configuration_json, created_by, created_at)
                  SELECT ?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8
-                 WHERE EXISTS (SELECT 1 FROM delivery_routes WHERE id = ?1)",
+                 WHERE EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
                     vals![
                         id,
                         registry_id,
@@ -2830,37 +2849,37 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_heads
-                 (delivery_route_id, registry_id, cache_id, configuration_generation,
+                    "INSERT INTO route_heads
+                 (route_id, registry_id, cache_id, configuration_generation,
                   configuration_digest, access_policy_digest)
                  SELECT id, registry_id, cache_id, 1, ?2, access_policy_digest
-                 FROM delivery_routes WHERE id = ?1
-                   AND EXISTS (SELECT 1 FROM delivery_route_configurations
-                   WHERE delivery_route_id = ?1 AND configuration_generation = 1
+                 FROM routes WHERE id = ?1
+                   AND EXISTS (SELECT 1 FROM route_configurations
+                   WHERE route_id = ?1 AND configuration_generation = 1
                      AND configuration_digest = ?2)",
                     vals![id, configuration_digest],
                 ),
                 Statement::new(
-                    "UPDATE delivery_routes SET enabled = ?2, updated_at = ?3
-                     WHERE id = ?1 AND EXISTS (SELECT 1 FROM delivery_route_heads
-                       WHERE delivery_route_id = ?1 AND configuration_generation = 1
+                    "UPDATE routes SET enabled = ?2, updated_at = ?3
+                     WHERE id = ?1 AND EXISTS (SELECT 1 FROM route_heads
+                       WHERE route_id = ?1 AND configuration_generation = 1
                          AND configuration_digest = ?4)",
                     vals![id, spec.enabled, now, configuration_digest],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_observations (delivery_route_id, registry_id,
+                    "INSERT INTO route_observations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, state, observed_at)
                  VALUES (?1, ?2, ?3, 1, ?4, 'unknown', ?5)",
                     vals![id, registry_id, cache_id, configuration_digest, now],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_scope_grant_pins
+                    "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest,
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active', 'route',
-                       ?5, 1, ?6, 1 FROM delivery_endpoint_route_scopes
+                       ?5, 1, ?6, 1 FROM endpoint_route_scopes
                      WHERE endpoint_id = ?2 AND endpoint_generation = ?3
                        AND consumer_scope_key = ?4 AND state = 'active' AND ?7 = 1",
                     vals![
@@ -2874,18 +2893,18 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_scope_grant_pins
+                    "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest,
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active', 'route',
-                       ?5, 1, ?6, 1 FROM storage_gateway_revision_route_scopes
+                       ?5, 1, ?6, 1 FROM gateway_revision_route_scopes
                      WHERE ?2 IS NOT NULL AND gateway_id = ?2 AND generation = ?3
                        AND consumer_scope_key = ?4 AND state = 'active' AND ?7 = 1",
                     vals![
                         format!("gateway-pin:{}", Uuid::new_v4().simple()),
-                        spec.storage_gateway_id,
+                        spec.gateway_id,
                         spec.gateway_generation,
                         spec.consumer_scope_key,
                         id,
@@ -2894,21 +2913,21 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
                       grant_generation, grant_state, usage_kind, target_kind,
                       target_stable_id, target_generation_key,
                       target_configuration_digest, acquired_by, acquired_at,
                       resource_version)
-                     SELECT ?1, er.network_boundary_id, er.boundary_revision, ?2,
+                     SELECT ?1, er.network_policy_id, er.boundary_revision, ?2,
                        s.grant_generation, 'active', 'route_endpoint', 'route',
                        ?3, 1, ?4, ?5, ?6, 1
-                     FROM delivery_endpoint_revisions er
-                     JOIN network_boundary_consumer_scopes s
-                       ON s.boundary_id = er.network_boundary_id
+                     FROM endpoint_revisions er
+                     JOIN network_policy_consumer_scopes s
+                       ON s.boundary_id = er.network_policy_id
                       AND s.consumer_scope_key = ?2 AND s.state = 'active'
-                     JOIN network_boundary_revision_lifecycle l
-                       ON l.boundary_id = er.network_boundary_id
+                     JOIN network_policy_revision_lifecycle l
+                       ON l.boundary_id = er.network_policy_id
                       AND l.revision = er.boundary_revision AND l.state = 'active'
                      WHERE er.endpoint_id = ?7 AND er.generation = ?8 AND ?9 = 1",
                     vals![
@@ -2924,7 +2943,7 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
                       grant_generation, grant_state, usage_kind, target_kind,
                       target_stable_id, target_generation_key,
@@ -2932,8 +2951,8 @@ impl Database {
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, s.grant_generation, 'active',
                        'route_access', 'route', ?5, 1, ?6, ?7, ?8, 1
-                     FROM network_boundary_consumer_scopes s
-                     JOIN network_boundary_revision_lifecycle l
+                     FROM network_policy_consumer_scopes s
+                     JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = s.boundary_id AND l.revision = ?3
                       AND l.state = 'active'
                      WHERE ?2 IS NOT NULL AND s.boundary_id = ?2
@@ -2957,13 +2976,13 @@ impl Database {
                       primary_target_stable_id, primary_target_generation_key,
                       primary_target_configuration_digest, state, progress_total,
                       detail_json, created_at)
-                     SELECT ?1, 'delivery_route_probe', e.owner_scope_key,
-                       'route.manage', 'delivery_route', r.id,
+                     SELECT ?1, 'route_probe', e.owner_scope_key,
+                       'route.manage', 'route', r.id,
                        h.configuration_generation, h.configuration_digest,
                        'pending', 1, ?2, ?3
-                     FROM delivery_routes r
-                     JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                     FROM routes r
+                     JOIN route_heads h ON h.route_id = r.id
+                     JOIN endpoints e ON e.id = r.endpoint_id
                      WHERE r.id = ?4 AND r.enabled = 1
                        AND h.configuration_generation = 1
                        AND h.configuration_digest = ?5",
@@ -2977,9 +2996,9 @@ impl Database {
                 ),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_route.created",
+                    event_name: "topology.route.created",
                     owner_scope_key: &endpoint.owner_scope_key,
-                    resource_kind: "delivery_route",
+                    resource_kind: "route",
                     resource_stable_id: id,
                     resource_generation_key: 1,
                     actor_kind: "key",
@@ -2990,9 +3009,7 @@ impl Database {
                 }),
             ])
             .await?;
-        self.delivery_route(id)
-            .await?
-            .context("created route disappeared")
+        self.route(id).await?.context("created route disappeared")
     }
 
     /// Returns a normalized route identity and current configuration pointer.
@@ -3000,13 +3017,13 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_route(&self, id: &str) -> Result<Option<DeliveryRouteRecord>> {
+    pub async fn route(&self, id: &str) -> Result<Option<RouteRecord>> {
         self.backend
             .query_opt(
                 "SELECT r.id, h.configuration_generation, h.configuration_digest, r.endpoint_id,
              r.endpoint_generation, r.base_path, r.registry_id, r.cache_id, r.mode, r.enabled,
-             r.resource_version, r.created_at, r.updated_at FROM delivery_routes r
-             JOIN delivery_route_heads h ON h.delivery_route_id = r.id WHERE r.id = ?1",
+             r.resource_version, r.created_at, r.updated_at FROM routes r
+             JOIN route_heads h ON h.route_id = r.id WHERE r.id = ?1",
                 &vals![id],
             )
             .await?
@@ -3019,7 +3036,7 @@ impl Database {
                     (None, Some(id)) => SurfaceTarget::BinaryCache(id),
                     _ => bail!("route has invalid surface discriminator"),
                 };
-                Ok(DeliveryRouteRecord {
+                Ok(RouteRecord {
                     id: row.get(0)?,
                     configuration_generation: row.get(1)?,
                     configuration_digest: row.get(2)?,
@@ -3042,30 +3059,27 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted JSON.
-    pub async fn delivery_route_snapshot(
-        &self,
-        id: &str,
-    ) -> Result<Option<DeliveryRouteSnapshotRecord>> {
+    pub async fn route_snapshot(&self, id: &str) -> Result<Option<RouteSnapshotRecord>> {
         self.backend
             .query_opt(
                 "SELECT c.canonical_configuration_json, c.canonical_rendered_url,
                         o.state, o.observed_at, o.error
-                   FROM delivery_route_heads h
-                   JOIN delivery_route_configurations c
-                     ON c.delivery_route_id = h.delivery_route_id
+                   FROM route_heads h
+                   JOIN route_configurations c
+                     ON c.route_id = h.route_id
                     AND c.configuration_generation = h.configuration_generation
                     AND c.configuration_digest = h.configuration_digest
-                   JOIN delivery_route_observations o
-                     ON o.delivery_route_id = h.delivery_route_id
+                   JOIN route_observations o
+                     ON o.route_id = h.route_id
                     AND o.configuration_generation = h.configuration_generation
                     AND o.configuration_digest = h.configuration_digest
-                  WHERE h.delivery_route_id = ?1",
+                  WHERE h.route_id = ?1",
                 &vals![id],
             )
             .await?
             .map(|row| {
                 let canonical: String = row.get(0)?;
-                Ok(DeliveryRouteSnapshotRecord {
+                Ok(RouteSnapshotRecord {
                     spec: serde_json::from_str(&canonical)
                         .context("decoding current route configuration")?,
                     canonical_url: row.get(1)?,
@@ -3077,22 +3091,19 @@ impl Database {
             .transpose()
     }
 
-    /// Lists delivery routes for one exact surface.
+    /// Lists routes for one exact surface.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn list_delivery_routes(
-        &self,
-        surface: SurfaceTarget,
-    ) -> Result<Vec<DeliveryRouteRecord>> {
+    pub async fn list_routes(&self, surface: SurfaceTarget) -> Result<Vec<RouteRecord>> {
         let (registry_id, cache_id) = surface.ids();
         self.backend
             .query(
                 "SELECT r.id, h.configuration_generation, h.configuration_digest, r.endpoint_id,
                  r.endpoint_generation, r.base_path, r.registry_id, r.cache_id, r.mode, r.enabled,
-                 r.resource_version, r.created_at, r.updated_at FROM delivery_routes r
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
+                 r.resource_version, r.created_at, r.updated_at FROM routes r
+                 JOIN route_heads h ON h.route_id = r.id
                  WHERE r.registry_id = ?1 OR r.cache_id = ?2
                  ORDER BY r.endpoint_id, r.base_path, r.id",
                 &vals![registry_id, cache_id],
@@ -3100,7 +3111,7 @@ impl Database {
             .await?
             .iter()
             .map(|row| {
-                Ok(DeliveryRouteRecord {
+                Ok(RouteRecord {
                     id: row.get(0)?,
                     configuration_generation: row.get(1)?,
                     configuration_digest: row.get(2)?,
@@ -3128,19 +3139,16 @@ impl Database {
     ///
     /// Returns an error for URL identity change, stale resource version,
     /// current signed-stack references whose URL would change, or database failure.
-    pub async fn update_delivery_route(
+    pub async fn update_route(
         &self,
         id: &str,
-        spec: &DeliveryRouteSpec,
+        spec: &RouteSpec,
         canonical_rendered_url: &str,
         expected_version: i64,
         actor: &str,
-    ) -> Result<DeliveryRouteRecord> {
-        let base_path = validate_delivery_route_spec(spec)?;
-        let existing = self
-            .delivery_route(id)
-            .await?
-            .context("route does not exist")?;
+    ) -> Result<RouteRecord> {
+        let base_path = validate_route_spec(spec)?;
+        let existing = self.route(id).await?.context("route does not exist")?;
         if existing.resource_version != expected_version {
             bail!("route resource version is stale");
         }
@@ -3153,7 +3161,7 @@ impl Database {
         let canonical_audiences = self
             .backend
             .query(
-                "SELECT audience FROM canonical_routes WHERE delivery_route_id = ?1",
+                "SELECT audience FROM route_advertisements WHERE route_id = ?1",
                 &vals![id],
             )
             .await?
@@ -3172,9 +3180,9 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT h.configuration_generation, c.canonical_rendered_url
-             FROM delivery_routes r JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-             JOIN delivery_route_configurations c
-               ON c.delivery_route_id = r.id
+             FROM routes r JOIN route_heads h ON h.route_id = r.id
+             JOIN route_configurations c
+               ON c.route_id = r.id
               AND c.configuration_generation = h.configuration_generation
              WHERE r.id = ?1 AND r.resource_version = ?2",
                 &vals![id, expected_version],
@@ -3195,7 +3203,7 @@ impl Database {
                 bail!("a pinned route target must be a complete placement");
             }
             if spec.mode == "direct"
-                && (Some(placement.storage_binding_id) != spec.target_storage_binding_id
+                && (Some(placement.binding_id) != spec.target_binding_id
                     || Some(placement.prefix.as_str()) != spec.target_placement_prefix.as_deref()
                     || join_route_segments(
                         spec.gateway_client_base_path.as_deref().unwrap_or_default(),
@@ -3238,7 +3246,7 @@ impl Database {
             "accessPolicyDigest": spec.access_policy_digest,
             "endpointId": spec.endpoint_id,
             "endpointGeneration": spec.endpoint_generation,
-            "gatewayId": spec.storage_gateway_id,
+            "gatewayId": spec.gateway_id,
             "gatewayGeneration": spec.gateway_generation,
             "externalProviderKind": spec.external_provider_kind,
             "externalProviderResourceId": spec.external_provider_resource_id,
@@ -3247,13 +3255,13 @@ impl Database {
         .to_string();
         let now = unix_now();
         let endpoint = self
-            .delivery_endpoint(&spec.endpoint_id)
+            .endpoint(&spec.endpoint_id)
             .await?
             .context("route endpoint does not exist")?;
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_route.revised",
-            "resource_kind": "delivery_route",
+            "type": "topology.route.revised",
+            "resource_kind": "route",
             "resource_stable_id": id,
             "resource_generation": next,
             "resource_version": expected_version + 1,
@@ -3262,38 +3270,38 @@ impl Database {
         self.backend
             .batch(&[
                 Statement::new(
-                    "DELETE FROM network_boundary_serving_pins
+                    "DELETE FROM network_policy_serving_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "DELETE FROM delivery_endpoint_scope_grant_pins
+                    "DELETE FROM endpoint_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "DELETE FROM storage_gateway_scope_grant_pins
+                    "DELETE FROM gateway_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "DELETE FROM direct_delivery_route_evidence WHERE delivery_route_id = ?1",
+                    "DELETE FROM direct_route_evidence WHERE route_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "DELETE FROM delivery_route_access_observations WHERE delivery_route_id = ?1",
+                    "DELETE FROM route_access_observations WHERE route_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "DELETE FROM delivery_route_observations WHERE delivery_route_id = ?1",
+                    "DELETE FROM route_observations WHERE route_id = ?1",
                     vals![id],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_configurations (delivery_route_id, registry_id,
+                    "INSERT INTO route_configurations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, canonical_rendered_url,
                  canonical_configuration_json, created_by, created_at)
                  SELECT id, registry_id, cache_id, ?2, ?3, ?4, ?5, ?6, ?7
-                 FROM delivery_routes WHERE id = ?1 AND resource_version = ?8",
+                 FROM routes WHERE id = ?1 AND resource_version = ?8",
                     vals![
                         id,
                         next,
@@ -3306,10 +3314,10 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "UPDATE delivery_routes SET endpoint_id = ?4, endpoint_generation = ?5,
+                    "UPDATE routes SET endpoint_id = ?4, endpoint_generation = ?5,
                  endpoint_ingress_kind = ?6, consumer_scope_key = ?7,
-                 storage_gateway_id = ?8, gateway_generation = ?9,
-                 target_storage_binding_id = ?10, gateway_client_base_path = ?11,
+                 gateway_id = ?8, gateway_generation = ?9,
+                 target_binding_id = ?10, gateway_client_base_path = ?11,
                  target_placement_prefix = ?12, mode = ?13, access_policy_kind = ?14,
                  access_boundary_id = ?15, access_boundary_revision = ?16,
                  external_provider_kind = ?17, external_provider_resource_id = ?18,
@@ -3320,7 +3328,7 @@ impl Database {
                  serves_cache = ?27, serves_web = ?28, enabled = ?29,
                  resource_version = resource_version + 1, updated_at = ?30
                  WHERE id = ?1 AND resource_version = ?31 AND EXISTS (
-                   SELECT 1 FROM delivery_route_configurations WHERE delivery_route_id = ?1
+                   SELECT 1 FROM route_configurations WHERE route_id = ?1
                      AND configuration_generation = ?2 AND configuration_digest = ?3)",
                     vals![
                         id,
@@ -3330,9 +3338,9 @@ impl Database {
                         spec.endpoint_generation,
                         spec.endpoint_ingress_kind,
                         spec.consumer_scope_key,
-                        spec.storage_gateway_id,
+                        spec.gateway_id,
                         spec.gateway_generation,
-                        spec.target_storage_binding_id,
+                        spec.target_binding_id,
                         spec.gateway_client_base_path,
                         spec.target_placement_prefix,
                         spec.mode,
@@ -3357,16 +3365,16 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "UPDATE delivery_route_heads SET configuration_generation = ?2,
+                    "UPDATE route_heads SET configuration_generation = ?2,
                      configuration_digest = ?3, access_policy_digest = ?4
-                     WHERE delivery_route_id = ?1 AND EXISTS (
-                       SELECT 1 FROM delivery_route_configurations
-                       WHERE delivery_route_id = ?1 AND configuration_generation = ?2
+                     WHERE route_id = ?1 AND EXISTS (
+                       SELECT 1 FROM route_configurations
+                       WHERE route_id = ?1 AND configuration_generation = ?2
                          AND configuration_digest = ?3)",
                     vals![id, next, digest, spec.access_policy_digest],
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_route_observations (delivery_route_id, registry_id,
+                    "INSERT INTO route_observations (route_id, registry_id,
                  cache_id, configuration_generation, configuration_digest, state, observed_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'unknown', ?6)",
                     {
@@ -3375,7 +3383,7 @@ impl Database {
                     },
                 ),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_scope_grant_pins
+                    "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest,
@@ -3383,9 +3391,9 @@ impl Database {
                      SELECT ?1, r.endpoint_id, r.endpoint_generation,
                        r.consumer_scope_key, g.grant_generation, 'active', 'route',
                        r.id, h.configuration_generation, h.configuration_digest, 1
-                     FROM delivery_routes r JOIN delivery_route_heads h
-                       ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoint_route_scopes g
+                     FROM routes r JOIN route_heads h
+                       ON h.route_id = r.id
+                     JOIN endpoint_route_scopes g
                        ON g.endpoint_id = r.endpoint_id
                       AND g.endpoint_generation = r.endpoint_generation
                       AND g.consumer_scope_key = r.consumer_scope_key
@@ -3393,46 +3401,46 @@ impl Database {
                     vals![format!("endpoint-pin:{}", Uuid::new_v4().simple()), id],
                 ),
                 Statement::new(
-                    "INSERT INTO storage_gateway_scope_grant_pins
+                    "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest,
                       resource_version)
-                     SELECT ?1, r.storage_gateway_id, r.gateway_generation,
+                     SELECT ?1, r.gateway_id, r.gateway_generation,
                        r.consumer_scope_key, g.grant_generation, 'active', 'route',
                        r.id, h.configuration_generation, h.configuration_digest, 1
-                     FROM delivery_routes r JOIN delivery_route_heads h
-                       ON h.delivery_route_id = r.id
-                     JOIN storage_gateway_revision_route_scopes g
-                       ON g.gateway_id = r.storage_gateway_id
+                     FROM routes r JOIN route_heads h
+                       ON h.route_id = r.id
+                     JOIN gateway_revision_route_scopes g
+                       ON g.gateway_id = r.gateway_id
                       AND g.generation = r.gateway_generation
                       AND g.consumer_scope_key = r.consumer_scope_key
                       AND g.state = 'active' WHERE r.id = ?2 AND r.enabled = 1
-                       AND r.storage_gateway_id IS NOT NULL",
+                       AND r.gateway_id IS NOT NULL",
                     vals![format!("gateway-pin:{}", Uuid::new_v4().simple()), id],
                 ),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
                       grant_generation, grant_state, usage_kind, target_kind,
                       target_stable_id, target_generation_key,
                       target_configuration_digest, acquired_by, acquired_at,
                       resource_version)
-                     SELECT ?1, er.network_boundary_id, er.boundary_revision,
+                     SELECT ?1, er.network_policy_id, er.boundary_revision,
                        r.consumer_scope_key, g.grant_generation, 'active',
                        'route_endpoint', 'route', r.id, h.configuration_generation,
                        h.configuration_digest, ?3, ?4, 1
-                     FROM delivery_routes r JOIN delivery_route_heads h
-                       ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoint_revisions er
+                     FROM routes r JOIN route_heads h
+                       ON h.route_id = r.id
+                     JOIN endpoint_revisions er
                        ON er.endpoint_id = r.endpoint_id
                       AND er.generation = r.endpoint_generation
-                     JOIN network_boundary_consumer_scopes g
-                       ON g.boundary_id = er.network_boundary_id
+                     JOIN network_policy_consumer_scopes g
+                       ON g.boundary_id = er.network_policy_id
                       AND g.consumer_scope_key = r.consumer_scope_key
                       AND g.state = 'active'
-                     JOIN network_boundary_revision_lifecycle l
-                       ON l.boundary_id = er.network_boundary_id
+                     JOIN network_policy_revision_lifecycle l
+                       ON l.boundary_id = er.network_policy_id
                       AND l.revision = er.boundary_revision AND l.state = 'active'
                      WHERE r.id = ?2 AND r.enabled = 1",
                     vals![
@@ -3443,7 +3451,7 @@ impl Database {
                     ],
                 ),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
                       grant_generation, grant_state, usage_kind, target_kind,
                       target_stable_id, target_generation_key,
@@ -3453,13 +3461,13 @@ impl Database {
                        r.consumer_scope_key, g.grant_generation, 'active',
                        'route_access', 'route', r.id, h.configuration_generation,
                        h.configuration_digest, ?3, ?4, 1
-                     FROM delivery_routes r JOIN delivery_route_heads h
-                       ON h.delivery_route_id = r.id
-                     JOIN network_boundary_consumer_scopes g
+                     FROM routes r JOIN route_heads h
+                       ON h.route_id = r.id
+                     JOIN network_policy_consumer_scopes g
                        ON g.boundary_id = r.access_boundary_id
                       AND g.consumer_scope_key = r.consumer_scope_key
                       AND g.state = 'active'
-                     JOIN network_boundary_revision_lifecycle l
+                     JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = r.access_boundary_id
                       AND l.revision = r.access_boundary_revision AND l.state = 'active'
                      WHERE r.id = ?2 AND r.enabled = 1
@@ -3477,12 +3485,12 @@ impl Database {
                          started_at = COALESCE(started_at, ?2), finished_at = ?2,
                          error = 'superseded by a route desired-state mutation',
                          resource_version = resource_version + 1
-                     WHERE operation_kind = 'delivery_route_probe'
-                       AND primary_target_kind = 'delivery_route'
+                     WHERE operation_kind = 'route_probe'
+                       AND primary_target_kind = 'route'
                        AND primary_target_stable_id = ?1
                        AND state IN ('pending', 'running')
-                       AND EXISTS (SELECT 1 FROM delivery_route_heads h
-                         WHERE h.delivery_route_id = ?1
+                       AND EXISTS (SELECT 1 FROM route_heads h
+                         WHERE h.route_id = ?1
                            AND h.configuration_generation = ?3
                            AND h.configuration_digest = ?4)",
                     vals![id, now, next, digest],
@@ -3494,13 +3502,13 @@ impl Database {
                       primary_target_stable_id, primary_target_generation_key,
                       primary_target_configuration_digest, state, progress_total,
                       detail_json, created_at)
-                     SELECT ?1, 'delivery_route_probe', e.owner_scope_key,
-                       'route.manage', 'delivery_route', r.id,
+                     SELECT ?1, 'route_probe', e.owner_scope_key,
+                       'route.manage', 'route', r.id,
                        h.configuration_generation, h.configuration_digest,
                        'pending', 1, ?2, ?3
-                     FROM delivery_routes r
-                     JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                     FROM routes r
+                     JOIN route_heads h ON h.route_id = r.id
+                     JOIN endpoints e ON e.id = r.endpoint_id
                      WHERE r.id = ?4 AND r.enabled = 1
                        AND h.configuration_generation = ?5
                        AND h.configuration_digest = ?6",
@@ -3508,9 +3516,9 @@ impl Database {
                 ),
                 Database::topology_event_insert_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_route.revised",
+                    event_name: "topology.route.revised",
                     owner_scope_key: &endpoint.owner_scope_key,
-                    resource_kind: "delivery_route",
+                    resource_kind: "route",
                     resource_stable_id: id,
                     resource_generation_key: next,
                     actor_kind: "key",
@@ -3521,9 +3529,7 @@ impl Database {
                 }),
             ])
             .await?;
-        self.delivery_route(id)
-            .await?
-            .context("updated route disappeared")
+        self.route(id).await?.context("updated route disappeared")
     }
 
     /// Deletes an unreferenced disabled route in dependency order.
@@ -3534,7 +3540,7 @@ impl Database {
     ///
     /// Returns an error when the route is stale, enabled, canonical, present in
     /// the signed stack, pinned, or on database failure.
-    pub async fn delete_delivery_route(
+    pub async fn delete_route(
         &self,
         id: &str,
         expected_version: i64,
@@ -3545,27 +3551,27 @@ impl Database {
         let eligible = self
             .backend
             .query_opt(
-                "SELECT e.owner_scope_key FROM delivery_routes r
-             JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                "SELECT e.owner_scope_key FROM routes r
+             JOIN endpoints e ON e.id = r.endpoint_id
              WHERE r.id = ?1 AND r.resource_version = ?2
              AND r.enabled = 0
-             AND NOT EXISTS (SELECT 1 FROM canonical_routes c WHERE c.delivery_route_id = r.id)
+             AND NOT EXISTS (SELECT 1 FROM route_advertisements c WHERE c.route_id = r.id)
              AND NOT EXISTS (SELECT 1 FROM registry_cache_stack_entries s
-               WHERE s.delivery_route_id = r.id)
-             AND NOT EXISTS (SELECT 1 FROM delivery_endpoint_scope_grant_pins p
+               WHERE s.route_id = r.id)
+             AND NOT EXISTS (SELECT 1 FROM endpoint_scope_grant_pins p
                WHERE p.target_kind = 'route' AND p.target_stable_id = r.id)
-             AND NOT EXISTS (SELECT 1 FROM storage_gateway_scope_grant_pins p
+             AND NOT EXISTS (SELECT 1 FROM gateway_scope_grant_pins p
                WHERE p.target_kind = 'route' AND p.target_stable_id = r.id)
-             AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins p
+             AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins p
                WHERE p.target_kind = 'route' AND p.target_stable_id = r.id)
              AND NOT EXISTS (SELECT 1 FROM topology_operations o
                WHERE o.state IN ('pending', 'running') AND (
-                 (o.primary_target_kind = 'delivery_route'
+                 (o.primary_target_kind = 'route'
                    AND o.primary_target_stable_id = r.id
-                   AND o.operation_kind <> 'delivery_route_probe')
+                   AND o.operation_kind <> 'route_probe')
                  OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                    WHERE t.operation_id = o.operation_id
-                     AND t.target_kind = 'delivery_route' AND t.stable_id = r.id)))",
+                     AND t.target_kind = 'route' AND t.stable_id = r.id)))",
                 &vals![id, expected_version],
             )
             .await?;
@@ -3576,8 +3582,8 @@ impl Database {
         let now = unix_now();
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_route.deleted",
-            "resource_kind": "delivery_route",
+            "type": "topology.route.deleted",
+            "resource_kind": "route",
             "resource_stable_id": id,
             "resource_version": expected_version,
         }))?;
@@ -3588,59 +3594,56 @@ impl Database {
                      SET state = 'cancelled', started_at = COALESCE(started_at, ?3),
                          finished_at = ?3, error = 'route deleted',
                          resource_version = resource_version + 1
-                     WHERE operation_kind = 'delivery_route_probe'
-                       AND primary_target_kind = 'delivery_route'
+                     WHERE operation_kind = 'route_probe'
+                       AND primary_target_kind = 'route'
                        AND primary_target_stable_id = ?1
                        AND state IN ('pending', 'running')
-                       AND EXISTS (SELECT 1 FROM delivery_routes r
+                       AND EXISTS (SELECT 1 FROM routes r
                          WHERE r.id = ?1 AND r.resource_version = ?2 AND r.enabled = 0)",
                     vals![id, expected_version, now],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM direct_delivery_route_evidence WHERE delivery_route_id = ?1",
+                    "DELETE FROM direct_route_evidence WHERE route_id = ?1",
                     vals![id],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM delivery_route_access_observations WHERE delivery_route_id = ?1",
+                    "DELETE FROM route_access_observations WHERE route_id = ?1",
                     vals![id],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM delivery_route_observations WHERE delivery_route_id = ?1",
+                    "DELETE FROM route_observations WHERE route_id = ?1",
+                    vals![id],
+                )
+                .unchecked(),
+                Statement::new("DELETE FROM route_heads WHERE route_id = ?1", vals![id])
+                    .unchecked(),
+                Statement::new(
+                    "DELETE FROM route_configurations WHERE route_id = ?1",
                     vals![id],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM delivery_route_heads WHERE delivery_route_id = ?1",
-                    vals![id],
-                )
-                .unchecked(),
-                Statement::new(
-                    "DELETE FROM delivery_route_configurations WHERE delivery_route_id = ?1",
-                    vals![id],
-                )
-                .unchecked(),
-                Statement::new(
-                    "DELETE FROM delivery_routes WHERE id = ?1 AND resource_version = ?2
+                    "DELETE FROM routes WHERE id = ?1 AND resource_version = ?2
                      AND enabled = 0
                      AND NOT EXISTS (SELECT 1 FROM topology_operations o
                        WHERE o.state IN ('pending', 'running') AND (
-                         (o.primary_target_kind = 'delivery_route'
+                         (o.primary_target_kind = 'route'
                            AND o.primary_target_stable_id = ?1
-                           AND o.operation_kind <> 'delivery_route_probe')
+                           AND o.operation_kind <> 'route_probe')
                          OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                            WHERE t.operation_id = o.operation_id
-                             AND t.target_kind = 'delivery_route' AND t.stable_id = ?1)))",
+                             AND t.target_kind = 'route' AND t.stable_id = ?1)))",
                     vals![id, expected_version],
                 )
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &event_id,
-                    event_name: "topology.delivery_route.deleted",
+                    event_name: "topology.route.deleted",
                     owner_scope_key: &owner_scope_key,
-                    resource_kind: "delivery_route",
+                    resource_kind: "route",
                     resource_stable_id: id,
                     resource_generation_key: 0,
                     actor_kind,
@@ -3651,24 +3654,24 @@ impl Database {
                 }),
             ])
             .await?;
-        Ok(self.delivery_route(id).await?.is_none())
+        Ok(self.route(id).await?.is_none())
     }
 
-    /// Creates or advances one surface/audience canonical route selection.
+    /// Creates or advances one surface/audience route advertisement selection.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid audience, wrong-surface or disabled
     /// route, missing capability, stale selection, or database failure.
-    pub async fn set_canonical_route(
+    pub async fn set_route_advertisement(
         &self,
         surface: SurfaceTarget,
         audience: &str,
-        delivery_route_id: &str,
+        route_id: &str,
         expected_resource_version: Option<i64>,
-    ) -> Result<CanonicalRouteRecord> {
+    ) -> Result<RouteAdvertisementRecord> {
         if !matches!(audience, "git" | "nix_cache" | "web") {
-            bail!("canonical route audience must be git, nix_cache, or web");
+            bail!("route advertisement audience must be git, nix_cache, or web");
         }
         let capability = match audience {
             "git" => "serves_git",
@@ -3689,56 +3692,49 @@ impl Database {
             self.backend
                 .execute(
                     &format!(
-                        "UPDATE canonical_routes SET delivery_route_id = ?4,
+                        "UPDATE route_advertisements SET route_id = ?4,
                          resource_version = resource_version + 1, updated_at = ?5
                          WHERE {surface_predicate} AND audience = ?3
                            AND resource_version = ?6 AND EXISTS (
-                             SELECT 1 FROM delivery_routes r WHERE r.id = ?4
+                             SELECT 1 FROM routes r WHERE r.id = ?4
                                AND {route_surface_predicate}
                                AND r.enabled = 1 AND r.{capability} = 1)"
                     ),
-                    &vals![
-                        registry_id,
-                        cache_id,
-                        audience,
-                        delivery_route_id,
-                        now,
-                        expected
-                    ],
+                    &vals![registry_id, cache_id, audience, route_id, now, expected],
                 )
                 .await?
         } else {
             self.backend
                 .execute(
                     &format!(
-                        "INSERT INTO canonical_routes (registry_id, cache_id, audience,
-                         delivery_route_id, resource_version, created_at, updated_at)
-                         SELECT ?1, ?2, ?3, r.id, 1, ?5, ?5 FROM delivery_routes r
+                        "INSERT INTO route_advertisements (registry_id, cache_id, audience,
+                         route_id, resource_version, created_at, updated_at)
+                         SELECT ?1, ?2, ?3, r.id, 1, ?5, ?5 FROM routes r
                          WHERE r.id = ?4 AND {route_surface_predicate}
                            AND r.enabled = 1 AND r.{capability} = 1"
                     ),
-                    &vals![registry_id, cache_id, audience, delivery_route_id, now],
+                    &vals![registry_id, cache_id, audience, route_id, now],
                 )
                 .await?
         };
         if affected != 1 {
-            bail!("canonical route is missing, stale, disabled, or incompatible");
+            bail!("route advertisement is missing, stale, disabled, or incompatible");
         }
-        self.canonical_route(surface, audience)
+        self.route_advertisement(surface, audience)
             .await?
-            .context("canonical route selection disappeared")
+            .context("route advertisement selection disappeared")
     }
 
-    /// Returns one configured canonical route selection.
+    /// Returns one configured route advertisement selection.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn canonical_route(
+    pub async fn route_advertisement(
         &self,
         surface: SurfaceTarget,
         audience: &str,
-    ) -> Result<Option<CanonicalRouteRecord>> {
+    ) -> Result<Option<RouteAdvertisementRecord>> {
         let (registry_id, cache_id) = surface.ids();
         let surface_predicate = match surface {
             SurfaceTarget::Registry(_) => "registry_id = ?1 AND cache_id IS NULL",
@@ -3747,18 +3743,18 @@ impl Database {
         self.backend
             .query_opt(
                 &format!(
-                    "SELECT registry_id, cache_id, audience, delivery_route_id,
-                 resource_version, created_at, updated_at FROM canonical_routes
+                    "SELECT registry_id, cache_id, audience, route_id,
+                 resource_version, created_at, updated_at FROM route_advertisements
                  WHERE {surface_predicate} AND audience = ?3"
                 ),
                 &vals![registry_id, cache_id, audience],
             )
             .await?
             .map(|row| {
-                Ok(CanonicalRouteRecord {
+                Ok(RouteAdvertisementRecord {
                     surface,
                     audience: row.get(2)?,
-                    delivery_route_id: row.get(3)?,
+                    route_id: row.get(3)?,
                     resource_version: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
@@ -3779,7 +3775,7 @@ impl Database {
         self.backend
             .query(
                 "SELECT registry_id, stack_path, committed_url, resolved_priority,
-                 mirror_group_id, cache_id, delivery_route_id, route_configuration_generation,
+                 mirror_group_id, cache_id, route_id, route_configuration_generation,
                  route_configuration_digest, indexed_commit
                  FROM registry_cache_stack_entries WHERE registry_id = ?1
                  ORDER BY resolved_priority, stack_path",
@@ -3795,7 +3791,7 @@ impl Database {
                     resolved_priority: row.get(3)?,
                     mirror_group_id: row.get(4)?,
                     cache_id: row.get(5)?,
-                    delivery_route_id: row.get(6)?,
+                    route_id: row.get(6)?,
                     route_configuration_generation: row.get(7)?,
                     route_configuration_digest: row.get(8)?,
                     indexed_commit: row.get(9)?,
@@ -3816,7 +3812,7 @@ impl Database {
         self.backend
             .query(
                 "SELECT registry_id, stack_path, committed_url, resolved_priority,
-                 mirror_group_id, cache_id, delivery_route_id, route_configuration_generation,
+                 mirror_group_id, cache_id, route_id, route_configuration_generation,
                  route_configuration_digest, indexed_commit
                  FROM registry_cache_stack_entries WHERE cache_id = ?1
                  ORDER BY registry_id, resolved_priority, stack_path",
@@ -3832,7 +3828,7 @@ impl Database {
                     resolved_priority: row.get(3)?,
                     mirror_group_id: row.get(4)?,
                     cache_id: row.get(5)?,
-                    delivery_route_id: row.get(6)?,
+                    route_id: row.get(6)?,
                     route_configuration_generation: row.get(7)?,
                     route_configuration_digest: row.get(8)?,
                     indexed_commit: row.get(9)?,
@@ -3848,7 +3844,7 @@ impl Database {
     /// Returns an error on database failure or malformed persisted data.
     pub async fn ready_cache_canonical_url(&self, cache_id: i64) -> Result<Option<String>> {
         Ok(self
-            .ready_cache_canonical_route_identity(cache_id)
+            .ready_cache_route_advertisement_identity(cache_id)
             .await?
             .map(|identity| identity.canonical_url))
     }
@@ -3866,18 +3862,18 @@ impl Database {
             .backend
             .query(
                 "SELECT cache.stable_id
-                 FROM delivery_routes route
-                 JOIN delivery_route_heads head ON head.delivery_route_id = route.id
-                 JOIN delivery_route_configurations config
-                   ON config.delivery_route_id = head.delivery_route_id
+                 FROM routes route
+                 JOIN route_heads head ON head.route_id = route.id
+                 JOIN route_configurations config
+                   ON config.route_id = head.route_id
                   AND config.configuration_generation = head.configuration_generation
                   AND config.configuration_digest = head.configuration_digest
-                 JOIN delivery_route_observations route_observation
-                   ON route_observation.delivery_route_id = route.id
+                 JOIN route_observations route_observation
+                   ON route_observation.route_id = route.id
                   AND route_observation.configuration_generation = head.configuration_generation
                   AND route_observation.configuration_digest = head.configuration_digest
-                 JOIN delivery_route_access_observations access_observation
-                   ON access_observation.delivery_route_id = route.id
+                 JOIN route_access_observations access_observation
+                   ON access_observation.route_id = route.id
                   AND access_observation.configuration_generation = head.configuration_generation
                   AND access_observation.configuration_digest = head.configuration_digest
                   AND access_observation.access_policy_digest = head.access_policy_digest
@@ -3908,11 +3904,11 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn ready_cache_canonical_route_identity(
+    pub async fn ready_cache_route_advertisement_identity(
         &self,
         cache_id: i64,
-    ) -> Result<Option<ReadyCanonicalRouteIdentity>> {
-        self.ready_canonical_route_identity(SurfaceTarget::BinaryCache(cache_id), "nix_cache")
+    ) -> Result<Option<ReadyRouteAdvertisementIdentity>> {
+        self.ready_route_advertisement_identity(SurfaceTarget::BinaryCache(cache_id), "nix_cache")
             .await
     }
 
@@ -3923,16 +3919,16 @@ impl Database {
     /// Returns an error on database failure or malformed persisted data.
     pub async fn ready_registry_canonical_url(&self, registry_id: i64) -> Result<Option<String>> {
         Ok(self
-            .ready_canonical_route_identity(SurfaceTarget::Registry(registry_id), "git")
+            .ready_route_advertisement_identity(SurfaceTarget::Registry(registry_id), "git")
             .await?
             .map(|identity| identity.canonical_url))
     }
 
-    async fn ready_canonical_route_identity(
+    async fn ready_route_advertisement_identity(
         &self,
         surface: SurfaceTarget,
         audience: &str,
-    ) -> Result<Option<ReadyCanonicalRouteIdentity>> {
+    ) -> Result<Option<ReadyRouteAdvertisementIdentity>> {
         let (registry_id, cache_id) = surface.ids();
         let surface_predicate = match surface {
             SurfaceTarget::Registry(_) => "cr.registry_id = ?1 AND cr.cache_id IS NULL",
@@ -3942,20 +3938,20 @@ impl Database {
             .query_opt(
                 &format!(
                     "SELECT r.id, h.configuration_generation,
-                   h.configuration_digest, c.canonical_rendered_url FROM canonical_routes cr
-                 JOIN delivery_routes r ON r.id = cr.delivery_route_id
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                 JOIN delivery_route_configurations c
-                   ON c.delivery_route_id = r.id
+                   h.configuration_digest, c.canonical_rendered_url FROM route_advertisements cr
+                 JOIN routes r ON r.id = cr.route_id
+                 JOIN route_heads h ON h.route_id = r.id
+                 JOIN route_configurations c
+                   ON c.route_id = r.id
                   AND c.configuration_generation = h.configuration_generation
                   AND c.configuration_digest = h.configuration_digest
-                 JOIN delivery_route_observations ro
-                   ON ro.delivery_route_id = r.id
+                 JOIN route_observations ro
+                   ON ro.route_id = r.id
                   AND ro.configuration_generation = h.configuration_generation
                   AND ro.configuration_digest = h.configuration_digest
                   AND ro.state = 'healthy'
-                 JOIN delivery_route_access_observations ao
-                   ON ao.delivery_route_id = r.id
+                 JOIN route_access_observations ao
+                   ON ao.route_id = r.id
                   AND ao.configuration_generation = h.configuration_generation
                   AND ao.configuration_digest = h.configuration_digest
                   AND ao.access_policy_digest = h.access_policy_digest
@@ -3963,20 +3959,20 @@ impl Database {
                  WHERE {surface_predicate} AND cr.audience = ?3
                    AND r.enabled = 1
                    AND (r.mode <> 'direct' OR EXISTS (
-                     SELECT 1 FROM direct_delivery_route_evidence de
+                     SELECT 1 FROM direct_route_evidence de
                      JOIN placement_delivery_manifest_heads mh
                        ON mh.placement_id = de.placement_id
                       AND mh.manifest_id = de.publication_manifest_id
-                     JOIN storage_gateways g ON g.id = de.storage_gateway_id
-                     JOIN delivery_endpoints e ON e.id = de.endpoint_id
-                     JOIN delivery_endpoint_observations eo ON eo.endpoint_id = de.endpoint_id
-                     WHERE de.delivery_route_id = r.id
+                     JOIN gateways g ON g.id = de.gateway_id
+                     JOIN endpoints e ON e.id = de.endpoint_id
+                     JOIN endpoint_observations eo ON eo.endpoint_id = de.endpoint_id
+                     WHERE de.route_id = r.id
                        AND de.configuration_generation = h.configuration_generation
                        AND de.configuration_digest = h.configuration_digest
                        AND de.endpoint_id = r.endpoint_id
                        AND de.endpoint_generation = r.endpoint_generation
                        AND de.placement_id = r.placement_id
-                       AND de.storage_gateway_id = r.storage_gateway_id
+                       AND de.gateway_id = r.gateway_id
                        AND de.gateway_generation = r.gateway_generation
                        AND g.enabled = 1 AND g.desired_generation = de.gateway_generation
                        AND g.observed_generation = de.gateway_generation
@@ -3989,7 +3985,7 @@ impl Database {
             )
             .await?
             .map(|row| {
-                Ok(ReadyCanonicalRouteIdentity {
+                Ok(ReadyRouteAdvertisementIdentity {
                     route_id: row.get(0)?,
                     configuration_generation: row.get(1)?,
                     configuration_digest: row.get(2)?,
@@ -4004,10 +4000,10 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn delivery_route_reconciliation_target(
+    pub async fn route_reconciliation_target(
         &self,
-        delivery_route_id: &str,
-    ) -> Result<Option<DeliveryRouteReconciliationTarget>> {
+        route_id: &str,
+    ) -> Result<Option<RouteReconciliationTarget>> {
         self.backend
             .query_opt(
                 "SELECT r.id, h.configuration_generation, h.configuration_digest,
@@ -4016,20 +4012,20 @@ impl Database {
                    r.access_policy_kind, r.external_provider_kind,
                    r.external_provider_resource_id, r.external_provider_revision,
                    mh.manifest_id
-                 FROM delivery_routes r
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                 JOIN delivery_route_configurations c
-                   ON c.delivery_route_id = r.id
+                 FROM routes r
+                 JOIN route_heads h ON h.route_id = r.id
+                 JOIN route_configurations c
+                   ON c.route_id = r.id
                   AND c.configuration_generation = h.configuration_generation
                   AND c.configuration_digest = h.configuration_digest
                  LEFT JOIN placement_delivery_manifest_heads mh
                    ON mh.placement_id = r.placement_id
                  WHERE r.id = ?1 AND r.enabled = 1",
-                &vals![delivery_route_id],
+                &vals![route_id],
             )
             .await?
             .map(|row| {
-                Ok(DeliveryRouteReconciliationTarget {
+                Ok(RouteReconciliationTarget {
                     id: row.get(0)?,
                     configuration_generation: row.get(1)?,
                     configuration_digest: row.get(2)?,
@@ -4056,34 +4052,34 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn hub_delivery_route_state_ready(
+    pub async fn hub_route_state_ready(
         &self,
-        delivery_route_id: &str,
+        route_id: &str,
         generation: i64,
         digest: &str,
     ) -> Result<bool> {
         Ok(self
             .backend
             .query_opt(
-                "SELECT 1 FROM delivery_routes r
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                 JOIN delivery_endpoints e ON e.id = r.endpoint_id
-                 JOIN delivery_endpoint_observations eo ON eo.endpoint_id = e.id
-                 JOIN delivery_endpoint_revisions er
+                "SELECT 1 FROM routes r
+                 JOIN route_heads h ON h.route_id = r.id
+                 JOIN endpoints e ON e.id = r.endpoint_id
+                 JOIN endpoint_observations eo ON eo.endpoint_id = e.id
+                 JOIN endpoint_revisions er
                    ON er.endpoint_id = e.id AND er.generation = r.endpoint_generation
-                 JOIN network_boundary_revisions ebr
-                   ON ebr.boundary_id = er.network_boundary_id
+                 JOIN network_policy_revisions ebr
+                   ON ebr.boundary_id = er.network_policy_id
                   AND ebr.revision = er.boundary_revision
-                 JOIN network_boundary_revision_lifecycle ebl
-                   ON ebl.boundary_id = er.network_boundary_id
+                 JOIN network_policy_revision_lifecycle ebl
+                   ON ebl.boundary_id = er.network_policy_id
                   AND ebl.revision = er.boundary_revision AND ebl.state = 'active'
-                 JOIN network_boundary_observations ebo
-                   ON ebo.boundary_id = er.network_boundary_id
+                 JOIN network_policy_observations ebo
+                   ON ebo.boundary_id = er.network_policy_id
                   AND ebo.revision = er.boundary_revision AND ebo.state = 'verified'
-                 LEFT JOIN network_boundary_revision_lifecycle abl
+                 LEFT JOIN network_policy_revision_lifecycle abl
                    ON abl.boundary_id = r.access_boundary_id
                   AND abl.revision = r.access_boundary_revision
-                 LEFT JOIN network_boundary_observations abo
+                 LEFT JOIN network_policy_observations abo
                    ON abo.boundary_id = r.access_boundary_id
                   AND abo.revision = r.access_boundary_revision
                  WHERE r.id = ?1 AND r.mode IN ('hub_proxy', 'hub_redirect')
@@ -4097,12 +4093,12 @@ impl Database {
                    AND ebo.trusted_ingress_observed = ebr.trusted_ingress_kind
                    AND (r.access_policy_kind <> 'private_network'
                      OR (abl.state = 'active' AND abo.state = 'verified'
-                       AND EXISTS (SELECT 1 FROM network_boundary_revisions abr
+                       AND EXISTS (SELECT 1 FROM network_policy_revisions abr
                          WHERE abr.boundary_id = r.access_boundary_id
                            AND abr.revision = r.access_boundary_revision
                            AND abo.protected_transport_observed = abr.protected_transport_required
                            AND abo.trusted_ingress_observed = abr.trusted_ingress_kind)))",
-                &vals![delivery_route_id, generation, digest],
+                &vals![route_id, generation, digest],
             )
             .await?
             .is_some())
@@ -4120,9 +4116,9 @@ impl Database {
     /// Returns an error for invalid state combinations, stale evidence, or a
     /// database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn reconcile_delivery_route(
+    pub async fn reconcile_route(
         &self,
-        delivery_route_id: &str,
+        route_id: &str,
         configuration_generation: i64,
         configuration_digest: &str,
         access_policy_digest: &str,
@@ -4143,13 +4139,13 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT r.mode, r.registry_id, r.cache_id, e.owner_scope_key
-                 FROM delivery_routes r
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                 JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                 FROM routes r
+                 JOIN route_heads h ON h.route_id = r.id
+                 JOIN endpoints e ON e.id = r.endpoint_id
                  WHERE r.id = ?1 AND h.configuration_generation = ?2
                    AND h.configuration_digest = ?3 AND h.access_policy_digest = ?4",
                 &vals![
-                    delivery_route_id,
+                    route_id,
                     configuration_generation,
                     configuration_digest,
                     access_policy_digest
@@ -4170,30 +4166,30 @@ impl Database {
         }
         let mut statements = vec![
             Statement::new(
-                "DELETE FROM direct_delivery_route_evidence WHERE delivery_route_id = ?1",
-                vals![delivery_route_id],
+                "DELETE FROM direct_route_evidence WHERE route_id = ?1",
+                vals![route_id],
             )
             .unchecked(),
             Statement::new(
-                "DELETE FROM delivery_route_access_observations WHERE delivery_route_id = ?1",
-                vals![delivery_route_id],
+                "DELETE FROM route_access_observations WHERE route_id = ?1",
+                vals![route_id],
             )
             .unchecked(),
             Statement::new(
-                "DELETE FROM delivery_route_observations WHERE delivery_route_id = ?1",
-                vals![delivery_route_id],
+                "DELETE FROM route_observations WHERE route_id = ?1",
+                vals![route_id],
             )
             .unchecked(),
             Statement::new(
-                "INSERT INTO delivery_route_observations
-                 (delivery_route_id, registry_id, cache_id, configuration_generation,
+                "INSERT INTO route_observations
+                 (route_id, registry_id, cache_id, configuration_generation,
                   configuration_digest, state, observed_at, error)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
-                 WHERE EXISTS (SELECT 1 FROM delivery_route_heads
-                   WHERE delivery_route_id = ?1 AND configuration_generation = ?4
+                 WHERE EXISTS (SELECT 1 FROM route_heads
+                   WHERE route_id = ?1 AND configuration_generation = ?4
                      AND configuration_digest = ?5)",
                 vals![
-                    delivery_route_id,
+                    route_id,
                     registry_id,
                     cache_id,
                     configuration_generation,
@@ -4205,15 +4201,15 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
-                "INSERT INTO delivery_route_access_observations
-                 (delivery_route_id, configuration_generation, configuration_digest,
+                "INSERT INTO route_access_observations
+                 (route_id, configuration_generation, configuration_digest,
                   access_policy_digest, state, observed_at, error)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-                 WHERE EXISTS (SELECT 1 FROM delivery_route_heads
-                   WHERE delivery_route_id = ?1 AND configuration_generation = ?2
+                 WHERE EXISTS (SELECT 1 FROM route_heads
+                   WHERE route_id = ?1 AND configuration_generation = ?2
                      AND configuration_digest = ?3 AND access_policy_digest = ?4)",
                 vals![
-                    delivery_route_id,
+                    route_id,
                     configuration_generation,
                     configuration_digest,
                     access_policy_digest,
@@ -4227,18 +4223,18 @@ impl Database {
         if let Some(manifest_id) = direct_publication_manifest_id {
             statements.push(
                 Statement::new(
-                    "INSERT INTO direct_delivery_route_evidence
-                     (delivery_route_id, registry_id, cache_id, configuration_generation,
+                    "INSERT INTO direct_route_evidence
+                     (route_id, registry_id, cache_id, configuration_generation,
                       configuration_digest, endpoint_id, endpoint_generation, placement_id,
-                      storage_gateway_id, gateway_generation, publication_manifest_id, observed_at)
+                      gateway_id, gateway_generation, publication_manifest_id, observed_at)
                      SELECT r.id, r.registry_id, r.cache_id, h.configuration_generation,
                        h.configuration_digest, r.endpoint_id, r.endpoint_generation,
-                       r.placement_id, r.storage_gateway_id, r.gateway_generation, mh.manifest_id, ?6
-                     FROM delivery_routes r JOIN delivery_route_heads h
-                       ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
-                     JOIN delivery_endpoint_observations eo ON eo.endpoint_id = r.endpoint_id
-                     JOIN storage_gateways g ON g.id = r.storage_gateway_id
+                       r.placement_id, r.gateway_id, r.gateway_generation, mh.manifest_id, ?6
+                     FROM routes r JOIN route_heads h
+                       ON h.route_id = r.id
+                     JOIN endpoints e ON e.id = r.endpoint_id
+                     JOIN endpoint_observations eo ON eo.endpoint_id = r.endpoint_id
+                     JOIN gateways g ON g.id = r.gateway_id
                      JOIN placement_delivery_manifest_heads mh ON mh.placement_id = r.placement_id
                      WHERE r.id = ?1 AND r.mode = 'direct'
                        AND h.configuration_generation = ?2 AND h.configuration_digest = ?3
@@ -4250,7 +4246,7 @@ impl Database {
                        AND g.observed_generation = r.gateway_generation
                        AND g.reconciliation_state = 'ready'",
                     vals![
-                        delivery_route_id,
+                        route_id,
                         configuration_generation,
                         configuration_digest,
                         access_policy_digest,
@@ -4263,9 +4259,9 @@ impl Database {
         }
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_route.reconciled",
-            "resource_kind": "delivery_route",
-            "resource_stable_id": delivery_route_id,
+            "type": "topology.route.reconciled",
+            "resource_kind": "route",
+            "resource_stable_id": route_id,
             "resource_generation": configuration_generation,
             "route_state": route_state,
             "access_state": access_state,
@@ -4273,10 +4269,10 @@ impl Database {
         statements.push(Database::topology_event_statement(
             &crate::db::NewTopologyEvent {
                 event_id: &event_id,
-                event_name: "topology.delivery_route.reconciled",
+                event_name: "topology.route.reconciled",
                 owner_scope_key: &owner_scope_key,
-                resource_kind: "delivery_route",
-                resource_stable_id: delivery_route_id,
+                resource_kind: "route",
+                resource_stable_id: route_id,
                 resource_generation_key: configuration_generation,
                 actor_kind: "system",
                 actor_id: None,
@@ -4296,36 +4292,36 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error when the changeset, registry, cache, or exact current
-    /// canonical route is missing, or on database failure.
+    /// route advertisement is missing, or on database failure.
     pub async fn record_consumer_cache_publication_intent(
         &self,
         change_id: &str,
         registry_id: i64,
         cache_id: i64,
-        route: &ReadyCanonicalRouteIdentity,
+        route: &ReadyRouteAdvertisementIdentity,
     ) -> Result<()> {
         let affected = self
             .backend
             .execute(
                 "INSERT INTO consumer_cache_publication_intents
                  (change_id, registry_id, committed_url, cache_id,
-                  delivery_route_id, route_configuration_generation,
+                  route_id, route_configuration_generation,
                  route_configuration_digest, created_at)
                  SELECT ?1, ?2, ?4, ?3, r.id, h.configuration_generation,
                         h.configuration_digest, ?8
-                 FROM canonical_routes cr JOIN delivery_routes r
-                   ON r.id = cr.delivery_route_id
-                 JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                 JOIN delivery_route_configurations c
-                   ON c.delivery_route_id = r.id
+                 FROM route_advertisements cr JOIN routes r
+                   ON r.id = cr.route_id
+                 JOIN route_heads h ON h.route_id = r.id
+                 JOIN route_configurations c
+                   ON c.route_id = r.id
                   AND c.configuration_generation = ?6
                   AND c.configuration_digest = ?7
-                 JOIN delivery_route_observations ro
-                   ON ro.delivery_route_id = r.id
+                 JOIN route_observations ro
+                   ON ro.route_id = r.id
                   AND ro.configuration_generation = ?6
                   AND ro.configuration_digest = ?7 AND ro.state = 'healthy'
-                 JOIN delivery_route_access_observations ao
-                   ON ao.delivery_route_id = r.id
+                 JOIN route_access_observations ao
+                   ON ao.route_id = r.id
                   AND ao.configuration_generation = ?6
                   AND ao.configuration_digest = ?7 AND ao.state = 'verified'
                  WHERE cr.cache_id = ?3 AND cr.audience = 'nix_cache'
@@ -4334,21 +4330,21 @@ impl Database {
                    AND c.canonical_rendered_url = ?4
                    AND r.enabled = 1 AND r.serves_cache = 1
                    AND (r.mode <> 'direct' OR EXISTS (
-                     SELECT 1 FROM direct_delivery_route_evidence de
+                     SELECT 1 FROM direct_route_evidence de
                      JOIN placement_delivery_manifest_heads mh
                        ON mh.placement_id = de.placement_id
                       AND mh.manifest_id = de.publication_manifest_id
-                     JOIN storage_gateways g ON g.id = de.storage_gateway_id
-                     JOIN delivery_endpoints e ON e.id = de.endpoint_id
-                     JOIN delivery_endpoint_observations eo
+                     JOIN gateways g ON g.id = de.gateway_id
+                     JOIN endpoints e ON e.id = de.endpoint_id
+                     JOIN endpoint_observations eo
                        ON eo.endpoint_id = de.endpoint_id
-                     WHERE de.delivery_route_id = r.id
+                     WHERE de.route_id = r.id
                        AND de.configuration_generation = ?6
                        AND de.configuration_digest = ?7
                        AND de.endpoint_id = r.endpoint_id
                        AND de.endpoint_generation = r.endpoint_generation
                        AND de.placement_id = r.placement_id
-                       AND de.storage_gateway_id = r.storage_gateway_id
+                       AND de.gateway_id = r.gateway_id
                        AND de.gateway_generation = r.gateway_generation
                        AND g.enabled = 1
                        AND g.desired_generation = de.gateway_generation
@@ -4377,7 +4373,7 @@ impl Database {
         let existing = self
             .backend
             .query_opt(
-                "SELECT cache_id, delivery_route_id, route_configuration_generation,
+                "SELECT cache_id, route_id, route_configuration_generation,
                         route_configuration_digest
                    FROM consumer_cache_publication_intents
                  WHERE change_id = ?1 AND registry_id = ?2 AND committed_url = ?3",
@@ -4393,7 +4389,7 @@ impl Database {
                 return Ok(());
             }
         }
-        bail!("managed consumer-cache intent has no exact canonical route or conflicts")
+        bail!("managed consumer-cache intent has no exact route advertisement or conflicts")
     }
 
     /// Records that a signed changeset deliberately treats a URL as external.
@@ -4416,7 +4412,7 @@ impl Database {
             .execute(
                 "INSERT INTO consumer_cache_publication_intents
                  (change_id, registry_id, committed_url, cache_id,
-                  delivery_route_id, route_configuration_generation,
+                  route_id, route_configuration_generation,
                   route_configuration_digest, created_at)
                  VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL, ?4)
                  ON CONFLICT(change_id, committed_url) DO NOTHING",
@@ -4467,12 +4463,12 @@ impl Database {
 mod tests {
     use super::*;
 
-    async fn route_fixture() -> (Database, i64, DeliveryRouteSpec, String, [u8; 32]) {
+    async fn route_fixture() -> (Database, i64, RouteSpec, String, [u8; 32]) {
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
         let org = db.org_by_slug("route-probes").await.unwrap().unwrap();
         let binding_id = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org_id),
                 "binding:route-probes",
                 &org.stable_id,
@@ -4498,7 +4494,7 @@ mod tests {
             .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".to_string(),
-                storage_binding_id: binding_id,
+                binding_id: binding_id,
                 prefix: "registry-route-probes".to_string(),
                 kind: "complete".to_string(),
                 desired_state: "active".to_string(),
@@ -4509,7 +4505,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let endpoint_spec = crate::db::DeliveryEndpointRevisionSpec {
+        let endpoint_spec = crate::db::EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: "hub".to_string(),
             listener_configuration: "listener:route-probes".to_string(),
@@ -4525,12 +4521,12 @@ mod tests {
             )
             .await
             .unwrap();
-        db.create_delivery_endpoint(
+        db.create_endpoint(
             "endpoint:route-probes",
             &org.stable_id,
             Some(org_id),
             "https",
-            &crate::db::DeliveryEndpointHostInput::Domain(domain.stable_id),
+            &crate::db::EndpointHostInput::Domain(domain.stable_id),
             443,
             "instance:public",
             &endpoint_spec,
@@ -4541,7 +4537,7 @@ mod tests {
         .await
         .unwrap();
         let access_policy_json = "{}".to_string();
-        let spec = DeliveryRouteSpec {
+        let spec = RouteSpec {
             consumer_scope_key: org.stable_id,
             endpoint_id: "endpoint:route-probes".to_string(),
             endpoint_generation: 1,
@@ -4556,9 +4552,9 @@ mod tests {
             external_provider_kind: None,
             external_provider_resource_id: None,
             external_provider_revision: None,
-            storage_gateway_id: None,
+            gateway_id: None,
             gateway_generation: None,
-            target_storage_binding_id: None,
+            target_binding_id: None,
             gateway_client_base_path: None,
             target_placement_prefix: None,
             placement_id: Some(placement.id),
@@ -4613,7 +4609,7 @@ mod tests {
         let (db, registry_id, mut spec, url, version_one_digest) = route_fixture().await;
         spec.enabled = false;
         let first = db
-            .create_delivery_route(
+            .create_route(
                 "route:reservation-v1",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4627,14 +4623,10 @@ mod tests {
             .await
             .unwrap();
         assert!(db
-            .delete_delivery_route(&first.id, first.resource_version, "user", Some(1), "test")
+            .delete_route(&first.id, first.resource_version, "user", Some(1), "test")
             .await
             .unwrap());
-        let endpoint = db
-            .delivery_endpoint(&spec.endpoint_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let endpoint = db.endpoint(&spec.endpoint_id).await.unwrap().unwrap();
         let endpoint_digest = hex::decode(endpoint.endpoint_identity_digest).unwrap();
         let version_two_digest = Database::route_reservation_digest(
             &[8_u8; 32],
@@ -4644,7 +4636,7 @@ mod tests {
         )
         .unwrap();
         assert!(db
-            .create_delivery_route(
+            .create_route(
                 "route:reservation-v2",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4660,17 +4652,13 @@ mod tests {
             )
             .await
             .is_err());
-        assert!(db
-            .delivery_route("route:reservation-v2")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(db.route("route:reservation-v2").await.unwrap().is_none());
     }
 
     #[test]
     fn rejects_open_route_variants_and_forged_access_digests() {
         let access_policy_json = "{}".to_string();
-        let mut spec = DeliveryRouteSpec {
+        let mut spec = RouteSpec {
             consumer_scope_key: "org:example".to_string(),
             endpoint_id: "endpoint:edge".to_string(),
             endpoint_generation: 1,
@@ -4685,9 +4673,9 @@ mod tests {
             external_provider_kind: None,
             external_provider_resource_id: None,
             external_provider_revision: None,
-            storage_gateway_id: None,
+            gateway_id: None,
             gateway_generation: None,
-            target_storage_binding_id: None,
+            target_binding_id: None,
             gateway_client_base_path: None,
             target_placement_prefix: None,
             placement_id: Some(1),
@@ -4697,21 +4685,21 @@ mod tests {
             serves_web: false,
             enabled: true,
         };
-        assert_eq!(validate_delivery_route_spec(&spec).unwrap(), "/cache");
+        assert_eq!(validate_route_spec(&spec).unwrap(), "/cache");
 
         spec.access_policy_digest = "forged".to_string();
-        assert!(validate_delivery_route_spec(&spec).is_err());
+        assert!(validate_route_spec(&spec).is_err());
         spec.access_policy_digest = sha256_hex(&spec.access_policy_json);
         spec.mode = "direct".to_string();
         spec.endpoint_ingress_kind = "external".to_string();
-        assert!(validate_delivery_route_spec(&spec).is_err());
+        assert!(validate_route_spec(&spec).is_err());
     }
 
     #[tokio::test]
     async fn route_mutation_and_probe_outbox_commit_atomically_and_deduplicate() {
         let (db, registry_id, spec, url, reservation_digest) = route_fixture().await;
         let route = db
-            .create_delivery_route(
+            .create_route(
                 "route:atomic",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4732,7 +4720,7 @@ mod tests {
         assert_eq!(operation.state, "pending");
 
         assert!(db
-            .create_delivery_route(
+            .create_route(
                 "route:atomic",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4763,7 +4751,7 @@ mod tests {
     async fn domain_probe_completion_promotes_endpoint_and_requeues_routes_atomically() {
         let (db, registry_id, spec, url, reservation_digest) = route_fixture().await;
         let route = db
-            .create_delivery_route(
+            .create_route(
                 "route:endpoint-ready",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4786,7 +4774,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let claimed_route_operation = db
-            .claim_delivery_route_probe_operation(
+            .claim_route_probe_operation(
                 &initial_route_operation.operation_id,
                 initial_route_operation.resource_version,
                 120,
@@ -4871,7 +4859,7 @@ mod tests {
             domain.resource_version
         );
         assert_eq!(
-            db.delivery_endpoint(&spec.endpoint_id)
+            db.endpoint(&spec.endpoint_id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -4905,14 +4893,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(completed.resource_version, domain.resource_version + 1);
-        let endpoint = db
-            .delivery_endpoint(&spec.endpoint_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let endpoint = db.endpoint(&spec.endpoint_id).await.unwrap().unwrap();
         assert_eq!(endpoint.resource_version, 2);
         let observation = db
-            .delivery_endpoint_observation(&spec.endpoint_id)
+            .endpoint_observation(&spec.endpoint_id)
             .await
             .unwrap()
             .unwrap();
@@ -4939,7 +4923,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM topology_operations
-                 WHERE operation_kind = 'delivery_route_probe'
+                 WHERE operation_kind = 'route_probe'
                    AND primary_target_stable_id = ?1
                    AND primary_target_generation_key = ?2
                    AND primary_target_configuration_digest = ?3
@@ -4967,14 +4951,14 @@ mod tests {
                   control_permission, primary_target_kind, primary_target_stable_id,
                   primary_target_generation_key, primary_target_configuration_digest,
                   state, detail_json, created_at)
-                 VALUES (?1, 'delivery_route_probe', 'instance', 'route.manage',
-                  'delivery_route', 'collision', 1, ?2, 'pending', '{}', ?3)",
+                 VALUES (?1, 'route_probe', 'instance', 'route.manage',
+                  'route', 'collision', 1, ?2, 'pending', '{}', ?3)",
                 &vals![operation_id, digest, unix_now()],
             )
             .await
             .unwrap();
         assert!(db
-            .create_delivery_route(
+            .create_route(
                 "route:rollback",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -4987,14 +4971,14 @@ mod tests {
             )
             .await
             .is_err());
-        assert!(db.delivery_route("route:rollback").await.unwrap().is_none());
+        assert!(db.route("route:rollback").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn route_update_cancels_stale_probe_and_stale_evidence_is_rejected() {
         let (db, registry_id, mut spec, url, reservation_digest) = route_fixture().await;
         let first = db
-            .create_delivery_route(
+            .create_route(
                 "route:supersede",
                 SurfaceTarget::Registry(registry_id),
                 &spec,
@@ -5012,7 +4996,7 @@ mod tests {
             automatic_route_probe_operation_id("create", &first.id, 1, &first_digest);
         spec.serves_web = true;
         let second = db
-            .update_delivery_route(&first.id, &spec, &url, first.resource_version, "test")
+            .update_route(&first.id, &spec, &url, first.resource_version, "test")
             .await
             .unwrap();
         assert_eq!(
@@ -5024,7 +5008,7 @@ mod tests {
             "cancelled"
         );
         assert!(db
-            .reconcile_delivery_route(
+            .reconcile_route(
                 &first.id,
                 1,
                 &first_digest,
@@ -5051,7 +5035,7 @@ mod tests {
 
         spec.enabled = false;
         let disabled = db
-            .update_delivery_route(&second.id, &spec, &url, second.resource_version, "test")
+            .update_route(&second.id, &spec, &url, second.resource_version, "test")
             .await
             .unwrap();
         assert_eq!(
@@ -5063,7 +5047,7 @@ mod tests {
             "cancelled"
         );
         assert!(db
-            .delete_delivery_route(
+            .delete_route(
                 &disabled.id,
                 disabled.resource_version,
                 "user",
@@ -5072,6 +5056,6 @@ mod tests {
             )
             .await
             .unwrap());
-        assert!(db.delivery_route(&disabled.id).await.unwrap().is_none());
+        assert!(db.route(&disabled.id).await.unwrap().is_none());
     }
 }

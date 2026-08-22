@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     HubAccessArgs, HubAccessPolicyArgs, HubAccessTokenCmd, HubAccessTokenIssueCmd,
-    HubAccessTokenRetireCmd, HubAuditCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd,
+    HubAccessTokenRetireCmd, HubAuditCmd, HubBindingCmd, HubBindingCredentialCmd,
+    HubBindingWriteRevisionCmd, HubCacheCmd, HubCacheCoverageCmd, HubCacheGcCmd,
     HubCacheGcFirstSweepCmd, HubCacheGcJobsCmd, HubCacheGcPlanCmd, HubCacheGcPolicyCmd,
     HubCacheGcRunsCmd, HubCacheIntegrationCmd, HubCacheLeaseCmd, HubCachePopulationCmd,
     HubCacheRetentionCmd, HubCacheRootCmd, HubChannelCmd, HubCmd, HubConfigCmd,
@@ -33,8 +34,8 @@ use crate::cli::{
     HubInstanceCmd, HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
     HubInstanceTopologyDefaultsCmd, HubInvitationCancelCmd, HubInvitationCmd,
     HubInvitationCreateCmd, HubMembershipRemoveCmd, HubMembershipSetRoleCmd, HubMutationArgs,
-    HubNetworkBoundaryCmd, HubNetworkBoundaryRevisionCmd, HubOperationArgs, HubOperationCmd,
-    HubOrgCmd, HubOrgMemberCmd, HubOrgTopologyDefaultsCmd, HubOrganizationDomainClaimCmd,
+    HubNetworkPolicyCmd, HubNetworkPolicyRevisionCmd, HubOperationArgs, HubOperationCmd, HubOrgCmd,
+    HubOrgMemberCmd, HubOrgTopologyDefaultsCmd, HubOrganizationDomainClaimCmd,
     HubOrganizationDomainCmd, HubOrganizationDomainReleaseCmd, HubOrganizationDomainVerifyCmd,
     HubPackageCmd, HubPlacementCmd, HubPlacementDrainCmd, HubPlacementEquivalenceCmd,
     HubPlacementEvictionCmd, HubPlacementPolicyCmd, HubPlacementPromotionCmd, HubProjectCmd,
@@ -42,9 +43,7 @@ use crate::cli::{
     HubReviewedApplyArgs, HubRouteCmd, HubRouteSpecArgs, HubServiceAccountCmd,
     HubServiceAccountCreateCmd, HubServiceAccountDeleteCmd, HubServiceAccountUpdateCmd,
     HubSigningKeyCmd, HubSigningKeyEnrollCmd, HubSigningKeyRetireCmd, HubSigningKeyRotateCmd,
-    HubSigningKeyUsageCmd, HubStorageBindingCmd, HubStorageBindingCredentialCmd,
-    HubStorageBindingWriteRevisionCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd,
-    HubWebhookCmd,
+    HubSigningKeyUsageCmd, HubSurfaceCmd, HubTopologyCmd, HubTopologyCutoverCmd, HubWebhookCmd,
 };
 
 const PIN_RESOLUTION_DOCUMENT_SCHEMA: &str = "aos.hub.pin-resolutions.v1";
@@ -255,23 +254,23 @@ mod tests {
     }
 
     #[test]
-    fn network_boundary_kinds_use_wire_spelling() {
+    fn network_policy_kinds_use_wire_spelling() {
         assert_eq!(
-            canonical_network_boundary_kind("source-allowlist"),
+            canonical_network_policy_kind("source-allowlist"),
             "source_allowlist"
         );
         assert_eq!(
-            canonical_network_boundary_kind("trusted-ingress"),
+            canonical_network_policy_kind("trusted-ingress"),
             "trusted_ingress"
         );
-        assert_eq!(canonical_network_boundary_kind("vpc"), "vpc");
+        assert_eq!(canonical_network_policy_kind("vpc"), "vpc");
     }
 
     #[test]
-    fn network_boundaries_start_with_an_explicit_untrusted_revision() {
+    fn network_policies_start_with_an_explicit_untrusted_revision() {
         use hub_types::trusted_ingress_configuration::Configuration;
 
-        let revision = initial_network_boundary_revision("required", "edge-probe");
+        let revision = initial_network_policy_revision("required", "edge-probe");
         assert!(revision.protected_transport_required);
         assert_eq!(revision.probe_location_configuration_ref, "edge-probe");
         assert!(matches!(
@@ -421,7 +420,7 @@ mod tests {
     fn placement_json_keeps_the_normalized_snake_case_contract() {
         let placement = Placement {
             name: "west".to_string(),
-            storage_binding_name: "origin".to_string(),
+            binding_name: "origin".to_string(),
             prefix: "registry/west".to_string(),
             spec: Some(PlacementSpec {
                 kind: "shard".to_string(),
@@ -461,7 +460,7 @@ mod tests {
             placement_json(&placement).unwrap(),
             serde_json::json!({
                 "name": "west",
-                "storage_binding_name": "origin",
+                "binding_name": "origin",
                 "prefix": "registry/west",
                 "spec": {
                     "kind": "shard",
@@ -505,7 +504,7 @@ mod tests {
             })),
             serde_json::json!({
                 "next_page_token": "next",
-                "storage_bindings": [{ "resource_version": "7" }],
+                "bindings": [{ "resource_version": "7" }],
             })
         );
     }
@@ -843,10 +842,10 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Operation { command } => operation(printer, command).await,
         HubCmd::Org { command } => org(printer, command).await,
         HubCmd::SigningKey { command } => signing_key(printer, command).await,
-        HubCmd::StorageBinding { command } => storage_binding(printer, command).await,
+        HubCmd::Binding { command } => binding(printer, command).await,
         HubCmd::Surface { command } => surface(printer, command).await,
         HubCmd::Domain { command } => domain(printer, command).await,
-        HubCmd::NetworkBoundary { command } => network_boundary(printer, command).await,
+        HubCmd::NetworkPolicy { command } => network_policy(printer, command).await,
         HubCmd::Endpoint { command } => endpoint(printer, command).await,
         HubCmd::Gateway { command } => gateway(printer, command).await,
         HubCmd::Route { command } => route(printer, command).await,
@@ -876,7 +875,7 @@ fn placement_json(placement: &Placement) -> Result<serde_json::Value> {
     });
     Ok(serde_json::json!({
         "name": placement.name,
-        "storage_binding_name": placement.storage_binding_name,
+        "binding_name": placement.binding_name,
         "prefix": placement.prefix,
         "spec": {
             "kind": spec.kind,
@@ -971,7 +970,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                     spec.kind,
                     observation.state,
                     observation.completeness,
-                    placement.storage_binding_name,
+                    placement.binding_name,
                     placement.prefix,
                     spec.read_order,
                 ));
@@ -1008,7 +1007,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                 return Ok(());
             }
             printer.header(&format!("{} on {surface}", placement.name));
-            printer.kv("storage binding", &placement.storage_binding_name);
+            printer.kv("binding", &placement.binding_name);
             printer.kv("prefix", &placement.prefix);
             let spec = placement
                 .spec
@@ -1069,7 +1068,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             access,
             surface,
             name,
-            storage_binding,
+            binding,
             prefix,
             kind,
             desired_state,
@@ -1098,7 +1097,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             let name = name
                 .as_ref()
                 .context("placement add requires <name> when creating a plan")?;
-            let storage_binding = storage_binding
+            let binding = binding
                 .as_ref()
                 .context("placement add requires --binding when creating a plan")?;
             let prefix = prefix
@@ -1141,7 +1140,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                 &hub_types::PlanCreatePlacementRequest {
                     surface: Some(surface.to_message()),
                     name: name.clone(),
-                    storage_binding_id: storage_binding.to_string(),
+                    binding_id: binding.to_string(),
                     prefix: prefix.to_string(),
                     kind: kind.into(),
                     desired_state: desired_state.clone(),
@@ -1568,7 +1567,7 @@ fn placement_policy_spec(
             hub_types::placement_policy_revision_spec::Selector::LocalThenRemote(
                 hub_types::LocalThenRemotePlacementPolicy {
                     replica_groups: local_groups.chain(remote_groups).collect(),
-                    local_boundary: Some(hub_types::NetworkBoundaryRevisionRef {
+                    local_boundary: Some(hub_types::NetworkPolicyRevisionRef {
                         boundary_id,
                         revision,
                     }),
@@ -3099,14 +3098,10 @@ fn operation_list_target(value: &str) -> Result<hub_types::OperationResourceRef>
         "cache" => hub_types::operation_resource_ref::Target::BinaryCacheId(stable_id.into()),
         "placement" => hub_types::operation_resource_ref::Target::PlacementId(stable_id.into()),
         "domain" => hub_types::operation_resource_ref::Target::DomainId(stable_id.into()),
-        "boundary" => {
-            hub_types::operation_resource_ref::Target::NetworkBoundaryId(stable_id.into())
-        }
-        "endpoint" => {
-            hub_types::operation_resource_ref::Target::DeliveryEndpointId(stable_id.into())
-        }
-        "gateway" => hub_types::operation_resource_ref::Target::StorageGatewayId(stable_id.into()),
-        "route" => hub_types::operation_resource_ref::Target::DeliveryRouteId(stable_id.into()),
+        "boundary" => hub_types::operation_resource_ref::Target::NetworkPolicyId(stable_id.into()),
+        "endpoint" => hub_types::operation_resource_ref::Target::EndpointId(stable_id.into()),
+        "gateway" => hub_types::operation_resource_ref::Target::GatewayId(stable_id.into()),
+        "route" => hub_types::operation_resource_ref::Target::RouteId(stable_id.into()),
         "policy" => hub_types::operation_resource_ref::Target::PlacementPolicyId(stable_id.into()),
         "retention" => {
             hub_types::operation_resource_ref::Target::RetentionSubscriptionId(stable_id.into())
@@ -3117,9 +3112,7 @@ fn operation_list_target(value: &str) -> Result<hub_types::OperationResourceRef>
         "gc-generation" => {
             hub_types::operation_resource_ref::Target::CacheGcGenerationId(stable_id.into())
         }
-        "storage-binding" => {
-            hub_types::operation_resource_ref::Target::StorageBindingId(stable_id.into())
-        }
+        "storage-binding" => hub_types::operation_resource_ref::Target::BindingId(stable_id.into()),
         _ => anyhow::bail!(
             "unknown operation target kind '{kind}'; expected registry, cache, placement, domain, boundary, endpoint, gateway, route, policy, retention, population, gc-generation, or storage-binding"
         ),
@@ -4291,7 +4284,7 @@ fn topology_stable_id(explicit: Option<&str>, kind: &str) -> String {
         .unwrap_or_else(|| format!("{kind}:{:032x}", rand::random::<u128>()))
 }
 
-fn canonical_network_boundary_kind(kind: &str) -> &str {
+fn canonical_network_policy_kind(kind: &str) -> &str {
     match kind {
         "source-allowlist" => "source_allowlist",
         "trusted-ingress" => "trusted_ingress",
@@ -4299,11 +4292,11 @@ fn canonical_network_boundary_kind(kind: &str) -> &str {
     }
 }
 
-fn initial_network_boundary_revision(
+fn initial_network_policy_revision(
     protected_transport: &str,
     probe_location: &str,
-) -> hub_types::NetworkBoundaryRevisionSpec {
-    hub_types::NetworkBoundaryRevisionSpec {
+) -> hub_types::NetworkPolicyRevisionSpec {
+    hub_types::NetworkPolicyRevisionSpec {
         protected_transport_required: protected_transport == "required",
         trusted_ingress: Some(hub_types::TrustedIngressConfiguration {
             configuration: Some(
@@ -4426,22 +4419,20 @@ fn canonical_cidr(value: &str) -> Result<String> {
     Ok(format!("{address}/{prefix}"))
 }
 
-fn parse_storage_binding_ref(value: &str) -> Result<hub_types::StorageBindingRef> {
+fn parse_binding_ref(value: &str) -> Result<hub_types::BindingRef> {
     let target = if value == "instance:default" {
-        hub_types::storage_binding_ref::Target::InstanceDefault(true)
+        hub_types::binding_ref::Target::InstanceDefault(true)
     } else {
         let (org_slug, name) = value
             .split_once(':')
             .or_else(|| value.split_once('/'))
-            .context("organization storage binding refs use <org>:<name>")?;
-        hub_types::storage_binding_ref::Target::Organization(
-            hub_types::OrganizationStorageBindingRef {
-                org_slug: org_slug.into(),
-                name: name.into(),
-            },
-        )
+            .context("organization binding refs use <org>:<name>")?;
+        hub_types::binding_ref::Target::Organization(hub_types::OrganizationBindingRef {
+            org_slug: org_slug.into(),
+            name: name.into(),
+        })
     };
-    Ok(hub_types::StorageBindingRef {
+    Ok(hub_types::BindingRef {
         target: Some(target),
     })
 }
@@ -4577,20 +4568,20 @@ async fn delete_topology_resource(
 }
 
 /// Handles `aos hub storage-binding …`.
-async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> Result<()> {
+async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
     match command {
-        HubStorageBindingCmd::List {
+        HubBindingCmd::List {
             hub,
             token,
             org,
             pagination,
         } => {
             let client = hub_client(hub, token.as_deref())?;
-            topology_read::<_, hub_types::ListStorageBindingsResponse>(
+            topology_read::<_, hub_types::ListBindingsResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListStorageBindings,
-                &hub_types::ListStorageBindingsRequest {
+                HubTopologyMethod::ListBindings,
+                &hub_types::ListBindingsRequest {
                     owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
@@ -4598,22 +4589,22 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             )
             .await
         }
-        HubStorageBindingCmd::Show {
+        HubBindingCmd::Show {
             access,
             binding_ref,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::GetStorageBindingResponse>(
+            topology_read::<_, hub_types::GetBindingResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetStorageBinding,
-                &hub_types::GetStorageBindingRequest {
-                    storage_binding: Some(parse_storage_binding_ref(binding_ref)?),
+                HubTopologyMethod::GetBinding,
+                &hub_types::GetBindingRequest {
+                    binding: Some(parse_binding_ref(binding_ref)?),
                 },
             )
             .await
         }
-        HubStorageBindingCmd::Create {
+        HubBindingCmd::Create {
             hub,
             token,
             org,
@@ -4634,12 +4625,12 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 return topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanCreateStorageBinding,
-                    HubTopologyMethod::CreateStorageBinding,
-                    &hub_types::PlanStorageBindingMutationRequest::default(),
+                    HubTopologyMethod::PlanCreateBinding,
+                    HubTopologyMethod::CreateBinding,
+                    &hub_types::PlanBindingMutationRequest::default(),
                     mutation,
                     |plan_id, idempotency_key, confirmation_hash| {
-                        hub_types::ApplyStorageBindingMutationRequest {
+                        hub_types::ApplyBindingMutationRequest {
                             plan_id: plan_id.into(),
                             idempotency_key: idempotency_key.into(),
                             confirmation_hash: confirmation_hash.into(),
@@ -4696,58 +4687,54 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                         );
                     }
                 }
-                _ => anyhow::bail!("unsupported storage binding kind '{kind}'"),
+                _ => anyhow::bail!("unsupported binding kind '{kind}'"),
             }
             let parsed_endpoint = endpoint
                 .as_deref()
                 .map(parse_storage_endpoint)
                 .transpose()?;
             let provider = match kind {
-                "local-fs" => hub_types::storage_binding_spec::Provider::LocalFilesystem(
+                "local-fs" => hub_types::binding_spec::Provider::LocalFilesystem(
                     hub_types::LocalFilesystemStorageProvider {
                         root_path: root.clone().unwrap_or_default(),
                     },
                 ),
-                "s3" => {
-                    hub_types::storage_binding_spec::Provider::S3(hub_types::S3StorageProvider {
-                        bucket: bucket.clone().unwrap_or_default(),
-                        prefix: prefix.clone().unwrap_or_default(),
-                        endpoint: parsed_endpoint,
-                        signing_region: region.clone().unwrap_or_default(),
-                        access_mode: access.clone().unwrap_or_default(),
-                    })
-                }
-                "r2" => {
-                    hub_types::storage_binding_spec::Provider::R2(hub_types::R2StorageProvider {
-                        bucket: bucket.clone().unwrap_or_default(),
-                        prefix: prefix.clone().unwrap_or_default(),
-                        endpoint: parsed_endpoint,
-                        signing_region: region.clone().unwrap_or_default(),
-                        access_mode: access.clone().unwrap_or_default(),
-                    })
-                }
-                "deployment-r2" => hub_types::storage_binding_spec::Provider::DeploymentR2(
+                "s3" => hub_types::binding_spec::Provider::S3(hub_types::S3StorageProvider {
+                    bucket: bucket.clone().unwrap_or_default(),
+                    prefix: prefix.clone().unwrap_or_default(),
+                    endpoint: parsed_endpoint,
+                    signing_region: region.clone().unwrap_or_default(),
+                    access_mode: access.clone().unwrap_or_default(),
+                }),
+                "r2" => hub_types::binding_spec::Provider::R2(hub_types::R2StorageProvider {
+                    bucket: bucket.clone().unwrap_or_default(),
+                    prefix: prefix.clone().unwrap_or_default(),
+                    endpoint: parsed_endpoint,
+                    signing_region: region.clone().unwrap_or_default(),
+                    access_mode: access.clone().unwrap_or_default(),
+                }),
+                "deployment-r2" => hub_types::binding_spec::Provider::DeploymentR2(
                     hub_types::DeploymentR2StorageProvider {
                         bucket_binding: bucket_binding.clone().unwrap_or_default(),
                     },
                 ),
-                other => anyhow::bail!("unsupported storage binding kind '{other}'"),
+                other => anyhow::bail!("unsupported binding kind '{other}'"),
             };
-            let spec = hub_types::StorageBindingSpec {
+            let spec = hub_types::BindingSpec {
                 name: name.clone(),
                 provider: Some(provider),
             };
             topology_mutation::<
                 _,
-                hub_types::ApplyStorageBindingMutationRequest,
-                hub_types::StorageBindingResponse,
+                hub_types::ApplyBindingMutationRequest,
+                hub_types::BindingResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanCreateStorageBinding,
-                HubTopologyMethod::CreateStorageBinding,
-                &hub_types::PlanStorageBindingMutationRequest {
+                HubTopologyMethod::PlanCreateBinding,
+                HubTopologyMethod::CreateBinding,
+                &hub_types::PlanBindingMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-binding"),
                     owner_scope_key: organization_scope_key(&client, Some(org)).await?,
                     spec: Some(spec),
@@ -4756,7 +4743,7 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyStorageBindingMutationRequest {
+                    hub_types::ApplyBindingMutationRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -4765,13 +4752,9 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             )
             .await
         }
-        HubStorageBindingCmd::Credential { command } => {
-            storage_binding_credential(printer, command).await
-        }
-        HubStorageBindingCmd::WriteRevision { command } => {
-            storage_binding_write_revision(printer, command).await
-        }
-        HubStorageBindingCmd::Grant {
+        HubBindingCmd::Credential { command } => binding_credential(printer, command).await,
+        HubBindingCmd::WriteRevision { command } => binding_write_revision(printer, command).await,
+        HubBindingCmd::Grant {
             access,
             binding_ref,
             consumer_scope,
@@ -4780,17 +4763,17 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             consumer_scope_mutation(
                 printer,
                 access,
-                "storage_binding",
+                "binding",
                 binding_ref,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanGrantStorageBindingScope,
-                HubTopologyMethod::GrantStorageBindingScope,
+                HubTopologyMethod::PlanGrantBindingScope,
+                HubTopologyMethod::GrantBindingScope,
             )
             .await
         }
-        HubStorageBindingCmd::Revoke {
+        HubBindingCmd::Revoke {
             access,
             binding_ref,
             consumer_scope,
@@ -4799,17 +4782,17 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
             consumer_scope_mutation(
                 printer,
                 access,
-                "storage_binding",
+                "binding",
                 binding_ref,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanRevokeStorageBindingScope,
-                HubTopologyMethod::RevokeStorageBindingScope,
+                HubTopologyMethod::PlanRevokeBindingScope,
+                HubTopologyMethod::RevokeBindingScope,
             )
             .await
         }
-        HubStorageBindingCmd::Delete {
+        HubBindingCmd::Delete {
             access,
             binding_ref,
             mutation,
@@ -4819,20 +4802,17 @@ async fn storage_binding(printer: &Printer, command: &HubStorageBindingCmd) -> R
                 access,
                 binding_ref,
                 mutation,
-                HubTopologyMethod::PlanDeleteStorageBinding,
-                HubTopologyMethod::DeleteStorageBinding,
+                HubTopologyMethod::PlanDeleteBinding,
+                HubTopologyMethod::DeleteBinding,
             )
             .await
         }
     }
 }
 
-async fn storage_binding_credential(
-    printer: &Printer,
-    command: &HubStorageBindingCredentialCmd,
-) -> Result<()> {
+async fn binding_credential(printer: &Printer, command: &HubBindingCredentialCmd) -> Result<()> {
     match command {
-        HubStorageBindingCredentialCmd::Set {
+        HubBindingCredentialCmd::Set {
             access,
             binding_ref,
             purpose,
@@ -4840,7 +4820,7 @@ async fn storage_binding_credential(
             credential_fingerprint,
             mutation,
         }
-        | HubStorageBindingCredentialCmd::Rotate {
+        | HubBindingCredentialCmd::Rotate {
             access,
             binding_ref,
             purpose,
@@ -4851,14 +4831,14 @@ async fn storage_binding_credential(
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             let expected_current_generation = match command {
-                HubStorageBindingCredentialCmd::Rotate {
+                HubBindingCredentialCmd::Rotate {
                     from_generation, ..
                 } => i64::try_from(*from_generation)?,
                 _ => 0,
             };
-            let rotate = matches!(command, HubStorageBindingCredentialCmd::Rotate { .. });
-            let request = hub_types::PlanStorageBindingCredentialRequest {
-                storage_binding_id: binding_ref.clone(),
+            let rotate = matches!(command, HubBindingCredentialCmd::Rotate { .. });
+            let request = hub_types::PlanBindingCredentialRequest {
+                binding_id: binding_ref.clone(),
                 purpose: purpose.clone(),
                 secret_version_ref: secret_version_ref.clone(),
                 expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
@@ -4867,7 +4847,7 @@ async fn storage_binding_credential(
                 credential_fingerprint: credential_fingerprint.clone(),
             };
             let build_apply = |plan_id: &str, idempotency_key: &str, confirmation_hash: &str| {
-                hub_types::ApplyStorageBindingCredentialRequest {
+                hub_types::ApplyBindingCredentialRequest {
                     plan_id: plan_id.into(),
                     idempotency_key: idempotency_key.into(),
                     confirmation_hash: confirmation_hash.into(),
@@ -4877,8 +4857,8 @@ async fn storage_binding_credential(
                 topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanRotateStorageBindingCredential,
-                    HubTopologyMethod::RotateStorageBindingCredential,
+                    HubTopologyMethod::PlanRotateBindingCredential,
+                    HubTopologyMethod::RotateBindingCredential,
                     &request,
                     mutation,
                     build_apply,
@@ -4888,8 +4868,8 @@ async fn storage_binding_credential(
                 topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanSetStorageBindingCredential,
-                    HubTopologyMethod::SetStorageBindingCredential,
+                    HubTopologyMethod::PlanSetBindingCredential,
+                    HubTopologyMethod::SetBindingCredential,
                     &request,
                     mutation,
                     build_apply,
@@ -4897,7 +4877,7 @@ async fn storage_binding_credential(
                 .await
             }
         }
-        HubStorageBindingCredentialCmd::Validate {
+        HubBindingCredentialCmd::Validate {
             access,
             binding_ref,
             purpose,
@@ -4911,10 +4891,10 @@ async fn storage_binding_credential(
             topology_operation_mutation(
                 printer,
                 &client,
-                HubTopologyMethod::PlanValidateStorageBindingCredential,
-                HubTopologyMethod::ValidateStorageBindingCredential,
-                &hub_types::PlanValidateStorageBindingCredentialRequest {
-                    storage_binding_id: binding_ref.clone(),
+                HubTopologyMethod::PlanValidateBindingCredential,
+                HubTopologyMethod::ValidateBindingCredential,
+                &hub_types::PlanValidateBindingCredentialRequest {
+                    binding_id: binding_ref.clone(),
                     purpose: purpose.clone().unwrap_or_default(),
                     generation: 0,
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
@@ -4928,41 +4908,41 @@ async fn storage_binding_credential(
     }
 }
 
-async fn storage_binding_write_revision(
+async fn binding_write_revision(
     printer: &Printer,
-    command: &HubStorageBindingWriteRevisionCmd,
+    command: &HubBindingWriteRevisionCmd,
 ) -> Result<()> {
     match command {
-        HubStorageBindingWriteRevisionCmd::List {
+        HubBindingWriteRevisionCmd::List {
             access,
             binding_ref,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListStorageBindingWriteRevisionsResponse>(
+            topology_read::<_, hub_types::ListBindingWriteRevisionsResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListStorageBindingWriteRevisions,
-                &hub_types::ListStorageBindingWriteRevisionsRequest {
-                    storage_binding: Some(parse_storage_binding_ref(binding_ref)?),
+                HubTopologyMethod::ListBindingWriteRevisions,
+                &hub_types::ListBindingWriteRevisionsRequest {
+                    binding: Some(parse_binding_ref(binding_ref)?),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
             )
             .await
         }
-        HubStorageBindingWriteRevisionCmd::Show {
+        HubBindingWriteRevisionCmd::Show {
             access,
             binding_ref,
             revision,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::StorageBindingWriteRevisionResponse>(
+            topology_read::<_, hub_types::BindingWriteRevisionResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetStorageBindingWriteRevision,
-                &hub_types::GetStorageBindingWriteRevisionRequest {
-                    storage_binding: Some(parse_storage_binding_ref(binding_ref)?),
+                HubTopologyMethod::GetBindingWriteRevision,
+                &hub_types::GetBindingWriteRevisionRequest {
+                    binding: Some(parse_binding_ref(binding_ref)?),
                     revision: i64::try_from(*revision)?,
                 },
             )
@@ -4994,8 +4974,8 @@ async fn surface(printer: &Printer, command: &HubSurfaceCmd) -> Result<()> {
             printer.kv("placements", &response.placements.len().to_string());
             printer.kv("routes", &response.routes.len().to_string());
             printer.kv(
-                "canonical routes",
-                &response.canonical_routes.len().to_string(),
+                "route advertisements",
+                &response.route_advertisements.len().to_string(),
             );
             printer.kv(
                 "placement policies",
@@ -5072,7 +5052,7 @@ fn print_surface_topology(
             .unwrap_or("unknown");
         printer.plain(&format!(
             "  {} [{role}/{state}] -> {}:{}",
-            placement.name, placement.storage_binding_name, placement.prefix
+            placement.name, placement.binding_name, placement.prefix
         ));
     }
     printer.plain("placement policies");
@@ -5119,11 +5099,11 @@ fn print_surface_topology(
             spec.base_path
         ));
     }
-    printer.plain("canonical routes");
-    if topology.canonical_routes.is_empty() {
+    printer.plain("route advertisements");
+    if topology.route_advertisements.is_empty() {
         printer.plain("  (none)");
     }
-    for canonical in &topology.canonical_routes {
+    for canonical in &topology.route_advertisements {
         printer.plain(&format!(
             "  {} -> {}",
             canonical.audience, canonical.route_id
@@ -5429,18 +5409,18 @@ fn parse_generation_ref(value: &str, kind: &str) -> Result<(String, i64)> {
     Ok((stable_id.into(), generation))
 }
 
-async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) -> Result<()> {
+async fn network_policy(printer: &Printer, command: &HubNetworkPolicyCmd) -> Result<()> {
     match command {
-        HubNetworkBoundaryCmd::List {
+        HubNetworkPolicyCmd::List {
             access,
             org,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListNetworkBoundariesResponse>(
+            topology_read::<_, hub_types::ListNetworkPoliciesResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListNetworkBoundaries,
+                HubTopologyMethod::ListNetworkPolicies,
                 &hub_types::ListTopologyResourcesRequest {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
@@ -5449,20 +5429,20 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             )
             .await
         }
-        HubNetworkBoundaryCmd::Show { access, boundary }
-        | HubNetworkBoundaryCmd::Status { access, boundary } => {
+        HubNetworkPolicyCmd::Show { access, boundary }
+        | HubNetworkPolicyCmd::Status { access, boundary } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::NetworkBoundaryResponse>(
+            topology_read::<_, hub_types::NetworkPolicyResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetNetworkBoundary,
+                HubTopologyMethod::GetNetworkPolicy,
                 &hub_types::GetTopologyResourceRequest {
                     stable_id: boundary.clone(),
                 },
             )
             .await
         }
-        HubNetworkBoundaryCmd::Add {
+        HubNetworkPolicyCmd::Add {
             access,
             name,
             stable_id,
@@ -5482,12 +5462,12 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 return topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanCreateNetworkBoundary,
-                    HubTopologyMethod::CreateNetworkBoundary,
-                    &hub_types::PlanNetworkBoundaryMutationRequest::default(),
+                    HubTopologyMethod::PlanCreateNetworkPolicy,
+                    HubTopologyMethod::CreateNetworkPolicy,
+                    &hub_types::PlanNetworkPolicyMutationRequest::default(),
                     mutation,
                     |plan_id, idempotency_key, confirmation_hash| {
-                        hub_types::ApplyNetworkBoundaryMutationRequest {
+                        hub_types::ApplyNetworkPolicyMutationRequest {
                             plan_id: plan_id.into(),
                             idempotency_key: idempotency_key.into(),
                             confirmation_hash: confirmation_hash.into(),
@@ -5507,7 +5487,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 .context("network-boundary add requires --probe-location when creating a plan")?;
             match kind {
                 "vpn" | "vpc" | "tunnel" if allowlist_id.is_some() || listener_id.is_some() => {
-                    anyhow::bail!("provider network boundaries reject allowlist/listener options");
+                    anyhow::bail!("provider network policies reject allowlist/listener options");
                 }
                 "source-allowlist"
                     if provider.is_some()
@@ -5523,7 +5503,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 _ => {}
             }
             let identity = match kind {
-                "vpn" => hub_types::network_boundary_identity::Identity::Vpn(
+                "vpn" => hub_types::network_policy_identity::Identity::Vpn(
                     hub_types::ProviderResourceIdentity {
                         provider: provider.clone().context("--provider is required for vpn")?,
                         account_or_tenant: provider_account
@@ -5534,7 +5514,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                             .context("--resource-id is required for vpn")?,
                     },
                 ),
-                "vpc" => hub_types::network_boundary_identity::Identity::ProviderNetwork(
+                "vpc" => hub_types::network_policy_identity::Identity::ProviderNetwork(
                     hub_types::ProviderNetworkIdentity {
                         provider: provider.clone().context("--provider is required for vpc")?,
                         account_or_tenant: provider_account
@@ -5546,7 +5526,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                         ..Default::default()
                     },
                 ),
-                "tunnel" => hub_types::network_boundary_identity::Identity::Tunnel(
+                "tunnel" => hub_types::network_policy_identity::Identity::Tunnel(
                     hub_types::ProviderResourceIdentity {
                         provider: provider
                             .clone()
@@ -5560,50 +5540,48 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                     },
                 ),
                 "source-allowlist" => {
-                    hub_types::network_boundary_identity::Identity::SourceAllowlistId(
+                    hub_types::network_policy_identity::Identity::SourceAllowlistId(
                         allowlist_id
                             .clone()
                             .context("--allowlist-id is required for source-allowlist")?,
                     )
                 }
-                "trusted-ingress" => {
-                    hub_types::network_boundary_identity::Identity::TrustedIngress(
-                        hub_types::ProviderNetworkIdentity {
-                            provider: provider
-                                .clone()
-                                .context("--provider is required for trusted-ingress")?,
-                            account_or_tenant: provider_account
-                                .clone()
-                                .context("--provider-account is required for trusted-ingress")?,
-                            listener_id: listener_id
-                                .clone()
-                                .context("--listener-id is required for trusted-ingress")?,
-                            ..Default::default()
-                        },
-                    )
-                }
-                _ => anyhow::bail!("unsupported network boundary kind '{kind}'"),
+                "trusted-ingress" => hub_types::network_policy_identity::Identity::TrustedIngress(
+                    hub_types::ProviderNetworkIdentity {
+                        provider: provider
+                            .clone()
+                            .context("--provider is required for trusted-ingress")?,
+                        account_or_tenant: provider_account
+                            .clone()
+                            .context("--provider-account is required for trusted-ingress")?,
+                        listener_id: listener_id
+                            .clone()
+                            .context("--listener-id is required for trusted-ingress")?,
+                        ..Default::default()
+                    },
+                ),
+                _ => anyhow::bail!("unsupported network policy kind '{kind}'"),
             };
-            let canonical_kind = canonical_network_boundary_kind(kind);
+            let canonical_kind = canonical_network_policy_kind(kind);
             topology_mutation::<
                 _,
-                hub_types::ApplyNetworkBoundaryMutationRequest,
-                hub_types::NetworkBoundaryResponse,
+                hub_types::ApplyNetworkPolicyMutationRequest,
+                hub_types::NetworkPolicyResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanCreateNetworkBoundary,
-                HubTopologyMethod::CreateNetworkBoundary,
-                &hub_types::PlanNetworkBoundaryMutationRequest {
+                HubTopologyMethod::PlanCreateNetworkPolicy,
+                HubTopologyMethod::CreateNetworkPolicy,
+                &hub_types::PlanNetworkPolicyMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "network-boundary"),
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     name: name.clone(),
                     kind: canonical_kind.into(),
-                    identity: Some(hub_types::NetworkBoundaryIdentity {
+                    identity: Some(hub_types::NetworkPolicyIdentity {
                         identity: Some(identity),
                     }),
-                    initial_revision: Some(initial_network_boundary_revision(
+                    initial_revision: Some(initial_network_policy_revision(
                         protected_transport,
                         probe_location,
                     )),
@@ -5613,7 +5591,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyNetworkBoundaryMutationRequest {
+                    hub_types::ApplyNetworkPolicyMutationRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -5622,7 +5600,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             )
             .await
         }
-        HubNetworkBoundaryCmd::Revise {
+        HubNetworkPolicyCmd::Revise {
             access,
             boundary,
             protected_transport,
@@ -5644,12 +5622,12 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 return topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanReviseNetworkBoundary,
-                    HubTopologyMethod::ReviseNetworkBoundary,
-                    &hub_types::PlanNetworkBoundaryRevisionRequest::default(),
+                    HubTopologyMethod::PlanReviseNetworkPolicy,
+                    HubTopologyMethod::ReviseNetworkPolicy,
+                    &hub_types::PlanNetworkPolicyRevisionRequest::default(),
                     mutation,
                     |plan_id, idempotency_key, confirmation_hash| {
-                        hub_types::ApplyNetworkBoundaryRevisionRequest {
+                        hub_types::ApplyNetworkPolicyRevisionRequest {
                             plan_id: plan_id.into(),
                             idempotency_key: idempotency_key.into(),
                             confirmation_hash: confirmation_hash.into(),
@@ -5739,17 +5717,17 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
-                hub_types::ApplyNetworkBoundaryRevisionRequest,
-                hub_types::NetworkBoundaryRevisionResponse,
+                hub_types::ApplyNetworkPolicyRevisionRequest,
+                hub_types::NetworkPolicyRevisionResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanReviseNetworkBoundary,
-                HubTopologyMethod::ReviseNetworkBoundary,
-                &hub_types::PlanNetworkBoundaryRevisionRequest {
+                HubTopologyMethod::PlanReviseNetworkPolicy,
+                HubTopologyMethod::ReviseNetworkPolicy,
+                &hub_types::PlanNetworkPolicyRevisionRequest {
                     boundary_id: boundary.clone(),
-                    spec: Some(hub_types::NetworkBoundaryRevisionSpec {
+                    spec: Some(hub_types::NetworkPolicyRevisionSpec {
                         protected_transport_required: protected_transport.as_deref()
                             == Some("required"),
                         trusted_ingress,
@@ -5788,7 +5766,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyNetworkBoundaryRevisionRequest {
+                    hub_types::ApplyNetworkPolicyRevisionRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -5797,7 +5775,7 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             )
             .await
         }
-        HubNetworkBoundaryCmd::Grant {
+        HubNetworkPolicyCmd::Grant {
             access,
             boundary,
             consumer_scope,
@@ -5806,17 +5784,17 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             consumer_scope_mutation(
                 printer,
                 access,
-                "network_boundary",
+                "network_policy",
                 boundary,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanGrantNetworkBoundaryScope,
-                HubTopologyMethod::GrantNetworkBoundaryScope,
+                HubTopologyMethod::PlanGrantNetworkPolicyScope,
+                HubTopologyMethod::GrantNetworkPolicyScope,
             )
             .await
         }
-        HubNetworkBoundaryCmd::Revoke {
+        HubNetworkPolicyCmd::Revoke {
             access,
             boundary,
             consumer_scope,
@@ -5825,20 +5803,20 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
             consumer_scope_mutation(
                 printer,
                 access,
-                "network_boundary",
+                "network_policy",
                 boundary,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanRevokeNetworkBoundaryScope,
-                HubTopologyMethod::RevokeNetworkBoundaryScope,
+                HubTopologyMethod::PlanRevokeNetworkPolicyScope,
+                HubTopologyMethod::RevokeNetworkPolicyScope,
             )
             .await
         }
-        HubNetworkBoundaryCmd::Revision { command } => {
-            network_boundary_revision(printer, command).await
+        HubNetworkPolicyCmd::Revision { command } => {
+            network_policy_revision(printer, command).await
         }
-        HubNetworkBoundaryCmd::Remove {
+        HubNetworkPolicyCmd::Remove {
             access,
             boundary,
             mutation,
@@ -5848,30 +5826,30 @@ async fn network_boundary(printer: &Printer, command: &HubNetworkBoundaryCmd) ->
                 access,
                 boundary,
                 mutation,
-                HubTopologyMethod::PlanDeleteNetworkBoundary,
-                HubTopologyMethod::DeleteNetworkBoundary,
+                HubTopologyMethod::PlanDeleteNetworkPolicy,
+                HubTopologyMethod::DeleteNetworkPolicy,
             )
             .await
         }
     }
 }
 
-async fn network_boundary_revision(
+async fn network_policy_revision(
     printer: &Printer,
-    command: &HubNetworkBoundaryRevisionCmd,
+    command: &HubNetworkPolicyRevisionCmd,
 ) -> Result<()> {
     match command {
-        HubNetworkBoundaryRevisionCmd::List {
+        HubNetworkPolicyRevisionCmd::List {
             access,
             boundary,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListNetworkBoundaryRevisionsResponse>(
+            topology_read::<_, hub_types::ListNetworkPolicyRevisionsResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListNetworkBoundaryRevisions,
-                &hub_types::ListNetworkBoundaryRevisionsRequest {
+                HubTopologyMethod::ListNetworkPolicyRevisions,
+                &hub_types::ListNetworkPolicyRevisionsRequest {
                     boundary_id: boundary.clone(),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
@@ -5879,25 +5857,25 @@ async fn network_boundary_revision(
             )
             .await
         }
-        HubNetworkBoundaryRevisionCmd::Show {
+        HubNetworkPolicyRevisionCmd::Show {
             access,
             boundary_revision,
         } => {
             let (boundary_id, revision) =
-                parse_generation_ref(boundary_revision, "network boundary revision")?;
+                parse_generation_ref(boundary_revision, "network policy revision")?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::NetworkBoundaryRevisionResponse>(
+            topology_read::<_, hub_types::NetworkPolicyRevisionResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetNetworkBoundaryRevision,
-                &hub_types::GetNetworkBoundaryRevisionRequest {
+                HubTopologyMethod::GetNetworkPolicyRevision,
+                &hub_types::GetNetworkPolicyRevisionRequest {
                     boundary_id,
                     revision,
                 },
             )
             .await
         }
-        HubNetworkBoundaryRevisionCmd::Activate {
+        HubNetworkPolicyRevisionCmd::Activate {
             access,
             boundary_revision,
             mode,
@@ -5911,12 +5889,12 @@ async fn network_boundary_revision(
                 mode,
                 default_for_new_plans == "yes",
                 mutation,
-                HubTopologyMethod::PlanActivateNetworkBoundaryRevision,
-                HubTopologyMethod::ActivateNetworkBoundaryRevision,
+                HubTopologyMethod::PlanActivateNetworkPolicyRevision,
+                HubTopologyMethod::ActivateNetworkPolicyRevision,
             )
             .await
         }
-        HubNetworkBoundaryRevisionCmd::Retire {
+        HubNetworkPolicyRevisionCmd::Retire {
             access,
             boundary_revision,
             mutation,
@@ -5928,8 +5906,8 @@ async fn network_boundary_revision(
                 "",
                 false,
                 mutation,
-                HubTopologyMethod::PlanRetireNetworkBoundaryRevision,
-                HubTopologyMethod::RetireNetworkBoundaryRevision,
+                HubTopologyMethod::PlanRetireNetworkPolicyRevision,
+                HubTopologyMethod::RetireNetworkPolicyRevision,
             )
             .await
         }
@@ -5944,28 +5922,28 @@ async fn boundary_lifecycle_mutation(
     default_for_new_plans: bool,
     mutation: &HubMutationArgs,
     plan_method: impl HubRpc<
-        Request = hub_types::PlanNetworkBoundaryLifecycleRequest,
+        Request = hub_types::PlanNetworkPolicyLifecycleRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyNetworkBoundaryLifecycleRequest,
-        Response = hub_types::NetworkBoundaryRevisionResponse,
+        Request = hub_types::ApplyNetworkPolicyLifecycleRequest,
+        Response = hub_types::NetworkPolicyRevisionResponse,
     > + Copy,
 ) -> Result<()> {
     let (boundary_id, revision) =
-        parse_generation_ref(boundary_revision, "network boundary revision")?;
+        parse_generation_ref(boundary_revision, "network policy revision")?;
     let client = hub_client(&access.hub, access.token.as_deref())?;
     topology_mutation::<
         _,
-        hub_types::ApplyNetworkBoundaryLifecycleRequest,
-        hub_types::NetworkBoundaryRevisionResponse,
+        hub_types::ApplyNetworkPolicyLifecycleRequest,
+        hub_types::NetworkPolicyRevisionResponse,
         _,
     >(
         printer,
         &client,
         plan_method,
         apply_method,
-        &hub_types::PlanNetworkBoundaryLifecycleRequest {
+        &hub_types::PlanNetworkPolicyLifecycleRequest {
             boundary_id,
             revision,
             activation_mode: activation_mode.into(),
@@ -5976,7 +5954,7 @@ async fn boundary_lifecycle_mutation(
         },
         mutation,
         |plan_id, idempotency_key, confirmation_hash| {
-            hub_types::ApplyNetworkBoundaryLifecycleRequest {
+            hub_types::ApplyNetworkPolicyLifecycleRequest {
                 plan_id: plan_id.into(),
                 idempotency_key: idempotency_key.into(),
                 confirmation_hash: confirmation_hash.into(),
@@ -5987,23 +5965,21 @@ async fn boundary_lifecycle_mutation(
 }
 
 fn parse_delivery_origin(value: &str) -> Result<(String, hub_types::EndpointHost, u32)> {
-    let url = reqwest::Url::parse(value).context("parsing delivery endpoint URL")?;
+    let url = reqwest::Url::parse(value).context("parsing endpoint URL")?;
     if !matches!(url.scheme(), "http" | "https") {
-        anyhow::bail!("delivery endpoint URLs require http or https");
+        anyhow::bail!("endpoint URLs require http or https");
     }
     if url.username() != ""
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        anyhow::bail!("delivery endpoint URLs reject userinfo, query, and fragment components");
+        anyhow::bail!("endpoint URLs reject userinfo, query, and fragment components");
     }
     if url.path() != "/" && !url.path().is_empty() {
-        anyhow::bail!("delivery endpoint URLs contain only an origin; configure paths on routes");
+        anyhow::bail!("endpoint URLs contain only an origin; configure paths on routes");
     }
-    let host_text = url
-        .host_str()
-        .context("delivery endpoint URL has no host")?;
+    let host_text = url.host_str().context("endpoint URL has no host")?;
     let ip_text = host_text
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
@@ -6019,7 +5995,7 @@ fn parse_delivery_origin(value: &str) -> Result<(String, hub_types::EndpointHost
     };
     let port = url
         .port_or_known_default()
-        .context("delivery endpoint URL scheme has no effective port")?;
+        .context("endpoint URL scheme has no effective port")?;
     Ok((
         url.scheme().into(),
         hub_types::EndpointHost { host: Some(host) },
@@ -6035,10 +6011,10 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListDeliveryEndpointsResponse>(
+            topology_read::<_, hub_types::ListEndpointsResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListDeliveryEndpoints,
+                HubTopologyMethod::ListEndpoints,
                 &hub_types::ListTopologyResourcesRequest {
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
@@ -6049,10 +6025,10 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
         }
         HubEndpointCmd::Show { access, endpoint } | HubEndpointCmd::Status { access, endpoint } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::DeliveryEndpointResponse>(
+            topology_read::<_, hub_types::EndpointResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetDeliveryEndpoint,
+                HubTopologyMethod::GetEndpoint,
                 &hub_types::GetTopologyResourceRequest {
                     stable_id: endpoint.clone(),
                 },
@@ -6065,11 +6041,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListDeliveryEndpointGenerationsResponse>(
+            topology_read::<_, hub_types::ListEndpointGenerationsResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListDeliveryEndpointGenerations,
-                &hub_types::ListDeliveryEndpointGenerationsRequest {
+                HubTopologyMethod::ListEndpointGenerations,
+                &hub_types::ListEndpointGenerationsRequest {
                     endpoint_id: endpoint.clone(),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
@@ -6083,11 +6059,11 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             generation,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::DeliveryEndpointGenerationResponse>(
+            topology_read::<_, hub_types::EndpointGenerationResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetDeliveryEndpointGeneration,
-                &hub_types::GetDeliveryEndpointGenerationRequest {
+                HubTopologyMethod::GetEndpointGeneration,
+                &hub_types::GetEndpointGenerationRequest {
                     endpoint_id: endpoint.clone(),
                     generation: *generation,
                 },
@@ -6100,7 +6076,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             stable_id,
             org,
             acknowledge_cleartext,
-            network_boundary,
+            network_policy,
             ingress,
             listener_provider,
             listener_resource_id,
@@ -6140,13 +6116,13 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 Some(probe_public_key),
             )?
             .context("endpoint creation requires probe signing identity")?;
-            let (boundary_id, boundary_revision) = network_boundary
+            let (boundary_id, boundary_revision) = network_policy
                 .rsplit_once('@')
                 .map(|(id, revision)| {
                     Ok::<_, anyhow::Error>((id.to_string(), revision.parse::<i64>()?))
                 })
                 .transpose()?
-                .unwrap_or_else(|| (network_boundary.clone(), 0));
+                .unwrap_or_else(|| (network_policy.clone(), 0));
             let client = hub_client(&access.hub, access.token.as_deref())?;
             if let Some(hub_types::endpoint_host::Host::DomainId(hostname)) = host.host.as_mut() {
                 let response: hub_types::DomainResponse = client
@@ -6165,22 +6141,22 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             }
             topology_mutation::<
                 _,
-                hub_types::ApplyDeliveryEndpointMutationRequest,
-                hub_types::DeliveryEndpointResponse,
+                hub_types::ApplyEndpointMutationRequest,
+                hub_types::EndpointResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanCreateDeliveryEndpoint,
-                HubTopologyMethod::CreateDeliveryEndpoint,
-                &hub_types::PlanDeliveryEndpointMutationRequest {
+                HubTopologyMethod::PlanCreateEndpoint,
+                HubTopologyMethod::CreateEndpoint,
+                &hub_types::PlanEndpointMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "delivery-endpoint"),
                     owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     scheme,
                     host: Some(host),
                     effective_port,
-                    network_boundary_id: boundary_id,
-                    revision: Some(hub_types::DeliveryEndpointRevisionSpec {
+                    network_policy_id: boundary_id,
+                    revision: Some(hub_types::EndpointRevisionSpec {
                         boundary_revision,
                         ingress_kind: endpoint_ingress_kind(ingress)?,
                         listener_configuration_ref: format!(
@@ -6194,7 +6170,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyDeliveryEndpointMutationRequest {
+                    hub_types::ApplyEndpointMutationRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -6222,12 +6198,12 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 return topology_mutation(
                     printer,
                     &client,
-                    HubTopologyMethod::PlanStageDeliveryEndpointGeneration,
-                    HubTopologyMethod::StageDeliveryEndpointGeneration,
-                    &hub_types::PlanStageDeliveryEndpointGenerationRequest::default(),
+                    HubTopologyMethod::PlanStageEndpointGeneration,
+                    HubTopologyMethod::StageEndpointGeneration,
+                    &hub_types::PlanStageEndpointGenerationRequest::default(),
                     mutation,
                     |plan_id, idempotency_key, confirmation_hash| {
-                        hub_types::ApplyDeliveryEndpointGenerationRequest {
+                        hub_types::ApplyEndpointGenerationRequest {
                             plan_id: plan_id.into(),
                             idempotency_key: idempotency_key.into(),
                             confirmation_hash: confirmation_hash.into(),
@@ -6276,17 +6252,17 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
-                hub_types::ApplyDeliveryEndpointGenerationRequest,
-                hub_types::DeliveryEndpointGenerationResponse,
+                hub_types::ApplyEndpointGenerationRequest,
+                hub_types::EndpointGenerationResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanStageDeliveryEndpointGeneration,
-                HubTopologyMethod::StageDeliveryEndpointGeneration,
-                &hub_types::PlanStageDeliveryEndpointGenerationRequest {
+                HubTopologyMethod::PlanStageEndpointGeneration,
+                HubTopologyMethod::StageEndpointGeneration,
+                &hub_types::PlanStageEndpointGenerationRequest {
                     endpoint_id: endpoint.clone(),
-                    revision: Some(hub_types::DeliveryEndpointRevisionSpec {
+                    revision: Some(hub_types::EndpointRevisionSpec {
                         boundary_revision: boundary_revision
                             .map(|value| i64::try_from(value))
                             .transpose()?
@@ -6325,7 +6301,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyDeliveryEndpointGenerationRequest {
+                    hub_types::ApplyEndpointGenerationRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -6343,15 +6319,15 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
-                hub_types::ApplyDeliveryEndpointGenerationRequest,
-                hub_types::DeliveryEndpointResponse,
+                hub_types::ApplyEndpointGenerationRequest,
+                hub_types::EndpointResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanActivateDeliveryEndpointGeneration,
-                HubTopologyMethod::ActivateDeliveryEndpointGeneration,
-                &hub_types::PlanActivateDeliveryEndpointGenerationRequest {
+                HubTopologyMethod::PlanActivateEndpointGeneration,
+                HubTopologyMethod::ActivateEndpointGeneration,
+                &hub_types::PlanActivateEndpointGenerationRequest {
                     endpoint_id: endpoint.clone(),
                     generation: *generation,
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
@@ -6359,7 +6335,7 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyDeliveryEndpointGenerationRequest {
+                    hub_types::ApplyEndpointGenerationRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -6377,13 +6353,13 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             consumer_scope_mutation(
                 printer,
                 access,
-                "delivery_endpoint",
+                "endpoint",
                 endpoint,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanGrantDeliveryEndpointScope,
-                HubTopologyMethod::GrantDeliveryEndpointScope,
+                HubTopologyMethod::PlanGrantEndpointScope,
+                HubTopologyMethod::GrantEndpointScope,
             )
             .await
         }
@@ -6396,13 +6372,13 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
             consumer_scope_mutation(
                 printer,
                 access,
-                "delivery_endpoint",
+                "endpoint",
                 endpoint,
                 0,
                 consumer_scope,
                 mutation,
-                HubTopologyMethod::PlanRevokeDeliveryEndpointScope,
-                HubTopologyMethod::RevokeDeliveryEndpointScope,
+                HubTopologyMethod::PlanRevokeEndpointScope,
+                HubTopologyMethod::RevokeEndpointScope,
             )
             .await
         }
@@ -6416,8 +6392,8 @@ async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Result<()> {
                 access,
                 endpoint,
                 mutation,
-                HubTopologyMethod::PlanDeleteDeliveryEndpoint,
-                HubTopologyMethod::DeleteDeliveryEndpoint,
+                HubTopologyMethod::PlanDeleteEndpoint,
+                HubTopologyMethod::DeleteEndpoint,
             )
             .await
         }
@@ -6466,7 +6442,7 @@ fn build_access_policy(
                 ..Default::default()
             })
         }
-        "hub-auth" => anyhow::bail!("storage gateways do not support hub-auth access"),
+        "hub-auth" => anyhow::bail!("gateways do not support hub-auth access"),
         "external-provider" => {
             if has_hub_fields || has_boundary_fields {
                 anyhow::bail!("external-provider access rejects Hub and boundary options");
@@ -6607,12 +6583,12 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::ListStorageGatewaysResponse>(
+            topology_read::<_, hub_types::ListGatewaysResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::ListStorageGateways,
-                &hub_types::ListStorageGatewaysRequest {
-                    storage_binding: Some(parse_storage_binding_ref(binding)?),
+                HubTopologyMethod::ListGateways,
+                &hub_types::ListGatewaysRequest {
+                    binding: Some(parse_binding_ref(binding)?),
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -6621,10 +6597,10 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
         }
         HubGatewayCmd::Show { access, gateway } => {
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::StorageGatewayResponse>(
+            topology_read::<_, hub_types::GatewayResponse>(
                 printer,
                 &client,
-                HubTopologyMethod::GetStorageGateway,
+                HubTopologyMethod::GetGateway,
                 &hub_types::GetTopologyResourceRequest {
                     stable_id: gateway.clone(),
                 },
@@ -6651,15 +6627,15 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 })
                 .transpose()?
                 .unwrap_or_else(|| (endpoint.clone(), 0));
-            storage_gateway_mutation(
+            gateway_mutation(
                 printer,
                 access,
-                HubTopologyMethod::PlanCreateStorageGateway,
-                HubTopologyMethod::CreateStorageGateway,
-                hub_types::PlanStorageGatewayMutationRequest {
+                HubTopologyMethod::PlanCreateGateway,
+                HubTopologyMethod::CreateGateway,
+                hub_types::PlanGatewayMutationRequest {
                     stable_id: topology_stable_id(stable_id.as_deref(), "storage-gateway"),
-                    revision: Some(hub_types::StorageGatewayRevisionSpec {
-                        storage_binding_id: binding.clone(),
+                    revision: Some(hub_types::GatewayRevisionSpec {
+                        binding_id: binding.clone(),
                         endpoint_id,
                         endpoint_generation,
                         client_base_path: client_base_path.clone(),
@@ -6684,12 +6660,12 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             mutation,
         } => {
             if mutation.plan_id.is_some() {
-                return storage_gateway_mutation(
+                return gateway_mutation(
                     printer,
                     access,
-                    HubTopologyMethod::PlanUpdateStorageGateway,
-                    HubTopologyMethod::UpdateStorageGateway,
-                    hub_types::PlanStorageGatewayMutationRequest::default(),
+                    HubTopologyMethod::PlanUpdateGateway,
+                    HubTopologyMethod::UpdateGateway,
+                    hub_types::PlanGatewayMutationRequest::default(),
                     mutation,
                 )
                 .await;
@@ -6701,14 +6677,14 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             {
                 anyhow::bail!("gateway update requires at least one changed field");
             }
-            storage_gateway_mutation(
+            gateway_mutation(
                 printer,
                 access,
-                HubTopologyMethod::PlanUpdateStorageGateway,
-                HubTopologyMethod::UpdateStorageGateway,
-                hub_types::PlanStorageGatewayMutationRequest {
+                HubTopologyMethod::PlanUpdateGateway,
+                HubTopologyMethod::UpdateGateway,
+                hub_types::PlanGatewayMutationRequest {
                     stable_id: gateway.clone(),
-                    revision: Some(hub_types::StorageGatewayRevisionSpec {
+                    revision: Some(hub_types::GatewayRevisionSpec {
                         endpoint_generation: endpoint_generation
                             .map(|value| i64::try_from(value))
                             .transpose()?
@@ -6758,26 +6734,26 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 consumer_scope_mutation(
                     printer,
                     access,
-                    "storage_gateway",
+                    "gateway",
                     &gateway_id,
                     generation,
                     consumer_scope,
                     mutation,
-                    HubTopologyMethod::PlanRevokeStorageGatewayScope,
-                    HubTopologyMethod::RevokeStorageGatewayScope,
+                    HubTopologyMethod::PlanRevokeGatewayScope,
+                    HubTopologyMethod::RevokeGatewayScope,
                 )
                 .await
             } else {
                 consumer_scope_mutation(
                     printer,
                     access,
-                    "storage_gateway",
+                    "gateway",
                     &gateway_id,
                     generation,
                     consumer_scope,
                     mutation,
-                    HubTopologyMethod::PlanGrantStorageGatewayScope,
-                    HubTopologyMethod::GrantStorageGatewayScope,
+                    HubTopologyMethod::PlanGrantGatewayScope,
+                    HubTopologyMethod::GrantGatewayScope,
                 )
                 .await
             }
@@ -6799,13 +6775,13 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             gateway,
             mutation,
         } => {
-            topology_state_mutation::<hub_types::StorageGatewayResponse>(
+            topology_state_mutation::<hub_types::GatewayResponse>(
                 printer,
                 access,
                 gateway,
                 mutation,
-                HubTopologyMethod::PlanEnableStorageGateway,
-                HubTopologyMethod::EnableStorageGateway,
+                HubTopologyMethod::PlanEnableGateway,
+                HubTopologyMethod::EnableGateway,
             )
             .await
         }
@@ -6814,13 +6790,13 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
             gateway,
             mutation,
         } => {
-            topology_state_mutation::<hub_types::StorageGatewayResponse>(
+            topology_state_mutation::<hub_types::GatewayResponse>(
                 printer,
                 access,
                 gateway,
                 mutation,
-                HubTopologyMethod::PlanDisableStorageGateway,
-                HubTopologyMethod::DisableStorageGateway,
+                HubTopologyMethod::PlanDisableGateway,
+                HubTopologyMethod::DisableGateway,
             )
             .await
         }
@@ -6834,47 +6810,40 @@ async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Result<()> {
                 access,
                 gateway,
                 mutation,
-                HubTopologyMethod::PlanDeleteStorageGateway,
-                HubTopologyMethod::DeleteStorageGateway,
+                HubTopologyMethod::PlanDeleteGateway,
+                HubTopologyMethod::DeleteGateway,
             )
             .await
         }
     }
 }
 
-async fn storage_gateway_mutation(
+async fn gateway_mutation(
     printer: &Printer,
     access: &crate::cli::HubAccessArgs,
     plan_method: impl HubRpc<
-        Request = hub_types::PlanStorageGatewayMutationRequest,
+        Request = hub_types::PlanGatewayMutationRequest,
         Response = hub_types::TopologyPlanResponse,
     >,
     apply_method: impl HubRpc<
-        Request = hub_types::ApplyStorageGatewayMutationRequest,
-        Response = hub_types::StorageGatewayResponse,
+        Request = hub_types::ApplyGatewayMutationRequest,
+        Response = hub_types::GatewayResponse,
     > + Copy,
-    request: hub_types::PlanStorageGatewayMutationRequest,
+    request: hub_types::PlanGatewayMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
-    topology_mutation::<
-        _,
-        hub_types::ApplyStorageGatewayMutationRequest,
-        hub_types::StorageGatewayResponse,
-        _,
-    >(
+    topology_mutation::<_, hub_types::ApplyGatewayMutationRequest, hub_types::GatewayResponse, _>(
         printer,
         &client,
         plan_method,
         apply_method,
         &request,
         mutation,
-        |plan_id, idempotency_key, confirmation_hash| {
-            hub_types::ApplyStorageGatewayMutationRequest {
-                plan_id: plan_id.into(),
-                idempotency_key: idempotency_key.into(),
-                confirmation_hash: confirmation_hash.into(),
-            }
+        |plan_id, idempotency_key, confirmation_hash| hub_types::ApplyGatewayMutationRequest {
+            plan_id: plan_id.into(),
+            idempotency_key: idempotency_key.into(),
+            confirmation_hash: confirmation_hash.into(),
         },
     )
     .await
@@ -6899,22 +6868,22 @@ fn hub_delivery_kind(mode: &str) -> Result<i32> {
     }
 }
 
-fn route_mode(spec: &hub_types::DeliveryRouteSpec) -> Result<&'static str> {
+fn route_mode(spec: &hub_types::RouteSpec) -> Result<&'static str> {
     match spec
         .target
         .as_ref()
         .and_then(|target| target.target.as_ref())
         .context("route requires a complete target")?
     {
-        hub_types::delivery_route_target::Target::DirectGatewayPlacement(_) => Ok("direct"),
-        hub_types::delivery_route_target::Target::HubPlacement(target) => {
+        hub_types::route_target::Target::DirectGatewayPlacement(_) => Ok("direct"),
+        hub_types::route_target::Target::HubPlacement(target) => {
             match hub_types::HubDeliveryKind::try_from(target.delivery_kind) {
                 Ok(hub_types::HubDeliveryKind::Proxy) => Ok("hub-proxy"),
                 Ok(hub_types::HubDeliveryKind::Redirect) => Ok("hub-redirect"),
                 _ => anyhow::bail!("Hub placement target has no delivery kind"),
             }
         }
-        hub_types::delivery_route_target::Target::HubPolicyRevision(target) => {
+        hub_types::route_target::Target::HubPolicyRevision(target) => {
             match hub_types::HubDeliveryKind::try_from(target.delivery_kind) {
                 Ok(hub_types::HubDeliveryKind::Proxy) => Ok("hub-proxy"),
                 Ok(hub_types::HubDeliveryKind::Redirect) => Ok("hub-redirect"),
@@ -6928,7 +6897,7 @@ fn route_spec(
     surface: Option<&str>,
     input: &HubRouteSpecArgs,
     require_complete: bool,
-) -> Result<hub_types::DeliveryRouteSpec> {
+) -> Result<hub_types::RouteSpec> {
     let mode = input.mode.clone().unwrap_or_default();
     if require_complete && mode.is_empty() {
         anyhow::bail!("--mode is required");
@@ -6983,23 +6952,21 @@ fn route_spec(
                 .context("direct routes require --gateway")?,
             "gateway",
         )?;
-        Some(
-            hub_types::delivery_route_target::Target::DirectGatewayPlacement(
-                hub_types::DirectGatewayPlacementTarget {
-                    placement_name: input
-                        .placement
-                        .clone()
-                        .context("direct routes require --placement")?,
-                    gateway_id,
-                    gateway_generation,
-                },
-            ),
-        )
+        Some(hub_types::route_target::Target::DirectGatewayPlacement(
+            hub_types::DirectGatewayPlacementTarget {
+                placement_name: input
+                    .placement
+                    .clone()
+                    .context("direct routes require --placement")?,
+                gateway_id,
+                gateway_generation,
+            },
+        ))
     } else if let Some(placement) = input.placement.as_ref() {
         if input.gateway.is_some() {
             anyhow::bail!("Hub routes reject --gateway");
         }
-        Some(hub_types::delivery_route_target::Target::HubPlacement(
+        Some(hub_types::route_target::Target::HubPlacement(
             hub_types::HubPlacementTarget {
                 placement_name: placement.clone(),
                 delivery_kind: hub_delivery_kind(&mode)?,
@@ -7007,7 +6974,7 @@ fn route_spec(
         ))
     } else if let Some(policy) = input.placement_policy.as_ref() {
         let (policy_name, revision) = parse_generation_ref(policy, "placement policy")?;
-        Some(hub_types::delivery_route_target::Target::HubPolicyRevision(
+        Some(hub_types::route_target::Target::HubPolicyRevision(
             hub_types::HubPolicyRevisionTarget {
                 policy_name,
                 revision,
@@ -7027,7 +6994,7 @@ fn route_spec(
     if require_complete && input.serves.is_empty() {
         anyhow::bail!("at least one --serves capability is required");
     }
-    Ok(hub_types::DeliveryRouteSpec {
+    Ok(hub_types::RouteSpec {
         surface: surface.map(surface_message).transpose()?,
         endpoint_id,
         endpoint_generation,
@@ -7043,7 +7010,7 @@ fn route_spec(
         } else {
             build_access_policy(&input.policy, true)?
         },
-        target: target.map(|target| hub_types::DeliveryRouteTarget {
+        target: target.map(|target| hub_types::RouteTarget {
             target: Some(target),
         }),
         capabilities: if require_complete || !input.serves.is_empty() {
@@ -7056,9 +7023,9 @@ fn route_spec(
 }
 
 fn merge_route_spec(
-    mut current: hub_types::DeliveryRouteSpec,
+    mut current: hub_types::RouteSpec,
     input: &HubRouteSpecArgs,
-) -> Result<hub_types::DeliveryRouteSpec> {
+) -> Result<hub_types::RouteSpec> {
     if input.endpoint.is_some() || input.base_path.is_some() {
         anyhow::bail!("route update preserves endpoint identity and path; use route replace");
     }
@@ -7092,11 +7059,9 @@ fn merge_route_spec(
                         .target
                         .as_ref()
                         .and_then(|target| match target.target.as_ref() {
-                            Some(
-                                hub_types::delivery_route_target::Target::DirectGatewayPlacement(
-                                    target,
-                                ),
-                            ) => Some(target),
+                            Some(hub_types::route_target::Target::DirectGatewayPlacement(
+                                target,
+                            )) => Some(target),
                             _ => None,
                         });
                 let (gateway_id, gateway_generation) = if let Some(gateway) =
@@ -7112,16 +7077,14 @@ fn merge_route_spec(
                     .clone()
                     .or_else(|| existing.map(|target| target.placement_name.clone()))
                     .context("direct target update requires --placement")?;
-                current.target = Some(hub_types::DeliveryRouteTarget {
-                    target: Some(
-                        hub_types::delivery_route_target::Target::DirectGatewayPlacement(
-                            hub_types::DirectGatewayPlacementTarget {
-                                placement_name,
-                                gateway_id,
-                                gateway_generation,
-                            },
-                        ),
-                    ),
+                current.target = Some(hub_types::RouteTarget {
+                    target: Some(hub_types::route_target::Target::DirectGatewayPlacement(
+                        hub_types::DirectGatewayPlacementTarget {
+                            placement_name,
+                            gateway_id,
+                            gateway_generation,
+                        },
+                    )),
                 });
             }
             current.base_path.clear();
@@ -7139,8 +7102,8 @@ fn merge_route_spec(
                 anyhow::bail!("switching from direct requires a Hub target and explicit --access");
             }
             if let Some(placement) = input.placement.as_ref() {
-                current.target = Some(hub_types::DeliveryRouteTarget {
-                    target: Some(hub_types::delivery_route_target::Target::HubPlacement(
+                current.target = Some(hub_types::RouteTarget {
+                    target: Some(hub_types::route_target::Target::HubPlacement(
                         hub_types::HubPlacementTarget {
                             placement_name: placement.clone(),
                             delivery_kind: hub_delivery_kind(&mode)?,
@@ -7149,8 +7112,8 @@ fn merge_route_spec(
                 });
             } else if let Some(policy) = input.placement_policy.as_ref() {
                 let (policy_name, revision) = parse_generation_ref(policy, "placement policy")?;
-                current.target = Some(hub_types::DeliveryRouteTarget {
-                    target: Some(hub_types::delivery_route_target::Target::HubPolicyRevision(
+                current.target = Some(hub_types::RouteTarget {
+                    target: Some(hub_types::route_target::Target::HubPolicyRevision(
                         hub_types::HubPolicyRevisionTarget {
                             policy_name,
                             revision,
@@ -7174,10 +7137,10 @@ fn merge_route_spec(
                 .as_mut()
                 .and_then(|target| target.target.as_mut())
             {
-                Some(hub_types::delivery_route_target::Target::HubPlacement(target)) => {
+                Some(hub_types::route_target::Target::HubPlacement(target)) => {
                     target.delivery_kind = delivery_kind;
                 }
-                Some(hub_types::delivery_route_target::Target::HubPolicyRevision(target)) => {
+                Some(hub_types::route_target::Target::HubPolicyRevision(target)) => {
                     target.delivery_kind = delivery_kind;
                 }
                 _ => anyhow::bail!("Hub route requires a Hub target"),
@@ -7198,16 +7161,16 @@ fn merge_route_spec(
         .and_then(|target| target.target.as_ref())
         .context("route requires a complete target")?;
     match target {
-        hub_types::delivery_route_target::Target::DirectGatewayPlacement(target)
+        hub_types::route_target::Target::DirectGatewayPlacement(target)
             if !target.placement_name.is_empty()
                 && !target.gateway_id.is_empty()
                 && target.gateway_generation > 0
                 && current.access_policy.is_none() => {}
-        hub_types::delivery_route_target::Target::HubPlacement(target)
+        hub_types::route_target::Target::HubPlacement(target)
             if !target.placement_name.is_empty()
                 && target.delivery_kind != hub_types::HubDeliveryKind::Unspecified as i32
                 && current.access_policy.is_some() => {}
-        hub_types::delivery_route_target::Target::HubPolicyRevision(target)
+        hub_types::route_target::Target::HubPolicyRevision(target)
             if !target.policy_name.is_empty()
                 && target.revision > 0
                 && target.delivery_kind != hub_types::HubDeliveryKind::Unspecified as i32
@@ -7301,7 +7264,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 anyhow::bail!("route update requires at least one changed field");
             }
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            let current: hub_types::DeliveryRouteResponse = client
+            let current: hub_types::RouteResponse = client
                 .call_topology(
                     HubTopologyMethod::GetRoute,
                     &hub_types::GetTopologyResourceRequest {
@@ -7357,7 +7320,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             topology_mutation::<
                 _,
                 hub_types::ApplyRouteMutationRequest,
-                hub_types::DeliveryRouteResponse,
+                hub_types::RouteResponse,
                 _,
             >(
                 printer,
@@ -7407,7 +7370,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             route,
             mutation,
         } => {
-            topology_state_mutation::<hub_types::DeliveryRouteResponse>(
+            topology_state_mutation::<hub_types::RouteResponse>(
                 printer,
                 access,
                 route,
@@ -7422,7 +7385,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             route,
             mutation,
         } => {
-            topology_state_mutation::<hub_types::DeliveryRouteResponse>(
+            topology_state_mutation::<hub_types::RouteResponse>(
                 printer,
                 access,
                 route,
@@ -7457,15 +7420,15 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_mutation::<
                 _,
-                hub_types::ApplyCanonicalRouteRequest,
-                hub_types::CanonicalRouteResponse,
+                hub_types::ApplyRouteAdvertisementRequest,
+                hub_types::RouteAdvertisementResponse,
                 _,
             >(
                 printer,
                 &client,
-                HubTopologyMethod::PlanSetCanonicalRoute,
-                HubTopologyMethod::SetCanonicalRoute,
-                &hub_types::PlanCanonicalRouteRequest {
+                HubTopologyMethod::PlanSetRouteAdvertisement,
+                HubTopologyMethod::SetRouteAdvertisement,
+                &hub_types::PlanRouteAdvertisementRequest {
                     surface: Some(surface_message(surface_ref)?),
                     audience: audience.clone(),
                     route_id: route.clone(),
@@ -7475,7 +7438,7 @@ async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()> {
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyCanonicalRouteRequest {
+                    hub_types::ApplyRouteAdvertisementRequest {
                         plan_id: plan_id.into(),
                         idempotency_key: idempotency_key.into(),
                         confirmation_hash: confirmation_hash.into(),
@@ -7496,20 +7459,26 @@ async fn route_mutation(
     >,
     apply_method: impl HubRpc<
         Request = hub_types::ApplyRouteMutationRequest,
-        Response = hub_types::DeliveryRouteResponse,
+        Response = hub_types::RouteResponse,
     > + Copy,
     request: hub_types::PlanRouteMutationRequest,
     mutation: &HubMutationArgs,
 ) -> Result<()> {
     let client = hub_client(&access.hub, access.token.as_deref())?;
-    topology_mutation::<_, hub_types::ApplyRouteMutationRequest, hub_types::DeliveryRouteResponse, _>(
-        printer, &client, plan_method, apply_method, &request, mutation,
+    topology_mutation::<_, hub_types::ApplyRouteMutationRequest, hub_types::RouteResponse, _>(
+        printer,
+        &client,
+        plan_method,
+        apply_method,
+        &request,
+        mutation,
         |plan_id, idempotency_key, confirmation_hash| hub_types::ApplyRouteMutationRequest {
             plan_id: plan_id.into(),
             idempotency_key: idempotency_key.into(),
             confirmation_hash: confirmation_hash.into(),
         },
-    ).await
+    )
+    .await
 }
 
 /// Handles `aos hub instance …` (get/set deployment-wide instance settings).
@@ -7661,11 +7630,11 @@ async fn apply_topology_defaults(
     printer: &Printer,
     client: &HubClient,
     mut defaults: hub_types::TopologyDefaults,
-    storage_binding: Option<&String>,
+    binding: Option<&String>,
     domain: Option<&String>,
     endpoint: Option<&String>,
     gateway: Option<&String>,
-    clear_storage_binding: bool,
+    clear_binding: bool,
     clear_domain: bool,
     clear_endpoint: bool,
     clear_gateway: bool,
@@ -7679,37 +7648,37 @@ async fn apply_topology_defaults(
         Response = hub_types::TopologyDefaultsResponse,
     > + Copy,
 ) -> Result<()> {
-    if let Some(value) = storage_binding {
-        defaults.storage_binding_id = value.clone();
+    if let Some(value) = binding {
+        defaults.binding_id = value.clone();
     }
     if let Some(value) = domain {
         defaults.domain_id = value.clone();
     }
     set_generation_ref(
         endpoint,
-        &mut defaults.delivery_endpoint_id,
-        &mut defaults.delivery_endpoint_generation,
+        &mut defaults.endpoint_id,
+        &mut defaults.endpoint_generation,
         "endpoint",
     )?;
     set_generation_ref(
         gateway,
-        &mut defaults.storage_gateway_id,
-        &mut defaults.storage_gateway_generation,
+        &mut defaults.gateway_id,
+        &mut defaults.gateway_generation,
         "gateway",
     )?;
-    if clear_storage_binding {
-        defaults.storage_binding_id.clear();
+    if clear_binding {
+        defaults.binding_id.clear();
     }
     if clear_domain {
         defaults.domain_id.clear();
     }
     if clear_endpoint {
-        defaults.delivery_endpoint_id.clear();
-        defaults.delivery_endpoint_generation = 0;
+        defaults.endpoint_id.clear();
+        defaults.endpoint_generation = 0;
     }
     if clear_gateway {
-        defaults.storage_gateway_id.clear();
-        defaults.storage_gateway_generation = 0;
+        defaults.gateway_id.clear();
+        defaults.gateway_generation = 0;
     }
     topology_mutation::<
         _,
@@ -7780,25 +7749,21 @@ async fn organization_topology_defaults(
     match command {
         HubOrgTopologyDefaultsCmd::Show { .. } => print_topology_message(printer, &current),
         HubOrgTopologyDefaultsCmd::Set {
-            storage_binding,
+            binding,
             domain,
             endpoint,
             gateway,
             mutation,
             ..
         } => {
-            if storage_binding.is_none()
-                && domain.is_none()
-                && endpoint.is_none()
-                && gateway.is_none()
-            {
+            if binding.is_none() && domain.is_none() && endpoint.is_none() && gateway.is_none() {
                 anyhow::bail!("topology-defaults set requires at least one default");
             }
             apply_topology_defaults(
                 printer,
                 &client,
                 current.defaults.unwrap_or_default(),
-                storage_binding.as_ref(),
+                binding.as_ref(),
                 domain.as_ref(),
                 endpoint.as_ref(),
                 gateway.as_ref(),
@@ -7813,14 +7778,14 @@ async fn organization_topology_defaults(
             .await
         }
         HubOrgTopologyDefaultsCmd::Clear {
-            storage_binding,
+            binding,
             domain,
             endpoint,
             gateway,
             mutation,
             ..
         } => {
-            if !*storage_binding && !*domain && !*endpoint && !*gateway {
+            if !*binding && !*domain && !*endpoint && !*gateway {
                 anyhow::bail!("topology-defaults clear requires at least one default");
             }
             apply_topology_defaults(
@@ -7831,7 +7796,7 @@ async fn organization_topology_defaults(
                 None,
                 None,
                 None,
-                *storage_binding,
+                *binding,
                 *domain,
                 *endpoint,
                 *gateway,

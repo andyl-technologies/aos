@@ -8,40 +8,40 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::delivery_endpoints::DeliveryEndpointWorkflow;
+use super::endpoints::EndpointWorkflow;
 use super::organization_scope::organization_authorization_scope;
 
 /// Renders boundary workflows and delegates unrelated pages onward.
 #[component]
-pub(super) fn NetworkBoundaryWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+pub(super) fn NetworkPolicyWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Instance, "boundaries") => view! {
-            <NetworkBoundaries client=client owner_scope_key="instance".to_string()/>
+            <NetworkPolicies client=client owner_scope_key="instance".to_string()/>
         }
         .into_any(),
         (ConsoleScope::Instance, "boundaries-new") => view! {
-            <NetworkBoundaries client=client owner_scope_key="instance".to_string() creation_only=true/>
+            <NetworkPolicies client=client owner_scope_key="instance".to_string() creation_only=true/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "boundaries") => view! {
-            <OrganizationNetworkBoundaries client=client organization=slug.clone() creation_only=false/>
+            <OrganizationNetworkPolicies client=client organization=slug.clone() creation_only=false/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "boundaries-new") => view! {
-            <OrganizationNetworkBoundaries client=client organization=slug.clone() creation_only=true/>
+            <OrganizationNetworkPolicies client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
-        _ => view! { <DeliveryEndpointWorkflow route=route client=client/> }.into_any(),
+        _ => view! { <EndpointWorkflow route=route client=client/> }.into_any(),
     }
 }
 
 #[component]
-fn OrganizationNetworkBoundaries(
+fn OrganizationNetworkPolicies(
     client: ApiClient,
     organization: String,
     creation_only: bool,
@@ -62,7 +62,7 @@ fn OrganizationNetworkBoundaries(
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-        <NetworkBoundaries client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
+        <NetworkPolicies client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -74,17 +74,17 @@ fn OrganizationNetworkBoundaries(
 }
 
 #[component]
-fn NetworkBoundaries(
+fn NetworkPolicies(
     client: ApiClient,
     owner_scope_key: String,
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
-    let can_create = client.allows("network_boundary.manage");
+    let can_create = client.allows("network_policy.manage");
     let create_href = can_create.then(|| {
         organization.as_ref().map_or_else(
-            || "/-/instance/network-boundaries/new".to_string(),
-            |slug| format!("/-/org/{slug}/network-boundaries/new"),
+            || "/-/instance/network-policies/new".to_string(),
+            |slug| format!("/-/org/{slug}/network-policies/new"),
         )
     });
     let list_client = client.clone();
@@ -94,24 +94,24 @@ fn NetworkBoundaries(
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListNetworkBoundariesResponse, _, _, _>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARIES_PATH,
+                .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
                     move |page_token| aos_proto_types::ListTopologyResourcesRequest {
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
                     },
-                    |response| (response.network_boundaries, response.next_page_token),
+                    |response| (response.network_policies, response.next_page_token),
                 )
                 .await
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network boundaries"</h2><HelpTooltip term="Network boundaries" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network boundary"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network boundaries…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network boundaries in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkBoundaryCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkBoundaryCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Trust and reachability"</p><div class="section-title"><h2>"Network policies"</h2><HelpTooltip term="Network policies" summary="Boundaries name verifiable network identity. Immutable revisions hold protected-transport, trusted-ingress, source, and probe policy."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create network policy"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading network policies…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(boundaries) if boundaries.is_empty() => view! { <p class="muted">"No network policies in this scope."</p> }.into_any(), Ok(boundaries) => view! { <div class="binding-list">{boundaries.iter().cloned().map(|boundary| view! { <NetworkPolicyCard client=client.clone() boundary=boundary/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <NetworkPolicyCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[component]
-fn NetworkBoundaryCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn NetworkPolicyCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
     let name = RwSignal::new(String::new());
     let kind = RwSignal::new("vpn".to_string());
     let provider = RwSignal::new(String::new());
@@ -141,12 +141,12 @@ fn NetworkBoundaryCreate(client: ApiClient, owner_scope_key: String) -> impl Int
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("network-boundary-create");
-        let request = aos_proto_types::PlanNetworkBoundaryMutationRequest {
+        let request = aos_proto_types::PlanNetworkPolicyMutationRequest {
             stable_id: String::new(),
             owner_scope_key: owner_scope_key.clone(),
             name: name.get_untracked().trim().to_string(),
             kind: kind.get_untracked(),
-            identity: Some(aos_proto_types::NetworkBoundaryIdentity {
+            identity: Some(aos_proto_types::NetworkPolicyIdentity {
                 identity: Some(identity),
             }),
             initial_revision: Some(default_boundary_revision()),
@@ -158,7 +158,7 @@ fn NetworkBoundaryCreate(client: ApiClient, owner_scope_key: String) -> impl Int
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_CREATE_NETWORK_BOUNDARY_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_CREATE_NETWORK_POLICY_PATH,
                     &request,
                 )
                 .await
@@ -179,9 +179,9 @@ fn NetworkBoundaryCreate(client: ApiClient, owner_scope_key: String) -> impl Int
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::NetworkBoundaryResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_CREATE_NETWORK_BOUNDARY_PATH,
-                    &reviewed.network_boundary_apply(),
+                .call::<_, aos_proto_types::NetworkPolicyResponse>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_CREATE_NETWORK_POLICY_PATH,
+                    &reviewed.network_policy_apply(),
                 )
                 .await
             {
@@ -191,23 +191,17 @@ fn NetworkBoundaryCreate(client: ApiClient, owner_scope_key: String) -> impl Int
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><h2>"Create network boundary"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Identity kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="vpn">"VPN"</option><option value="vpc">"Provider network / VPC"</option><option value="tunnel">"Tunnel"</option><option value="source-allowlist">"Source allowlist"</option><option value="trusted-ingress">"Trusted ingress"</option></select></label>{move || if kind.get() == "source-allowlist" { view! { <label class="full-field"><span>"Allowlist resource ID"</span><input required prop:value=move || allowlist_id.get() on:input=move |event| allowlist_id.set(event_target_value(&event))/></label> }.into_any() } else { let needs_listener = matches!(kind.get().as_str(), "vpc" | "trusted-ingress"); view! { <label><span>"Provider"</span><input required prop:value=move || provider.get() on:input=move |event| provider.set(event_target_value(&event))/></label><label><span>"Account or tenant"</span><input required prop:value=move || account.get() on:input=move |event| account.set(event_target_value(&event))/></label><label><span>"Provider resource ID"</span><input required prop:value=move || resource_id.get() on:input=move |event| resource_id.set(event_target_value(&event))/></label>{needs_listener.then(|| view! { <label><span>"Listener ID"</span><input required prop:value=move || listener_id.get() on:input=move |event| listener_id.set(event_target_value(&event))/></label> })} }.into_any() }}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="panel editor-panel"><h2>"Create network policy"</h2><form class="editor-form" on:submit=on_plan><label><span>"Name"</span><input required prop:value=move || name.get() on:input=move |event| name.set(event_target_value(&event))/></label><label><span>"Identity kind"</span><select prop:value=move || kind.get() on:change=move |event| kind.set(event_target_value(&event))><option value="vpn">"VPN"</option><option value="vpc">"Provider network / VPC"</option><option value="tunnel">"Tunnel"</option><option value="source-allowlist">"Source allowlist"</option><option value="trusted-ingress">"Trusted ingress"</option></select></label>{move || if kind.get() == "source-allowlist" { view! { <label class="full-field"><span>"Allowlist resource ID"</span><input required prop:value=move || allowlist_id.get() on:input=move |event| allowlist_id.set(event_target_value(&event))/></label> }.into_any() } else { let needs_listener = matches!(kind.get().as_str(), "vpc" | "trusted-ingress"); view! { <label><span>"Provider"</span><input required prop:value=move || provider.get() on:input=move |event| provider.set(event_target_value(&event))/></label><label><span>"Account or tenant"</span><input required prop:value=move || account.get() on:input=move |event| account.set(event_target_value(&event))/></label><label><span>"Provider resource ID"</span><input required prop:value=move || resource_id.get() on:input=move |event| resource_id.set(event_target_value(&event))/></label>{needs_listener.then(|| view! { <label><span>"Listener ID"</span><input required prop:value=move || listener_id.get() on:input=move |event| listener_id.set(event_target_value(&event))/></label> })} }.into_any() }}<div class="form-actions"><button class="button" type="submit" disabled=move || busy.get()>"Review creation"</button></div></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
-fn NetworkBoundaryCard(
-    client: ApiClient,
-    boundary: aos_proto_types::NetworkBoundary,
-) -> impl IntoView {
+fn NetworkPolicyCard(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
     let has_default_revision = boundary.default_revision > 0;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{boundary.kind.clone()}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><code>{boundary.identity_fingerprint.clone()}</code></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div><BoundaryRevisions client=client.clone() boundary=boundary.clone()/><div class="subworkflow-grid"><BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/><BoundaryGrants client=client.clone() boundary=boundary.clone()/></div><BoundaryDelete client=client boundary=boundary/></div></details> }
+    view! { <details class="binding-card"><summary><div><span class="resource-kind">{boundary.kind.clone()}</span><h3>{boundary.name.clone()}</h3><code>{boundary.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=format!("revision {}", boundary.default_revision) positive=has_default_revision/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Owner"</span><code>{boundary.owner_scope_key.clone()}</code></div><div><span>"Identity fingerprint"</span><HashValue value=boundary.identity_fingerprint.clone()/></div><div><span>"Version"</span><code>{boundary.resource_version.clone()}</code></div></div><BoundaryRevisions client=client.clone() boundary=boundary.clone()/><div class="subworkflow-grid"><BoundaryRevisionCreate client=client.clone() boundary=boundary.clone()/><BoundaryGrants client=client.clone() boundary=boundary.clone()/></div><BoundaryDelete client=client boundary=boundary/></div></details> }
 }
 
 #[component]
-fn BoundaryRevisions(
-    client: ApiClient,
-    boundary: aos_proto_types::NetworkBoundary,
-) -> impl IntoView {
+fn BoundaryRevisions(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
     let boundary_id = boundary.stable_id;
     let read_client = client.clone();
     let revisions = LocalResource::new(move || {
@@ -215,9 +209,9 @@ fn BoundaryRevisions(
         let boundary_id = boundary_id.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListNetworkBoundaryRevisionsResponse, _, _, _>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARY_REVISIONS_PATH,
-                    move |page_token| aos_proto_types::ListNetworkBoundaryRevisionsRequest {
+                .collect_pages::<_, aos_proto_types::ListNetworkPolicyRevisionsResponse, _, _, _>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICY_REVISIONS_PATH,
+                    move |page_token| aos_proto_types::ListNetworkPolicyRevisionsRequest {
                         boundary_id: boundary_id.clone(),
                         page_size: 100,
                         page_token,
@@ -239,7 +233,7 @@ enum BoundaryLifecycleAction {
 #[component]
 fn BoundaryRevisionRow(
     client: ApiClient,
-    revision: aos_proto_types::NetworkBoundaryRevision,
+    revision: aos_proto_types::NetworkPolicyRevision,
 ) -> impl IntoView {
     let lifecycle = revision.lifecycle.clone().unwrap_or_default();
     let observation = revision.observation.clone().unwrap_or_default();
@@ -257,7 +251,7 @@ fn BoundaryRevisionRow(
             BoundaryLifecycleAction::Activate => "boundary-activate",
             BoundaryLifecycleAction::Retire => "boundary-retire",
         });
-        let request = aos_proto_types::PlanNetworkBoundaryLifecycleRequest {
+        let request = aos_proto_types::PlanNetworkPolicyLifecycleRequest {
             boundary_id: request_revision.boundary_id.clone(),
             revision: request_revision.revision,
             activation_mode: if action == BoundaryLifecycleAction::Activate {
@@ -271,7 +265,14 @@ fn BoundaryRevisionRow(
             idempotency_key: idempotency_key.clone(),
             pin_resolutions: Vec::new(),
         };
-        let path = match action { BoundaryLifecycleAction::Activate => aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_ACTIVATE_NETWORK_BOUNDARY_REVISION_PATH, BoundaryLifecycleAction::Retire => aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_RETIRE_NETWORK_BOUNDARY_REVISION_PATH };
+        let path = match action {
+            BoundaryLifecycleAction::Activate => {
+                aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_ACTIVATE_NETWORK_POLICY_REVISION_PATH
+            }
+            BoundaryLifecycleAction::Retire => {
+                aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_RETIRE_NETWORK_POLICY_REVISION_PATH
+            }
+        };
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -294,18 +295,18 @@ fn BoundaryRevisionRow(
         let client = client.clone();
         let path = match action {
             BoundaryLifecycleAction::Activate => {
-                aos_proto_types::NETWORK_BOUNDARY_SERVICE_ACTIVATE_NETWORK_BOUNDARY_REVISION_PATH
+                aos_proto_types::NETWORK_POLICY_SERVICE_ACTIVATE_NETWORK_POLICY_REVISION_PATH
             }
             BoundaryLifecycleAction::Retire => {
-                aos_proto_types::NETWORK_BOUNDARY_SERVICE_RETIRE_NETWORK_BOUNDARY_REVISION_PATH
+                aos_proto_types::NETWORK_POLICY_SERVICE_RETIRE_NETWORK_POLICY_REVISION_PATH
             }
         };
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::NetworkBoundaryRevisionResponse>(
+                .call::<_, aos_proto_types::NetworkPolicyRevisionResponse>(
                     path,
-                    &reviewed.network_boundary_lifecycle_apply(),
+                    &reviewed.network_policy_lifecycle_apply(),
                 )
                 .await
             {
@@ -315,13 +316,13 @@ fn BoundaryRevisionRow(
             busy.set(false);
         });
     });
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><span>{format!("{} · observation {}", lifecycle.state, observation.state)}</span><code>{revision.content_digest}</code></div><StatusBadge state=lifecycle.state.clone() positive=lifecycle.state == "active"/></div>{matches!(lifecycle.state.as_str(), "staged" | "active" | "retiring").then(|| view! { <div class="inline-controls">{(lifecycle.state == "staged").then(|| view! { <select prop:value=move || mode.get() on:change=move |event| mode.set(event_target_value(&event))><option value="overlap">"Overlap"</option><option value="coordinated">"Coordinated"</option></select><label class="inline-check"><input type="checkbox" prop:checked=move || make_default.get() on:change=move |event| make_default.set(event_target_checked(&event))/><span>"Default for new plans"</span></label><button class="secondary-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Activate)>"Review activation"</button> })}{matches!(lifecycle.state.as_str(), "active" | "retiring").then(|| view! { <button class="danger-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Retire)>"Review retirement"</button> })}</div> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|(reviewed, _)| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Revision {}", revision.revision)}</strong><span>{format!("{} · observation {}", lifecycle.state, observation.state)}</span><HashValue value=revision.content_digest/></div><StatusBadge state=lifecycle.state.clone() positive=lifecycle.state == "active"/></div>{matches!(lifecycle.state.as_str(), "staged" | "active" | "retiring").then(|| view! { <div class="inline-controls">{(lifecycle.state == "staged").then(|| view! { <select prop:value=move || mode.get() on:change=move |event| mode.set(event_target_value(&event))><option value="overlap">"Overlap"</option><option value="coordinated">"Coordinated"</option></select><label class="inline-check"><input type="checkbox" prop:checked=move || make_default.get() on:change=move |event| make_default.set(event_target_checked(&event))/><span>"Default for new plans"</span></label><button class="secondary-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Activate)>"Review activation"</button> })}{matches!(lifecycle.state.as_str(), "active" | "retiring").then(|| view! { <button class="danger-button" type="button" disabled=move || busy.get() on:click=move |_| plan_action.run(BoundaryLifecycleAction::Retire)>"Review retirement"</button> })}</div> })}{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|(reviewed, _)| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
 }
 
 #[component]
 fn BoundaryRevisionCreate(
     client: ApiClient,
-    boundary: aos_proto_types::NetworkBoundary,
+    boundary: aos_proto_types::NetworkPolicy,
 ) -> impl IntoView {
     let protected = RwSignal::new(true);
     let trusted = RwSignal::new("none".to_string());
@@ -356,9 +357,9 @@ fn BoundaryRevisionCreate(
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("boundary-revision");
-        let request = aos_proto_types::PlanNetworkBoundaryRevisionRequest {
+        let request = aos_proto_types::PlanNetworkPolicyRevisionRequest {
             boundary_id: boundary_id.clone(),
-            spec: Some(aos_proto_types::NetworkBoundaryRevisionSpec {
+            spec: Some(aos_proto_types::NetworkPolicyRevisionSpec {
                 protected_transport_required: protected.get_untracked(),
                 trusted_ingress: Some(trusted_ingress),
                 source_allowlist_cidrs: split_values(&cidrs.get_untracked()),
@@ -378,7 +379,7 @@ fn BoundaryRevisionCreate(
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_REVISE_NETWORK_BOUNDARY_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_REVISE_NETWORK_POLICY_PATH,
                     &request,
                 )
                 .await
@@ -399,9 +400,9 @@ fn BoundaryRevisionCreate(
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::NetworkBoundaryRevisionResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_REVISE_NETWORK_BOUNDARY_PATH,
-                    &reviewed.network_boundary_revision_apply(),
+                .call::<_, aos_proto_types::NetworkPolicyRevisionResponse>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_REVISE_NETWORK_POLICY_PATH,
+                    &reviewed.network_policy_revision_apply(),
                 )
                 .await
             {
@@ -415,7 +416,7 @@ fn BoundaryRevisionCreate(
 }
 
 #[component]
-fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkBoundary) -> impl IntoView {
+fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
     let scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -429,7 +430,7 @@ fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkBoundary)
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("boundary-grant");
         let request = grant_request(
-            "network_boundary",
+            "network_policy",
             &boundary_id,
             0,
             &scope.get_untracked(),
@@ -439,7 +440,14 @@ fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkBoundary)
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = client.call::<_, aos_proto_types::TopologyPlanResponse>(aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_GRANT_NETWORK_BOUNDARY_SCOPE_PATH, &request).await.map_err(|failure| failure.to_string()).and_then(|response| PendingPlan::from_response(response, idempotency_key));
+            let result = client
+                .call::<_, aos_proto_types::TopologyPlanResponse>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_GRANT_NETWORK_POLICY_SCOPE_PATH,
+                    &request,
+                )
+                .await
+                .map_err(|failure| failure.to_string())
+                .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
                 Ok(reviewed) => pending.set(Some(reviewed)),
                 Err(detail) => error.set(Some(detail)),
@@ -456,7 +464,7 @@ fn BoundaryGrants(client: ApiClient, boundary: aos_proto_types::NetworkBoundary)
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_GRANT_NETWORK_BOUNDARY_SCOPE_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_GRANT_NETWORK_POLICY_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -494,7 +502,14 @@ fn BoundaryGrantRow(
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = client.call::<_, aos_proto_types::TopologyPlanResponse>(aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_REVOKE_NETWORK_BOUNDARY_SCOPE_PATH, &request).await.map_err(|failure| failure.to_string()).and_then(|response| PendingPlan::from_response(response, idempotency_key));
+            let result = client
+                .call::<_, aos_proto_types::TopologyPlanResponse>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_REVOKE_NETWORK_POLICY_SCOPE_PATH,
+                    &request,
+                )
+                .await
+                .map_err(|failure| failure.to_string())
+                .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
                 Ok(reviewed) => pending.set(Some(reviewed)),
                 Err(detail) => error.set(Some(detail)),
@@ -511,7 +526,7 @@ fn BoundaryGrantRow(
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_REVOKE_NETWORK_BOUNDARY_SCOPE_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_REVOKE_NETWORK_POLICY_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -526,7 +541,7 @@ fn BoundaryGrantRow(
 }
 
 #[component]
-fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkBoundary) -> impl IntoView {
+fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkPolicy) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -546,7 +561,7 @@ fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkBoundary)
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_PLAN_DELETE_NETWORK_BOUNDARY_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_PLAN_DELETE_NETWORK_POLICY_PATH,
                     &request,
                 )
                 .await
@@ -568,7 +583,7 @@ fn BoundaryDelete(client: ApiClient, boundary: aos_proto_types::NetworkBoundary)
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
-                    aos_proto_types::NETWORK_BOUNDARY_SERVICE_DELETE_NETWORK_BOUNDARY_PATH,
+                    aos_proto_types::NETWORK_POLICY_SERVICE_DELETE_NETWORK_POLICY_PATH,
                     &reviewed.delete_apply(),
                 )
                 .await
@@ -589,8 +604,8 @@ fn boundary_identity(
     resource_id: &str,
     listener_id: &str,
     allowlist_id: &str,
-) -> Result<aos_proto_types::network_boundary_identity::Identity, String> {
-    use aos_proto_types::network_boundary_identity::Identity;
+) -> Result<aos_proto_types::network_policy_identity::Identity, String> {
+    use aos_proto_types::network_policy_identity::Identity;
     if kind == "source-allowlist" {
         if allowlist_id.trim().is_empty() {
             return Err("Source allowlist identity requires an allowlist resource ID".to_string());
@@ -630,8 +645,8 @@ fn boundary_identity(
         _ => Err("Unsupported network-boundary kind".to_string()),
     }
 }
-fn default_boundary_revision() -> aos_proto_types::NetworkBoundaryRevisionSpec {
-    aos_proto_types::NetworkBoundaryRevisionSpec {
+fn default_boundary_revision() -> aos_proto_types::NetworkPolicyRevisionSpec {
+    aos_proto_types::NetworkPolicyRevisionSpec {
         protected_transport_required: true,
         trusted_ingress: Some(aos_proto_types::TrustedIngressConfiguration {
             configuration: Some(

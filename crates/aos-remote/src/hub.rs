@@ -72,43 +72,43 @@ enum HubTopologyMethod {
     PlanUpdateOrganization,
     /// Selects the normalized `UpdateOrganization` Connect operation.
     UpdateOrganization,
-    /// Selects the normalized `ListStorageBindings` Connect operation.
-    ListStorageBindings,
-    /// Selects the normalized `GetStorageBinding` Connect operation.
-    GetStorageBinding,
-    /// Selects the normalized `PlanCreateStorageBinding` Connect operation.
-    PlanCreateStorageBinding,
-    /// Selects the normalized `CreateStorageBinding` Connect operation.
-    CreateStorageBinding,
-    /// Selects the normalized `PlanSetStorageBindingCredential` Connect operation.
-    PlanSetStorageBindingCredential,
-    /// Selects the normalized `SetStorageBindingCredential` Connect operation.
-    SetStorageBindingCredential,
-    /// Selects the normalized `PlanRotateStorageBindingCredential` Connect operation.
-    PlanRotateStorageBindingCredential,
-    /// Selects the normalized `RotateStorageBindingCredential` Connect operation.
-    RotateStorageBindingCredential,
-    PlanValidateStorageBindingCredential,
-    /// Selects the normalized `ValidateStorageBindingCredential` Connect operation.
-    ValidateStorageBindingCredential,
-    /// Selects the normalized `PlanGrantStorageBindingScope` Connect operation.
-    PlanGrantStorageBindingScope,
-    /// Selects the normalized `GrantStorageBindingScope` Connect operation.
-    GrantStorageBindingScope,
-    /// Selects the normalized `PlanRevokeStorageBindingScope` Connect operation.
-    PlanRevokeStorageBindingScope,
-    /// Selects the normalized `RevokeStorageBindingScope` Connect operation.
-    RevokeStorageBindingScope,
-    /// Selects the normalized `ListStorageBindingWriteRevisions` Connect operation.
-    ListStorageBindingWriteRevisions,
-    /// Selects the normalized `GetStorageBindingWriteRevision` Connect operation.
-    GetStorageBindingWriteRevision,
+    /// Selects the normalized `ListBindings` Connect operation.
+    ListBindings,
+    /// Selects the normalized `GetBinding` Connect operation.
+    GetBinding,
+    /// Selects the normalized `PlanCreateBinding` Connect operation.
+    PlanCreateBinding,
+    /// Selects the normalized `CreateBinding` Connect operation.
+    CreateBinding,
+    /// Selects the normalized `PlanSetBindingCredential` Connect operation.
+    PlanSetBindingCredential,
+    /// Selects the normalized `SetBindingCredential` Connect operation.
+    SetBindingCredential,
+    /// Selects the normalized `PlanRotateBindingCredential` Connect operation.
+    PlanRotateBindingCredential,
+    /// Selects the normalized `RotateBindingCredential` Connect operation.
+    RotateBindingCredential,
+    PlanValidateBindingCredential,
+    /// Selects the normalized `ValidateBindingCredential` Connect operation.
+    ValidateBindingCredential,
+    /// Selects the normalized `PlanGrantBindingScope` Connect operation.
+    PlanGrantBindingScope,
+    /// Selects the normalized `GrantBindingScope` Connect operation.
+    GrantBindingScope,
+    /// Selects the normalized `PlanRevokeBindingScope` Connect operation.
+    PlanRevokeBindingScope,
+    /// Selects the normalized `RevokeBindingScope` Connect operation.
+    RevokeBindingScope,
+    /// Selects the normalized `ListBindingWriteRevisions` Connect operation.
+    ListBindingWriteRevisions,
+    /// Selects the normalized `GetBindingWriteRevision` Connect operation.
+    GetBindingWriteRevision,
     /// Selects the fenced storage-binding controller observation.
-    ReportStorageBindingWriteRevision,
-    /// Selects the normalized `PlanDeleteStorageBinding` Connect operation.
-    PlanDeleteStorageBinding,
-    /// Selects the normalized `DeleteStorageBinding` Connect operation.
-    DeleteStorageBinding,
+    ReportBindingWriteRevision,
+    /// Selects the normalized `PlanDeleteBinding` Connect operation.
+    PlanDeleteBinding,
+    /// Selects the normalized `DeleteBinding` Connect operation.
+    DeleteBinding,
     /// Selects the normalized `GetInstanceTopologyDefaults` Connect operation.
     GetInstanceTopologyDefaults,
     /// Selects the normalized `PlanSetInstanceTopologyDefaults` Connect operation.
@@ -144,113 +144,113 @@ enum HubTopologyMethod {
     PlanDeleteDomain,
     /// Selects the normalized `DeleteDomain` Connect operation.
     DeleteDomain,
-    /// Selects the normalized `ListNetworkBoundaries` Connect operation.
-    ListNetworkBoundaries,
-    /// Selects the normalized `GetNetworkBoundary` Connect operation.
-    GetNetworkBoundary,
-    /// Selects the normalized `PlanCreateNetworkBoundary` Connect operation.
-    PlanCreateNetworkBoundary,
-    /// Selects the normalized `CreateNetworkBoundary` Connect operation.
-    CreateNetworkBoundary,
-    /// Selects the normalized `ListNetworkBoundaryRevisions` Connect operation.
-    ListNetworkBoundaryRevisions,
-    /// Selects the normalized `GetNetworkBoundaryRevision` Connect operation.
-    GetNetworkBoundaryRevision,
-    /// Selects the normalized `PlanReviseNetworkBoundary` Connect operation.
-    PlanReviseNetworkBoundary,
-    /// Selects the normalized `ReviseNetworkBoundary` Connect operation.
-    ReviseNetworkBoundary,
-    CompleteNetworkBoundaryRevisionProbe,
-    ReportNetworkBoundaryRevision,
-    /// Selects the normalized `PlanActivateNetworkBoundaryRevision` Connect operation.
-    PlanActivateNetworkBoundaryRevision,
-    /// Selects the normalized `ActivateNetworkBoundaryRevision` Connect operation.
-    ActivateNetworkBoundaryRevision,
-    /// Selects the normalized `PlanRetireNetworkBoundaryRevision` Connect operation.
-    PlanRetireNetworkBoundaryRevision,
-    /// Selects the normalized `RetireNetworkBoundaryRevision` Connect operation.
-    RetireNetworkBoundaryRevision,
-    /// Selects the normalized `PlanGrantNetworkBoundaryScope` Connect operation.
-    PlanGrantNetworkBoundaryScope,
-    /// Selects the normalized `GrantNetworkBoundaryScope` Connect operation.
-    GrantNetworkBoundaryScope,
-    /// Selects the normalized `PlanRevokeNetworkBoundaryScope` Connect operation.
-    PlanRevokeNetworkBoundaryScope,
-    /// Selects the normalized `RevokeNetworkBoundaryScope` Connect operation.
-    RevokeNetworkBoundaryScope,
-    /// Selects the normalized `PlanDeleteNetworkBoundary` Connect operation.
-    PlanDeleteNetworkBoundary,
-    /// Selects the normalized `DeleteNetworkBoundary` Connect operation.
-    DeleteNetworkBoundary,
-    /// Selects the normalized `ListDeliveryEndpoints` Connect operation.
-    ListDeliveryEndpoints,
-    /// Selects the normalized `GetDeliveryEndpoint` Connect operation.
-    GetDeliveryEndpoint,
-    /// Selects the normalized `PlanCreateDeliveryEndpoint` Connect operation.
-    PlanCreateDeliveryEndpoint,
-    /// Selects the normalized `CreateDeliveryEndpoint` Connect operation.
-    CreateDeliveryEndpoint,
-    /// Selects the normalized `ListDeliveryEndpointGenerations` Connect operation.
-    ListDeliveryEndpointGenerations,
-    /// Selects the normalized `GetDeliveryEndpointGeneration` Connect operation.
-    GetDeliveryEndpointGeneration,
-    /// Selects the normalized `PlanStageDeliveryEndpointGeneration` Connect operation.
-    PlanStageDeliveryEndpointGeneration,
-    /// Selects the normalized `StageDeliveryEndpointGeneration` Connect operation.
-    StageDeliveryEndpointGeneration,
-    /// Selects the normalized `PlanActivateDeliveryEndpointGeneration` Connect operation.
-    PlanActivateDeliveryEndpointGeneration,
-    /// Selects the normalized `ActivateDeliveryEndpointGeneration` Connect operation.
-    ActivateDeliveryEndpointGeneration,
-    /// Selects the normalized `PlanGrantDeliveryEndpointScope` Connect operation.
-    PlanGrantDeliveryEndpointScope,
-    /// Selects the normalized `GrantDeliveryEndpointScope` Connect operation.
-    GrantDeliveryEndpointScope,
-    /// Selects the normalized `PlanRevokeDeliveryEndpointScope` Connect operation.
-    PlanRevokeDeliveryEndpointScope,
-    /// Selects the normalized `RevokeDeliveryEndpointScope` Connect operation.
-    RevokeDeliveryEndpointScope,
-    CompleteDeliveryEndpointProbe,
-    ReportDeliveryEndpoint,
-    /// Selects the normalized `PlanDeleteDeliveryEndpoint` Connect operation.
-    PlanDeleteDeliveryEndpoint,
-    /// Selects the normalized `DeleteDeliveryEndpoint` Connect operation.
-    DeleteDeliveryEndpoint,
-    /// Selects the normalized `ListStorageGateways` Connect operation.
-    ListStorageGateways,
-    /// Selects the normalized `GetStorageGateway` Connect operation.
-    GetStorageGateway,
-    /// Selects the normalized `PlanCreateStorageGateway` Connect operation.
-    PlanCreateStorageGateway,
-    /// Selects the normalized `CreateStorageGateway` Connect operation.
-    CreateStorageGateway,
-    /// Selects the normalized `PlanUpdateStorageGateway` Connect operation.
-    PlanUpdateStorageGateway,
-    /// Selects the normalized `UpdateStorageGateway` Connect operation.
-    UpdateStorageGateway,
-    /// Selects the normalized `PlanGrantStorageGatewayScope` Connect operation.
-    PlanGrantStorageGatewayScope,
-    /// Selects the normalized `GrantStorageGatewayScope` Connect operation.
-    GrantStorageGatewayScope,
-    /// Selects the normalized `PlanRevokeStorageGatewayScope` Connect operation.
-    PlanRevokeStorageGatewayScope,
-    /// Selects the normalized `RevokeStorageGatewayScope` Connect operation.
-    RevokeStorageGatewayScope,
+    /// Selects the normalized `ListNetworkPolicies` Connect operation.
+    ListNetworkPolicies,
+    /// Selects the normalized `GetNetworkPolicy` Connect operation.
+    GetNetworkPolicy,
+    /// Selects the normalized `PlanCreateNetworkPolicy` Connect operation.
+    PlanCreateNetworkPolicy,
+    /// Selects the normalized `CreateNetworkPolicy` Connect operation.
+    CreateNetworkPolicy,
+    /// Selects the normalized `ListNetworkPolicyRevisions` Connect operation.
+    ListNetworkPolicyRevisions,
+    /// Selects the normalized `GetNetworkPolicyRevision` Connect operation.
+    GetNetworkPolicyRevision,
+    /// Selects the normalized `PlanReviseNetworkPolicy` Connect operation.
+    PlanReviseNetworkPolicy,
+    /// Selects the normalized `ReviseNetworkPolicy` Connect operation.
+    ReviseNetworkPolicy,
+    CompleteNetworkPolicyRevisionProbe,
+    ReportNetworkPolicyRevision,
+    /// Selects the normalized `PlanActivateNetworkPolicyRevision` Connect operation.
+    PlanActivateNetworkPolicyRevision,
+    /// Selects the normalized `ActivateNetworkPolicyRevision` Connect operation.
+    ActivateNetworkPolicyRevision,
+    /// Selects the normalized `PlanRetireNetworkPolicyRevision` Connect operation.
+    PlanRetireNetworkPolicyRevision,
+    /// Selects the normalized `RetireNetworkPolicyRevision` Connect operation.
+    RetireNetworkPolicyRevision,
+    /// Selects the normalized `PlanGrantNetworkPolicyScope` Connect operation.
+    PlanGrantNetworkPolicyScope,
+    /// Selects the normalized `GrantNetworkPolicyScope` Connect operation.
+    GrantNetworkPolicyScope,
+    /// Selects the normalized `PlanRevokeNetworkPolicyScope` Connect operation.
+    PlanRevokeNetworkPolicyScope,
+    /// Selects the normalized `RevokeNetworkPolicyScope` Connect operation.
+    RevokeNetworkPolicyScope,
+    /// Selects the normalized `PlanDeleteNetworkPolicy` Connect operation.
+    PlanDeleteNetworkPolicy,
+    /// Selects the normalized `DeleteNetworkPolicy` Connect operation.
+    DeleteNetworkPolicy,
+    /// Selects the normalized `ListEndpoints` Connect operation.
+    ListEndpoints,
+    /// Selects the normalized `GetEndpoint` Connect operation.
+    GetEndpoint,
+    /// Selects the normalized `PlanCreateEndpoint` Connect operation.
+    PlanCreateEndpoint,
+    /// Selects the normalized `CreateEndpoint` Connect operation.
+    CreateEndpoint,
+    /// Selects the normalized `ListEndpointGenerations` Connect operation.
+    ListEndpointGenerations,
+    /// Selects the normalized `GetEndpointGeneration` Connect operation.
+    GetEndpointGeneration,
+    /// Selects the normalized `PlanStageEndpointGeneration` Connect operation.
+    PlanStageEndpointGeneration,
+    /// Selects the normalized `StageEndpointGeneration` Connect operation.
+    StageEndpointGeneration,
+    /// Selects the normalized `PlanActivateEndpointGeneration` Connect operation.
+    PlanActivateEndpointGeneration,
+    /// Selects the normalized `ActivateEndpointGeneration` Connect operation.
+    ActivateEndpointGeneration,
+    /// Selects the normalized `PlanGrantEndpointScope` Connect operation.
+    PlanGrantEndpointScope,
+    /// Selects the normalized `GrantEndpointScope` Connect operation.
+    GrantEndpointScope,
+    /// Selects the normalized `PlanRevokeEndpointScope` Connect operation.
+    PlanRevokeEndpointScope,
+    /// Selects the normalized `RevokeEndpointScope` Connect operation.
+    RevokeEndpointScope,
+    CompleteEndpointProbe,
+    ReportEndpoint,
+    /// Selects the normalized `PlanDeleteEndpoint` Connect operation.
+    PlanDeleteEndpoint,
+    /// Selects the normalized `DeleteEndpoint` Connect operation.
+    DeleteEndpoint,
+    /// Selects the normalized `ListGateways` Connect operation.
+    ListGateways,
+    /// Selects the normalized `GetGateway` Connect operation.
+    GetGateway,
+    /// Selects the normalized `PlanCreateGateway` Connect operation.
+    PlanCreateGateway,
+    /// Selects the normalized `CreateGateway` Connect operation.
+    CreateGateway,
+    /// Selects the normalized `PlanUpdateGateway` Connect operation.
+    PlanUpdateGateway,
+    /// Selects the normalized `UpdateGateway` Connect operation.
+    UpdateGateway,
+    /// Selects the normalized `PlanGrantGatewayScope` Connect operation.
+    PlanGrantGatewayScope,
+    /// Selects the normalized `GrantGatewayScope` Connect operation.
+    GrantGatewayScope,
+    /// Selects the normalized `PlanRevokeGatewayScope` Connect operation.
+    PlanRevokeGatewayScope,
+    /// Selects the normalized `RevokeGatewayScope` Connect operation.
+    RevokeGatewayScope,
     /// Selects the normalized `PreviewGatewayRoutes` Connect operation.
     PreviewGatewayRoutes,
-    ReportStorageGateway,
-    /// Selects the normalized `PlanEnableStorageGateway` Connect operation.
-    PlanEnableStorageGateway,
-    /// Selects the normalized `EnableStorageGateway` Connect operation.
-    EnableStorageGateway,
-    /// Selects the normalized `PlanDisableStorageGateway` Connect operation.
-    PlanDisableStorageGateway,
-    /// Selects the normalized `DisableStorageGateway` Connect operation.
-    DisableStorageGateway,
-    /// Selects the normalized `PlanDeleteStorageGateway` Connect operation.
-    PlanDeleteStorageGateway,
-    /// Selects the normalized `DeleteStorageGateway` Connect operation.
-    DeleteStorageGateway,
+    ReportGateway,
+    /// Selects the normalized `PlanEnableGateway` Connect operation.
+    PlanEnableGateway,
+    /// Selects the normalized `EnableGateway` Connect operation.
+    EnableGateway,
+    /// Selects the normalized `PlanDisableGateway` Connect operation.
+    PlanDisableGateway,
+    /// Selects the normalized `DisableGateway` Connect operation.
+    DisableGateway,
+    /// Selects the normalized `PlanDeleteGateway` Connect operation.
+    PlanDeleteGateway,
+    /// Selects the normalized `DeleteGateway` Connect operation.
+    DeleteGateway,
     /// Selects the normalized `ListRoutes` Connect operation.
     ListRoutes,
     /// Selects the normalized `GetRoute` Connect operation.
@@ -279,10 +279,10 @@ enum HubTopologyMethod {
     PlanDeleteRoute,
     /// Selects the normalized `DeleteRoute` Connect operation.
     DeleteRoute,
-    /// Selects the normalized `PlanSetCanonicalRoute` Connect operation.
-    PlanSetCanonicalRoute,
-    /// Selects the normalized `SetCanonicalRoute` Connect operation.
-    SetCanonicalRoute,
+    /// Selects the normalized `PlanSetRouteAdvertisement` Connect operation.
+    PlanSetRouteAdvertisement,
+    /// Selects the normalized `SetRouteAdvertisement` Connect operation.
+    SetRouteAdvertisement,
     CompleteRouteProbe,
     /// Selects the normalized `ExplainRoute` Connect operation.
     ExplainRoute,
@@ -681,66 +681,42 @@ impl HubTopologyMethod {
         match self {
             PlanUpdateOrganization => "aos.hub.v1.OrganizationService/PlanUpdateOrganization",
             UpdateOrganization => "aos.hub.v1.OrganizationService/UpdateOrganization",
-            ListStorageBindings => "aos.hub.v1.StorageBindingService/ListStorageBindings",
-            GetStorageBinding => "aos.hub.v1.StorageBindingService/GetStorageBinding",
-            PlanCreateStorageBinding => "aos.hub.v1.StorageBindingService/PlanCreateStorageBinding",
-            CreateStorageBinding => "aos.hub.v1.StorageBindingService/CreateStorageBinding",
-            PlanSetStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/PlanSetStorageBindingCredential"
+            ListBindings => "aos.hub.v1.BindingService/ListBindings",
+            GetBinding => "aos.hub.v1.BindingService/GetBinding",
+            PlanCreateBinding => "aos.hub.v1.BindingService/PlanCreateBinding",
+            CreateBinding => "aos.hub.v1.BindingService/CreateBinding",
+            PlanSetBindingCredential => "aos.hub.v1.BindingService/PlanSetBindingCredential",
+            SetBindingCredential => "aos.hub.v1.BindingService/SetBindingCredential",
+            PlanRotateBindingCredential => "aos.hub.v1.BindingService/PlanRotateBindingCredential",
+            RotateBindingCredential => "aos.hub.v1.BindingService/RotateBindingCredential",
+            PlanValidateBindingCredential => {
+                "aos.hub.v1.BindingService/PlanValidateBindingCredential"
             }
-            SetStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/SetStorageBindingCredential"
+            ValidateBindingCredential => "aos.hub.v1.BindingService/ValidateBindingCredential",
+            PlanGrantBindingScope => "aos.hub.v1.BindingService/PlanGrantBindingScope",
+            GrantBindingScope => "aos.hub.v1.BindingService/GrantBindingScope",
+            PlanRevokeBindingScope => "aos.hub.v1.BindingService/PlanRevokeBindingScope",
+            RevokeBindingScope => "aos.hub.v1.BindingService/RevokeBindingScope",
+            ListBindingWriteRevisions => "aos.hub.v1.BindingService/ListBindingWriteRevisions",
+            GetBindingWriteRevision => "aos.hub.v1.BindingService/GetBindingWriteRevision",
+            ReportBindingWriteRevision => {
+                "aos.hub.v1.BindingControllerService/ReportBindingWriteRevision"
             }
-            PlanRotateStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/PlanRotateStorageBindingCredential"
-            }
-            RotateStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/RotateStorageBindingCredential"
-            }
-            PlanValidateStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/PlanValidateStorageBindingCredential"
-            }
-            ValidateStorageBindingCredential => {
-                "aos.hub.v1.StorageBindingService/ValidateStorageBindingCredential"
-            }
-            PlanGrantStorageBindingScope => {
-                "aos.hub.v1.StorageBindingService/PlanGrantStorageBindingScope"
-            }
-            GrantStorageBindingScope => "aos.hub.v1.StorageBindingService/GrantStorageBindingScope",
-            PlanRevokeStorageBindingScope => {
-                "aos.hub.v1.StorageBindingService/PlanRevokeStorageBindingScope"
-            }
-            RevokeStorageBindingScope => {
-                "aos.hub.v1.StorageBindingService/RevokeStorageBindingScope"
-            }
-            ListStorageBindingWriteRevisions => {
-                "aos.hub.v1.StorageBindingService/ListStorageBindingWriteRevisions"
-            }
-            GetStorageBindingWriteRevision => {
-                "aos.hub.v1.StorageBindingService/GetStorageBindingWriteRevision"
-            }
-            ReportStorageBindingWriteRevision => {
-                "aos.hub.v1.StorageBindingControllerService/ReportStorageBindingWriteRevision"
-            }
-            PlanDeleteStorageBinding => "aos.hub.v1.StorageBindingService/PlanDeleteStorageBinding",
-            DeleteStorageBinding => "aos.hub.v1.StorageBindingService/DeleteStorageBinding",
-            GetInstanceTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults"
-            }
+            PlanDeleteBinding => "aos.hub.v1.BindingService/PlanDeleteBinding",
+            DeleteBinding => "aos.hub.v1.BindingService/DeleteBinding",
+            GetInstanceTopologyDefaults => "aos.hub.v1.BindingService/GetInstanceTopologyDefaults",
             PlanSetInstanceTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/PlanSetInstanceTopologyDefaults"
+                "aos.hub.v1.BindingService/PlanSetInstanceTopologyDefaults"
             }
-            SetInstanceTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/SetInstanceTopologyDefaults"
-            }
+            SetInstanceTopologyDefaults => "aos.hub.v1.BindingService/SetInstanceTopologyDefaults",
             GetOrganizationTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/GetOrganizationTopologyDefaults"
+                "aos.hub.v1.BindingService/GetOrganizationTopologyDefaults"
             }
             PlanSetOrganizationTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/PlanSetOrganizationTopologyDefaults"
+                "aos.hub.v1.BindingService/PlanSetOrganizationTopologyDefaults"
             }
             SetOrganizationTopologyDefaults => {
-                "aos.hub.v1.StorageBindingService/SetOrganizationTopologyDefaults"
+                "aos.hub.v1.BindingService/SetOrganizationTopologyDefaults"
             }
             ListDomains => "aos.hub.v1.DomainService/ListDomains",
             GetDomain => "aos.hub.v1.DomainService/GetDomain",
@@ -756,114 +732,82 @@ impl HubTopologyMethod {
             VerifyDomain => "aos.hub.v1.DomainService/VerifyDomain",
             PlanDeleteDomain => "aos.hub.v1.DomainService/PlanDeleteDomain",
             DeleteDomain => "aos.hub.v1.DomainService/DeleteDomain",
-            ListNetworkBoundaries => "aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaries",
-            GetNetworkBoundary => "aos.hub.v1.NetworkBoundaryService/GetNetworkBoundary",
-            PlanCreateNetworkBoundary => {
-                "aos.hub.v1.NetworkBoundaryService/PlanCreateNetworkBoundary"
+            ListNetworkPolicies => "aos.hub.v1.NetworkPolicyService/ListNetworkPolicies",
+            GetNetworkPolicy => "aos.hub.v1.NetworkPolicyService/GetNetworkPolicy",
+            PlanCreateNetworkPolicy => "aos.hub.v1.NetworkPolicyService/PlanCreateNetworkPolicy",
+            CreateNetworkPolicy => "aos.hub.v1.NetworkPolicyService/CreateNetworkPolicy",
+            ListNetworkPolicyRevisions => {
+                "aos.hub.v1.NetworkPolicyService/ListNetworkPolicyRevisions"
             }
-            CreateNetworkBoundary => "aos.hub.v1.NetworkBoundaryService/CreateNetworkBoundary",
-            ListNetworkBoundaryRevisions => {
-                "aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaryRevisions"
+            GetNetworkPolicyRevision => "aos.hub.v1.NetworkPolicyService/GetNetworkPolicyRevision",
+            PlanReviseNetworkPolicy => "aos.hub.v1.NetworkPolicyService/PlanReviseNetworkPolicy",
+            ReviseNetworkPolicy => "aos.hub.v1.NetworkPolicyService/ReviseNetworkPolicy",
+            CompleteNetworkPolicyRevisionProbe => {
+                "aos.hub.v1.NetworkPolicyControllerService/CompleteNetworkPolicyRevisionProbe"
             }
-            GetNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryService/GetNetworkBoundaryRevision"
+            ReportNetworkPolicyRevision => {
+                "aos.hub.v1.NetworkPolicyControllerService/ReportNetworkPolicyRevision"
             }
-            PlanReviseNetworkBoundary => {
-                "aos.hub.v1.NetworkBoundaryService/PlanReviseNetworkBoundary"
+            PlanActivateNetworkPolicyRevision => {
+                "aos.hub.v1.NetworkPolicyService/PlanActivateNetworkPolicyRevision"
             }
-            ReviseNetworkBoundary => "aos.hub.v1.NetworkBoundaryService/ReviseNetworkBoundary",
-            CompleteNetworkBoundaryRevisionProbe => {
-                "aos.hub.v1.NetworkBoundaryControllerService/CompleteNetworkBoundaryRevisionProbe"
+            ActivateNetworkPolicyRevision => {
+                "aos.hub.v1.NetworkPolicyService/ActivateNetworkPolicyRevision"
             }
-            ReportNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryControllerService/ReportNetworkBoundaryRevision"
+            PlanRetireNetworkPolicyRevision => {
+                "aos.hub.v1.NetworkPolicyService/PlanRetireNetworkPolicyRevision"
             }
-            PlanActivateNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryService/PlanActivateNetworkBoundaryRevision"
+            RetireNetworkPolicyRevision => {
+                "aos.hub.v1.NetworkPolicyService/RetireNetworkPolicyRevision"
             }
-            ActivateNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryService/ActivateNetworkBoundaryRevision"
+            PlanGrantNetworkPolicyScope => {
+                "aos.hub.v1.NetworkPolicyService/PlanGrantNetworkPolicyScope"
             }
-            PlanRetireNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryService/PlanRetireNetworkBoundaryRevision"
+            GrantNetworkPolicyScope => "aos.hub.v1.NetworkPolicyService/GrantNetworkPolicyScope",
+            PlanRevokeNetworkPolicyScope => {
+                "aos.hub.v1.NetworkPolicyService/PlanRevokeNetworkPolicyScope"
             }
-            RetireNetworkBoundaryRevision => {
-                "aos.hub.v1.NetworkBoundaryService/RetireNetworkBoundaryRevision"
+            RevokeNetworkPolicyScope => "aos.hub.v1.NetworkPolicyService/RevokeNetworkPolicyScope",
+            PlanDeleteNetworkPolicy => "aos.hub.v1.NetworkPolicyService/PlanDeleteNetworkPolicy",
+            DeleteNetworkPolicy => "aos.hub.v1.NetworkPolicyService/DeleteNetworkPolicy",
+            ListEndpoints => "aos.hub.v1.DeliveryService/ListEndpoints",
+            GetEndpoint => "aos.hub.v1.DeliveryService/GetEndpoint",
+            PlanCreateEndpoint => "aos.hub.v1.DeliveryService/PlanCreateEndpoint",
+            CreateEndpoint => "aos.hub.v1.DeliveryService/CreateEndpoint",
+            ListEndpointGenerations => "aos.hub.v1.DeliveryService/ListEndpointGenerations",
+            GetEndpointGeneration => "aos.hub.v1.DeliveryService/GetEndpointGeneration",
+            PlanStageEndpointGeneration => "aos.hub.v1.DeliveryService/PlanStageEndpointGeneration",
+            StageEndpointGeneration => "aos.hub.v1.DeliveryService/StageEndpointGeneration",
+            PlanActivateEndpointGeneration => {
+                "aos.hub.v1.DeliveryService/PlanActivateEndpointGeneration"
             }
-            PlanGrantNetworkBoundaryScope => {
-                "aos.hub.v1.NetworkBoundaryService/PlanGrantNetworkBoundaryScope"
-            }
-            GrantNetworkBoundaryScope => {
-                "aos.hub.v1.NetworkBoundaryService/GrantNetworkBoundaryScope"
-            }
-            PlanRevokeNetworkBoundaryScope => {
-                "aos.hub.v1.NetworkBoundaryService/PlanRevokeNetworkBoundaryScope"
-            }
-            RevokeNetworkBoundaryScope => {
-                "aos.hub.v1.NetworkBoundaryService/RevokeNetworkBoundaryScope"
-            }
-            PlanDeleteNetworkBoundary => {
-                "aos.hub.v1.NetworkBoundaryService/PlanDeleteNetworkBoundary"
-            }
-            DeleteNetworkBoundary => "aos.hub.v1.NetworkBoundaryService/DeleteNetworkBoundary",
-            ListDeliveryEndpoints => "aos.hub.v1.DeliveryService/ListDeliveryEndpoints",
-            GetDeliveryEndpoint => "aos.hub.v1.DeliveryService/GetDeliveryEndpoint",
-            PlanCreateDeliveryEndpoint => "aos.hub.v1.DeliveryService/PlanCreateDeliveryEndpoint",
-            CreateDeliveryEndpoint => "aos.hub.v1.DeliveryService/CreateDeliveryEndpoint",
-            ListDeliveryEndpointGenerations => {
-                "aos.hub.v1.DeliveryService/ListDeliveryEndpointGenerations"
-            }
-            GetDeliveryEndpointGeneration => {
-                "aos.hub.v1.DeliveryService/GetDeliveryEndpointGeneration"
-            }
-            PlanStageDeliveryEndpointGeneration => {
-                "aos.hub.v1.DeliveryService/PlanStageDeliveryEndpointGeneration"
-            }
-            StageDeliveryEndpointGeneration => {
-                "aos.hub.v1.DeliveryService/StageDeliveryEndpointGeneration"
-            }
-            PlanActivateDeliveryEndpointGeneration => {
-                "aos.hub.v1.DeliveryService/PlanActivateDeliveryEndpointGeneration"
-            }
-            ActivateDeliveryEndpointGeneration => {
-                "aos.hub.v1.DeliveryService/ActivateDeliveryEndpointGeneration"
-            }
-            PlanGrantDeliveryEndpointScope => {
-                "aos.hub.v1.DeliveryService/PlanGrantDeliveryEndpointScope"
-            }
-            GrantDeliveryEndpointScope => "aos.hub.v1.DeliveryService/GrantDeliveryEndpointScope",
-            PlanRevokeDeliveryEndpointScope => {
-                "aos.hub.v1.DeliveryService/PlanRevokeDeliveryEndpointScope"
-            }
-            RevokeDeliveryEndpointScope => "aos.hub.v1.DeliveryService/RevokeDeliveryEndpointScope",
-            CompleteDeliveryEndpointProbe => {
-                "aos.hub.v1.DeliveryControllerService/CompleteDeliveryEndpointProbe"
-            }
-            ReportDeliveryEndpoint => "aos.hub.v1.DeliveryControllerService/ReportDeliveryEndpoint",
-            PlanDeleteDeliveryEndpoint => "aos.hub.v1.DeliveryService/PlanDeleteDeliveryEndpoint",
-            DeleteDeliveryEndpoint => "aos.hub.v1.DeliveryService/DeleteDeliveryEndpoint",
-            ListStorageGateways => "aos.hub.v1.DeliveryService/ListStorageGateways",
-            GetStorageGateway => "aos.hub.v1.DeliveryService/GetStorageGateway",
-            PlanCreateStorageGateway => "aos.hub.v1.DeliveryService/PlanCreateStorageGateway",
-            CreateStorageGateway => "aos.hub.v1.DeliveryService/CreateStorageGateway",
-            PlanUpdateStorageGateway => "aos.hub.v1.DeliveryService/PlanUpdateStorageGateway",
-            UpdateStorageGateway => "aos.hub.v1.DeliveryService/UpdateStorageGateway",
-            PlanGrantStorageGatewayScope => {
-                "aos.hub.v1.DeliveryService/PlanGrantStorageGatewayScope"
-            }
-            GrantStorageGatewayScope => "aos.hub.v1.DeliveryService/GrantStorageGatewayScope",
-            PlanRevokeStorageGatewayScope => {
-                "aos.hub.v1.DeliveryService/PlanRevokeStorageGatewayScope"
-            }
-            RevokeStorageGatewayScope => "aos.hub.v1.DeliveryService/RevokeStorageGatewayScope",
+            ActivateEndpointGeneration => "aos.hub.v1.DeliveryService/ActivateEndpointGeneration",
+            PlanGrantEndpointScope => "aos.hub.v1.DeliveryService/PlanGrantEndpointScope",
+            GrantEndpointScope => "aos.hub.v1.DeliveryService/GrantEndpointScope",
+            PlanRevokeEndpointScope => "aos.hub.v1.DeliveryService/PlanRevokeEndpointScope",
+            RevokeEndpointScope => "aos.hub.v1.DeliveryService/RevokeEndpointScope",
+            CompleteEndpointProbe => "aos.hub.v1.DeliveryControllerService/CompleteEndpointProbe",
+            ReportEndpoint => "aos.hub.v1.DeliveryControllerService/ReportEndpoint",
+            PlanDeleteEndpoint => "aos.hub.v1.DeliveryService/PlanDeleteEndpoint",
+            DeleteEndpoint => "aos.hub.v1.DeliveryService/DeleteEndpoint",
+            ListGateways => "aos.hub.v1.DeliveryService/ListGateways",
+            GetGateway => "aos.hub.v1.DeliveryService/GetGateway",
+            PlanCreateGateway => "aos.hub.v1.DeliveryService/PlanCreateGateway",
+            CreateGateway => "aos.hub.v1.DeliveryService/CreateGateway",
+            PlanUpdateGateway => "aos.hub.v1.DeliveryService/PlanUpdateGateway",
+            UpdateGateway => "aos.hub.v1.DeliveryService/UpdateGateway",
+            PlanGrantGatewayScope => "aos.hub.v1.DeliveryService/PlanGrantGatewayScope",
+            GrantGatewayScope => "aos.hub.v1.DeliveryService/GrantGatewayScope",
+            PlanRevokeGatewayScope => "aos.hub.v1.DeliveryService/PlanRevokeGatewayScope",
+            RevokeGatewayScope => "aos.hub.v1.DeliveryService/RevokeGatewayScope",
             PreviewGatewayRoutes => "aos.hub.v1.DeliveryService/PreviewGatewayRoutes",
-            ReportStorageGateway => "aos.hub.v1.DeliveryControllerService/ReportStorageGateway",
-            PlanEnableStorageGateway => "aos.hub.v1.DeliveryService/PlanEnableStorageGateway",
-            EnableStorageGateway => "aos.hub.v1.DeliveryService/EnableStorageGateway",
-            PlanDisableStorageGateway => "aos.hub.v1.DeliveryService/PlanDisableStorageGateway",
-            DisableStorageGateway => "aos.hub.v1.DeliveryService/DisableStorageGateway",
-            PlanDeleteStorageGateway => "aos.hub.v1.DeliveryService/PlanDeleteStorageGateway",
-            DeleteStorageGateway => "aos.hub.v1.DeliveryService/DeleteStorageGateway",
+            ReportGateway => "aos.hub.v1.DeliveryControllerService/ReportGateway",
+            PlanEnableGateway => "aos.hub.v1.DeliveryService/PlanEnableGateway",
+            EnableGateway => "aos.hub.v1.DeliveryService/EnableGateway",
+            PlanDisableGateway => "aos.hub.v1.DeliveryService/PlanDisableGateway",
+            DisableGateway => "aos.hub.v1.DeliveryService/DisableGateway",
+            PlanDeleteGateway => "aos.hub.v1.DeliveryService/PlanDeleteGateway",
+            DeleteGateway => "aos.hub.v1.DeliveryService/DeleteGateway",
             ListRoutes => "aos.hub.v1.RouteService/ListRoutes",
             GetRoute => "aos.hub.v1.RouteService/GetRoute",
             PlanCreateRoute => "aos.hub.v1.RouteService/PlanCreateRoute",
@@ -878,8 +822,8 @@ impl HubTopologyMethod {
             DisableRoute => "aos.hub.v1.RouteService/DisableRoute",
             PlanDeleteRoute => "aos.hub.v1.RouteService/PlanDeleteRoute",
             DeleteRoute => "aos.hub.v1.RouteService/DeleteRoute",
-            PlanSetCanonicalRoute => "aos.hub.v1.RouteService/PlanSetCanonicalRoute",
-            SetCanonicalRoute => "aos.hub.v1.RouteService/SetCanonicalRoute",
+            PlanSetRouteAdvertisement => "aos.hub.v1.RouteService/PlanSetRouteAdvertisement",
+            SetRouteAdvertisement => "aos.hub.v1.RouteService/SetRouteAdvertisement",
             CompleteRouteProbe => "aos.hub.v1.RouteControllerService/CompleteRouteProbe",
             ExplainRoute => "aos.hub.v1.RouteService/ExplainRoute",
             GetSurfaceTopology => "aos.hub.v1.TopologyService/GetSurfaceTopology",
@@ -1224,25 +1168,25 @@ pub mod hub_rpc {
     typed_hub_rpcs! {
         PlanUpdateOrganization: PlanUpdateOrganizationRequest => TopologyPlanResponse;
         UpdateOrganization: ApplyOrganizationMutationRequest => OrganizationResponse;
-        ListStorageBindings: ListStorageBindingsRequest => ListStorageBindingsResponse;
-        GetStorageBinding: GetStorageBindingRequest => GetStorageBindingResponse;
-        PlanCreateStorageBinding: PlanStorageBindingMutationRequest => TopologyPlanResponse;
-        CreateStorageBinding: ApplyStorageBindingMutationRequest => StorageBindingResponse;
-        PlanSetStorageBindingCredential: PlanStorageBindingCredentialRequest => TopologyPlanResponse;
-        SetStorageBindingCredential: ApplyStorageBindingCredentialRequest => StorageBindingCredentialResponse;
-        PlanRotateStorageBindingCredential: PlanStorageBindingCredentialRequest => TopologyPlanResponse;
-        RotateStorageBindingCredential: ApplyStorageBindingCredentialRequest => StorageBindingCredentialResponse;
-        PlanValidateStorageBindingCredential: PlanValidateStorageBindingCredentialRequest => TopologyPlanResponse;
-        ValidateStorageBindingCredential: ApplyTopologyPlanRequest => OperationResponse;
-        PlanGrantStorageBindingScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        GrantStorageBindingScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        PlanRevokeStorageBindingScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        RevokeStorageBindingScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        ListStorageBindingWriteRevisions: ListStorageBindingWriteRevisionsRequest => ListStorageBindingWriteRevisionsResponse;
-        GetStorageBindingWriteRevision: GetStorageBindingWriteRevisionRequest => StorageBindingWriteRevisionResponse;
-        ReportStorageBindingWriteRevision: ReportStorageBindingWriteRevisionRequest => StorageBindingWriteRevisionResponse;
-        PlanDeleteStorageBinding: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteStorageBinding: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        ListBindings: ListBindingsRequest => ListBindingsResponse;
+        GetBinding: GetBindingRequest => GetBindingResponse;
+        PlanCreateBinding: PlanBindingMutationRequest => TopologyPlanResponse;
+        CreateBinding: ApplyBindingMutationRequest => BindingResponse;
+        PlanSetBindingCredential: PlanBindingCredentialRequest => TopologyPlanResponse;
+        SetBindingCredential: ApplyBindingCredentialRequest => BindingCredentialResponse;
+        PlanRotateBindingCredential: PlanBindingCredentialRequest => TopologyPlanResponse;
+        RotateBindingCredential: ApplyBindingCredentialRequest => BindingCredentialResponse;
+        PlanValidateBindingCredential: PlanValidateBindingCredentialRequest => TopologyPlanResponse;
+        ValidateBindingCredential: ApplyTopologyPlanRequest => OperationResponse;
+        PlanGrantBindingScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        GrantBindingScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        PlanRevokeBindingScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        RevokeBindingScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        ListBindingWriteRevisions: ListBindingWriteRevisionsRequest => ListBindingWriteRevisionsResponse;
+        GetBindingWriteRevision: GetBindingWriteRevisionRequest => BindingWriteRevisionResponse;
+        ReportBindingWriteRevision: ReportBindingWriteRevisionRequest => BindingWriteRevisionResponse;
+        PlanDeleteBinding: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DeleteBinding: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
         GetInstanceTopologyDefaults: GetInstanceTopologyDefaultsRequest => TopologyDefaultsResponse;
         PlanSetInstanceTopologyDefaults: PlanSetTopologyDefaultsRequest => TopologyPlanResponse;
         SetInstanceTopologyDefaults: ApplySetTopologyDefaultsRequest => TopologyDefaultsResponse;
@@ -1261,78 +1205,78 @@ pub mod hub_rpc {
         VerifyDomain: ApplyTopologyPlanRequest => OperationResponse;
         PlanDeleteDomain: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
         DeleteDomain: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
-        ListNetworkBoundaries: ListTopologyResourcesRequest => ListNetworkBoundariesResponse;
-        GetNetworkBoundary: GetTopologyResourceRequest => NetworkBoundaryResponse;
-        PlanCreateNetworkBoundary: PlanNetworkBoundaryMutationRequest => TopologyPlanResponse;
-        CreateNetworkBoundary: ApplyNetworkBoundaryMutationRequest => NetworkBoundaryResponse;
-        ListNetworkBoundaryRevisions: ListNetworkBoundaryRevisionsRequest => ListNetworkBoundaryRevisionsResponse;
-        GetNetworkBoundaryRevision: GetNetworkBoundaryRevisionRequest => NetworkBoundaryRevisionResponse;
-        PlanReviseNetworkBoundary: PlanNetworkBoundaryRevisionRequest => TopologyPlanResponse;
-        ReviseNetworkBoundary: ApplyNetworkBoundaryRevisionRequest => NetworkBoundaryRevisionResponse;
-        CompleteNetworkBoundaryRevisionProbe: CompleteNetworkBoundaryRevisionProbeRequest => NetworkBoundaryRevisionResponse;
-        ReportNetworkBoundaryRevision: ReportNetworkBoundaryRevisionRequest => NetworkBoundaryRevisionResponse;
-        PlanActivateNetworkBoundaryRevision: PlanNetworkBoundaryLifecycleRequest => TopologyPlanResponse;
-        ActivateNetworkBoundaryRevision: ApplyNetworkBoundaryLifecycleRequest => NetworkBoundaryRevisionResponse;
-        PlanRetireNetworkBoundaryRevision: PlanNetworkBoundaryLifecycleRequest => TopologyPlanResponse;
-        RetireNetworkBoundaryRevision: ApplyNetworkBoundaryLifecycleRequest => NetworkBoundaryRevisionResponse;
-        PlanGrantNetworkBoundaryScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        GrantNetworkBoundaryScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        PlanRevokeNetworkBoundaryScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        RevokeNetworkBoundaryScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        PlanDeleteNetworkBoundary: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteNetworkBoundary: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
-        ListDeliveryEndpoints: ListTopologyResourcesRequest => ListDeliveryEndpointsResponse;
-        GetDeliveryEndpoint: GetTopologyResourceRequest => DeliveryEndpointResponse;
-        PlanCreateDeliveryEndpoint: PlanDeliveryEndpointMutationRequest => TopologyPlanResponse;
-        CreateDeliveryEndpoint: ApplyDeliveryEndpointMutationRequest => DeliveryEndpointResponse;
-        ListDeliveryEndpointGenerations: ListDeliveryEndpointGenerationsRequest => ListDeliveryEndpointGenerationsResponse;
-        GetDeliveryEndpointGeneration: GetDeliveryEndpointGenerationRequest => DeliveryEndpointGenerationResponse;
-        PlanStageDeliveryEndpointGeneration: PlanStageDeliveryEndpointGenerationRequest => TopologyPlanResponse;
-        StageDeliveryEndpointGeneration: ApplyDeliveryEndpointGenerationRequest => DeliveryEndpointGenerationResponse;
-        PlanActivateDeliveryEndpointGeneration: PlanActivateDeliveryEndpointGenerationRequest => TopologyPlanResponse;
-        ActivateDeliveryEndpointGeneration: ApplyDeliveryEndpointGenerationRequest => DeliveryEndpointResponse;
-        PlanGrantDeliveryEndpointScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        GrantDeliveryEndpointScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        PlanRevokeDeliveryEndpointScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        RevokeDeliveryEndpointScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        CompleteDeliveryEndpointProbe: CompleteDeliveryEndpointProbeRequest => DeliveryEndpointResponse;
-        ReportDeliveryEndpoint: ReportDeliveryEndpointRequest => DeliveryEndpointResponse;
-        PlanDeleteDeliveryEndpoint: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteDeliveryEndpoint: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
-        ListStorageGateways: ListStorageGatewaysRequest => ListStorageGatewaysResponse;
-        GetStorageGateway: GetTopologyResourceRequest => StorageGatewayResponse;
-        PlanCreateStorageGateway: PlanStorageGatewayMutationRequest => TopologyPlanResponse;
-        CreateStorageGateway: ApplyStorageGatewayMutationRequest => StorageGatewayResponse;
-        PlanUpdateStorageGateway: PlanStorageGatewayMutationRequest => TopologyPlanResponse;
-        UpdateStorageGateway: ApplyStorageGatewayMutationRequest => StorageGatewayResponse;
-        PlanGrantStorageGatewayScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        GrantStorageGatewayScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
-        PlanRevokeStorageGatewayScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
-        RevokeStorageGatewayScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        ListNetworkPolicies: ListTopologyResourcesRequest => ListNetworkPoliciesResponse;
+        GetNetworkPolicy: GetTopologyResourceRequest => NetworkPolicyResponse;
+        PlanCreateNetworkPolicy: PlanNetworkPolicyMutationRequest => TopologyPlanResponse;
+        CreateNetworkPolicy: ApplyNetworkPolicyMutationRequest => NetworkPolicyResponse;
+        ListNetworkPolicyRevisions: ListNetworkPolicyRevisionsRequest => ListNetworkPolicyRevisionsResponse;
+        GetNetworkPolicyRevision: GetNetworkPolicyRevisionRequest => NetworkPolicyRevisionResponse;
+        PlanReviseNetworkPolicy: PlanNetworkPolicyRevisionRequest => TopologyPlanResponse;
+        ReviseNetworkPolicy: ApplyNetworkPolicyRevisionRequest => NetworkPolicyRevisionResponse;
+        CompleteNetworkPolicyRevisionProbe: CompleteNetworkPolicyRevisionProbeRequest => NetworkPolicyRevisionResponse;
+        ReportNetworkPolicyRevision: ReportNetworkPolicyRevisionRequest => NetworkPolicyRevisionResponse;
+        PlanActivateNetworkPolicyRevision: PlanNetworkPolicyLifecycleRequest => TopologyPlanResponse;
+        ActivateNetworkPolicyRevision: ApplyNetworkPolicyLifecycleRequest => NetworkPolicyRevisionResponse;
+        PlanRetireNetworkPolicyRevision: PlanNetworkPolicyLifecycleRequest => TopologyPlanResponse;
+        RetireNetworkPolicyRevision: ApplyNetworkPolicyLifecycleRequest => NetworkPolicyRevisionResponse;
+        PlanGrantNetworkPolicyScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        GrantNetworkPolicyScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        PlanRevokeNetworkPolicyScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        RevokeNetworkPolicyScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        PlanDeleteNetworkPolicy: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DeleteNetworkPolicy: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        ListEndpoints: ListTopologyResourcesRequest => ListEndpointsResponse;
+        GetEndpoint: GetTopologyResourceRequest => EndpointResponse;
+        PlanCreateEndpoint: PlanEndpointMutationRequest => TopologyPlanResponse;
+        CreateEndpoint: ApplyEndpointMutationRequest => EndpointResponse;
+        ListEndpointGenerations: ListEndpointGenerationsRequest => ListEndpointGenerationsResponse;
+        GetEndpointGeneration: GetEndpointGenerationRequest => EndpointGenerationResponse;
+        PlanStageEndpointGeneration: PlanStageEndpointGenerationRequest => TopologyPlanResponse;
+        StageEndpointGeneration: ApplyEndpointGenerationRequest => EndpointGenerationResponse;
+        PlanActivateEndpointGeneration: PlanActivateEndpointGenerationRequest => TopologyPlanResponse;
+        ActivateEndpointGeneration: ApplyEndpointGenerationRequest => EndpointResponse;
+        PlanGrantEndpointScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        GrantEndpointScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        PlanRevokeEndpointScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        RevokeEndpointScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        CompleteEndpointProbe: CompleteEndpointProbeRequest => EndpointResponse;
+        ReportEndpoint: ReportEndpointRequest => EndpointResponse;
+        PlanDeleteEndpoint: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DeleteEndpoint: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        ListGateways: ListGatewaysRequest => ListGatewaysResponse;
+        GetGateway: GetTopologyResourceRequest => GatewayResponse;
+        PlanCreateGateway: PlanGatewayMutationRequest => TopologyPlanResponse;
+        CreateGateway: ApplyGatewayMutationRequest => GatewayResponse;
+        PlanUpdateGateway: PlanGatewayMutationRequest => TopologyPlanResponse;
+        UpdateGateway: ApplyGatewayMutationRequest => GatewayResponse;
+        PlanGrantGatewayScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        GrantGatewayScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
+        PlanRevokeGatewayScope: PlanConsumerScopeGrantRequest => TopologyPlanResponse;
+        RevokeGatewayScope: ApplyConsumerScopeGrantRequest => ConsumerScopeGrantResponse;
         PreviewGatewayRoutes: GetTopologyResourceRequest => GatewayRoutePreviewResponse;
-        ReportStorageGateway: ReportStorageGatewayRequest => StorageGatewayResponse;
-        PlanEnableStorageGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        EnableStorageGateway: ApplyDeleteTopologyResourceRequest => StorageGatewayResponse;
-        PlanDisableStorageGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DisableStorageGateway: ApplyDeleteTopologyResourceRequest => StorageGatewayResponse;
-        PlanDeleteStorageGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteStorageGateway: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        ReportGateway: ReportGatewayRequest => GatewayResponse;
+        PlanEnableGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        EnableGateway: ApplyDeleteTopologyResourceRequest => GatewayResponse;
+        PlanDisableGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DisableGateway: ApplyDeleteTopologyResourceRequest => GatewayResponse;
+        PlanDeleteGateway: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DeleteGateway: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
         ListRoutes: ListRoutesRequest => ListRoutesResponse;
-        GetRoute: GetTopologyResourceRequest => DeliveryRouteResponse;
+        GetRoute: GetTopologyResourceRequest => RouteResponse;
         PlanCreateRoute: PlanRouteMutationRequest => TopologyPlanResponse;
-        CreateRoute: ApplyRouteMutationRequest => DeliveryRouteResponse;
+        CreateRoute: ApplyRouteMutationRequest => RouteResponse;
         PlanUpdateRoute: PlanRouteMutationRequest => TopologyPlanResponse;
-        UpdateRoute: ApplyRouteMutationRequest => DeliveryRouteResponse;
+        UpdateRoute: ApplyRouteMutationRequest => RouteResponse;
         PlanReplaceRoute: PlanReplaceRouteRequest => TopologyPlanResponse;
-        ReplaceRoute: ApplyRouteMutationRequest => DeliveryRouteResponse;
+        ReplaceRoute: ApplyRouteMutationRequest => RouteResponse;
         PlanEnableRoute: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        EnableRoute: ApplyDeleteTopologyResourceRequest => DeliveryRouteResponse;
+        EnableRoute: ApplyDeleteTopologyResourceRequest => RouteResponse;
         PlanDisableRoute: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DisableRoute: ApplyDeleteTopologyResourceRequest => DeliveryRouteResponse;
+        DisableRoute: ApplyDeleteTopologyResourceRequest => RouteResponse;
         PlanDeleteRoute: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
         DeleteRoute: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
-        PlanSetCanonicalRoute: PlanCanonicalRouteRequest => TopologyPlanResponse;
-        SetCanonicalRoute: ApplyCanonicalRouteRequest => CanonicalRouteResponse;
+        PlanSetRouteAdvertisement: PlanRouteAdvertisementRequest => TopologyPlanResponse;
+        SetRouteAdvertisement: ApplyRouteAdvertisementRequest => RouteAdvertisementResponse;
         CompleteRouteProbe: CompleteRouteProbeRequest => OperationResponse;
         ExplainRoute: ExplainRouteRequest => ExplainRouteResponse;
         GetSurfaceTopology: GetSurfaceTopologyRequest => GetSurfaceTopologyResponse;
@@ -2062,7 +2006,7 @@ mod tests {
         let create = serde_json::to_value(PlanCreatePlacementRequest {
             surface: surface.clone(),
             name: "replica".to_string(),
-            storage_binding_id: "origin".to_string(),
+            binding_id: "origin".to_string(),
             prefix: "cache/replica".to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -2080,7 +2024,7 @@ mod tests {
         assert_eq!(create["desiredReadEnabled"], true);
         assert!(create.get("writeEnabled").is_none());
         assert!(create.get("writeOrder").is_none());
-        assert!(create.get("storage_binding_id").is_none());
+        assert!(create.get("binding_id").is_none());
         assert!(create.get("state").is_none());
         assert!(create.get("completeness").is_none());
 

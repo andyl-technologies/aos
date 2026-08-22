@@ -52,7 +52,7 @@ async fn seed_creates_browsable_registry_and_login() {
         .await
         .unwrap()
         .expect("demo user exists");
-    assert!(db.list_storage_bindings(org.id).await.unwrap().is_empty());
+    assert!(db.list_bindings(org.id).await.unwrap().is_empty());
     let binding = db
         .instance_default_binding()
         .await

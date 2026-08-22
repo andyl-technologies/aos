@@ -244,7 +244,7 @@ async fn canonical_management_links_serve_one_authenticated_shell() {
     let cookie = login(&app, &db, "console@example.com").await;
     for path in [
         "/-/instance",
-        "/-/instance/storage-bindings",
+        "/-/instance/bindings",
         "/-/caches",
         "/-/orgs",
         "/-/org/acme/projects",

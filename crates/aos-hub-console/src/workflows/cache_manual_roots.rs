@@ -7,7 +7,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -87,7 +87,7 @@ fn ManualRootSummary(
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{root.store_hash}</strong><code>{root.root_id}</code></div>
+                <div><HashValue value=root.store_hash/><code>{root.root_id}</code></div>
                 <StatusBadge
                     state=lease.as_ref().map(|lease| lease.state.clone()).unwrap_or_else(|| "permanent".to_string())
                     positive=lease.as_ref().is_none_or(|lease| lease.state == "active")

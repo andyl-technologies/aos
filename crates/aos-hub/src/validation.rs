@@ -698,7 +698,7 @@ pub struct RepairCredential {
 /// Resolves the upload credential for an http repair target.
 ///
 /// Implemented by the hub server to mint an internal short-lived cache JWT
-/// for a target that resolves through one of the hub's ready delivery routes. For
+/// for a target that resolves through one of the hub's ready routes. For
 /// a target the hub does not serve — an arbitrary external cache with no
 /// configured credential — it returns `None`, and [`run_repairs`] records the
 /// repair as `plan_only` rather than writing somewhere it cannot authorize.

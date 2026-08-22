@@ -205,7 +205,7 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
         .unwrap();
     let registry = db.registry_by_id(reg).await.unwrap().unwrap();
     db.grant_consumer_scope(
-        aos_hub::db::GrantResource::NetworkBoundary {
+        aos_hub::db::GrantResource::NetworkPolicy {
             id: "instance:public",
         },
         &registry.owner_scope_key,
@@ -215,7 +215,7 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     )
     .await
     .unwrap();
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         aos_hub::db::SurfaceTarget::Registry(reg),
         placement,

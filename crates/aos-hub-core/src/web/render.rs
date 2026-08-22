@@ -22,7 +22,23 @@
 
 use std::fmt::Write as _;
 
+use aos_hub_console_contract::{HashPresentation, AUTHENTICATED_PRIMARY_NAVIGATION};
 use aos_proto_types as pb;
+
+/// Renders the canonical signed-in masthead links.
+pub(crate) fn authenticated_navigation() -> String {
+    AUTHENTICATED_PRIMARY_NAVIGATION
+        .iter()
+        .map(|item| {
+            format!(
+                "<a href=\"{}\">{}</a>",
+                escape(item.href),
+                escape(item.label)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
 
 /// The masthead chrome threaded into every page by the deploying shell.
 ///
@@ -81,11 +97,10 @@ impl PageChrome {
         match &self.session_email {
             Some(email) => format!(
                 "<span class=\"session\">\
-                 <a href=\"/\">registries</a> · \
-                 <a href=\"/-/orgs\">organizations</a> · \
-                 <a href=\"/-/account\">account</a> · \
+                 {} · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
+                authenticated_navigation(),
                 escape(email),
             ),
             None => "<span class=\"session\">\
@@ -229,6 +244,51 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// Renders one hash using the shared compact, tooltip, and copy treatment.
+///
+/// The complete value remains in the document and is exposed by the
+/// progressive-enhancement bundle on hover, focus, and copy.
+#[must_use]
+pub fn hash_value(value: &str) -> String {
+    hash_value_with_link(value, None)
+}
+
+/// Renders one compact hash whose pill links to `href` while copy stays local.
+#[must_use]
+pub fn hash_value_link(value: &str, href: &str) -> String {
+    hash_value_with_link(value, Some(href))
+}
+
+fn hash_value_with_link(value: &str, href: Option<&str>) -> String {
+    let presentation = HashPresentation::new(value);
+    let content = format!(
+        "<code aria-label=\"{}\">{}</code>\
+         <span class=\"hash-tooltip\" role=\"tooltip\">{}</span>",
+        escape(presentation.full),
+        escape(&presentation.compact),
+        escape(presentation.full),
+    );
+    let identity = match href {
+        Some(href) => format!(
+            "<a class=\"hash-value\" data-hash-value=\"{}\" href=\"{}\">{content}</a>",
+            escape(presentation.full),
+            escape(href),
+        ),
+        None => format!(
+            "<span class=\"hash-value\" data-hash-value=\"{}\" tabindex=\"0\">\
+             {content}</span>",
+            escape(presentation.full),
+        ),
+    };
+    format!(
+        "<span class=\"hash-control\">{}\
+         <button type=\"button\" class=\"hash-copy\" data-copy-value=\"{}\" \
+         aria-label=\"Copy full hash\">copy</button></span>",
+        identity,
+        escape(presentation.full),
+    )
+}
+
 /// Render a complete page in the shared layout.
 ///
 /// `crumbs` is the masthead trail as `(href, label)` pairs; the final crumb is
@@ -349,7 +409,7 @@ pub fn registry_home(
             .map(|k| {
                 vec![
                     escape(&k.id),
-                    escape(&key_fingerprint(&k.key)),
+                    hash_value(&key_fingerprint(&k.key)),
                     escape(&k.status),
                 ]
             })
@@ -622,7 +682,7 @@ pub fn releases_page(
             .map(|r| {
                 vec![
                     escape(&r.semver),
-                    escape(&truncate_chars(&r.commit_oid, 12)),
+                    hash_value(&r.commit_oid),
                     escape(if r.signer.is_empty() {
                         "—"
                     } else {
@@ -712,7 +772,19 @@ mod tests {
         );
         assert_eq!(signed.page_title("log in"), "log in — Acme &lt;Co&gt;");
         assert!(signed.session_span().contains("a@b.example"));
+        assert!(signed
+            .session_span()
+            .contains("<a href=\"/-/instance\">settings</a>"));
         assert!(signed.session_span().contains("log out"));
+    }
+
+    #[test]
+    fn hash_value_is_compact_and_retains_the_complete_value() {
+        let hash = "sha256:0123456789abcdef";
+        let html = hash_value(hash);
+        assert!(html.contains(">sha256:01234…</code>"));
+        assert!(html.contains(&format!("data-hash-value=\"{hash}\"")));
+        assert!(html.contains(&format!("data-copy-value=\"{hash}\"")));
     }
 
     #[test]

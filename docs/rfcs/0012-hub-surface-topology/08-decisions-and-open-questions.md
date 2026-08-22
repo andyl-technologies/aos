@@ -88,14 +88,14 @@ only the Hub namespace.
 ### D15: names are corrected during the cutover
 
 The system-of-record object is `binary_caches`, signed consumer projections are
-`registry_cache_stack_entries`, HTTP mappings are delivery routes, and storage
+`registry_cache_stack_entries`, HTTP mappings are routes, and storage
 copies are placements. The final schema/API/source does not retain ambiguous
 `frontends`, `cache_registry_links`, `advertised`, or storage-switch concepts.
 
 ### D16: retained URLs are ordinary routes
 
 An existing public URL may survive only because the migration imports it as a
-normal delivery route that satisfies all new invariants. There is no historical
+normal route that satisfies all new invariants. There is no historical
 URL alias table or special compatibility handler.
 
 ### D17: one settings shell and hierarchy serves every scope
@@ -174,9 +174,9 @@ require declared layer-7 ingress. Hub-authorized redirects run the complete
 authorization and eligibility pipeline before minting a short-lived,
 path-specific capability.
 
-### D24: client URL origins are typed delivery endpoints
+### D24: client URL origins are typed endpoints
 
-`Domain` remains DNS-name ownership/certificate lifecycle. `DeliveryEndpoint`
+`Domain` remains DNS-name ownership/certificate lifecycle. `Endpoint`
 owns scheme, DNS or canonical IP host, effective port, ingress/network realm,
 and observed listener/TLS posture. Routes and gateway revisions reference an
 endpoint; they do not store opaque URLs or overload Domain with IP literals.
@@ -184,9 +184,9 @@ Instance endpoint grants make shared Hub origins available to organizations
 without transferring ownership. Plain HTTP is explicit and never carries Hub
 or origin secrets over unprotected cleartext.
 
-### D25: network boundaries are revisioned security resources
+### D25: network policies are revisioned security resources
 
-`NetworkBoundary` has immutable scoped realm identity derived from a typed
+`NetworkPolicy` has immutable scoped realm identity derived from a typed
 public, provider-resource, stable allowlist-resource, or trusted-listener
 specification. Its immutable desired revisions pin protected-transport
 requirements, trusted-ingress verification references, probe location, and
@@ -264,7 +264,7 @@ operator-only method exposed as ordinary settings porcelain.
 
 ## Rejected conflations
 
-- Storage binding endpoint as consumer URL.
+- Binding endpoint as consumer URL.
 - Physical bucket equality as logical binding identity.
 - Binding frontend inheritance as invisible route creation.
 - Domain name as a full URL, listener, access policy, or IP-literal container.

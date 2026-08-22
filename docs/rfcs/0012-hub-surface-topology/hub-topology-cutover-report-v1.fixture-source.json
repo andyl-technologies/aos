@@ -543,7 +543,7 @@
           "artifact_node_id": "evidence/cutover-fixture"
         }
       },
-      "delivery_endpoints": {
+      "endpoints": {
         "expected_count": 1,
         "actual_count": 1,
         "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000030",
@@ -552,7 +552,7 @@
           "artifact_node_id": "evidence/cutover-fixture"
         }
       },
-      "network_boundaries": {
+      "network_policies": {
         "expected_count": 1,
         "actual_count": 1,
         "configuration_digest": "derive:sha256:b000000000000000000000000000000000000000000000000000000000000032",

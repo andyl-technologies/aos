@@ -97,10 +97,8 @@ impl PendingPlan {
     }
 
     /// Builds a storage-binding apply envelope for this exact plan.
-    pub(crate) fn storage_binding_apply(
-        &self,
-    ) -> aos_proto_types::ApplyStorageBindingMutationRequest {
-        aos_proto_types::ApplyStorageBindingMutationRequest {
+    pub(crate) fn binding_apply(&self) -> aos_proto_types::ApplyBindingMutationRequest {
+        aos_proto_types::ApplyBindingMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -110,8 +108,8 @@ impl PendingPlan {
     /// Builds a storage-credential apply envelope for this exact plan.
     pub(crate) fn storage_credential_apply(
         &self,
-    ) -> aos_proto_types::ApplyStorageBindingCredentialRequest {
-        aos_proto_types::ApplyStorageBindingCredentialRequest {
+    ) -> aos_proto_types::ApplyBindingCredentialRequest {
+        aos_proto_types::ApplyBindingCredentialRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -159,10 +157,10 @@ impl PendingPlan {
     }
 
     /// Builds a network-boundary identity apply envelope for this exact plan.
-    pub(crate) fn network_boundary_apply(
+    pub(crate) fn network_policy_apply(
         &self,
-    ) -> aos_proto_types::ApplyNetworkBoundaryMutationRequest {
-        aos_proto_types::ApplyNetworkBoundaryMutationRequest {
+    ) -> aos_proto_types::ApplyNetworkPolicyMutationRequest {
+        aos_proto_types::ApplyNetworkPolicyMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -170,10 +168,10 @@ impl PendingPlan {
     }
 
     /// Builds a network-boundary revision apply envelope for this exact plan.
-    pub(crate) fn network_boundary_revision_apply(
+    pub(crate) fn network_policy_revision_apply(
         &self,
-    ) -> aos_proto_types::ApplyNetworkBoundaryRevisionRequest {
-        aos_proto_types::ApplyNetworkBoundaryRevisionRequest {
+    ) -> aos_proto_types::ApplyNetworkPolicyRevisionRequest {
+        aos_proto_types::ApplyNetworkPolicyRevisionRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -181,10 +179,10 @@ impl PendingPlan {
     }
 
     /// Builds a boundary lifecycle apply envelope for this exact plan.
-    pub(crate) fn network_boundary_lifecycle_apply(
+    pub(crate) fn network_policy_lifecycle_apply(
         &self,
-    ) -> aos_proto_types::ApplyNetworkBoundaryLifecycleRequest {
-        aos_proto_types::ApplyNetworkBoundaryLifecycleRequest {
+    ) -> aos_proto_types::ApplyNetworkPolicyLifecycleRequest {
+        aos_proto_types::ApplyNetworkPolicyLifecycleRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -192,10 +190,8 @@ impl PendingPlan {
     }
 
     /// Builds a delivery-endpoint identity apply envelope for this exact plan.
-    pub(crate) fn delivery_endpoint_apply(
-        &self,
-    ) -> aos_proto_types::ApplyDeliveryEndpointMutationRequest {
-        aos_proto_types::ApplyDeliveryEndpointMutationRequest {
+    pub(crate) fn endpoint_apply(&self) -> aos_proto_types::ApplyEndpointMutationRequest {
+        aos_proto_types::ApplyEndpointMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -203,10 +199,10 @@ impl PendingPlan {
     }
 
     /// Builds an endpoint-generation apply envelope for this exact plan.
-    pub(crate) fn delivery_endpoint_generation_apply(
+    pub(crate) fn endpoint_generation_apply(
         &self,
-    ) -> aos_proto_types::ApplyDeliveryEndpointGenerationRequest {
-        aos_proto_types::ApplyDeliveryEndpointGenerationRequest {
+    ) -> aos_proto_types::ApplyEndpointGenerationRequest {
+        aos_proto_types::ApplyEndpointGenerationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -214,10 +210,8 @@ impl PendingPlan {
     }
 
     /// Builds a storage-gateway mutation apply envelope for this exact plan.
-    pub(crate) fn storage_gateway_apply(
-        &self,
-    ) -> aos_proto_types::ApplyStorageGatewayMutationRequest {
-        aos_proto_types::ApplyStorageGatewayMutationRequest {
+    pub(crate) fn gateway_apply(&self) -> aos_proto_types::ApplyGatewayMutationRequest {
+        aos_proto_types::ApplyGatewayMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),
@@ -234,8 +228,10 @@ impl PendingPlan {
     }
 
     /// Builds a canonical-route apply envelope for this exact plan.
-    pub(crate) fn canonical_route_apply(&self) -> aos_proto_types::ApplyCanonicalRouteRequest {
-        aos_proto_types::ApplyCanonicalRouteRequest {
+    pub(crate) fn route_advertisement_apply(
+        &self,
+    ) -> aos_proto_types::ApplyRouteAdvertisementRequest {
+        aos_proto_types::ApplyRouteAdvertisementRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
             confirmation_hash: self.plan.confirmation_hash.clone(),

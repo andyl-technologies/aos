@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use worker::{SqlStorage, SqlStorageValue};
 
 use aos_hub_core::db::{
-    Database, DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec,
-    GrantResource, NewSurfacePlacementSpec, SurfacePlacementRecord, SurfaceTarget,
+    Database, EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
+    RouteSpec, SurfacePlacementRecord, SurfaceTarget,
 };
 use aos_hub_core::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
 use aos_hub_core::surface_write::{
@@ -82,16 +82,13 @@ impl DoE2eSurfaceProvider {
         db: &Database,
         fixture: WorkerImageFixture,
     ) -> Result<WorkerImageFixture> {
-        let binding = db
-            .storage_binding(1)
-            .await?
-            .context("e2e binding is missing")?;
+        let binding = db.binding(1).await?.context("e2e binding is missing")?;
         let owner_scope = db
             .org_by_id(1)
             .await?
             .context("e2e organization is missing")?
             .stable_id;
-        let binding_resource = GrantResource::StorageBinding {
+        let binding_resource = GrantResource::Binding {
             id: binding.id,
             stable_id: &binding.stable_id,
         };
@@ -137,7 +134,7 @@ impl DoE2eSurfaceProvider {
                 .create_surface_placement(&NewSurfacePlacementSpec {
                     surface: SurfaceTarget::Registry(registry_id),
                     name: format!("{name}-placement"),
-                    storage_binding_id: binding.id,
+                    binding_id: binding.id,
                     prefix: prefix.to_string(),
                     kind: "complete".to_string(),
                     desired_state: "active".to_string(),
@@ -183,7 +180,7 @@ impl DoE2eSurfaceProvider {
                 Some(placement.id),
             )
             .await?;
-            configure_hub_delivery_route(
+            configure_hub_route(
                 db,
                 SurfaceTarget::Registry(registry_id),
                 placement.id,
@@ -200,7 +197,7 @@ impl DoE2eSurfaceProvider {
     }
 }
 
-pub(crate) async fn configure_hub_delivery_route(
+pub(crate) async fn configure_hub_route(
     db: &Database,
     surface: SurfaceTarget,
     placement_id: i64,
@@ -231,7 +228,7 @@ pub(crate) async fn configure_hub_delivery_route(
         }
     };
 
-    let boundary = GrantResource::NetworkBoundary { id: BOUNDARY_ID };
+    let boundary = GrantResource::NetworkPolicy { id: BOUNDARY_ID };
     if !db
         .list_consumer_scope_grants(boundary)
         .await?
@@ -247,16 +244,16 @@ pub(crate) async fn configure_hub_delivery_route(
         )
         .await?;
     }
-    if db.delivery_endpoint(ENDPOINT_ID).await?.is_none() {
-        db.create_delivery_endpoint(
+    if db.endpoint(ENDPOINT_ID).await?.is_none() {
+        db.create_endpoint(
             ENDPOINT_ID,
             &owner_scope,
             org_id,
             "http",
-            &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
+            &EndpointHostInput::Ipv4([127, 0, 0, 1]),
             PORT,
             BOUNDARY_ID,
-            &DeliveryEndpointRevisionSpec {
+            &EndpointRevisionSpec {
                 boundary_revision: 1,
                 ingress_kind: "hub".to_string(),
                 listener_configuration: "workerd-e2e".to_string(),
@@ -268,7 +265,7 @@ pub(crate) async fn configure_hub_delivery_route(
             "worker-image-endpoint",
         )
         .await?;
-        db.reconcile_delivery_endpoint(ENDPOINT_ID, 1, 1, "healthy", true, false, None, 1)
+        db.reconcile_endpoint(ENDPOINT_ID, 1, 1, "healthy", true, false, None, 1)
             .await?;
     }
 
@@ -277,7 +274,7 @@ pub(crate) async fn configure_hub_delivery_route(
     let access_policy_json = "{}";
     let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
     let endpoint = db
-        .delivery_endpoint(ENDPOINT_ID)
+        .endpoint(ENDPOINT_ID)
         .await?
         .context("worker image endpoint disappeared")?;
     let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest)
@@ -295,10 +292,10 @@ pub(crate) async fn configure_hub_delivery_route(
         SurfaceTarget::BinaryCache(_) => (false, true),
     };
     let route = db
-        .create_delivery_route(
+        .create_route(
             &route_id,
             surface,
-            &DeliveryRouteSpec {
+            &RouteSpec {
                 consumer_scope_key: owner_scope,
                 endpoint_id: ENDPOINT_ID.to_string(),
                 endpoint_generation: 1,
@@ -317,9 +314,9 @@ pub(crate) async fn configure_hub_delivery_route(
                 external_provider_kind: None,
                 external_provider_resource_id: None,
                 external_provider_revision: None,
-                storage_gateway_id: None,
+                gateway_id: None,
                 gateway_generation: None,
-                target_storage_binding_id: None,
+                target_binding_id: None,
                 gateway_client_base_path: None,
                 target_placement_prefix: None,
                 placement_id: Some(placement_id),
@@ -337,7 +334,7 @@ pub(crate) async fn configure_hub_delivery_route(
             "workerd-e2e",
         )
         .await?;
-    db.reconcile_delivery_route(
+    db.reconcile_route(
         &route_id,
         route
             .configuration_generation
@@ -359,7 +356,7 @@ pub(crate) async fn configure_hub_delivery_route(
         SurfaceTarget::BinaryCache(_) => &["nix_cache", "web"],
     };
     for audience in audiences {
-        db.set_canonical_route(surface, audience, &route_id, None)
+        db.set_route_advertisement(surface, audience, &route_id, None)
             .await?;
     }
     Ok(())

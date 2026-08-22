@@ -5,7 +5,7 @@
 //! `objects/ab/cd…`, `channels/stable/00`, …) and get bytes or a definite
 //! "not present". Two transports cover the deployment matrix:
 //!
-//! - [`LocalFsFetch`] for `file://` storage bindings — the local-first
+//! - [`LocalFsFetch`] for `file://` bindings — the local-first
 //!   mode, where the registry surface is a directory on disk.
 //! - [`HttpFetch`] for registration-only registries indexed through their
 //!   public CDN URL, exactly as an `apm` client would fetch them.
