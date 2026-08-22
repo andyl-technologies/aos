@@ -18,7 +18,8 @@ use crucible_qemu::{
 };
 
 use crate::{
-    AttemptExecutionContext, AttemptWorkerFailure, CrucibleAttemptExecution, ExecutionCancellation,
+    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
+    CapturedExactCheckpoint, CrucibleAttemptExecution, ExecutionCancellation,
     QemuCrucibleAttemptSession, QemuCrucibleSessionFactory,
 };
 
@@ -142,36 +143,64 @@ pub trait QemuAttemptResourceGuardFactory {
     ) -> Result<Self::Guard, QemuVmRealizationError>;
 }
 
-/// Candidate paired with the exact unified-log boundary it incorporates.
+/// Modeled stop or exact checkpoint boundary returned by a live driver.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuLiveAttemptResult {
-    candidate: ObservationCandidate,
-    event_log: EventLogOffset,
+pub enum QemuLiveAttemptResult {
+    /// A canonical observation plus the scheduler boundary available to a
+    /// checkpoint request racing with modeled completion.
+    Observation {
+        /// Complete immutable observation candidate.
+        candidate: Box<ObservationCandidate>,
+        /// Exact scheduler checkpoint at the same paused boundary.
+        checkpoint: Box<crucible::Checkpoint>,
+        /// Unified-log boundary incorporated by both values.
+        event_log: EventLogOffset,
+    },
+    /// The driver stopped early because a checkpoint request was observed.
+    Checkpoint {
+        /// Exact scheduler checkpoint at the paused live boundary.
+        checkpoint: Box<crucible::Checkpoint>,
+    },
 }
 
 impl QemuLiveAttemptResult {
-    /// Binds a candidate to the live backend's current unified-log boundary.
+    /// Binds a candidate and scheduler checkpoint to the current live boundary.
     #[must_use]
     pub fn at_current_boundary(
         candidate: ObservationCandidate,
+        checkpoint: crucible::Checkpoint,
         backend: &dyn QemuLiveAttemptBackend,
     ) -> Self {
-        Self {
-            candidate,
+        Self::Observation {
+            candidate: Box::new(candidate),
+            checkpoint: Box::new(checkpoint),
             event_log: backend.event_log().offset(),
         }
     }
 
-    /// Returns the exact unified-log boundary incorporated by the candidate.
+    /// Returns one early checkpoint boundary after the request was observed.
     #[must_use]
-    pub const fn event_log(&self) -> EventLogOffset {
-        self.event_log
+    pub fn checkpoint(checkpoint: crucible::Checkpoint) -> Self {
+        Self::Checkpoint {
+            checkpoint: Box::new(checkpoint),
+        }
     }
 
-    /// Consumes the binding into its canonical candidate.
+    /// Returns the candidate's exact unified-log boundary, when this is a stop.
     #[must_use]
-    pub fn into_candidate(self) -> ObservationCandidate {
-        self.candidate
+    pub const fn observation_event_log(&self) -> Option<EventLogOffset> {
+        match self {
+            Self::Observation { event_log, .. } => Some(*event_log),
+            Self::Checkpoint { .. } => None,
+        }
+    }
+
+    /// Returns the exact scheduler checkpoint at this paused boundary.
+    #[must_use]
+    pub const fn checkpoint_boundary(&self) -> &crucible::Checkpoint {
+        match self {
+            Self::Observation { checkpoint, .. } | Self::Checkpoint { checkpoint } => checkpoint,
+        }
     }
 }
 
@@ -366,7 +395,7 @@ where
         &mut self,
         guard: &mut G,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, QemuVmRealizationError>;
+    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError>;
 
     /// Drains, terminates, and reaps the active backend under `guard`.
     ///
@@ -618,7 +647,7 @@ where
         &mut self,
         input: &CrucibleAttemptExecution,
         realization: QemuVmRealization,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.guard
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
@@ -638,10 +667,35 @@ where
         if let Some(error) = backend.take_operational_failure() {
             return Err(classify_operational_failure(error));
         }
-        if let Ok(candidate) = &result
-            && !self
-                .seal_result_event_log(candidate.event_log())
-                .map_err(classify_operational_failure)?
+        let result = result?;
+
+        if self.context.checkpoint_request().is_requested() {
+            let checkpoint = match result {
+                QemuLiveAttemptResult::Observation { checkpoint, .. }
+                | QemuLiveAttemptResult::Checkpoint { checkpoint } => *checkpoint,
+            };
+            let capture = self
+                .capture_exact_checkpoint(checkpoint)
+                .map_err(classify_operational_failure)?;
+            return Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(capture)));
+        }
+
+        let QemuLiveAttemptResult::Observation {
+            candidate,
+            event_log,
+            ..
+        } = result
+        else {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuLiveAttemptSessionError::Operational(QemuVmRealizationError::Executor {
+                    operation: "accept campaign QEMU checkpoint boundary",
+                    message: String::from("the live driver returned an unsolicited checkpoint"),
+                }),
+            ));
+        };
+        if !self
+            .seal_result_event_log(event_log)
+            .map_err(classify_operational_failure)?
         {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuLiveAttemptSessionError::Operational(QemuVmRealizationError::Executor {
@@ -655,13 +709,13 @@ where
         self.guard
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
-        result.map(QemuLiveAttemptResult::into_candidate)
+        Ok(AttemptExecutionProduct::Observation(candidate))
     }
 
     fn capture_exact_checkpoint(
         &mut self,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         let result = self
             .executor

@@ -337,8 +337,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   checkpoint-requested, checkpoint-publishing, and paused ledger states, stages
   the exact root before writes, preserves it as a restart/GC root, recovers the
   expected root across daemon epochs, and releases capacity only after durable
-  pause. Concrete modeled-driver capture-result wiring and resume
-  materialization remain open.
+  pause. The live driver now returns its same-boundary scheduler checkpoint,
+  the session converts a winning sticky request into a guarded exact capture,
+  and the fixed pool carries that linear capture through no-write preparation,
+  root staging, immutable publication, and durable pause without rerunning the
+  guest. Resume materialization remains open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
@@ -359,10 +362,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   are implemented. The guarded live session can now capture a basis-checked
   exact snapshot while retaining the paused process and resource guard;
   exact request/response, durable handoff, root-before-write phase tokens,
-  restart root preservation, GC enumeration, and paused-capacity replacement
-  are implemented. Concrete capture-result wiring and resume materialization
-  remain open. The fixed worker pool and its linear
-  publication/reconciliation path are implemented.
+  restart root preservation, GC enumeration, captured-result propagation, and
+  paused-capacity replacement are implemented. Resume materialization remains
+  open. The fixed worker pool and its linear observation/checkpoint
+  publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:
   graph-scoped target validation, exact command replay and reuse rejection,
   pins/accounting/coordination root projection, tombstoned unpin intent, and

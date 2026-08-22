@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
     BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
@@ -20,20 +21,77 @@ use crucible_campaign::{
     ControlRequest, CoverageProjection, DaemonEpoch, ExactRational, ExecutionRetentionIntent,
     ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
     ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection, ExecutorService,
-    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
-    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy,
-    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
+    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
+    ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse, WorkerSlotId,
 };
-use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+use crucible_cas::content_store::{
+    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, PlacementReceipt, PutReceipt, StoreError,
+};
+use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
-    AttemptExecutionInput, AttemptExecutionModel, AttemptWorkResult, AttemptWorkerFailure,
-    ExecutorCapacity, MemoryAssignmentLedger, RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct, AttemptWorkResult,
+    AttemptWorkerFailure, ExactCheckpointStore, ExecutorCapacity, MemoryAssignmentLedger,
+    RepositoryAttemptAdmission, RepositoryAttemptWorker,
 };
+
+struct TestDurableBackend {
+    memory: MemoryBlobBackend,
+}
+
+impl TestDurableBackend {
+    fn new() -> Self {
+        Self {
+            memory: MemoryBlobBackend::new("executor-pool-checkpoints", 8 * 1024 * 1024),
+        }
+    }
+}
+
+impl ImmutableBlobBackend for TestDurableBackend {
+    fn name(&self) -> &str {
+        "executor-pool-checkpoints"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            durable: true,
+            deferred_write: false,
+            range_read: true,
+            streaming_read: true,
+            conditional_create: true,
+            streaming_put: true,
+            repair_inventory: false,
+            planned_delete: false,
+        }
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.memory.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.memory.read(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        let receipt = self.memory.put_if_absent(id, source)?;
+        Ok(PutReceipt {
+            id: receipt.id,
+            placements: vec![PlacementReceipt {
+                backend: String::from(self.name()),
+                durable: true,
+                logical_length: source.logical_length(),
+            }],
+        })
+    }
+}
 
 struct BlockingAdmission {
     state: Arc<(Mutex<(bool, bool)>, Condvar)>,
@@ -87,6 +145,54 @@ impl LocalAttemptWorker for BlockingWorker {
         AttemptWorkResult::new(
             queued,
             Err(AttemptWorkerFailure::Canceled("shutdown cancellation")),
+        )
+    }
+}
+
+struct CheckpointWorker {
+    entered: Arc<AtomicUsize>,
+}
+
+struct UnsolicitedCheckpointWorker;
+
+impl LocalAttemptWorker for UnsolicitedCheckpointWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        AttemptWorkResult::new(
+            queued,
+            Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(
+                crate::CapturedExactCheckpoint::new(
+                    checkpoint_snapshot("unsolicited-checkpoint"),
+                    BlobHandle::from_bytes(vec![0x6b; 512]),
+                ),
+            ))),
+        )
+    }
+}
+
+impl LocalAttemptWorker for CheckpointWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        self.entered.store(1, Ordering::Release);
+        while !queued.checkpoint_request().is_requested() {
+            if queued.cancellation().is_canceled() {
+                return AttemptWorkResult::new(
+                    queued,
+                    Err(AttemptWorkerFailure::Canceled("checkpoint worker canceled")),
+                );
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        AttemptWorkResult::new(
+            queued,
+            Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(
+                crate::CapturedExactCheckpoint::new(
+                    checkpoint_snapshot("pool-checkpoint"),
+                    BlobHandle::from_bytes(vec![0x5a; 512]),
+                ),
+            ))),
         )
     }
 }
@@ -157,10 +263,10 @@ impl AttemptExecutionModel for CandidateModel {
         &mut self,
         _input: &AttemptExecutionInput,
         context: &AttemptExecutionContext,
-    ) -> Result<ObservationCandidate, AttemptWorkerFailure<Self::Error>> {
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         assert!(!context.cancellation().is_canceled());
         self.calls.fetch_add(1, Ordering::AcqRel);
-        Ok(self.candidate.clone())
+        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
     }
 }
 
@@ -234,6 +340,102 @@ fn blocking_worker_does_not_block_service_and_shutdown_cancels_it() {
 }
 
 #[test]
+fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
+    let epoch = DaemonEpoch::from_bytes([0x37; 16]).expect("epoch");
+    let entered = Arc::new(AtomicUsize::new(0));
+    let pool = pool(
+        epoch,
+        vec![CheckpointWorker {
+            entered: Arc::clone(&entered),
+        }],
+    );
+    let assignment = request(epoch, 0x49);
+    let mut service = pool.service();
+    let accepted = service
+        .submit_attempt(&assignment)
+        .expect("accept checkpointable execution");
+    let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
+        panic!("checkpointable execution should be newly accepted")
+    };
+    wait_until(Duration::from_secs(2), || {
+        entered.load(Ordering::Acquire) == 1
+    });
+
+    let checkpoint_request =
+        CheckpointAttemptExecutionRequest::new(&assignment, execution).expect("checkpoint request");
+    assert!(matches!(
+        service
+            .checkpoint_attempt_execution(&checkpoint_request)
+            .expect("request exact checkpoint")
+            .disposition(),
+        crucible_campaign::CheckpointAttemptExecutionDisposition::Requested
+    ));
+    let status_request =
+        GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    wait_until(Duration::from_secs(2), || {
+        service
+            .get_attempt_execution(&status_request)
+            .is_ok_and(|response| {
+                matches!(
+                    response.disposition(),
+                    GetAttemptExecutionDisposition::Paused { .. }
+                )
+            })
+    });
+    let status = service
+        .get_attempt_execution(&status_request)
+        .expect("paused status");
+    let GetAttemptExecutionDisposition::Paused { checkpoint } = status.disposition() else {
+        panic!("execution should be paused")
+    };
+    let loaded = pool
+        .service
+        .shared
+        .checkpoints
+        .load(checkpoint)
+        .expect("load published exact checkpoint");
+    assert_eq!(loaded.snapshot(), &checkpoint_snapshot("pool-checkpoint"));
+    assert_eq!(loaded.vmstate_bytes(), 512);
+
+    let report = service.report().expect("checkpoint pool report");
+    assert_eq!(report.executions(), 1);
+    assert_eq!(report.checkpoints_paused(), 1);
+    assert_eq!(report.checkpoints_discarded(), 0);
+    assert_eq!(report.active(), 0);
+    assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+}
+
+#[test]
+fn unsolicited_checkpoint_fails_closed_without_publication() {
+    let epoch = DaemonEpoch::from_bytes([0x38; 16]).expect("epoch");
+    let pool = pool(epoch, vec![UnsolicitedCheckpointWorker]);
+    let assignment = request(epoch, 0x4a);
+    let mut service = pool.service();
+    let accepted = service
+        .submit_attempt(&assignment)
+        .expect("accept execution");
+    let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
+        panic!("execution should be newly accepted")
+    };
+    let status_request =
+        GetAttemptExecutionRequest::new(&assignment, execution).expect("status request");
+    wait_until(Duration::from_secs(2), || {
+        service
+            .get_attempt_execution(&status_request)
+            .is_ok_and(|response| {
+                response.disposition() == GetAttemptExecutionDisposition::Canceled
+            })
+    });
+
+    let report = service.report().expect("terminal pool report");
+    assert_eq!(report.executions(), 1);
+    assert_eq!(report.checkpoints_paused(), 0);
+    assert_eq!(report.terminal_stops(), 1);
+    assert_eq!(report.active(), 0);
+    assert_eq!(pool.shutdown_and_join().expect("clean shutdown"), report);
+}
+
+#[test]
 fn shutdown_drains_accepted_work_that_never_started() {
     let epoch = DaemonEpoch::from_bytes([0x36; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));
@@ -249,6 +451,7 @@ fn shutdown_drains_accepted_work_that_never_started() {
     let pool = LocalExecutorWorkerPool::start(
         capability,
         store(),
+        checkpoint_store(),
         vec![BlockingWorker {
             entered: Arc::clone(&entered),
         }],
@@ -313,7 +516,12 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
     assert!(matches!(
         LocalExecutorWorkerPool::<MemoryAssignmentLedger, AllowAllAttemptAdmission>::start::<
             SequencedFailureWorker,
-        >(capability(epoch), store.clone(), Vec::new()),
+        >(
+            capability(epoch),
+            store.clone(),
+            checkpoint_store(),
+            Vec::new(),
+        ),
         Err(LocalExecutorPoolConfigError::ZeroWorkers)
     ));
     let workers = (0..2)
@@ -322,7 +530,7 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
         })
         .collect();
     assert!(matches!(
-        LocalExecutorWorkerPool::start(capability(epoch), store, workers),
+        LocalExecutorWorkerPool::start(capability(epoch), store, checkpoint_store(), workers),
         Err(LocalExecutorPoolConfigError::WorkerCountExceedsSlots)
     ));
 }
@@ -344,6 +552,7 @@ fn repository_admission_does_not_hold_supervisor_actor_ownership() {
     let pool = LocalExecutorWorkerPool::start(
         capability,
         store(),
+        checkpoint_store(),
         vec![SequencedFailureWorker {
             calls: Arc::new(AtomicUsize::new(0)),
         }],
@@ -425,6 +634,7 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     let pool = LocalExecutorWorkerPool::start(
         capability,
         CampaignExecutorStore::new(Arc::clone(&repository)),
+        checkpoint_store(),
         vec![RepositoryAttemptWorker::new(
             CampaignExecutorStore::new(Arc::clone(&repository)),
             CandidateModel {
@@ -728,7 +938,33 @@ fn pool<W>(
 where
     W: LocalAttemptWorker + Send + 'static,
 {
-    LocalExecutorWorkerPool::start(capability(epoch), store(), workers).expect("worker pool")
+    LocalExecutorWorkerPool::start(capability(epoch), store(), checkpoint_store(), workers)
+        .expect("worker pool")
+}
+
+fn checkpoint_store() -> Arc<ExactCheckpointStore> {
+    Arc::new(
+        ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), 1024 * 1024)
+            .expect("durable exact-checkpoint store"),
+    )
+}
+
+fn checkpoint_snapshot(name: &str) -> QemuVmSnapshot {
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.executor-pool-checkpoint",
+        name,
+    ));
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("checkpoint boundary");
+    QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("QEMU checkpoint snapshot")
 }
 
 fn capability(

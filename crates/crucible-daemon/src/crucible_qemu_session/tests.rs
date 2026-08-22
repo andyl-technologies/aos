@@ -18,6 +18,7 @@ use crucible::{
     RuntimeState, ScenarioDef, SchedulerState,
 };
 use crucible_campaign::ExecutionRetentionIntent;
+use crucible_cas::content_store::BlobHandle;
 use crucible_qemu::{QemuLiveBackendShutdown, QemuRealizedNodeBackend};
 
 use super::*;
@@ -291,9 +292,11 @@ impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
         &mut self,
         guard: &mut TrackingGuard,
         checkpoint: Checkpoint,
-    ) -> Result<QemuVmSnapshot, QemuVmRealizationError> {
+    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
         guard.check_operational_boundary()?;
-        QemuVmLiveRealizationExecutor::capture_live_exact_snapshot(self, checkpoint)
+        QemuVmLiveRealizationExecutor::capture_live_exact_snapshot(self, checkpoint).map(
+            |snapshot| CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![0; 64])),
+        )
     }
 
     fn shutdown_live_backend_guarded(
@@ -849,7 +852,8 @@ fn exact_checkpoint_capture_remains_guarded_until_explicit_finish() {
         .capture_exact_checkpoint(checkpoint.clone())
         .expect("capture guarded exact checkpoint");
 
-    assert_eq!(snapshot.checkpoint(), &checkpoint);
+    assert_eq!(snapshot.snapshot().checkpoint(), &checkpoint);
+    assert_eq!(snapshot.vmstate_bytes(), 64);
     assert_eq!(counters.captures.load(Ordering::SeqCst), 1);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     session.finish().expect("finish captured session");

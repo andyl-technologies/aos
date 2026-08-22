@@ -145,8 +145,8 @@ pub use crucible_qemu_session::{
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
 pub use exact_checkpoint_store::{
-    EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION, ExactCheckpointId,
-    ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
+    CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+    ExactCheckpointId, ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
     LoadedExactCheckpoint, PreparedExactCheckpoint, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
     QEMU_VMSTATE_SCHEMA_VERSION,
 };
@@ -176,20 +176,22 @@ pub use executor_supervisor::{
     LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
 };
 pub use executor_worker::{
-    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptResultAbortError,
-    AttemptResultPreparationError, AttemptResultPublicationError, AttemptResultStageOutcome,
-    AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
+    AttemptExecutionContext, AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct,
+    AttemptResultAbortError, AttemptResultPreparationError, AttemptResultPublicationError,
+    AttemptResultStageOutcome, AttemptResultStagingError, AttemptWorkResult, AttemptWorkerFailure,
     AttemptWorkerReconcileError, AttemptWorkerReconcileOutcome, CheckpointResultAbortError,
     CheckpointResultAbortToken, CheckpointResultPublicationError, CheckpointResultReconcileError,
     CheckpointResultStageOutcome, CheckpointResultStagingError, LocalAttemptWorker,
-    PendingAttemptResult, PreparedAttemptResult, PreparedCheckpointResult, PublishedAttemptResult,
+    PendingAttemptResult, PendingCheckpointResult, PreparedAttemptResult,
+    PreparedAttemptWorkResult, PreparedCheckpointResult, PublishedAttemptResult,
     PublishedAttemptResultAbortError, PublishedCheckpointResult, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
     StagedCheckpointResult, abort_checkpoint_result, abort_prepared_attempt_result,
     abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
-    retry_pending_attempt_result, stage_prepared_attempt_result, stage_prepared_checkpoint_result,
+    retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
+    stage_prepared_checkpoint_result,
 };
 pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,
