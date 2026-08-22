@@ -304,7 +304,38 @@ pub struct DequeuedFaultEvent {
     pub payload: Vec<u8>,
 }
 
+const DEQUEUED_FAULT_EVENT_MAGIC: &[u8] = b"crucible.dequeued-fault-event.v1\0";
+
 impl DequeuedFaultEvent {
+    /// Returns the exact canonical record length after authenticating the event.
+    ///
+    /// This performs every semantic check required by [`Self::canonical_bytes`]
+    /// without allocating the output record, so enclosing codecs can admit the
+    /// record against their aggregate resource budget first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultEventError`] when the payload exceeds the hard bound, its
+    /// length differs from the header, or its authenticated digests are invalid.
+    pub fn canonical_length(&self) -> Result<usize, FaultEventError> {
+        let payload_length =
+            u32::try_from(self.payload.len()).map_err(|_| FaultEventError::Bounds)?;
+        if payload_length == 0
+            || payload_length > HARD_FAULT_PAYLOAD_BYTES
+            || self.header.payload_length != payload_length
+        {
+            return Err(FaultEventError::Bounds);
+        }
+        self.header.validate()?;
+        self.header.authenticate_payload(&self.payload)?;
+        DEQUEUED_FAULT_EVENT_MAGIC
+            .len()
+            .checked_add(FAULT_EVENT_HEADER_V1_BYTES)
+            .and_then(|length| length.checked_add(4))
+            .and_then(|length| length.checked_add(self.payload.len()))
+            .ok_or(FaultEventError::Bounds)
+    }
+
     /// Encodes this drained event as a canonical durable-checkpoint record.
     ///
     /// The original transport header is retained byte-for-byte so restore can
@@ -316,20 +347,13 @@ impl DequeuedFaultEvent {
     /// Returns [`FaultEventError`] when the payload exceeds the hard bound, its
     /// length differs from the header, or its authenticated digests are invalid.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultEventError> {
-        const MAGIC: &[u8] = b"crucible.dequeued-fault-event.v1\0";
-        let payload_length =
-            u32::try_from(self.payload.len()).map_err(|_| FaultEventError::Bounds)?;
-        if payload_length == 0
-            || payload_length > HARD_FAULT_PAYLOAD_BYTES
-            || self.header.payload_length != payload_length
-        {
-            return Err(FaultEventError::Bounds);
-        }
-        self.header.validate()?;
-        self.header.authenticate_payload(&self.payload)?;
-        let mut bytes =
-            Vec::with_capacity(MAGIC.len() + FAULT_EVENT_HEADER_V1_BYTES + 4 + self.payload.len());
-        bytes.extend_from_slice(MAGIC);
+        let encoded_length = self.canonical_length()?;
+        let payload_length = self.header.payload_length;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(encoded_length)
+            .map_err(|_| FaultEventError::CheckpointAllocation)?;
+        bytes.extend_from_slice(DEQUEUED_FAULT_EVENT_MAGIC);
         bytes.extend_from_slice(&self.header.encode());
         bytes.extend_from_slice(&payload_length.to_le_bytes());
         bytes.extend_from_slice(&self.payload);
@@ -344,9 +368,8 @@ impl DequeuedFaultEvent {
     /// header, hard payload bound, header length, or either payload digest is
     /// invalid, or when bytes remain after the record.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, FaultEventError> {
-        const MAGIC: &[u8] = b"crucible.dequeued-fault-event.v1\0";
         let body = bytes
-            .strip_prefix(MAGIC)
+            .strip_prefix(DEQUEUED_FAULT_EVENT_MAGIC)
             .ok_or(FaultEventError::CheckpointVersion)?;
         let (header_bytes, body) = body
             .split_at_checked(FAULT_EVENT_HEADER_V1_BYTES)
@@ -372,9 +395,14 @@ impl DequeuedFaultEvent {
             return Err(FaultEventError::CheckpointLength);
         }
         header.authenticate_payload(payload)?;
+        let mut owned_payload = Vec::new();
+        owned_payload
+            .try_reserve_exact(payload.len())
+            .map_err(|_| FaultEventError::CheckpointAllocation)?;
+        owned_payload.extend_from_slice(payload);
         let event = Self {
             header,
-            payload: payload.to_vec(),
+            payload: owned_payload,
         };
         if event.canonical_bytes()?.as_slice() != bytes {
             return Err(FaultEventError::CheckpointCanonical);

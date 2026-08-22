@@ -10,14 +10,29 @@ impl IoCoreSnapshot {
     /// Returns [`IoCoreSnapshotCodecError`] when capacities, queue depths,
     /// delivery ordering, source identities, or frame payload bounds are invalid.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, IoCoreSnapshotCodecError> {
+        self.canonical_bytes_with_limit(HARD_IO_CORE_CHECKPOINT_BYTES)
+    }
+
+    /// Encodes the I/O-core continuation under an enclosing byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IoCoreSnapshotCodecError`] under the same conditions as
+    /// [`Self::canonical_bytes`], and when the representation exceeds `maximum`.
+    pub fn canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, IoCoreSnapshotCodecError> {
         validate_io_core_snapshot(self)?;
-        let encoded_len = io_core_encoded_len(self)?;
+        let configured = maximum.min(HARD_IO_CORE_CHECKPOINT_BYTES);
+        let encoded_len = io_core_encoded_len(self, configured)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(encoded_len).map_err(|_| {
-            io_core_resource_limit(
+            io_core_configured_resource_limit(
                 "I/O-core snapshot bytes",
                 0,
                 encoded_len as u64,
+                configured,
                 HARD_IO_CORE_CHECKPOINT_BYTES,
             )
         })?;
@@ -41,6 +56,31 @@ impl IoCoreSnapshot {
     /// Returns [`IoCoreSnapshotCodecError`] for unsupported, malformed,
     /// over-limit, invalid, noncanonical, or trailing state.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, IoCoreSnapshotCodecError> {
+        Self::from_canonical_bytes_with_limit(bytes, HARD_IO_CORE_CHECKPOINT_BYTES)
+    }
+
+    /// Decodes an I/O-core continuation under an enclosing byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IoCoreSnapshotCodecError`] under the same conditions as
+    /// [`Self::from_canonical_bytes`], and before decoding when the input
+    /// exceeds `maximum`.
+    pub fn from_canonical_bytes_with_limit(
+        bytes: &[u8],
+        maximum: u64,
+    ) -> Result<Self, IoCoreSnapshotCodecError> {
+        let configured = maximum.min(HARD_IO_CORE_CHECKPOINT_BYTES);
+        let requested = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if requested > configured {
+            return Err(io_core_configured_resource_limit(
+                "I/O-core snapshot bytes",
+                0,
+                requested,
+                configured,
+                HARD_IO_CORE_CHECKPOINT_BYTES,
+            ));
+        }
         let mut reader = IoCoreSnapshotReader::new(bytes)?;
         let current_icount = reader.u64("current icount")?;
         let shift_bits = reader.byte("shift bits")?;
@@ -64,7 +104,7 @@ impl IoCoreSnapshot {
             outbox,
         };
         validate_io_core_snapshot(&snapshot)?;
-        if snapshot.canonical_bytes()?.as_slice() != bytes {
+        if snapshot.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(IoCoreSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
@@ -108,39 +148,53 @@ pub enum IoCoreSnapshotCodecError {
     Noncanonical,
 }
 
-fn io_core_encoded_len(snapshot: &IoCoreSnapshot) -> Result<usize, IoCoreSnapshotCodecError> {
+fn io_core_encoded_len(
+    snapshot: &IoCoreSnapshot,
+    configured: u64,
+) -> Result<usize, IoCoreSnapshotCodecError> {
     let fixed = IO_CORE_SNAPSHOT_MAGIC.len() as u64 + 33 + 12;
-    let mut length = fixed;
+    let mut length = add_io_core_encoded_len(0, fixed, configured)?;
     for request in &snapshot.inbox {
-        length = add_io_core_encoded_len(length, 16 + request.payload.len() as u64)?;
+        length = add_io_core_encoded_len(length, 16 + request.payload.len() as u64, configured)?;
     }
     for pending in snapshot.inflight.iter().chain(&snapshot.outbox) {
-        length = add_io_core_encoded_len(length, 25 + pending.response.payload.len() as u64)?;
+        length = add_io_core_encoded_len(
+            length,
+            25 + pending.response.payload.len() as u64,
+            configured,
+        )?;
     }
     usize::try_from(length).map_err(|_| {
-        io_core_resource_limit(
+        io_core_configured_resource_limit(
             "I/O-core snapshot bytes",
             0,
             length,
+            configured,
             HARD_IO_CORE_CHECKPOINT_BYTES,
         )
     })
 }
 
-fn add_io_core_encoded_len(current: u64, requested: u64) -> Result<u64, IoCoreSnapshotCodecError> {
+fn add_io_core_encoded_len(
+    current: u64,
+    requested: u64,
+    configured: u64,
+) -> Result<u64, IoCoreSnapshotCodecError> {
     let total = current.checked_add(requested).ok_or_else(|| {
-        io_core_resource_limit(
+        io_core_configured_resource_limit(
             "I/O-core snapshot bytes",
             current,
             requested,
+            configured,
             HARD_IO_CORE_CHECKPOINT_BYTES,
         )
     })?;
-    if total > HARD_IO_CORE_CHECKPOINT_BYTES {
-        return Err(io_core_resource_limit(
+    if total > configured || total > HARD_IO_CORE_CHECKPOINT_BYTES {
+        return Err(io_core_configured_resource_limit(
             "I/O-core snapshot bytes",
             current,
             requested,
+            configured,
             HARD_IO_CORE_CHECKPOINT_BYTES,
         ));
     }
@@ -527,41 +581,5 @@ pub struct ShmemDequeueResult {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn io_core_snapshot_rejects_prior_version() {
-        let core = IoCore::new(8, 1, 2, 2)
-            .unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
-        let mut bytes = core
-            .snapshot()
-            .canonical_bytes()
-            .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
-        let version_index = b"crucible.io-core-snapshot.v".len();
-        assert_eq!(bytes[version_index], b'2');
-        bytes[version_index] = b'1';
-        assert_eq!(
-            IoCoreSnapshot::from_canonical_bytes(&bytes),
-            Err(IoCoreSnapshotCodecError::Version)
-        );
-    }
-
-    #[test]
-    fn io_core_snapshot_reports_offending_capacity() {
-        let core = IoCore::new(8, 1, 2, 2)
-            .unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
-        let mut snapshot = core.snapshot();
-        snapshot.inbox_capacity = HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 + 1;
-        assert_eq!(
-            snapshot.canonical_bytes(),
-            Err(IoCoreSnapshotCodecError::ResourceLimit {
-                field: "inbox",
-                current: 0,
-                requested: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 + 1,
-                configured: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
-                hard: HARD_IO_CORE_CHECKPOINT_ENTRIES as u64,
-            })
-        );
-    }
-}
+#[path = "snapshot/tests.rs"]
+mod tests;

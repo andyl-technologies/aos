@@ -81,6 +81,10 @@ fn drained_event_checkpoint_round_trips_and_rejects_trailing_bytes() {
     let bytes = event
         .canonical_bytes()
         .expect("valid drained event encodes");
+    assert_eq!(
+        event.canonical_length().expect("event length validates"),
+        bytes.len()
+    );
     let restored =
         DequeuedFaultEvent::from_canonical_bytes(&bytes).expect("canonical drained event decodes");
     assert_eq!(restored, event);

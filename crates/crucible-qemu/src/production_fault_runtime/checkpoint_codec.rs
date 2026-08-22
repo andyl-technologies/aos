@@ -444,10 +444,13 @@ fn encode_qemu_event_map<'a>(
             .try_reserve_exact(events.len())
             .map_err(|_| record_allocation_limit("pending QEMU event count", events.len()))?;
         for event in events {
+            let encoded_length = event
+                .canonical_length()
+                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
+            budget.admit(encoded_length)?;
             let encoded = event
                 .canonical_bytes()
                 .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::QemuEvent)?;
-            budget.admit(encoded.len())?;
             encoded_events.push(bounded_checkpoint_bytes(encoded)?);
         }
         let encoded_events = BoundedVec::new(encoded_events).map_err(map_bounded_cbor_error)?;

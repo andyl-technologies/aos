@@ -143,7 +143,9 @@ impl BlockSnapshot {
         validate_snapshot(self)?;
         let wire = BlockSnapshotEncodeWire {
             core: bounded_bytes(
-                self.core.canonical_bytes().map_err(map_io_core_error)?,
+                self.core
+                    .canonical_bytes_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
+                    .map_err(map_io_core_error)?,
                 "block I/O core bytes",
             )?,
             base_hash: self.base_hash,
@@ -210,8 +212,11 @@ impl BlockSnapshot {
             map_decode_error(error).map_or(BlockSnapshotCodecError::Malformed, map_resource_error)
         })?;
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes(wire.core.as_slice())
-                .map_err(map_io_core_error)?,
+            core: IoCoreSnapshot::from_canonical_bytes_with_limit(
+                wire.core.as_slice(),
+                maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
+            )
+            .map_err(map_io_core_error)?,
             base_hash: wire.base_hash,
             device_length: wire.device_length,
             overlay_delta: OverlayDelta {
