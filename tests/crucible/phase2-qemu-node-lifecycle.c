@@ -207,8 +207,24 @@ static void validate_event(void)
         fail("terminal crash omitted its pre-exit decision fields");
     }
     if (terminal_crash) {
-        memcpy(terminal_evidence_hash, envelope + 56,
-               sizeof(terminal_evidence_hash));
+        uint8_t authorization_evidence[LIFECYCLE_EVIDENCE_BYTES];
+        g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+        gsize digest_length = sizeof(terminal_evidence_hash);
+
+        if (!checksum) {
+            fail("terminal authorization digest allocation failed");
+        }
+        memcpy(authorization_evidence, evidence,
+               sizeof(authorization_evidence));
+        /* Authorization survives raw-to-logical coordinate translation. */
+        memset(authorization_evidence + 24, 0, 8);
+        g_checksum_update(checksum, authorization_evidence,
+                          sizeof(authorization_evidence));
+        g_checksum_get_digest(checksum, terminal_evidence_hash,
+                              &digest_length);
+        if (digest_length != sizeof(terminal_evidence_hash)) {
+            fail("terminal authorization digest length was malformed");
+        }
     }
     if ((volatile_policy == 1 && get_u64(evidence + 104) != 0) ||
         (volatile_policy == 2 && get_u64(evidence + 104) == 0)) {
