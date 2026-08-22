@@ -1492,6 +1492,27 @@
          "service" : "PublishService"
       },
       {
+         "method" : "BeginRegistryPublicationManifest",
+         "path" : "aos.hub.v1.PublishService/BeginRegistryPublicationManifest",
+         "request" : "BeginRegistryPublicationManifestRequest",
+         "response" : "RegistryPublicationManifestSession",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "AppendRegistryPublicationManifest",
+         "path" : "aos.hub.v1.PublishService/AppendRegistryPublicationManifest",
+         "request" : "AppendRegistryPublicationManifestRequest",
+         "response" : "RegistryPublicationManifestSession",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "SealRegistryPublicationManifest",
+         "path" : "aos.hub.v1.PublishService/SealRegistryPublicationManifest",
+         "request" : "SealRegistryPublicationManifestRequest",
+         "response" : "RegistryPublication",
+         "service" : "PublishService"
+      },
+      {
          "method" : "BeginRegistryPublicationMultipartUpload",
          "path" : "aos.hub.v1.PublishService/BeginRegistryPublicationMultipartUpload",
          "request" : "BeginRegistryPublicationMultipartUploadRequest",

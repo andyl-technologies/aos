@@ -250,6 +250,9 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                 if !matches!(
                     path.as_str(),
                     "PublishService/BeginRegistryPublication"
+                        | "PublishService/BeginRegistryPublicationManifest"
+                        | "PublishService/AppendRegistryPublicationManifest"
+                        | "PublishService/SealRegistryPublicationManifest"
                         | "PublishService/CommitRegistryPublication"
                         | "PublishService/AbortRegistryPublication"
                         | "PublishService/BeginRegistryPublicationMultipartUpload"

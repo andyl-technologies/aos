@@ -250,12 +250,15 @@
       "cli_families": ["registry publish"],
       "web_workflows": ["registry-publication"],
       "web_method_exceptions": [
+        {"method": "BeginRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
+        {"method": "AppendRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
+        {"method": "SealRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."},
         {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
         {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
         {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
         {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."}
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
+      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication"]
     },
     {
       "service": "GitService",

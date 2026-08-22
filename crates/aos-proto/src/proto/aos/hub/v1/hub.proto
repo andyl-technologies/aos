@@ -338,6 +338,14 @@ service ImageService {
 service PublishService {
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc BeginRegistryPublicationManifest(
+      BeginRegistryPublicationManifestRequest)
+      returns (RegistryPublicationManifestSession);
+  rpc AppendRegistryPublicationManifest(
+      AppendRegistryPublicationManifestRequest)
+      returns (RegistryPublicationManifestSession);
+  rpc SealRegistryPublicationManifest(SealRegistryPublicationManifestRequest)
+      returns (RegistryPublication);
   rpc BeginRegistryPublicationMultipartUpload(
       BeginRegistryPublicationMultipartUploadRequest)
       returns (BeginRegistryPublicationMultipartUploadResponse);
@@ -1549,6 +1557,47 @@ message BeginRegistryPublicationRequest {
   string default_commit = 4;
   string parent_publication_id = 5;
   repeated RegistryPublicationObjectInput objects = 6;
+}
+
+// Starts or resumes bounded admission of one exact publication manifest.
+// `manifest_digest` is the SHA-256 of the canonical sorted object tuples used
+// by BeginRegistryPublication, and `object_count` is fixed for the session.
+message BeginRegistryPublicationManifestRequest {
+  string registry = 1;
+  string generation = 2;
+  string refs_digest = 3;
+  string default_commit = 4;
+  string parent_publication_id = 5;
+  string manifest_digest = 6;
+  uint32 object_count = 7;
+}
+
+// Durable progress returned after begin and every exact append retry.
+message RegistryPublicationManifestSession {
+  string publication_id = 1;
+  string lease_token = 2;
+  string manifest_digest = 3;
+  uint32 object_count = 4;
+  uint32 admitted_object_count = 5;
+  uint32 next_chunk_index = 6;
+  string state = 7;
+  int64 lease_expires_at = 8;
+}
+
+// Appends one page of at most 256 objects. Pages are zero-based and strictly
+// ordered. `chunk_digest` makes retry after a lost response content-exact.
+message AppendRegistryPublicationManifestRequest {
+  string publication_id = 1;
+  string lease_token = 2;
+  uint32 chunk_index = 3;
+  string chunk_digest = 4;
+  repeated RegistryPublicationObjectInput objects = 5;
+}
+
+// Seals a complete admitted manifest and returns its upload inventory.
+message SealRegistryPublicationManifestRequest {
+  string publication_id = 1;
+  string lease_token = 2;
 }
 
 message ListRegistryPublicationsRequest {

@@ -8584,9 +8584,7 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             };
             let client = publication_client(access).await?;
             bind_publication_parent(&client, &mut pinned.request).await?;
-            let publication: hub_types::RegistryPublication = client
-                .call_topology(HubTopologyMethod::BeginRegistryPublication, &pinned.request)
-                .await?;
+            let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
             let publication_id = publication.publication_id.clone();
             let result: Result<hub_types::RegistryPublication> = async {
                 anyhow::ensure!(
@@ -8653,13 +8651,8 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
         } => {
             let request = publication_manifest_request(manifest, registry)?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
-            topology_read::<_, hub_types::RegistryPublication>(
-                printer,
-                &client,
-                HubTopologyMethod::BeginRegistryPublication,
-                &request,
-            )
-            .await
+            let publication = begin_registry_publication_chunked(&client, &request).await?;
+            print_topology_message(printer, &publication)
         }
         HubPublishCmd::Show {
             access,
@@ -9058,6 +9051,127 @@ async fn bind_publication_parent(
         request.parent_publication_id = current.publication_id.clone();
     }
     Ok(())
+}
+
+async fn begin_registry_publication_chunked(
+    client: &HubClient,
+    request: &hub_types::BeginRegistryPublicationRequest,
+) -> Result<hub_types::RegistryPublication> {
+    const MANIFEST_CHUNK_OBJECTS: usize = 256;
+
+    let mut objects = request.objects.clone();
+    objects.sort_by(|left, right| left.path.cmp(&right.path));
+    anyhow::ensure!(
+        !objects.is_empty() && objects.len() <= MAX_PUBLICATION_OBJECTS,
+        "publication manifest requires 1..={MAX_PUBLICATION_OBJECTS} objects"
+    );
+    let manifest_digest = publication_manifest_digest(&objects)?;
+    let mut session: hub_types::RegistryPublicationManifestSession = client
+        .call_topology(
+            HubTopologyMethod::BeginRegistryPublicationManifest,
+            &hub_types::BeginRegistryPublicationManifestRequest {
+                registry: request.registry.clone(),
+                generation: request.generation.clone(),
+                refs_digest: request.refs_digest.clone(),
+                default_commit: request.default_commit.clone(),
+                parent_publication_id: request.parent_publication_id.clone(),
+                manifest_digest,
+                object_count: u32::try_from(objects.len())?,
+            },
+        )
+        .await?;
+    anyhow::ensure!(
+        usize::try_from(session.object_count)? == objects.len(),
+        "Hub publication session changed the declared object count"
+    );
+    let admitted = usize::try_from(session.admitted_object_count)?;
+    anyhow::ensure!(
+        admitted <= objects.len(),
+        "Hub publication session has an invalid continuation cursor"
+    );
+
+    for chunk in objects[admitted..].chunks(MANIFEST_CHUNK_OBJECTS) {
+        let expected_count = session
+            .admitted_object_count
+            .checked_add(u32::try_from(chunk.len())?)
+            .context("publication manifest progress overflowed")?;
+        session = client
+            .call_topology(
+                HubTopologyMethod::AppendRegistryPublicationManifest,
+                &hub_types::AppendRegistryPublicationManifestRequest {
+                    publication_id: session.publication_id.clone(),
+                    lease_token: session.lease_token.clone(),
+                    chunk_index: session.next_chunk_index,
+                    chunk_digest: publication_manifest_chunk_digest(chunk)?,
+                    objects: chunk.to_vec(),
+                },
+            )
+            .await?;
+        anyhow::ensure!(
+            session.admitted_object_count == expected_count,
+            "Hub publication session did not advance by the appended chunk"
+        );
+    }
+    anyhow::ensure!(
+        session.admitted_object_count == session.object_count,
+        "Hub publication session remains incomplete"
+    );
+    client
+        .call_topology(
+            HubTopologyMethod::SealRegistryPublicationManifest,
+            &hub_types::SealRegistryPublicationManifestRequest {
+                publication_id: session.publication_id,
+                lease_token: session.lease_token,
+            },
+        )
+        .await
+}
+
+fn publication_manifest_digest(
+    objects: &[hub_types::RegistryPublicationObjectInput],
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    canonical.sort();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
+}
+
+fn publication_manifest_chunk_digest(
+    objects: &[hub_types::RegistryPublicationObjectInput],
+) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.path,
+                &object.sha256,
+                object.byte_size,
+                &object.kind,
+                &object.media_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&canonical)?)
+    ))
 }
 
 struct PinnedPublication {
