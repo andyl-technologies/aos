@@ -50,6 +50,8 @@ in
             "$out/source-supplement.tar"
           ln -s ${patchStackRepository}/source-supplement.sha256 \
             "$out/source-supplement.sha256"
+          ln -s ${patchStackRepository}/source-supplement.entries0 \
+            "$out/source-supplement.entries0"
           ln -s ${patchStackRepository}/source-inventory.sha256 \
             "$out/source-inventory.sha256"
           work_repo="$out/repo.git"
@@ -70,7 +72,9 @@ in
 
           metadata="$out/drop-one"
           mkdir -p "$metadata"
-          printf 'index\tpatch\toutcome\tref\thead\ttree\tconflicting_commit\tconflicting_files\n' \
+          supplement_hash=$(cat "$out/source-supplement.sha256")
+          base_inventory_hash=$(cat "$out/source-inventory.sha256")
+          printf 'index\tpatch\toutcome\tref\thead\ttree\tsource_identity\tconflicting_commit\tconflicting_files\n' \
             > "$metadata/manifest.tsv"
 
           index=0
@@ -127,7 +131,7 @@ in
                 echo "conflicting_replayed_commit=$conflicting_commit"
                 echo "conflicting_files=$conflicting_files"
               } > "$patch_metadata/conflict.env"
-              printf '%s\t%s\tconflict\t-\t-\t-\t%s\t%s\n' \
+              printf '%s\t%s\tconflict\t-\t-\t-\t-\t%s\t%s\n' \
                 "$index" "$patch_name" "$conflicting_commit" "$conflicting_files" \
                 >> "$metadata/manifest.tsv"
               continue
@@ -135,13 +139,17 @@ in
 
             variant_ref="refs/heads/drop-one/$index"
             variant_tree=$(git rev-parse "$variant_head^{tree}")
+            source_identity=$(printf 'crucible.qemu-materialized-source.v1\n%s\n%s\n%s\n' \
+              "$variant_tree" "$supplement_hash" "$base_inventory_hash" \
+              | sha256sum | gawk '{ print $1 }')
             git --git-dir="$work_repo" update-ref "$variant_ref" "$variant_head"
             echo drop-clean > "$patch_metadata/outcome"
             printf '%s\n' "$variant_ref" > "$patch_metadata/ref"
             printf '%s\n' "$variant_head" > "$patch_metadata/head"
             printf '%s\n' "$variant_tree" > "$patch_metadata/tree"
-            printf '%s\t%s\tdrop-clean\t%s\t%s\t%s\t-\t-\n' \
-              "$index" "$patch_name" "$variant_ref" "$variant_head" "$variant_tree" \
+            printf '%s\n' "$source_identity" > "$patch_metadata/source-identity"
+            printf '%s\t%s\tdrop-clean\t%s\t%s\t%s\t%s\t-\t-\n' \
+              "$index" "$patch_name" "$variant_ref" "$variant_head" "$variant_tree" "$source_identity" \
               >> "$metadata/manifest.tsv"
           done < "$patchCommitManifestPath"
 
@@ -165,6 +173,7 @@ in
           successful_refs_retained=true
           conflicts_recorded_in_manifest=true
           conflicts_require_pinned_rebase_head_and_unmerged_paths=true
+          successful_refs_bind_materialized_source_identity=true
           RESULT
         '';
       }

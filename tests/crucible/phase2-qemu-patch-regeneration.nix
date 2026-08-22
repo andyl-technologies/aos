@@ -296,8 +296,30 @@ in
             test "$actual_supplement_hash" = "$expected_supplement_hash" \
               || fail "shared source supplement hash mismatch"
             tar -xf ${patchStackRepository}/source-supplement.tar -C "$apply_dir"
-            tar -df ${patchStackRepository}/source-supplement.tar -C "$apply_dir" \
+            tar --no-recursion --null --format=gnu --mtime=@0 --owner=0 --group=0 \
+              --numeric-owner -C "$apply_dir" \
+              --files-from=${patchStackRepository}/source-supplement.entries0 \
+              -cf "$TMPDIR/regeneration-source-supplement.tar"
+            materialized_supplement_hash=$(sha256sum \
+              "$TMPDIR/regeneration-source-supplement.tar" | gawk '{ print $1 }')
+            test "$materialized_supplement_hash" = "$expected_supplement_hash" \
               || fail "regeneration source supplement differs after materialization"
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" --work-tree="$apply_dir" \
+                update-index --refresh \
+              || fail "regeneration source cannot refresh the pinned base index"
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" --work-tree="$apply_dir" \
+                diff-files --quiet -- \
+              || fail "regeneration source differs from the pinned base tree"
+            tar --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+              --numeric-owner \
+              -cf "$TMPDIR/regeneration-source.inventory.tar" -C "$apply_dir" .
+            actual_source_inventory_hash=$(sha256sum "$TMPDIR/regeneration-source.inventory.tar" \
+              | gawk '{ print $1 }')
+            expected_source_inventory_hash=$(cat ${patchStackRepository}/source-inventory.sha256)
+            test "$actual_source_inventory_hash" = "$expected_source_inventory_hash" \
+              || fail "regeneration source does not consume the verified source inventory"
             cd "$apply_dir"
             for patch_name in ${patchList}; do
               patch --batch --forward --fuzz=0 --no-backup-if-mismatch \
@@ -369,6 +391,8 @@ in
             shared_patch_stack_repository=true
             shared_patch_stack_source_extractions=1
             shared_patch_stack_full_tree_staging_passes=1
+            verified_source_inventory_consumed=true
+            verified_source_inventory_sha256=$actual_source_inventory_hash
             every_patch_commit_has_exactly_one_dco_signoff=true
             patch_branch_bundle_verified=true
             patch_branch_bundle_is_thin=true
