@@ -1746,15 +1746,27 @@ retry or quarantine. Dropping an unjoined watcher also latches terminal closure
 and leaves its worker retaining authority until empty, fail-closed.
 
 The crate-internal process layer now has a nondroppable quarantine worker that
-accepts only a direct child, watcher, and configured cgroup carrying the same
-watcher-lifecycle token. It makes sticky cancellation visible, repeatedly kills
-the group, synchronously reaps the nonduplicable direct child, joins the
-watcher, and removes the authenticated empty cgroup. Ordinary host failures
+accepts only retained direct children, an optional not-yet-joined watcher, and
+a configured cgroup carrying the same watcher-lifecycle token. It makes sticky
+cancellation visible, repeatedly kills the group, synchronously reaps every
+nonduplicable direct child, joins the watcher when present, and removes the
+authenticated empty cgroup. Ordinary host failures
 retry at the fixed kill cadence. An invariant panic is caught once and parks
 with every remaining authority retained; dropping the observation handle does
 not stop cleanup. A startup error returns every untransferred authority, and an
 ignored error deliberately leaks them rather than invoking bounded destructor
 cleanup.
+
+A crate-internal attempt-process owner now starts the one watcher before
+minting its sealed child contract and retains that complete state through the
+attempt lifetime. Normal finish joins the terminal watcher before removing the
+authenticated empty cgroup. A failed realization can retain a bounded set of
+nonduplicable direct-child handles even when `/proc` identity authentication
+itself failed; quarantine then force-kills the exact owned children while the
+cgroup watcher covers every group member. Dropping an unfinished owner transfers
+its group, optional watcher, and retained children to the nondroppable worker.
+Startup, watcher, and removal failures return or retain their authority for
+retry, and an unrecoverable worker-start failure leaks it fail-closed.
 
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
