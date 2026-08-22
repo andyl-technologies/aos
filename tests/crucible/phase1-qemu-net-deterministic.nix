@@ -51,6 +51,10 @@
         needle = "qemu_receive_packet(nc, data, (int)len)";
       }
       {
+        label = "canonical retry clears QEMU private backpressure latch";
+        needle = "nc->receive_disabled = 0;";
+      }
+      {
         label = "transient backpressure status";
         needle = "if (delivered == 0)";
       }
@@ -83,6 +87,10 @@
       {
         label = "canonical retry assertion";
         needle = "canonical_retry_delivers_after_receiver_recovers=true";
+      }
+      {
+        label = "QEMU receive-disabled latch regression";
+        needle = "canonical_retry_clears_qemu_receive_disabled_latch=true";
       }
       {
         label = "no private RX queue assertion";
@@ -327,6 +335,7 @@ in
             grep -q '^net_inject_symbol=qemu_plugin_net_inject$' "$out/result"
             grep -q '^direct_inject_retains_caller_ownership_when_not_ready=true$' "$out/result"
             grep -q '^canonical_retry_delivers_after_receiver_recovers=true$' "$out/result"
+            grep -q '^canonical_retry_clears_qemu_receive_disabled_latch=true$' "$out/result"
             grep -q '^qemu_private_rx_queue_used=false$' "$out/result"
             grep -q '^skewed_producer_observed_icount_identical=true$' "$out/result"
             grep -q '^arrival_order_visible=false$' "$out/result"
@@ -349,6 +358,7 @@ in
             qemu_net_rx_api=qemu_plugin_net_inject
             qemu_net_rx_delivery_icount_deterministic=true
             qemu_net_rx_canonical_retry=true
+            qemu_net_rx_retry_clears_private_backpressure_latch=true
             qemu_net_rx_private_queue=false
             skewed_producer_observed_icount_identical=true
             guest_observed_icount=4096

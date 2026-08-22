@@ -299,3 +299,38 @@ fn mirrored_sink_restores_canonical_state_after_backend_commit_rejection() {
             .is_empty()
     );
 }
+
+#[test]
+fn host_state_evidence_excludes_locked_replay_authorization() {
+    let limits = FaultResourceLimits::default();
+    let recorded_action = network_action();
+    let mut recorded_sink = HostFaultActionSink::new(limits);
+    let recorded_prepared = recorded_sink
+        .prepare_batch(std::slice::from_ref(&recorded_action))
+        .unwrap_or_else(|error| panic!("recorded prepare: {}", error.error));
+    let recorded = recorded_sink
+        .commit_batch(recorded_prepared.transaction)
+        .unwrap_or_else(|error| panic!("recorded commit: {error}"));
+
+    let mut replay_action = recorded_action.clone();
+    replay_action.expected_precondition = recorded.results[0].precondition;
+    assert_ne!(replay_action.id(), recorded_action.id());
+    assert_eq!(
+        replay_action.committed_state_id(),
+        recorded_action.committed_state_id()
+    );
+
+    let mut replay_sink = HostFaultActionSink::new(limits);
+    let replay_prepared = replay_sink
+        .prepare_batch(std::slice::from_ref(&replay_action))
+        .unwrap_or_else(|error| panic!("replay prepare: {}", error.error));
+    let replay = replay_sink
+        .commit_batch(replay_prepared.transaction)
+        .unwrap_or_else(|error| panic!("replay commit: {error}"));
+
+    assert_eq!(
+        replay.results[0].observation.evidence,
+        recorded.results[0].observation.evidence
+    );
+    assert_eq!(replay_sink.state().digest(), recorded_sink.state().digest());
+}

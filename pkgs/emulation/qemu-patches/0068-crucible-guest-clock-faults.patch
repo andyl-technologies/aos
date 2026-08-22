@@ -3028,7 +3028,7 @@ index 238a29ec7..dc27b9190 100644
          }
          if (strcmp(name, "cpu") == 0 ||
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index b181e40ee..2f4939337 100644
+index 7702bd5c6..f3b6a53bc 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -345,13 +345,11 @@ enum {

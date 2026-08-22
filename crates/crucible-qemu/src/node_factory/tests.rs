@@ -183,6 +183,9 @@ fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
@@ -218,7 +221,74 @@ fn post_load_host_restore_failure_kills_child_without_resuming_qemu() -> Result<
     }
 
     let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines.len(), 10);
+    assert!(
+        lines
+            .iter()
+            .all(|line| execute_name(line) != Some(QMP_CONT_COMMAND))
+    );
+    Ok(())
+}
+
+#[test]
+fn post_load_anchor_release_failure_kills_child_without_resuming_qemu() -> Result<(), Box<dyn Error>>
+{
+    let config = RegionConfig::new(1, 4, 0);
+    let layout = RegionLayout::for_config(config)?;
+    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let plugin_peer = thread::spawn(move || {
+        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
+    });
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let child_pid = child.id();
+    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"running"}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":false,"status":"paused"}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
+        r#"{"error":{"class":"GenericError","desc":"delete failed"}}"#,
+    ]);
+    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
+    let checkpoint = checkpoint_with_hash_byte(0xab);
+
+    let result = build_qemu_node_from_restored_checkpoint(
+        QemuNodeChild::new(child),
+        setup,
+        qmp,
+        QemuNodeRestorePlan::new(
+            &checkpoint,
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
+            test_admission(),
+        ),
+        node_factory_runtime(),
+    );
+    assert!(matches!(
+        result,
+        Err(QemuNodeFactoryError::VmStateRestoreAnchorRelease { .. })
+    ));
+    assert_process_is_gone(child_pid)?;
+    match plugin_peer.join() {
+        Ok(Ok(_region)) => {}
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_panic) => return Err("plugin setup peer panicked".into()),
+    }
+
+    let lines = written_json_lines_from_shared(&qmp_written)?;
+    assert_eq!(lines.len(), 8);
+    assert_eq!(
+        execute_name(json_line(&lines, 7)),
+        Some(QMP_SNAPSHOT_DELETE_COMMAND)
+    );
     assert!(
         lines
             .iter()
@@ -252,6 +322,9 @@ fn missing_post_load_calibration_ack_kills_child_before_exposure() -> Result<(),
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
     ]);
     let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
@@ -282,7 +355,7 @@ fn missing_post_load_calibration_ack_kills_child_before_exposure() -> Result<(),
     }
 
     let lines = written_json_lines_from_shared(&qmp_written)?;
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines.len(), 10);
     assert!(
         lines
             .iter()
@@ -322,6 +395,9 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
@@ -381,11 +457,23 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
     );
     assert_eq!(
         execute_name(json_line(&lines, 7)),
-        Some(QMP_QUERY_STATUS_COMMAND)
+        Some(QMP_SNAPSHOT_DELETE_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 8)),
+        Some(QMP_QUERY_JOBS_COMMAND)
+    );
     assert_eq!(
         execute_name(json_line(&lines, 9)),
+        Some(QMP_JOB_DISMISS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 10)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 11)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 12)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 

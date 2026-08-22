@@ -1812,7 +1812,7 @@ impl ProductionFaultNetworkInterceptor {
                     OpportunityPayload::NetworkControl {
                         technology: event.technology.clone(),
                         event_sequence: event.sequence,
-                        request_digest: event.action.id(),
+                        request_digest: event.action.committed_state_id(),
                         result_schema: event.result_schema.clone(),
                         result_digest: event.result_digest,
                     },
@@ -2341,7 +2341,7 @@ impl ProductionFaultNetworkInterceptor {
                     });
                 }
                 records.push(NetworkAvailabilityTransitionRecord {
-                    action: action.id(),
+                    action: action.committed_state_id(),
                     binding: action.binding.clone(),
                     target: action.target.clone(),
                     phase: action.phase,

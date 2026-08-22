@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use crucible::{AdvanceOutcome, ExecutionHorizon};
+use crucible::{AdvanceOutcome, ExecutionHorizon, Icount};
 use crucible_shmem::DequeuedFaultResult;
 use thiserror::Error;
 
@@ -90,6 +90,23 @@ pub enum QemuAsyncDriverOperation {
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Arms the publication fence for the next advance-completion wait.
+    ///
+    /// Live runtimes retain the supplied pre-wake generation until the plugin
+    /// publishes the scheduler input that invalidated its prior idle report.
+    /// Runtimes without a live shared-memory executor ignore the fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot arm the
+    /// requested completion fence.
+    fn arm_advance_completion_fence(
+        &mut self,
+        _fence: Option<QemuAdvanceCompletionFence>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     /// Reports whether QEMU owns no in-flight device coroutine at this boundary.
     ///
     /// Runtimes without a live external executor are always quiescent. A live
@@ -435,6 +452,15 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError>;
 
+    /// Returns the plugin-publication fence carried by a pending quantum.
+    #[must_use]
+    fn advance_completion_fence(
+        &self,
+        _pending: &Self::PendingQuantum,
+    ) -> Option<QemuAdvanceCompletionFence> {
+        None
+    }
+
     /// Finishes one quantum after the host-I/O runtime observed completion.
     ///
     /// # Errors
@@ -447,9 +473,18 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
 }
 
+/// Pre-wake generation that must be superseded before a quantum can complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuAdvanceCompletionFence {
+    /// Plugin publish generation observed before scheduler input was released.
+    pub initial_publish_generation: u32,
+}
+
 /// Quantum completion observed from the shared-memory hot path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuAsyncQuantumCompletion {
+    /// Effective shared-memory ceiling published for this quantum.
+    pub ceiling: Icount,
     /// Scheduler-facing advance result for this quantum.
     pub outcome: AdvanceOutcome,
     /// Attested node state at the completed quantum boundary.
@@ -465,6 +500,7 @@ pub struct QemuAsyncQuantumCompletion {
 impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
     fn from(report: QemuQuantumReport) -> Self {
         Self {
+            ceiling: report.ceiling,
             outcome: report.outcome,
             final_state: report.final_state,
             inbound_frames_consumed: report.inbound_frames_consumed,
@@ -494,6 +530,8 @@ pub enum QemuAsyncNodeStepOutcome {
 /// Report produced by one bounded async node-step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuAsyncNodeStepReport {
+    /// Effective shared-memory ceiling, absent when the bounded wait crashed.
+    pub ceiling: Option<Icount>,
     /// Outcome of the node-step.
     pub outcome: QemuAsyncNodeStepOutcome,
     /// Attested state for a completed quantum, absent after a crash.

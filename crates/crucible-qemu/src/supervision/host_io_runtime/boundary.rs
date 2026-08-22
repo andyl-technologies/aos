@@ -30,6 +30,23 @@ pub(super) fn classify_after_host_wake(
     boundary
 }
 
+/// Classifies a boundary after both scheduler-input and host-device wakes.
+///
+/// Scheduler input can make an otherwise valid future-idle report runnable, so
+/// its pre-wake generation invalidates every boundary class until superseded.
+pub(super) fn classify_after_scheduler_and_host_wake(
+    idle: &crate::QemuNodeIdleState,
+    ceiling: u64,
+    scheduler_input_unobserved: bool,
+    device_wake_unacknowledged: bool,
+) -> QuantumBoundary {
+    if scheduler_input_unobserved {
+        QuantumBoundary::Pending
+    } else {
+        classify_after_host_wake(idle, ceiling, device_wake_unacknowledged)
+    }
+}
+
 /// Returns whether the plugin has not yet published after a device wake.
 pub(super) fn device_wake_publication_is_unobserved(
     initial_generation: Option<u32>,

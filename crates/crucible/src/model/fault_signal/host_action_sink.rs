@@ -116,10 +116,10 @@ impl HostFaultActionState {
     fn recompute_digest(&mut self) {
         let mut bytes = Vec::with_capacity((self.active.len() + self.impulses.len()) * 32);
         for action in self.active.values().chain(self.impulses.iter()) {
-            bytes.extend_from_slice(&action.id().bytes);
+            bytes.extend_from_slice(&action.committed_state_id().bytes);
         }
         self.digest = ContentHash::from_canonical_material(
-            "crucible.host-fault-action-state.v1",
+            "crucible.host-fault-action-state.v2",
             &hex_bytes(&bytes),
         );
     }

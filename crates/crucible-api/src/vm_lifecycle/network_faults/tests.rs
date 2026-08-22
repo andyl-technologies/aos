@@ -1141,6 +1141,34 @@ fn typed_control_transform_action(
 }
 
 #[test]
+fn control_outcome_evidence_excludes_locked_replay_authorization() {
+    let action = association_control_event([0, 0]).action;
+    let mut locked = action.clone();
+    locked.expected_precondition = Some(ContentHash::from_bytes(b"recorded-network-state"));
+
+    assert_ne!(action.id(), locked.id());
+    assert_eq!(action.committed_state_id(), locked.committed_state_id());
+
+    let recorded = boundary::ControlPlaneOutcome {
+        action,
+        kind: boundary::ControlPlaneOutcomeKind::TypedError,
+        result: Some(object_id("network-control-error")),
+    };
+    let replayed = boundary::ControlPlaneOutcome {
+        action: locked,
+        kind: recorded.kind,
+        result: recorded.result.clone(),
+    };
+
+    assert_eq!(
+        control_plane_outcome_evidence(&recorded)
+            .unwrap_or_else(|error| panic!("recorded evidence should encode: {error}")),
+        control_plane_outcome_evidence(&replayed)
+            .unwrap_or_else(|error| panic!("replayed evidence should encode: {error}")),
+    );
+}
+
+#[test]
 fn association_control_bias_and_replacement_preserve_digest_invariants() {
     let replacement_bytes = [30_i64, 40_i64]
         .into_iter()

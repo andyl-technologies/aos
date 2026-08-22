@@ -6,7 +6,10 @@ mod channel_behavior;
 mod completion;
 mod network_delivery;
 mod source_assertions;
-use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
+use crucible_shmem::{
+    AdvanceCeiling, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameEntry, NodeSlot, STATUS_IDLE,
+    STATUS_RUNNING,
+};
 use source_assertions::{assert_source_order, function_source};
 
 const QUANTUM_SOURCE: &str = include_str!("../quantum.rs");
@@ -234,6 +237,64 @@ fn qemu_quantum_preserves_backpressured_due_frame_for_retry() {
 }
 
 #[test]
+fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    hot_path
+        .enqueue_inbound_frame(QemuInboundFrame {
+            delivery_icount: icount(5),
+            src_node: 31,
+            sequence: 1,
+            payload: b"retained-head".to_vec(),
+        })
+        .unwrap_or_else(|error| panic!("retained head should enqueue: {error}"));
+    let first = hot_path
+        .start_quantum(horizon(5))
+        .unwrap_or_else(|error| panic!("first delivery quantum should start: {error}"));
+    slot.publish_reached_icount(5, 0)
+        .unwrap_or_else(|error| panic!("first delivery boundary should publish: {error}"));
+    plugin_mark_inbound_retained(&hot_path, 5);
+    hot_path
+        .finish_quantum(first)
+        .unwrap_or_else(|error| panic!("retained delivery quantum should finish: {error}"));
+
+    hot_path
+        .enqueue_inbound_frame(QemuInboundFrame {
+            delivery_icount: icount(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT),
+            src_node: 31,
+            sequence: 2,
+            payload: b"later-pending".to_vec(),
+        })
+        .unwrap_or_else(|error| panic!("later pending frame should enqueue: {error}"));
+    let retry = hot_path
+        .start_quantum(horizon(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT + 10))
+        .unwrap_or_else(|error| panic!("retained retry quantum should start: {error}"));
+
+    assert_eq!(
+        retry.ceiling,
+        icount(5 + FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
+    );
+    let initial_publish_generation = retry.report_generation;
+    assert_eq!(
+        retry.completion_fence,
+        Some(QemuAdvanceCompletionFence {
+            initial_publish_generation,
+        })
+    );
+}
+
+#[test]
 fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
     let slot = NodeSlot::default();
     if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
@@ -299,6 +360,12 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     };
     assert_eq!(pending.requested_horizon, icount(6));
     assert_eq!(pending.ceiling, icount(5));
+    assert_eq!(
+        pending.completion_fence,
+        Some(QemuAdvanceCompletionFence {
+            initial_publish_generation: 0,
+        })
+    );
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
     if let Err(error) = slot.publish_reached_icount(5, 0) {
         panic!("plugin should stop at the delivery boundary: {error}");

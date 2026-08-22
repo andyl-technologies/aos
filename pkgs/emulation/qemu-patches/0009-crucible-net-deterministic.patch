@@ -25,7 +25,7 @@ index c3a6c9596..eed7f3d1e 100644
  (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                   int64_t num, uint64_t a1, uint64_t a2,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index bdd5ac235..13b26db35 100644
+index bdd5ac235..303501cf6 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,7 @@
@@ -36,7 +36,7 @@ index bdd5ac235..13b26db35 100644
  #include "qapi/error.h"
  #include "migration/blocker.h"
  #include "hw/boards.h"
-@@ -132,6 +133,49 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -132,6 +133,58 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  
@@ -73,6 +73,15 @@ index bdd5ac235..13b26db35 100644
 +        return -1;
 +    }
 +
++    /*
++     * qemu_receive_packet() sets receive_disabled when the device reports
++     * backpressure.  The ordinary QEMU send path later clears that latch
++     * while flushing its private packet queue.  Crucible deliberately leaves
++     * ownership in canonical shared memory instead, so each explicit retry
++     * must re-probe the device rather than inherit a latch whose queue is
++     * intentionally empty.
++     */
++    nc->receive_disabled = 0;
 +    delivered = qemu_receive_packet(nc, data, (int)len);
 +    if (delivered == (ssize_t)len) {
 +        return 0;

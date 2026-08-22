@@ -259,6 +259,7 @@ The unified event log gains records in these classes:
 | `fault_choice` | binding, opportunity, probability/candidate set, keyed result |
 | `effect_combined` | target, phase, contributors, combined effect digest |
 | `effect_applied` | adapter, effect, resolved target, application evidence |
+| `effect_committed` | binding, target, atomic commit outcome, canonical application evidence |
 | `effect_rejected` | capability/precondition/application error |
 | `network_profile` | segment/path, directional components, profile digest |
 | `association_transition` | old/new attachment/path, timers, frame treatment |

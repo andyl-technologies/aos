@@ -367,6 +367,26 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
 }
 
 #[test]
+fn drained_control_boundary_pumps_fault_commands_before_acknowledging() {
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(79, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    let _borrowed_bridge = state
+        .fault_commands
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let request = slot
+        .request_control_boundary()
+        .unwrap_or_else(|error| panic!("control request should publish: {error}"));
+
+    assert_eq!(
+        state.on_control_boundary(0),
+        Err(LiveVcpuTimeCallbackError::FaultCommandStateBorrowed)
+    );
+    assert_eq!(slot.snapshot().control_boundary_ack, request);
+}
+
+#[test]
 fn busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported() {
     TEST_REQUEST_VMSTOP_CALLS.set(0);
     TEST_REQUEST_VMSTOP_STATUS.set(-7);
@@ -737,6 +757,10 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
             .try_pending_idle_advance()
             .unwrap_or_else(|error| panic!("pending state should remain readable: {error}"))
             .is_none()
+    );
+    assert!(
+        !state.all_halted_idle_handled.load(Ordering::Acquire),
+        "a QEMU barrier deferral must re-arm the all-halted retry edge"
     );
 }
 

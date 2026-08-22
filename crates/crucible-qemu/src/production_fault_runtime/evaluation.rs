@@ -159,18 +159,25 @@ impl ProductionFaultRuntime {
                     "crucible.resolved-fault-target.v1",
                     &action.target.canonical_material(),
                 );
-                if event.header.binding_hash != binding_hash.bytes
-                    || event.header.target_hash != target_hash.bytes
-                    || event.header.generation != action.transition_sequence
-                    || !qemu_event_matches_commit(event, action, commit)
-                    || boundary
-                        .retired_instructions
-                        .is_none_or(|retired| event.header.observed_icount > retired)
+                let binding_matches = event.header.binding_hash == binding_hash.bytes;
+                let target_matches = event.header.target_hash == target_hash.bytes;
+                let generation_matches = event.header.generation == action.transition_sequence;
+                let commit_matches = qemu_event_matches_commit(event, action, commit);
+                let boundary_matches = boundary
+                    .retired_instructions
+                    .is_none_or(|retired| event.header.observed_icount <= retired);
+                if !binding_matches
+                    || !target_matches
+                    || !generation_matches
+                    || !commit_matches
+                    || !boundary_matches
                 {
                     return Err(BackendError::Rejected {
                         message: format!(
-                            "QEMU fault event {} does not match its active rule",
-                            event.header.event_sequence
+                            "QEMU fault event {} does not match its active rule: binding={binding_matches}, target={target_matches}, generation={generation_matches}, commit={commit_matches}, boundary={boundary_matches}, observed_icount={}, boundary_icount={:?}",
+                            event.header.event_sequence,
+                            event.header.observed_icount,
+                            boundary.retired_instructions,
                         ),
                     }
                     .into());

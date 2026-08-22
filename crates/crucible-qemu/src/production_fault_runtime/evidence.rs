@@ -46,6 +46,9 @@ pub(super) fn node_lifecycle_decision(
     } else {
         None
     };
+    let mut authorization_evidence: [u8; LIFECYCLE_EVIDENCE_BYTES] =
+        event.payload.as_slice().try_into().ok()?;
+    authorization_evidence[24..32].fill(0);
     Some(QemuNodeLifecycleDecision {
         node: node.clone(),
         action: action_identity,
@@ -56,7 +59,7 @@ pub(super) fn node_lifecycle_decision(
         observed_icount: event.header.observed_icount,
         pre_exit_hash,
         event_evidence: ContentHash {
-            bytes: event.header.evidence_hash,
+            bytes: Sha256::digest(authorization_evidence).into(),
         },
     })
 }
@@ -304,7 +307,7 @@ pub(super) fn validate_lifecycle_terminal_shape(
                 && effective_transition == u32::from(requested_transition)
                 && flags == 0
                 && pre_exit == Some([0_u8; 32].as_slice())
-                && lifecycle_after_counts_match_before(bytes)
+                && lifecycle_terminal_counts_are_valid(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_DIRECT => {
             event.header.outcome == FaultEventOutcomeV1::Applied
@@ -312,14 +315,14 @@ pub(super) fn validate_lifecycle_terminal_shape(
                 && effective_transition == u32::from(requested_transition)
                 && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
                 && digest_is_valid
-                && lifecycle_after_counts_match_before(bytes)
+                && lifecycle_terminal_counts_are_valid(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_READY_EXHAUSTED => {
             event.header.outcome == FaultEventOutcomeV1::Applied
                 && effective_is_terminal
                 && flags == LIFECYCLE_TERMINAL_PRE_EXIT_VALID | LIFECYCLE_TERMINAL_EXIT_REQUIRED
                 && digest_is_valid
-                && lifecycle_after_counts_match_before(bytes)
+                && lifecycle_terminal_counts_are_valid(bytes)
         }
         LIFECYCLE_TERMINAL_CAUSE_FAIL_CLOSED => {
             event.header.outcome == FaultEventOutcomeV1::Error
@@ -327,7 +330,7 @@ pub(super) fn validate_lifecycle_terminal_shape(
                     == u32::from(lifecycle_tag(NodeLifecycleTransition::PermanentFailure))
                 && exit_required
                 && if pre_exit_valid {
-                    digest_is_valid && lifecycle_after_counts_match_before(bytes)
+                    digest_is_valid && lifecycle_terminal_counts_are_valid(bytes)
                 } else {
                     pre_exit == Some([0_u8; 32].as_slice())
                         && event.header.after_hash == event.header.before_hash
@@ -339,8 +342,9 @@ pub(super) fn validate_lifecycle_terminal_shape(
     }
 }
 
-pub(super) fn lifecycle_after_counts_match_before(bytes: &[u8]) -> bool {
-    read_u64(bytes, 112) == read_u64(bytes, 48) && read_u64(bytes, 120) == read_u64(bytes, 56)
+pub(super) fn lifecycle_terminal_counts_are_valid(bytes: &[u8]) -> bool {
+    read_u64(bytes, 112) == read_u64(bytes, 48)
+        && read_u64(bytes, 120).is_some_and(|device_bytes| device_bytes != 0)
 }
 
 pub(super) fn validate_lifecycle_terminal_policy(

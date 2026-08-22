@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.host-fault-action-state.v2\0";
+const MAGIC: &[u8] = b"crucible.host-fault-action-state.v3\0";
 const HARD_ACTIONS: u64 = FaultResourceLimits::compiled_maximum().resolved_effect_records;
 
 struct ActionEntriesRef<'a>(&'a BTreeMap<ActiveContributionKey, ResolvedBindingAction>);
@@ -456,7 +456,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("encode host state: {error}"));
 
         let mut old_version = bytes.clone();
-        old_version[..MAGIC.len()].copy_from_slice(b"crucible.host-fault-action-state.v1\0");
+        old_version[..MAGIC.len()].copy_from_slice(b"crucible.host-fault-action-state.v2\0");
         assert_eq!(
             HostFaultActionState::from_canonical_bytes(&old_version),
             Err(FaultRuntimeError::AdapterCheckpointCodec)
