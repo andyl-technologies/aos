@@ -8,7 +8,7 @@
 //!   `user_identities`, `service_accounts`, `memberships`, and
 //!   `invitations`, the phase-2b authentication tables `tokens`,
 //!   `sessions`, `device_codes`, and `magic_links`, and the phase-2c
-//!   `storage_bindings` and topology-placement tables that bind a surface to
+//!   `bindings` and topology-placement tables that bind a surface to
 //!   one or more physical locations: facts that exist nowhere on the surface
 //!   (slug, source URL, trust anchors, the anti-rollback floor each
 //!   channel has reached, the org → project → registry hierarchy and who
@@ -104,7 +104,7 @@
 //! # Storage topology
 //!
 //! Registries and caches are logical identities. Every physical byte path is
-//! represented by a placement that names one typed storage binding and one
+//! represented by a placement that names one typed binding and one
 //! binding-relative prefix. Reads select eligible placements; writes require a
 //! fully reconciled write authority. No resource-global storage pointer or
 //! physical-source fallback exists.
@@ -129,7 +129,7 @@
 //! (RFC-0004 "Configuration management" and "Tenancy and IAM"). Three
 //! append-only tables — never `UPDATE`d row-by-row except for the
 //! changeset lifecycle stamps — record every mutation of the SQL-backed
-//! config (visibility, memberships, tokens metadata, storage bindings,
+//! config (visibility, memberships, tokens metadata, bindings,
 //! registry config) and who performed it.
 //!
 //! A **changeset** is a unit of review: an actor opens a draft, stages one
@@ -391,7 +391,7 @@ pub const MIGRATIONS: &[&str] = &[
 /// schema. Unlike the historical integer version, this value cannot collide
 /// with a pre-cutover deployment whose independent migration history happened
 /// to have the same length.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/1";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/topology-hard-cutover/2";
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -508,10 +508,10 @@ pub struct RegistryRecord {
     pub updated_at: i64,
 }
 
-/// A storage binding (system-of-record row): a named backend an org's
+/// A binding (system-of-record row): a named backend an org's
 /// surfaces use through explicit physical placements.
 #[derive(Debug, Clone, Default)]
-pub struct StorageBindingRecord {
+pub struct BindingRecord {
     /// Database id.
     pub id: i64,
     /// Owning org id, or `None` for the instance-level default binding
@@ -523,7 +523,7 @@ pub struct StorageBindingRecord {
     /// externally configured S3-compatible store), or the instance-owned
     /// Worker `deployment_r2` singleton. Organization rows only use `s3`/`r2`.
     pub kind: String,
-    /// Whether this is the singleton instance-level default storage binding.
+    /// Whether this is the singleton instance-level default binding.
     /// Exactly one row carries this; it has a `None` `org_id`.
     pub is_instance_default: bool,
     /// Stable API identity, independent of database ids and display names.
@@ -562,7 +562,7 @@ pub struct StorageBindingRecord {
 /// credentials, or credential-version references. Queries returning it select
 /// only these columns at the SQL boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingReadDetail {
+pub struct BindingReadDetail {
     /// Database identity used only for same-request joins.
     pub id: i64,
     /// Owning organization, or `None` for the instance default.
@@ -587,7 +587,7 @@ pub struct StorageBindingReadDetail {
 
 /// A compact storage-binding identity safe for read-only inventory pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingReadSummary {
+pub struct BindingReadSummary {
     /// Database identity used only for same-request joins.
     pub id: i64,
     /// Owning organization, or `None` for the instance default.
@@ -602,8 +602,8 @@ pub struct StorageBindingReadSummary {
     pub stable_id: String,
 }
 
-impl From<&StorageBindingRecord> for StorageBindingReadSummary {
-    fn from(binding: &StorageBindingRecord) -> Self {
+impl From<&BindingRecord> for BindingReadSummary {
+    fn from(binding: &BindingRecord) -> Self {
         Self {
             id: binding.id,
             org_id: binding.org_id,
@@ -615,20 +615,20 @@ impl From<&StorageBindingRecord> for StorageBindingReadSummary {
     }
 }
 
-const STORAGE_BINDING_READ_DETAIL_SQL: &str =
+const BINDING_READ_DETAIL_SQL: &str =
     "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key, \
      resource_version, created_at, updated_at \
-     FROM storage_bindings WHERE stable_id = ?1";
+     FROM bindings WHERE stable_id = ?1";
 
-const STORAGE_BINDING_READ_SUMMARY_SQL: &str =
+const BINDING_READ_SUMMARY_SQL: &str =
     "SELECT id, org_id, name, kind, is_instance_default, stable_id \
-     FROM storage_bindings WHERE org_id = ?1 ORDER BY name";
+     FROM bindings WHERE org_id = ?1 ORDER BY name";
 
-/// One immutable credential-version reference attached to a storage binding.
+/// One immutable credential-version reference attached to a binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingCredentialRevisionRecord {
-    /// Owning storage binding.
-    pub storage_binding_id: i64,
+pub struct BindingCredentialRevisionRecord {
+    /// Owning binding.
+    pub binding_id: i64,
     /// Capability purpose (`read`, `write`, `delete`, `list`, or `presign`).
     pub purpose: String,
     /// Monotonic purpose-local generation.
@@ -715,7 +715,7 @@ pub struct OrgUsage {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct InstanceSettings {
     /// Operator-chosen site title shown in the masthead and page titles; `None`
-    /// falls back to the deploy `--brand` (or empty).
+    /// renders an empty title.
     pub site_title: Option<String>,
     /// Short tagline shown under the brand on the home page.
     pub tagline: Option<String>,
@@ -1519,7 +1519,7 @@ pub struct CacheProbeRow {
 /// [`Database::is_mirror`]). The [`MirrorSource::mode`] selects the
 /// replication strategy: `full` copies the verified upstream surface into the
 /// local binding on a schedule; `pullthrough` fetches on demand through a Hub
-/// delivery route. See the hub's `mirror` module for sync and fetch logic.
+/// route. See the hub's `mirror` module for sync and fetch logic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirrorSource {
     /// The upstream registry surface URL (`file://`, `/path`, or `http(s)://`).
@@ -1816,8 +1816,8 @@ pub struct SurfacePlacementRecord {
     pub cache_id: Option<i64>,
     /// Stable human-readable name within the surface.
     pub name: String,
-    /// Storage binding containing the placement.
-    pub storage_binding_id: i64,
+    /// Binding containing the placement.
+    pub binding_id: i64,
     /// Surface-relative prefix within the binding.
     pub prefix: String,
     /// Derived placement role: observed authority is `primary`; otherwise the
@@ -1973,9 +1973,9 @@ pub fn surface_write_authority_mutation_failure(
 /// References that constrain a placement drain or metadata deletion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfacePlacementBlockers {
-    /// A direct delivery route selects the placement.
+    /// A direct route selects the placement.
     pub direct_route: bool,
-    /// A delivery route selects a policy containing the placement.
+    /// A route selects a policy containing the placement.
     pub routed_policy: bool,
     /// A placement-selection policy contains the placement.
     pub policy_member: bool,
@@ -2020,12 +2020,12 @@ pub struct TopologyDefaultsRecord {
     pub org_id: Option<i64>,
     /// Stable uniqueness key (`instance` or `org:<id>`).
     pub scope_key: String,
-    /// Default storage binding for new placements.
-    pub storage_binding_id: Option<i64>,
-    /// Default domain for new delivery routes.
+    /// Default binding for new placements.
+    pub binding_id: Option<i64>,
+    /// Default domain for new routes.
     pub domain_id: Option<i64>,
-    /// Default storage gateway for new direct routes.
-    pub storage_gateway_id: Option<i64>,
+    /// Default gateway for new direct routes.
+    pub gateway_id: Option<i64>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
     /// Creation time in Unix seconds.
@@ -2040,17 +2040,17 @@ pub struct StableTopologyDefaultsRecord {
     /// Canonical owner scope.
     pub scope_key: String,
     /// Default storage-binding stable id.
-    pub storage_binding_id: Option<String>,
+    pub binding_id: Option<String>,
     /// Default domain stable id.
     pub domain_id: Option<String>,
-    /// Default delivery endpoint stable id.
-    pub delivery_endpoint_id: Option<String>,
-    /// Pinned delivery endpoint generation.
-    pub delivery_endpoint_generation: Option<i64>,
-    /// Default storage gateway stable id.
-    pub storage_gateway_id: Option<String>,
-    /// Pinned storage gateway generation.
-    pub storage_gateway_generation: Option<i64>,
+    /// Default endpoint stable id.
+    pub endpoint_id: Option<String>,
+    /// Pinned endpoint generation.
+    pub endpoint_generation: Option<i64>,
+    /// Default gateway stable id.
+    pub gateway_id: Option<String>,
+    /// Pinned gateway generation.
+    pub gateway_generation: Option<i64>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
 }
@@ -2273,8 +2273,8 @@ pub struct NewSurfacePlacementSpec {
     pub surface: SurfaceTarget,
     /// Stable human-readable name within the surface.
     pub name: String,
-    /// Storage binding containing the placement.
-    pub storage_binding_id: i64,
+    /// Binding containing the placement.
+    pub binding_id: i64,
     /// Surface-relative prefix within the binding.
     pub prefix: String,
     /// Placement shape: `complete`, `shard`, or `archive`.
@@ -2313,11 +2313,11 @@ pub struct UpdateSurfacePlacementSpec {
     pub read_order: i64,
 }
 
-/// One immutable snapshot of a storage binding's write contract.
+/// One immutable snapshot of a binding's write contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingWriteRevisionRecord {
-    /// Storage binding whose credentials and capabilities were snapshotted.
-    pub storage_binding_id: i64,
+pub struct BindingWriteRevisionRecord {
+    /// Binding whose credentials and capabilities were snapshotted.
+    pub binding_id: i64,
     /// Monotonically increasing binding-local revision.
     pub revision: i64,
     /// Credential purpose pinned by the revision.
@@ -2340,9 +2340,9 @@ pub struct StorageBindingWriteRevisionRecord {
 
 /// Desired immutable storage-binding write revision.
 #[derive(Debug, Clone)]
-pub struct NewStorageBindingWriteRevision {
-    /// Storage binding receiving the revision.
-    pub storage_binding_id: i64,
+pub struct NewBindingWriteRevision {
+    /// Binding receiving the revision.
+    pub binding_id: i64,
     /// Exact validated write-credential generation.
     pub write_credential_generation: i64,
     /// Whether ordinary object writes are supported.
@@ -2357,9 +2357,9 @@ pub struct NewStorageBindingWriteRevision {
 
 /// Desired default binding-write revision for new placement plans.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingWriteStateRecord {
-    /// Storage binding owning the pointer.
-    pub storage_binding_id: i64,
+pub struct BindingWriteStateRecord {
+    /// Binding owning the pointer.
+    pub binding_id: i64,
     /// Validated revision selected for new plans, if configured.
     pub current_write_revision: Option<i64>,
     /// Optimistic-concurrency version.
@@ -2370,9 +2370,9 @@ pub struct StorageBindingWriteStateRecord {
 
 /// Controller validation of one immutable binding-write revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBindingWriteObservationRecord {
-    /// Storage binding owning the revision.
-    pub storage_binding_id: i64,
+pub struct BindingWriteObservationRecord {
+    /// Binding owning the revision.
+    pub binding_id: i64,
     /// Validated immutable revision.
     pub revision: i64,
     /// `unknown`, `validating`, `valid`, or `invalid`.
@@ -2440,12 +2440,12 @@ pub enum TopologyScope {
 pub struct SetTopologyDefaults {
     /// Scope receiving the defaults.
     pub scope: TopologyScope,
-    /// Default storage binding for new placements.
-    pub storage_binding_id: Option<i64>,
+    /// Default binding for new placements.
+    pub binding_id: Option<i64>,
     /// Default domain for new routes.
     pub domain_id: Option<i64>,
-    /// Default storage gateway for new direct routes.
-    pub storage_gateway_id: Option<i64>,
+    /// Default gateway for new direct routes.
+    pub gateway_id: Option<i64>,
     /// Expected version, or `None` when creating the row.
     pub expected_version: Option<i64>,
 }
@@ -2639,15 +2639,15 @@ pub enum NewTopologyOperationTargetRef {
     /// Delivery-domain stable identity.
     Domain(String),
     /// Network-boundary stable identity.
-    NetworkBoundary(String),
+    NetworkPolicy(String),
     /// Delivery-endpoint stable identity.
-    DeliveryEndpoint(String),
+    Endpoint(String),
     /// Storage-gateway stable identity.
-    StorageGateway(String),
+    Gateway(String),
     /// Delivery-route stable identity.
-    DeliveryRoute(String),
+    Route(String),
     /// Storage-binding database identity.
-    StorageBinding(i64),
+    Binding(i64),
 }
 
 /// One target requested for a new durable operation.
@@ -4361,7 +4361,7 @@ impl Database {
             let managed = self
                 .backend
                 .query_opt(
-                    "SELECT i.cache_id, i.delivery_route_id,
+                    "SELECT i.cache_id, i.route_id,
                      i.route_configuration_generation, i.route_configuration_digest
                      FROM consumer_cache_publication_intents i
                      JOIN change_requests cs ON cs.change_id = i.change_id
@@ -4383,7 +4383,7 @@ impl Database {
             stmts.push(Statement::new(
                 "INSERT INTO registry_cache_stack_entries
                  (registry_id, stack_path, committed_url, resolved_priority,
-                  mirror_group_id, cache_id, delivery_route_id,
+                  mirror_group_id, cache_id, route_id,
                   route_configuration_generation, route_configuration_digest,
                   indexed_commit)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -8051,12 +8051,12 @@ impl Database {
     }
 
     /// Ensures the binding has a nullable, versioned write-state singleton.
-    async fn ensure_storage_binding_write_state(&self, storage_binding_id: i64) -> Result<()> {
+    async fn ensure_binding_write_state(&self, binding_id: i64) -> Result<()> {
         if self
             .backend
             .query_opt(
-                "SELECT 1 FROM storage_binding_write_state WHERE storage_binding_id = ?1",
-                &vals![storage_binding_id],
+                "SELECT 1 FROM binding_write_state WHERE binding_id = ?1",
+                &vals![binding_id],
             )
             .await?
             .is_some()
@@ -8066,22 +8066,22 @@ impl Database {
         let inserted = self
             .backend
             .execute(
-                "INSERT INTO storage_binding_write_state
-                 (storage_binding_id, current_write_revision, updated_at)
-                 SELECT id, NULL, ?2 FROM storage_bindings WHERE id = ?1",
-                &vals![storage_binding_id, unix_now()],
+                "INSERT INTO binding_write_state
+                 (binding_id, current_write_revision, updated_at)
+                 SELECT id, NULL, ?2 FROM bindings WHERE id = ?1",
+                &vals![binding_id, unix_now()],
             )
             .await;
         match inserted {
             Ok(1) => Ok(()),
-            Ok(_) => bail!("storage binding does not exist"),
+            Ok(_) => bail!("binding does not exist"),
             Err(error) => {
                 if self
                     .backend
                     .query_opt(
-                        "SELECT 1 FROM storage_binding_write_state
-                         WHERE storage_binding_id = ?1",
-                        &vals![storage_binding_id],
+                        "SELECT 1 FROM binding_write_state
+                         WHERE binding_id = ?1",
+                        &vals![binding_id],
                     )
                     .await?
                     .is_some()
@@ -8104,16 +8104,16 @@ impl Database {
     ///
     /// Returns an error for invalid fingerprints, an absent binding, a reused
     /// revision fingerprint, or a database failure.
-    pub async fn create_storage_binding_write_revision(
+    pub async fn create_binding_write_revision(
         &self,
-        input: &NewStorageBindingWriteRevision,
-    ) -> Result<StorageBindingWriteRevisionRecord> {
+        input: &NewBindingWriteRevision,
+    ) -> Result<BindingWriteRevisionRecord> {
         if input.write_credential_generation <= 0 {
             bail!("write credential generation must be positive");
         }
         let credential = self
-            .storage_binding_credential_revision(
-                input.storage_binding_id,
+            .binding_credential_revision(
+                input.binding_id,
                 "write",
                 input.write_credential_generation,
             )
@@ -8127,10 +8127,9 @@ impl Database {
         if input.conditional_writes_supported && !input.writes_supported {
             bail!("conditional writes require ordinary write capability");
         }
-        self.ensure_storage_binding_write_state(input.storage_binding_id)
-            .await?;
+        self.ensure_binding_write_state(input.binding_id).await?;
         let now = unix_now();
-        let matching_existing = |record: &StorageBindingWriteRevisionRecord| {
+        let matching_existing = |record: &BindingWriteRevisionRecord| {
             record.write_credential_generation == input.write_credential_generation
                 && record.writes_supported == input.writes_supported
                 && record.conditional_writes_supported == input.conditional_writes_supported
@@ -8138,12 +8137,12 @@ impl Database {
         };
         let existing_by_fingerprint = async {
             self.backend.query_opt(
-                &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM storage_binding_write_revisions WHERE storage_binding_id = ?1 AND revision_fingerprint = ?2"),
-                &vals![input.storage_binding_id, input.revision_fingerprint],
+                &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM binding_write_revisions WHERE binding_id = ?1 AND revision_fingerprint = ?2"),
+                &vals![input.binding_id, input.revision_fingerprint],
             ).await
         };
         if let Some(row) = existing_by_fingerprint.await? {
-            let existing = row_to_storage_binding_write_revision(&row)?;
+            let existing = row_to_binding_write_revision(&row)?;
             if matching_existing(&existing) {
                 return Ok(existing);
             }
@@ -8154,27 +8153,27 @@ impl Database {
                 .backend
                 .query_opt(
                     "SELECT COALESCE((SELECT MAX(revision)
-                        FROM storage_binding_write_revisions r
-                        WHERE r.storage_binding_id = b.id), 0) + 1
-                     FROM storage_bindings b WHERE b.id = ?1",
-                    &vals![input.storage_binding_id],
+                        FROM binding_write_revisions r
+                        WHERE r.binding_id = b.id), 0) + 1
+                     FROM bindings b WHERE b.id = ?1",
+                    &vals![input.binding_id],
                 )
                 .await?
-                .context("storage binding does not exist")?
+                .context("binding does not exist")?
                 .get(0)?;
             let inserted = self
                 .backend
                 .execute(
-                    "INSERT INTO storage_binding_write_revisions
-                 (storage_binding_id, revision, write_credential_version_ref,
+                    "INSERT INTO binding_write_revisions
+                 (binding_id, revision, write_credential_version_ref,
                   write_credential_purpose, write_credential_generation,
                   writes_supported, conditional_writes_supported,
                   revision_fingerprint, capability_fingerprint, created_at)
                  SELECT id, ?2, ?3, 'write', ?4,
                    ?5, ?6, ?7, ?8, ?9
-                 FROM storage_bindings WHERE id = ?1",
+                 FROM bindings WHERE id = ?1",
                     &vals![
-                        input.storage_binding_id,
+                        input.binding_id,
                         revision,
                         credential.secret_version_ref,
                         input.write_credential_generation,
@@ -8188,13 +8187,13 @@ impl Database {
                 .await;
             match inserted {
                 Ok(1) => break revision,
-                Ok(_) => bail!("storage binding does not exist"),
+                Ok(_) => bail!("binding does not exist"),
                 Err(error) => {
                     if let Some(row) = self.backend.query_opt(
-                        &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM storage_binding_write_revisions WHERE storage_binding_id = ?1 AND revision_fingerprint = ?2"),
-                        &vals![input.storage_binding_id, input.revision_fingerprint],
+                        &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM binding_write_revisions WHERE binding_id = ?1 AND revision_fingerprint = ?2"),
+                        &vals![input.binding_id, input.revision_fingerprint],
                     ).await? {
-                        let existing = row_to_storage_binding_write_revision(&row)?;
+                        let existing = row_to_binding_write_revision(&row)?;
                         if matching_existing(&existing) {
                             return Ok(existing);
                         }
@@ -8206,9 +8205,9 @@ impl Database {
                     let latest: Option<i64> = self
                         .backend
                         .query_opt(
-                            "SELECT MAX(revision) FROM storage_binding_write_revisions
-                             WHERE storage_binding_id = ?1",
-                            &vals![input.storage_binding_id],
+                            "SELECT MAX(revision) FROM binding_write_revisions
+                             WHERE binding_id = ?1",
+                            &vals![input.binding_id],
                         )
                         .await?
                         .context("revision allocation query returned no row")?
@@ -8219,7 +8218,7 @@ impl Database {
                 }
             }
         };
-        self.storage_binding_write_revision(input.storage_binding_id, revision)
+        self.binding_write_revision(input.binding_id, revision)
             .await?
             .context("created binding-write revision disappeared")
     }
@@ -8229,25 +8228,23 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_write_revision(
+    pub async fn binding_write_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         revision: i64,
-    ) -> Result<Option<StorageBindingWriteRevisionRecord>> {
+    ) -> Result<Option<BindingWriteRevisionRecord>> {
         let rows = self
             .backend
             .query(
                 &format!(
                     "SELECT {BINDING_WRITE_REVISION_COLUMNS}
-                     FROM storage_binding_write_revisions
-                     WHERE storage_binding_id = ?1 AND revision = ?2"
+                     FROM binding_write_revisions
+                     WHERE binding_id = ?1 AND revision = ?2"
                 ),
-                &vals![storage_binding_id, revision],
+                &vals![binding_id, revision],
             )
             .await?;
-        rows.first()
-            .map(row_to_storage_binding_write_revision)
-            .transpose()
+        rows.first().map(row_to_binding_write_revision).transpose()
     }
 
     /// Lists immutable write revisions for one binding in ascending generation order.
@@ -8255,24 +8252,22 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_storage_binding_write_revisions(
+    pub async fn list_binding_write_revisions(
         &self,
-        storage_binding_id: i64,
-    ) -> Result<Vec<StorageBindingWriteRevisionRecord>> {
+        binding_id: i64,
+    ) -> Result<Vec<BindingWriteRevisionRecord>> {
         let rows = self
             .backend
             .query(
                 &format!(
                     "SELECT {BINDING_WRITE_REVISION_COLUMNS}
-                     FROM storage_binding_write_revisions
-                     WHERE storage_binding_id = ?1 ORDER BY revision"
+                     FROM binding_write_revisions
+                     WHERE binding_id = ?1 ORDER BY revision"
                 ),
-                &vals![storage_binding_id],
+                &vals![binding_id],
             )
             .await?;
-        rows.iter()
-            .map(row_to_storage_binding_write_revision)
-            .collect()
+        rows.iter().map(row_to_binding_write_revision).collect()
     }
 
     /// Returns the binding's default write revision for new plans.
@@ -8280,22 +8275,22 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_write_state(
+    pub async fn binding_write_state(
         &self,
-        storage_binding_id: i64,
-    ) -> Result<Option<StorageBindingWriteStateRecord>> {
+        binding_id: i64,
+    ) -> Result<Option<BindingWriteStateRecord>> {
         let row = self
             .backend
             .query_opt(
-                "SELECT storage_binding_id, current_write_revision,
+                "SELECT binding_id, current_write_revision,
                         resource_version, updated_at
-                 FROM storage_binding_write_state WHERE storage_binding_id = ?1",
-                &vals![storage_binding_id],
+                 FROM binding_write_state WHERE binding_id = ?1",
+                &vals![binding_id],
             )
             .await?;
         row.map(|row| {
-            Ok(StorageBindingWriteStateRecord {
-                storage_binding_id: row.get(0)?,
+            Ok(BindingWriteStateRecord {
+                binding_id: row.get(0)?,
                 current_write_revision: row.get(1)?,
                 resource_version: row.get(2)?,
                 updated_at: row.get(3)?,
@@ -8313,29 +8308,29 @@ impl Database {
     ///
     /// Returns an error unless the revision has a `valid` observation and the
     /// binding-write state resource version matches.
-    pub async fn set_current_storage_binding_write_revision(
+    pub async fn set_current_binding_write_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         revision: i64,
         expected_version: i64,
-    ) -> Result<StorageBindingWriteStateRecord> {
+    ) -> Result<BindingWriteStateRecord> {
         let affected = self
             .backend
             .execute(
-                "UPDATE storage_binding_write_state
+                "UPDATE binding_write_state
                  SET current_write_revision = ?2,
                      resource_version = resource_version + 1, updated_at = ?4
-                 WHERE storage_binding_id = ?1 AND resource_version = ?3
-                   AND EXISTS (SELECT 1 FROM storage_binding_write_observations o
-                     WHERE o.storage_binding_id = ?1 AND o.revision = ?2
+                 WHERE binding_id = ?1 AND resource_version = ?3
+                   AND EXISTS (SELECT 1 FROM binding_write_observations o
+                     WHERE o.binding_id = ?1 AND o.revision = ?2
                        AND o.state = 'valid')",
-                &vals![storage_binding_id, revision, expected_version, unix_now()],
+                &vals![binding_id, revision, expected_version, unix_now()],
             )
             .await?;
         if affected != 1 {
             bail!("binding-write state is stale or the revision is not valid");
         }
-        self.storage_binding_write_state(storage_binding_id)
+        self.binding_write_state(binding_id)
             .await?
             .context("binding-write state disappeared")
     }
@@ -8346,14 +8341,14 @@ impl Database {
     ///
     /// Returns an error for an invalid state/error combination, an absent
     /// revision, stale observation version, or database failure.
-    pub async fn observe_storage_binding_write_revision(
+    pub async fn observe_binding_write_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         revision: i64,
         state: &str,
         error: Option<&str>,
         expected_observation_version: Option<i64>,
-    ) -> Result<StorageBindingWriteObservationRecord> {
+    ) -> Result<BindingWriteObservationRecord> {
         if !matches!(state, "unknown" | "validating" | "valid" | "invalid") {
             bail!("invalid binding-write observation state '{state}'");
         }
@@ -8364,30 +8359,23 @@ impl Database {
         let affected = if let Some(version) = expected_observation_version {
             self.backend
                 .execute(
-                    "UPDATE storage_binding_write_observations
+                    "UPDATE binding_write_observations
                      SET state = ?4, validated_at = ?5, error = ?6,
                          observation_version = observation_version + 1
-                     WHERE storage_binding_id = ?1 AND revision = ?2
+                     WHERE binding_id = ?1 AND revision = ?2
                        AND observation_version = ?3",
-                    &vals![
-                        storage_binding_id,
-                        revision,
-                        version,
-                        state,
-                        validated_at,
-                        error
-                    ],
+                    &vals![binding_id, revision, version, state, validated_at, error],
                 )
                 .await?
         } else {
             self.backend
                 .execute(
-                    "INSERT INTO storage_binding_write_observations
-                     (storage_binding_id, revision, state, validated_at, error)
-                     SELECT storage_binding_id, revision, ?3, ?4, ?5
-                     FROM storage_binding_write_revisions
-                     WHERE storage_binding_id = ?1 AND revision = ?2",
-                    &vals![storage_binding_id, revision, state, validated_at, error],
+                    "INSERT INTO binding_write_observations
+                     (binding_id, revision, state, validated_at, error)
+                     SELECT binding_id, revision, ?3, ?4, ?5
+                     FROM binding_write_revisions
+                     WHERE binding_id = ?1 AND revision = ?2",
+                    &vals![binding_id, revision, state, validated_at, error],
                 )
                 .await?
         };
@@ -8395,10 +8383,10 @@ impl Database {
             bail!("binding-write revision is missing or its observation version is stale");
         }
         let row = self.backend.query_opt(
-            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM storage_binding_write_observations WHERE storage_binding_id = ?1 AND revision = ?2"),
-            &vals![storage_binding_id, revision],
+            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM binding_write_observations WHERE binding_id = ?1 AND revision = ?2"),
+            &vals![binding_id, revision],
         ).await?.context("binding-write observation disappeared")?;
-        row_to_storage_binding_write_observation(&row)
+        row_to_binding_write_observation(&row)
     }
 
     /// Returns the controller observation for one binding-write revision.
@@ -8406,16 +8394,16 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_write_observation(
+    pub async fn binding_write_observation(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         revision: i64,
-    ) -> Result<Option<StorageBindingWriteObservationRecord>> {
+    ) -> Result<Option<BindingWriteObservationRecord>> {
         let row = self.backend.query_opt(
-            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM storage_binding_write_observations WHERE storage_binding_id = ?1 AND revision = ?2"),
-            &vals![storage_binding_id, revision],
+            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM binding_write_observations WHERE binding_id = ?1 AND revision = ?2"),
+            &vals![binding_id, revision],
         ).await?;
-        row.map(|row| row_to_storage_binding_write_observation(&row))
+        row.map(|row| row_to_binding_write_observation(&row))
             .transpose()
     }
 
@@ -8423,7 +8411,7 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error unless the placement's current storage binding and
+    /// Returns an error unless the placement's current binding and
     /// write-spec version match the requested immutable revision.
     pub async fn bind_surface_placement_write_capability(
         &self,
@@ -8434,12 +8422,12 @@ impl Database {
             .backend
             .execute(
                 "INSERT INTO surface_placement_write_capabilities
-             (placement_id, placement_write_spec_version, storage_binding_id,
+             (placement_id, placement_write_spec_version, binding_id,
               binding_write_revision, created_at)
-             SELECT p.id, p.write_spec_version, p.storage_binding_id, r.revision, ?3
+             SELECT p.id, p.write_spec_version, p.binding_id, r.revision, ?3
              FROM surface_placements p
-             JOIN storage_binding_write_revisions r
-               ON r.storage_binding_id = p.storage_binding_id AND r.revision = ?2
+             JOIN binding_write_revisions r
+               ON r.binding_id = p.binding_id AND r.revision = ?2
              WHERE p.id = ?1
                AND NOT EXISTS (SELECT 1 FROM surface_placement_write_capabilities existing
                  WHERE existing.placement_id = p.id
@@ -8899,11 +8887,11 @@ impl Database {
                ON pc.placement_id = p.id
               AND pc.placement_write_spec_version = p.write_spec_version
               AND pc.binding_write_revision = ?7
-             JOIN storage_binding_write_revisions br
-               ON br.storage_binding_id = pc.storage_binding_id
+             JOIN binding_write_revisions br
+               ON br.binding_id = pc.binding_id
               AND br.revision = pc.binding_write_revision
-             JOIN storage_binding_write_observations bo
-               ON bo.storage_binding_id = br.storage_binding_id
+             JOIN binding_write_observations bo
+               ON bo.binding_id = br.binding_id
               AND bo.revision = br.revision
              WHERE p.id = ?4 AND (p.registry_id = ?1 OR p.cache_id = ?2)
                AND p.resource_version = ?5 AND p.write_spec_version = ?6
@@ -9017,11 +9005,11 @@ impl Database {
                    ON pc.placement_id = p.id
                   AND pc.placement_write_spec_version = p.write_spec_version
                   AND pc.binding_write_revision = ?7
-                 JOIN storage_binding_write_revisions br
-                   ON br.storage_binding_id = pc.storage_binding_id
+                 JOIN binding_write_revisions br
+                   ON br.binding_id = pc.binding_id
                   AND br.revision = pc.binding_write_revision
-                 JOIN storage_binding_write_observations bo
-                   ON bo.storage_binding_id = br.storage_binding_id
+                 JOIN binding_write_observations bo
+                   ON bo.binding_id = br.binding_id
                   AND bo.revision = br.revision
                  WHERE p.id = ?5
                    AND p.write_spec_version = ?6
@@ -9109,11 +9097,11 @@ impl Database {
                    ON pc.placement_id = p.id
                   AND pc.placement_write_spec_version = p.write_spec_version
                   AND pc.binding_write_revision = surface_write_authorities.desired_binding_write_revision
-                 JOIN storage_binding_write_revisions br
-                   ON br.storage_binding_id = pc.storage_binding_id
+                 JOIN binding_write_revisions br
+                   ON br.binding_id = pc.binding_id
                   AND br.revision = pc.binding_write_revision
-                 JOIN storage_binding_write_observations bo
-                   ON bo.storage_binding_id = br.storage_binding_id
+                 JOIN binding_write_observations bo
+                   ON bo.binding_id = br.binding_id
                   AND bo.revision = br.revision
                  WHERE p.id = surface_write_authorities.desired_placement_id
                    AND p.write_spec_version = surface_write_authorities.desired_write_spec_version
@@ -9249,11 +9237,11 @@ impl Database {
                    ON pc.placement_id = p.id
                   AND pc.placement_write_spec_version = p.write_spec_version
                   AND pc.binding_write_revision = surface_write_authorities.observed_binding_write_revision
-                 JOIN storage_binding_write_revisions br
-                   ON br.storage_binding_id = pc.storage_binding_id
+                 JOIN binding_write_revisions br
+                   ON br.binding_id = pc.binding_id
                   AND br.revision = pc.binding_write_revision
-                 JOIN storage_binding_write_observations bo
-                   ON bo.storage_binding_id = br.storage_binding_id
+                 JOIN binding_write_observations bo
+                   ON bo.binding_id = br.binding_id
                   AND bo.revision = br.revision
                  WHERE p.id = surface_write_authorities.observed_placement_id
                    AND p.write_spec_version = surface_write_authorities.observed_write_spec_version
@@ -9331,7 +9319,7 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn surface_write_authorities_using_binding_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         binding_write_revision: i64,
     ) -> Result<Vec<SurfaceWriteAuthorityRecord>> {
         let rows = self
@@ -9341,13 +9329,13 @@ impl Database {
                     "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities a
                  WHERE (a.desired_binding_write_revision = ?2
                     AND EXISTS (SELECT 1 FROM surface_placements p
-                      WHERE p.id = a.desired_placement_id AND p.storage_binding_id = ?1))
+                      WHERE p.id = a.desired_placement_id AND p.binding_id = ?1))
                     OR (a.observed_binding_write_revision = ?2
                     AND EXISTS (SELECT 1 FROM surface_placements p
-                      WHERE p.id = a.observed_placement_id AND p.storage_binding_id = ?1))
+                      WHERE p.id = a.observed_placement_id AND p.binding_id = ?1))
                  ORDER BY a.id"
                 ),
-                &vals![storage_binding_id, binding_write_revision],
+                &vals![binding_id, binding_write_revision],
             )
             .await?;
         rows.iter().map(row_to_surface_write_authority).collect()
@@ -9363,20 +9351,20 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on a remaining authority/current-pointer pin or database failure.
-    pub async fn retire_storage_binding_write_revision(
+    pub async fn retire_binding_write_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         revision: i64,
     ) -> Result<bool> {
         if !self
-            .surface_write_authorities_using_binding_revision(storage_binding_id, revision)
+            .surface_write_authorities_using_binding_revision(binding_id, revision)
             .await?
             .is_empty()
         {
             bail!("binding-write revision remains pinned by surface authority");
         }
         if self
-            .storage_binding_write_state(storage_binding_id)
+            .binding_write_state(binding_id)
             .await?
             .is_some_and(|state| state.current_write_revision == Some(revision))
         {
@@ -9386,20 +9374,20 @@ impl Database {
             .batch(&[
                 Statement::new(
                     "DELETE FROM surface_placement_write_capabilities
-                     WHERE storage_binding_id = ?1 AND binding_write_revision = ?2",
-                    vals![storage_binding_id, revision].to_vec(),
+                     WHERE binding_id = ?1 AND binding_write_revision = ?2",
+                    vals![binding_id, revision].to_vec(),
                 ),
                 Statement::new(
-                    "DELETE FROM storage_binding_write_revisions
-                     WHERE storage_binding_id = ?1 AND revision = ?2
-                       AND NOT EXISTS (SELECT 1 FROM storage_binding_write_state s
-                         WHERE s.storage_binding_id = ?1 AND s.current_write_revision = ?2)",
-                    vals![storage_binding_id, revision].to_vec(),
+                    "DELETE FROM binding_write_revisions
+                     WHERE binding_id = ?1 AND revision = ?2
+                       AND NOT EXISTS (SELECT 1 FROM binding_write_state s
+                         WHERE s.binding_id = ?1 AND s.current_write_revision = ?2)",
+                    vals![binding_id, revision].to_vec(),
                 ),
             ])
             .await?;
         Ok(self
-            .storage_binding_write_revision(storage_binding_id, revision)
+            .binding_write_revision(binding_id, revision)
             .await?
             .is_none())
     }
@@ -9439,7 +9427,7 @@ impl Database {
             .backend
             .execute(
                 "INSERT INTO surface_placements
-                (registry_id, cache_id, name, storage_binding_id,
+                (registry_id, cache_id, name, binding_id,
                  consumer_scope_key, binding_grant_generation, binding_grant_state,
                  prefix, kind,
                  desired_state, desired_read_enabled, read_order,
@@ -9447,18 +9435,18 @@ impl Database {
                  requires_conditional_writes, created_at, updated_at)
              SELECT ?1, ?2, ?3, b.id, g.consumer_scope_key, g.grant_generation, g.state,
                     ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?13, ?13
-             FROM storage_bindings b
+             FROM bindings b
              LEFT JOIN registries r ON r.id = ?1
              LEFT JOIN binary_caches c ON c.id = ?2
-             JOIN storage_binding_consumer_scopes g
-               ON g.storage_binding_id = b.id
+             JOIN binding_consumer_scopes g
+               ON g.binding_id = b.id
               AND g.consumer_scope_key = COALESCE(r.owner_scope_key, c.owner_scope_key)
               AND g.state = 'active'
              WHERE b.id = ?4
                AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
                  OR (?2 IS NOT NULL AND c.id IS NOT NULL))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
-                 WHERE existing.storage_binding_id = b.id
+                 WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
                      OR existing.prefix = ?5
                      OR substr(existing.prefix, 1, length(?5) + 1) = ?5 || '/'
@@ -9467,7 +9455,7 @@ impl Database {
                     registry_id,
                     cache_id,
                     input.name,
-                    input.storage_binding_id,
+                    input.binding_id,
                     prefix,
                     input.kind,
                     input.desired_state,
@@ -9502,20 +9490,20 @@ impl Database {
                     .backend
                     .query_opt(
                         "SELECT 1 FROM surface_placements existing
-                         WHERE existing.storage_binding_id = ?1
+                         WHERE existing.binding_id = ?1
                            AND (existing.prefix = '' OR ?2 = ''
                              OR existing.prefix = ?2
                              OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
                              OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
                          LIMIT 1",
-                        &vals![input.storage_binding_id, prefix],
+                        &vals![input.binding_id, prefix],
                     )
                     .await?
                     .is_some()
                 {
                     return Err(SurfacePlacementCreateFailure::new(
                         SurfacePlacementCreateFailureKind::Conflict,
-                        "storage binding prefix overlaps another placement namespace",
+                        "binding prefix overlaps another placement namespace",
                     )
                     .into());
                 }
@@ -9527,31 +9515,31 @@ impl Database {
                 .backend
                 .query_opt(
                     "SELECT 1 FROM surface_placements existing
-                     WHERE existing.storage_binding_id = ?1
+                     WHERE existing.binding_id = ?1
                        AND (existing.prefix = '' OR ?2 = ''
                          OR existing.prefix = ?2
                          OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
                          OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
                      LIMIT 1",
-                    &vals![input.storage_binding_id, prefix],
+                    &vals![input.binding_id, prefix],
                 )
                 .await?
                 .is_some()
             {
                 return Err(SurfacePlacementCreateFailure::new(
                     SurfacePlacementCreateFailureKind::Conflict,
-                    "storage binding prefix overlaps another placement namespace",
+                    "binding prefix overlaps another placement namespace",
                 )
                 .into());
             }
             return Err(SurfacePlacementCreateFailure::new(
                 SurfacePlacementCreateFailureKind::InvalidArgument,
-                "surface and storage binding must exist in a compatible scope",
+                "surface and binding must exist in a compatible scope",
             )
             .into());
         }
         let placement = self
-            .surface_placement_at(input.storage_binding_id, &prefix)
+            .surface_placement_at(input.binding_id, &prefix)
             .await?
             .context("created placement disappeared")?;
         self.backend
@@ -9604,7 +9592,7 @@ impl Database {
         binding_id: i64,
         prefix: &str,
     ) -> Result<Option<SurfacePlacementRecord>> {
-        let rows = self.backend.query(&format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective WHERE storage_binding_id = ?1 AND prefix = ?2"), &vals![binding_id, prefix]).await?;
+        let rows = self.backend.query(&format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective WHERE binding_id = ?1 AND prefix = ?2"), &vals![binding_id, prefix]).await?;
         rows.first().map(row_to_surface_placement).transpose()
     }
 
@@ -9655,14 +9643,14 @@ impl Database {
                        AND p.completeness = 'complete'
                        AND EXISTS (
                          SELECT 1 FROM surface_placement_write_capabilities capability
-                         JOIN storage_binding_write_revisions revision
-                           ON revision.storage_binding_id = capability.storage_binding_id
+                         JOIN binding_write_revisions revision
+                           ON revision.binding_id = capability.binding_id
                           AND revision.revision = capability.binding_write_revision
-                         JOIN storage_binding_write_observations observation
-                           ON observation.storage_binding_id = revision.storage_binding_id
+                         JOIN binding_write_observations observation
+                           ON observation.binding_id = revision.binding_id
                           AND observation.revision = revision.revision
-                         JOIN storage_binding_credential_revisions credential
-                           ON credential.storage_binding_id = revision.storage_binding_id
+                         JOIN binding_credential_revisions credential
+                           ON credential.binding_id = revision.binding_id
                           AND credential.purpose = revision.write_credential_purpose
                           AND credential.generation = revision.write_credential_generation
                          WHERE capability.placement_id = p.id
@@ -9688,10 +9676,10 @@ impl Database {
     pub async fn placement_publication_write_revision(
         &self,
         placement_id: i64,
-    ) -> Result<Option<StorageBindingWriteRevisionRecord>> {
+    ) -> Result<Option<BindingWriteRevisionRecord>> {
         self.backend
             .query_opt(
-                "SELECT revision.storage_binding_id, revision.revision,
+                "SELECT revision.binding_id, revision.revision,
                             revision.write_credential_version_ref,
                             revision.write_credential_purpose,
                             revision.write_credential_generation,
@@ -9703,14 +9691,14 @@ impl Database {
                      JOIN surface_placement_write_capabilities capability
                        ON capability.placement_id = placement.id
                       AND capability.placement_write_spec_version = placement.write_spec_version
-                     JOIN storage_binding_write_revisions revision
-                       ON revision.storage_binding_id = capability.storage_binding_id
+                     JOIN binding_write_revisions revision
+                       ON revision.binding_id = capability.binding_id
                       AND revision.revision = capability.binding_write_revision
-                     JOIN storage_binding_write_observations observation
-                       ON observation.storage_binding_id = revision.storage_binding_id
+                     JOIN binding_write_observations observation
+                       ON observation.binding_id = revision.binding_id
                       AND observation.revision = revision.revision
-                     JOIN storage_binding_credential_revisions credential
-                       ON credential.storage_binding_id = revision.storage_binding_id
+                     JOIN binding_credential_revisions credential
+                       ON credential.binding_id = revision.binding_id
                       AND credential.purpose = revision.write_credential_purpose
                       AND credential.generation = revision.write_credential_generation
                      WHERE placement.id = ?1 AND placement.kind = 'complete'
@@ -9724,7 +9712,7 @@ impl Database {
                 &vals![placement_id],
             )
             .await?
-            .map(|row| row_to_storage_binding_write_revision(&row))
+            .map(|row| row_to_binding_write_revision(&row))
             .transpose()
     }
 
@@ -9743,9 +9731,9 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT
-                   EXISTS (SELECT 1 FROM delivery_routes WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM routes WHERE placement_id = ?1),
                    EXISTS (
-                     SELECT 1 FROM delivery_routes r WHERE r.placement_policy_revision_id IN (
+                     SELECT 1 FROM routes r WHERE r.placement_policy_revision_id IN (
                        SELECT policy_revision_id FROM placement_policy_complete_members
                          WHERE placement_id = ?1
                        UNION ALL
@@ -9966,7 +9954,7 @@ impl Database {
                    ON backend.upload_id = upload.upload_id
                  WHERE backend.placement_id = ?1 AND upload.active_object_slot = 1)
                AND NOT EXISTS (
-                 SELECT 1 FROM delivery_routes r
+                 SELECT 1 FROM routes r
                  WHERE r.placement_id = ?1 OR r.placement_policy_revision_id IN (
                    SELECT policy_revision_id FROM placement_policy_complete_members
                      WHERE placement_id = ?1
@@ -11122,11 +11110,11 @@ impl Database {
                      WHERE id = ?1 AND resource_version = ?2",
                     vals![id, requested.generation_key],
                 )),
-                NewTopologyOperationTargetRef::DeliveryRoute(id) => Some(Statement::new(
-                    "UPDATE delivery_routes SET updated_at = updated_at
+                NewTopologyOperationTargetRef::Route(id) => Some(Statement::new(
+                    "UPDATE routes SET updated_at = updated_at
                      WHERE id = ?1 AND EXISTS (
-                       SELECT 1 FROM delivery_route_heads
-                       WHERE delivery_route_id = ?1
+                       SELECT 1 FROM route_heads
+                       WHERE route_id = ?1
                          AND configuration_generation = ?2
                          AND configuration_digest = ?3)",
                     vals![id, requested.generation_key, requested.configuration_digest],
@@ -11182,29 +11170,29 @@ impl Database {
                     "stable_id = ?7 AND resource_version = ?8",
                     vals![id, requested.generation_key],
                 ),
-                NewTopologyOperationTargetRef::NetworkBoundary(id) => (
-                    "network_boundary_revisions",
+                NewTopologyOperationTargetRef::NetworkPolicy(id) => (
+                    "network_policy_revisions",
                     "boundary_id = ?7 AND revision = ?8 AND content_digest = ?9",
                     vals![id, requested.generation_key, requested.configuration_digest],
                 ),
-                NewTopologyOperationTargetRef::DeliveryEndpoint(id) => (
-                    "delivery_endpoint_revisions",
+                NewTopologyOperationTargetRef::Endpoint(id) => (
+                    "endpoint_revisions",
                     "endpoint_id = ?7 AND generation = ?8 AND content_digest = ?9",
                     vals![id, requested.generation_key, requested.configuration_digest],
                 ),
-                NewTopologyOperationTargetRef::StorageGateway(id) => (
-                    "storage_gateway_revisions",
+                NewTopologyOperationTargetRef::Gateway(id) => (
+                    "gateway_revisions",
                     "gateway_id = ?7 AND generation = ?8 AND content_digest = ?9",
                     vals![id, requested.generation_key, requested.configuration_digest],
                 ),
-                NewTopologyOperationTargetRef::DeliveryRoute(id) => (
-                    "delivery_route_heads",
-                    "delivery_route_id = ?7 AND configuration_generation = ?8
+                NewTopologyOperationTargetRef::Route(id) => (
+                    "route_heads",
+                    "route_id = ?7 AND configuration_generation = ?8
                          AND configuration_digest = ?9",
                     vals![id, requested.generation_key, requested.configuration_digest],
                 ),
-                NewTopologyOperationTargetRef::StorageBinding(id) => (
-                    "storage_bindings",
+                NewTopologyOperationTargetRef::Binding(id) => (
+                    "bindings",
                     "id = ?7 AND resource_version = ?8",
                     vals![id, requested.generation_key],
                 ),
@@ -11362,11 +11350,11 @@ impl Database {
                 }
                 ("domain", id.clone(), row.get(0)?)
             }
-            NewTopologyOperationTargetRef::NetworkBoundary(id) => {
+            NewTopologyOperationTargetRef::NetworkPolicy(id) => {
                 let row = self
                     .backend
                     .query_opt(
-                        "SELECT owner_scope_key FROM network_boundaries WHERE id = ?1",
+                        "SELECT owner_scope_key FROM network_policies WHERE id = ?1",
                         &vals![id],
                     )
                     .await?
@@ -11374,7 +11362,7 @@ impl Database {
                 let revision = self
                     .backend
                     .query_opt(
-                        "SELECT content_digest FROM network_boundary_revisions
+                        "SELECT content_digest FROM network_policy_revisions
                          WHERE boundary_id = ?1 AND revision = ?2",
                         &vals![id, target.generation_key],
                     )
@@ -11384,13 +11372,13 @@ impl Database {
                 if target.configuration_digest != digest {
                     bail!("operation boundary revision digest is stale");
                 }
-                ("network_boundary", id.clone(), row.get(0)?)
+                ("network_policy", id.clone(), row.get(0)?)
             }
-            NewTopologyOperationTargetRef::DeliveryEndpoint(id) => {
+            NewTopologyOperationTargetRef::Endpoint(id) => {
                 let row = self
                     .backend
                     .query_opt(
-                        "SELECT owner_scope_key FROM delivery_endpoints WHERE id = ?1",
+                        "SELECT owner_scope_key FROM endpoints WHERE id = ?1",
                         &vals![id],
                     )
                     .await?
@@ -11398,7 +11386,7 @@ impl Database {
                 let revision = self
                     .backend
                     .query_opt(
-                        "SELECT content_digest FROM delivery_endpoint_revisions
+                        "SELECT content_digest FROM endpoint_revisions
                          WHERE endpoint_id = ?1 AND generation = ?2",
                         &vals![id, target.generation_key],
                     )
@@ -11408,13 +11396,13 @@ impl Database {
                 if target.configuration_digest != digest {
                     bail!("operation endpoint generation digest is stale");
                 }
-                ("delivery_endpoint", id.clone(), row.get(0)?)
+                ("endpoint", id.clone(), row.get(0)?)
             }
-            NewTopologyOperationTargetRef::StorageGateway(id) => {
+            NewTopologyOperationTargetRef::Gateway(id) => {
                 let row = self
                     .backend
                     .query_opt(
-                        "SELECT owner_scope_key FROM storage_gateways WHERE id = ?1",
+                        "SELECT owner_scope_key FROM gateways WHERE id = ?1",
                         &vals![id],
                     )
                     .await?
@@ -11422,7 +11410,7 @@ impl Database {
                 let revision = self
                     .backend
                     .query_opt(
-                        "SELECT content_digest FROM storage_gateway_revisions
+                        "SELECT content_digest FROM gateway_revisions
                          WHERE gateway_id = ?1 AND generation = ?2",
                         &vals![id, target.generation_key],
                     )
@@ -11432,16 +11420,16 @@ impl Database {
                 if target.configuration_digest != digest {
                     bail!("operation gateway generation digest is stale");
                 }
-                ("storage_gateway", id.clone(), row.get(0)?)
+                ("gateway", id.clone(), row.get(0)?)
             }
-            NewTopologyOperationTargetRef::DeliveryRoute(id) => {
+            NewTopologyOperationTargetRef::Route(id) => {
                 let row = self
                     .backend
                     .query_opt(
                         "SELECT e.owner_scope_key, h.configuration_generation,
-                           h.configuration_digest FROM delivery_routes r
-                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
-                     JOIN delivery_route_heads h ON h.delivery_route_id = r.id
+                           h.configuration_digest FROM routes r
+                     JOIN endpoints e ON e.id = r.endpoint_id
+                     JOIN route_heads h ON h.route_id = r.id
                      WHERE r.id = ?1",
                         &vals![id],
                     )
@@ -11452,14 +11440,14 @@ impl Database {
                 if target.generation_key != generation || target.configuration_digest != digest {
                     bail!("operation delivery-route configuration target is stale");
                 }
-                ("delivery_route", id.clone(), row.get(0)?)
+                ("route", id.clone(), row.get(0)?)
             }
-            NewTopologyOperationTargetRef::StorageBinding(id) => {
+            NewTopologyOperationTargetRef::Binding(id) => {
                 let row = self
                     .backend
                     .query_opt(
                         "SELECT stable_id, owner_scope_key, resource_version
-                         FROM storage_bindings WHERE id = ?1",
+                         FROM bindings WHERE id = ?1",
                         &vals![id],
                     )
                     .await?
@@ -11470,7 +11458,7 @@ impl Database {
                 {
                     bail!("operation storage-binding target version is stale");
                 }
-                ("storage_binding", row.get(0)?, row.get(1)?)
+                ("binding", row.get(0)?, row.get(1)?)
             }
         };
         Ok((target.target.clone(), kind.to_owned(), stable_id, scope))
@@ -11567,7 +11555,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn due_delivery_route_probe_operations(
+    pub async fn due_route_probe_operations(
         &self,
         stale_before: i64,
         limit: usize,
@@ -11579,7 +11567,7 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations o
-                     WHERE o.operation_kind = 'delivery_route_probe'
+                     WHERE o.operation_kind = 'route_probe'
                        AND (o.state = 'pending'
                          OR (o.state = 'running' AND o.started_at <= ?1))
                      ORDER BY o.created_at, o.operation_id LIMIT ?2"
@@ -11627,7 +11615,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn due_network_boundary_coordination_operations(
+    pub async fn due_network_policy_coordination_operations(
         &self,
         stale_before: i64,
         limit: usize,
@@ -11639,7 +11627,7 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations o
-                     WHERE o.operation_kind = 'network_boundary_coordinated_activation'
+                     WHERE o.operation_kind = 'network_policy_coordinated_activation'
                        AND (o.state = 'pending'
                          OR (o.state = 'running' AND o.started_at <= ?1))
                      ORDER BY o.created_at, o.operation_id LIMIT ?2"
@@ -11734,15 +11722,13 @@ impl Database {
             "registry" => "SELECT scope_key FROM registries WHERE stable_id = ?1",
             "binary_cache" => "SELECT scope_key FROM binary_caches WHERE stable_id = ?1",
             "domain" => "SELECT owner_scope_key FROM domains WHERE stable_id = ?1",
-            "network_boundary" => "SELECT owner_scope_key FROM network_boundaries WHERE id = ?1",
-            "delivery_endpoint" => "SELECT owner_scope_key FROM delivery_endpoints WHERE id = ?1",
-            "storage_gateway" => "SELECT owner_scope_key FROM storage_gateways WHERE id = ?1",
-            "storage_binding" => {
-                "SELECT owner_scope_key FROM storage_bindings WHERE stable_id = ?1"
-            }
-            "delivery_route" => {
-                "SELECT endpoint.owner_scope_key FROM delivery_routes route
-                   JOIN delivery_endpoints endpoint ON endpoint.id = route.endpoint_id
+            "network_policy" => "SELECT owner_scope_key FROM network_policies WHERE id = ?1",
+            "endpoint" => "SELECT owner_scope_key FROM endpoints WHERE id = ?1",
+            "gateway" => "SELECT owner_scope_key FROM gateways WHERE id = ?1",
+            "binding" => "SELECT owner_scope_key FROM bindings WHERE stable_id = ?1",
+            "route" => {
+                "SELECT endpoint.owner_scope_key FROM routes route
+                   JOIN endpoints endpoint ON endpoint.id = route.endpoint_id
                   WHERE route.id = ?1"
             }
             "placement_policy" => {
@@ -12387,7 +12373,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for an invalid lease or database failure.
-    pub async fn claim_delivery_route_probe_operation(
+    pub async fn claim_route_probe_operation(
         &self,
         operation_id: &str,
         expected_version: i64,
@@ -12402,7 +12388,7 @@ impl Database {
             .execute(
                 "UPDATE topology_operations SET state = 'running', started_at = ?3,
                    finished_at = NULL, error = NULL, resource_version = resource_version + 1
-                 WHERE operation_id = ?1 AND operation_kind = 'delivery_route_probe'
+                 WHERE operation_id = ?1 AND operation_kind = 'route_probe'
                    AND resource_version = ?2
                    AND (state = 'pending' OR (state = 'running' AND started_at <= ?4))",
                 &vals![operation_id, expected_version, now, now - lease_seconds],
@@ -12451,7 +12437,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for an invalid lease or database failure.
-    pub async fn claim_network_boundary_coordination_operation(
+    pub async fn claim_network_policy_coordination_operation(
         &self,
         operation_id: &str,
         expected_version: i64,
@@ -12467,7 +12453,7 @@ impl Database {
                 "UPDATE topology_operations SET state = 'running', started_at = ?3,
                  finished_at = NULL, error = NULL, resource_version = resource_version + 1
                  WHERE operation_id = ?1
-                   AND operation_kind = 'network_boundary_coordinated_activation'
+                   AND operation_kind = 'network_policy_coordinated_activation'
                    AND resource_version = ?2
                    AND (state = 'pending' OR (state = 'running' AND started_at <= ?4))",
                 &vals![operation_id, expected_version, now, now - lease_seconds],
@@ -12517,13 +12503,13 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn count_live_network_boundary_pins(&self, pin_ids: &[String]) -> Result<i64> {
+    pub async fn count_live_network_policy_pins(&self, pin_ids: &[String]) -> Result<i64> {
         let mut live = 0_i64;
         for pin_id in pin_ids {
             if self
                 .backend
                 .query_opt(
-                    "SELECT 1 FROM network_boundary_serving_pins WHERE pin_id = ?1",
+                    "SELECT 1 FROM network_policy_serving_pins WHERE pin_id = ?1",
                     &vals![pin_id],
                 )
                 .await?
@@ -14293,7 +14279,7 @@ impl Database {
                 )
                 .unchecked(),
                 Statement::new(
-                    "INSERT INTO network_boundary_consumer_scopes
+                    "INSERT INTO network_policy_consumer_scopes
                      (boundary_id, consumer_scope_key, grant_generation, grant_kind,
                       state, granted_by, granted_at, resource_version)
                      VALUES ('instance:public', ?1, 1, 'instance_default',
@@ -14302,12 +14288,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation, grant_kind,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
                       state, granted_by, granted_at, resource_version)
                      SELECT id, ?1, 1, 'instance_default', 'active',
                             'system:org-create', ?2, 1
-                     FROM storage_bindings WHERE is_instance_default = 1",
+                     FROM bindings WHERE is_instance_default = 1",
                     vals![consumer_scope_key, now],
                 )
                 .unchecked(),
@@ -14316,7 +14302,7 @@ impl Database {
                      (event_id, resource_kind, resource_stable_id, resource_generation_key,
                       consumer_scope_key, grant_generation, transition, previous_state,
                       resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_boundary', 'instance:public', 0, ?2, 1,
+                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
                        'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
                     vals![
                         event_id,
@@ -14383,7 +14369,7 @@ impl Database {
                 )
                 .unchecked(),
                 Statement::new(
-                    "INSERT INTO network_boundary_consumer_scopes
+                    "INSERT INTO network_policy_consumer_scopes
                      (boundary_id, consumer_scope_key, grant_generation, grant_kind,
                       state, granted_by, granted_at, resource_version)
                      VALUES ('instance:public', ?1, 1, 'instance_default',
@@ -14392,12 +14378,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                     (storage_binding_id, consumer_scope_key, grant_generation, grant_kind,
+                    "INSERT INTO binding_consumer_scopes
+                     (binding_id, consumer_scope_key, grant_generation, grant_kind,
                       state, granted_by, granted_at, resource_version)
                      SELECT id, ?1, 1, 'instance_default', 'active',
                             'system:org-create', ?2, 1
-                     FROM storage_bindings WHERE is_instance_default = 1",
+                     FROM bindings WHERE is_instance_default = 1",
                     vals![consumer_scope_key, now],
                 )
                 .unchecked(),
@@ -14406,7 +14392,7 @@ impl Database {
                      (event_id, resource_kind, resource_stable_id, resource_generation_key,
                       consumer_scope_key, grant_generation, transition, previous_state,
                       resulting_state, actor_id, occurred_at, request_id)
-                     VALUES (?1, 'network_boundary', 'instance:public', 0, ?2, 1,
+                     VALUES (?1, 'network_policy', 'instance:public', 0, ?2, 1,
                        'granted', NULL, 'active', 'system:org-create', ?3, ?4)",
                     vals![event_id, consumer_scope_key, now, plan_id],
                 )
@@ -16640,13 +16626,13 @@ impl Database {
         Ok(true)
     }
 
-    /// Creates one final-topology storage binding with a caller-chosen stable identity.
+    /// Creates one final-topology binding with a caller-chosen stable identity.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid identity/spec fields, uniqueness conflicts,
     /// or database failure.
-    pub async fn create_topology_storage_binding(
+    pub async fn create_topology_binding(
         &self,
         org_id: Option<i64>,
         stable_id: &str,
@@ -16663,26 +16649,26 @@ impl Database {
         signing_region: Option<&str>,
         access_mode: Option<&str>,
     ) -> Result<i64> {
-        validate_key_bytes(stable_id, "storage binding stable id", 64)?;
-        validate_key_bytes(owner_scope_key, "storage binding owner scope", 64)?;
-        validate_key_bytes(name, "storage binding name", 128)?;
+        validate_key_bytes(stable_id, "binding stable id", 64)?;
+        validate_key_bytes(owner_scope_key, "binding owner scope", 64)?;
+        validate_key_bytes(name, "binding name", 128)?;
         crate::binding::BindingKind::parse(kind)
-            .context("storage binding kind must be local_fs, s3, r2, or deployment_r2")?;
+            .context("binding kind must be local_fs, s3, r2, or deployment_r2")?;
         if org_id.is_some() && matches!(kind, "local_fs" | "deployment_r2") {
-            bail!("organization storage bindings must use an external s3 or r2 provider");
+            bail!("organization bindings must use an external s3 or r2 provider");
         }
         let is_instance_default = org_id.is_none();
         if is_instance_default != (owner_scope_key == "instance") {
             anyhow::bail!(
-                "instance storage bindings must own the instance scope and organization bindings must not"
+                "instance bindings must own the instance scope and organization bindings must not"
             );
         }
         let now = unix_now();
-        let id = self.max_id("storage_bindings").await? + 1;
+        let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
         let mut statements = vec![
             Statement::new(
-                "INSERT INTO storage_bindings
+                "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
                   stable_id, owner_scope_key, local_root_path,
                   object_bucket, object_prefix, endpoint_scheme, endpoint_host_kind,
@@ -16713,8 +16699,8 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
-                "INSERT INTO storage_binding_consumer_scopes
-                 (storage_binding_id, consumer_scope_key, grant_generation, grant_kind,
+                "INSERT INTO binding_consumer_scopes
+                 (binding_id, consumer_scope_key, grant_generation, grant_kind,
                   state, granted_by, granted_at, resource_version)
                  VALUES (?1, ?2, 1, 'owner', 'active', 'system:binding-create', ?3, 1)",
                 vals![id, owner_scope_key, now],
@@ -16724,8 +16710,8 @@ impl Database {
         if is_instance_default {
             statements.push(
                 Statement::new(
-                    "INSERT INTO storage_binding_consumer_scopes
-                 (storage_binding_id, consumer_scope_key, grant_generation, grant_kind,
+                    "INSERT INTO binding_consumer_scopes
+                 (binding_id, consumer_scope_key, grant_generation, grant_kind,
                   state, granted_by, granted_at, resource_version)
                  SELECT ?1, stable_id, 1, 'instance_default', 'active',
                         'system:binding-create', ?2, 1
@@ -16739,26 +16725,23 @@ impl Database {
         Ok(id)
     }
 
-    /// Looks up a storage binding by stable API identity.
+    /// Looks up a binding by stable API identity.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_by_stable_id(
-        &self,
-        stable_id: &str,
-    ) -> Result<Option<StorageBindingRecord>> {
+    pub async fn binding_by_stable_id(&self, stable_id: &str) -> Result<Option<BindingRecord>> {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-                 FROM storage_bindings WHERE stable_id = ?1",
+                 FROM bindings WHERE stable_id = ?1",
                 &vals![stable_id],
             )
             .await?
-            .map(|row| row_to_storage_binding(&row))
+            .map(|row| row_to_binding(&row))
             .transpose()
     }
 
@@ -16774,12 +16757,12 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT defaults.scope_key, binding.stable_id, domain.stable_id,
-                   defaults.delivery_endpoint_id, defaults.delivery_endpoint_generation,
-                   defaults.storage_gateway_id, defaults.storage_gateway_generation,
+                   defaults.endpoint_id, defaults.endpoint_generation,
+                   defaults.gateway_id, defaults.gateway_generation,
                    defaults.resource_version
                  FROM topology_defaults defaults
-                 LEFT JOIN storage_bindings binding
-                   ON binding.id = defaults.storage_binding_id
+                 LEFT JOIN bindings binding
+                   ON binding.id = defaults.binding_id
                  LEFT JOIN domains domain ON domain.id = defaults.domain_id
                  WHERE defaults.scope_key = ?1",
                 &vals![scope_key],
@@ -16788,12 +16771,12 @@ impl Database {
             .map(|row| {
                 Ok(StableTopologyDefaultsRecord {
                     scope_key: row.get(0)?,
-                    storage_binding_id: row.get(1)?,
+                    binding_id: row.get(1)?,
                     domain_id: row.get(2)?,
-                    delivery_endpoint_id: row.get(3)?,
-                    delivery_endpoint_generation: row.get(4)?,
-                    storage_gateway_id: row.get(5)?,
-                    storage_gateway_generation: row.get(6)?,
+                    endpoint_id: row.get(3)?,
+                    endpoint_generation: row.get(4)?,
+                    gateway_id: row.get(5)?,
+                    gateway_generation: row.get(6)?,
                     resource_version: row.get(7)?,
                 })
             })
@@ -16817,12 +16800,12 @@ impl Database {
         scope_kind: &str,
         org_id: Option<i64>,
         scope_key: &str,
-        storage_binding_stable_id: Option<&str>,
+        binding_stable_id: Option<&str>,
         domain_stable_id: Option<&str>,
-        delivery_endpoint_id: Option<&str>,
-        delivery_endpoint_generation: Option<i64>,
-        storage_gateway_id: Option<&str>,
-        storage_gateway_generation: Option<i64>,
+        endpoint_id: Option<&str>,
+        endpoint_generation: Option<i64>,
+        gateway_id: Option<&str>,
+        gateway_generation: Option<i64>,
         expected_resource_version: Option<i64>,
     ) -> Result<StableTopologyDefaultsRecord> {
         let valid_scope_shape = match (scope_kind, org_id) {
@@ -16835,19 +16818,19 @@ impl Database {
         if !valid_scope_shape {
             bail!("topology defaults have an invalid scope shape");
         }
-        if delivery_endpoint_id.is_some() != delivery_endpoint_generation.is_some()
-            || storage_gateway_id.is_some() != storage_gateway_generation.is_some()
-            || delivery_endpoint_generation.is_some_and(|generation| generation <= 0)
-            || storage_gateway_generation.is_some_and(|generation| generation <= 0)
+        if endpoint_id.is_some() != endpoint_generation.is_some()
+            || gateway_id.is_some() != gateway_generation.is_some()
+            || endpoint_generation.is_some_and(|generation| generation <= 0)
+            || gateway_generation.is_some_and(|generation| generation <= 0)
         {
             bail!("topology defaults require paired positive resource generations");
         }
 
-        let storage_binding_id = match storage_binding_stable_id {
+        let binding_id = match binding_stable_id {
             Some(stable_id) => Some(
-                self.storage_binding_by_stable_id(stable_id)
+                self.binding_by_stable_id(stable_id)
                     .await?
-                    .context("topology-default storage binding does not exist")?
+                    .context("topology-default binding does not exist")?
                     .id,
             ),
             None => None,
@@ -16879,21 +16862,21 @@ impl Database {
                          AND {scope_identity_guard}
                          AND (scope.org_id IS NULL OR org.deleted_at IS NULL))
                    AND (?4 IS NULL OR EXISTS (
-                     SELECT 1 FROM storage_binding_consumer_scopes grant_row
-                      WHERE grant_row.storage_binding_id = ?4
+                     SELECT 1 FROM binding_consumer_scopes grant_row
+                      WHERE grant_row.binding_id = ?4
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
                    AND (?5 IS NULL OR EXISTS (
                      SELECT 1 FROM domains domain
                       WHERE domain.id = ?5 AND domain.owner_scope_key = ?3))
                    AND (?6 IS NULL OR EXISTS (
-                     SELECT 1 FROM delivery_endpoint_route_scopes grant_row
+                     SELECT 1 FROM endpoint_route_scopes grant_row
                       WHERE grant_row.endpoint_id = ?6
                         AND grant_row.endpoint_generation = ?7
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
                    AND (?8 IS NULL OR EXISTS (
-                     SELECT 1 FROM storage_gateway_revision_route_scopes grant_row
+                     SELECT 1 FROM gateway_revision_route_scopes grant_row
                       WHERE grant_row.gateway_id = ?8 AND grant_row.generation = ?9
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))"
@@ -16902,12 +16885,12 @@ impl Database {
             scope_kind,
             org_id,
             scope_key,
-            storage_binding_id,
+            binding_id,
             domain_id,
-            delivery_endpoint_id,
-            delivery_endpoint_generation,
-            storage_gateway_id,
-            storage_gateway_generation,
+            endpoint_id,
+            endpoint_generation,
+            gateway_id,
+            gateway_generation,
             now,
             expected_resource_version
         ];
@@ -16916,11 +16899,11 @@ impl Database {
                 .execute(
                     &format!(
                         "UPDATE topology_defaults
-                         SET storage_binding_id = ?4, domain_id = ?5,
-                             delivery_endpoint_id = ?6,
-                             delivery_endpoint_generation = ?7,
-                             storage_gateway_id = ?8,
-                             storage_gateway_generation = ?9,
+                         SET binding_id = ?4, domain_id = ?5,
+                             endpoint_id = ?6,
+                             endpoint_generation = ?7,
+                             gateway_id = ?8,
+                             gateway_generation = ?9,
                              resource_version = resource_version + 1, updated_at = ?10
                          WHERE scope_kind = ?1 AND {defaults_identity_guard} AND scope_key = ?3
                            AND resource_version = ?11 AND {guard}"
@@ -16933,9 +16916,9 @@ impl Database {
                 .execute(
                     &format!(
                         "INSERT INTO topology_defaults
-                         (scope_kind, org_id, scope_key, storage_binding_id, domain_id,
-                          delivery_endpoint_id, delivery_endpoint_generation,
-                          storage_gateway_id, storage_gateway_generation,
+                         (scope_kind, org_id, scope_key, binding_id, domain_id,
+                          endpoint_id, endpoint_generation,
+                          gateway_id, gateway_generation,
                           resource_version, created_at, updated_at)
                          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10
                          WHERE {guard}"
@@ -16954,23 +16937,23 @@ impl Database {
             .context("topology defaults disappeared after write")
     }
 
-    /// Looks up the non-sensitive read projection of a storage binding.
+    /// Looks up the non-sensitive read projection of a binding.
     ///
     /// The SQL projection excludes every provider coordinate and credential
-    /// field, so callers with only `storage_binding.read` never materialize
+    /// field, so callers with only `binding.read` never materialize
     /// those values in memory.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_read_detail_by_stable_id(
+    pub async fn binding_read_detail_by_stable_id(
         &self,
         stable_id: &str,
-    ) -> Result<Option<StorageBindingReadDetail>> {
+    ) -> Result<Option<BindingReadDetail>> {
         self.backend
-            .query_opt(STORAGE_BINDING_READ_DETAIL_SQL, &vals![stable_id])
+            .query_opt(BINDING_READ_DETAIL_SQL, &vals![stable_id])
             .await?
-            .map(|row| row_to_storage_binding_read_detail(&row))
+            .map(|row| row_to_binding_read_detail(&row))
             .transpose()
     }
 
@@ -16979,28 +16962,28 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_credential_revision(
+    pub async fn binding_credential_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         generation: i64,
-    ) -> Result<Option<StorageBindingCredentialRevisionRecord>> {
+    ) -> Result<Option<BindingCredentialRevisionRecord>> {
         self.backend
             .query_opt(
-                "SELECT r.storage_binding_id, r.purpose, r.generation,
+                "SELECT r.binding_id, r.purpose, r.generation,
                    r.secret_version_ref, r.validation_state, r.validated_at,
                    r.validation_error, r.credential_fingerprint, r.created_by,
                    r.created_at, h.resource_version
-                 FROM storage_binding_credential_revisions r
-                 JOIN storage_binding_credential_heads h
-                   ON h.storage_binding_id = r.storage_binding_id AND h.purpose = r.purpose
-                 WHERE r.storage_binding_id = ?1 AND r.purpose = ?2 AND r.generation = ?3",
-                &vals![storage_binding_id, purpose, generation],
+                 FROM binding_credential_revisions r
+                 JOIN binding_credential_heads h
+                   ON h.binding_id = r.binding_id AND h.purpose = r.purpose
+                 WHERE r.binding_id = ?1 AND r.purpose = ?2 AND r.generation = ?3",
+                &vals![binding_id, purpose, generation],
             )
             .await?
             .map(|row| {
-                Ok(StorageBindingCredentialRevisionRecord {
-                    storage_binding_id: row.get(0)?,
+                Ok(BindingCredentialRevisionRecord {
+                    binding_id: row.get(0)?,
                     purpose: row.get(1)?,
                     generation: row.get(2)?,
                     secret_version_ref: row.get(3)?,
@@ -17021,24 +17004,24 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn current_storage_binding_credential(
+    pub async fn current_binding_credential(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
-    ) -> Result<Option<StorageBindingCredentialRevisionRecord>> {
+    ) -> Result<Option<BindingCredentialRevisionRecord>> {
         let generation: Option<i64> = self
             .backend
             .query_opt(
-                "SELECT current_generation FROM storage_binding_credential_heads
-                 WHERE storage_binding_id = ?1 AND purpose = ?2",
-                &vals![storage_binding_id, purpose],
+                "SELECT current_generation FROM binding_credential_heads
+                 WHERE binding_id = ?1 AND purpose = ?2",
+                &vals![binding_id, purpose],
             )
             .await?
             .map(|row| row.get(0))
             .transpose()?;
         match generation {
             Some(generation) => {
-                self.storage_binding_credential_revision(storage_binding_id, purpose, generation)
+                self.binding_credential_revision(binding_id, purpose, generation)
                     .await
             }
             None => Ok(None),
@@ -17053,28 +17036,28 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_current_storage_binding_credentials(
+    pub async fn list_current_binding_credentials(
         &self,
-        storage_binding_id: i64,
-    ) -> Result<Vec<StorageBindingCredentialRevisionRecord>> {
+        binding_id: i64,
+    ) -> Result<Vec<BindingCredentialRevisionRecord>> {
         self.backend
             .query(
-                "SELECT r.storage_binding_id, r.purpose, r.generation,
+                "SELECT r.binding_id, r.purpose, r.generation,
                    r.secret_version_ref, r.validation_state, r.validated_at,
                    r.validation_error, r.credential_fingerprint, r.created_by,
                    r.created_at, h.resource_version
-                 FROM storage_binding_credential_heads h
-                 JOIN storage_binding_credential_revisions r
-                   ON r.storage_binding_id = h.storage_binding_id
+                 FROM binding_credential_heads h
+                 JOIN binding_credential_revisions r
+                   ON r.binding_id = h.binding_id
                   AND r.purpose = h.purpose AND r.generation = h.current_generation
-                 WHERE h.storage_binding_id = ?1 ORDER BY r.purpose",
-                &vals![storage_binding_id],
+                 WHERE h.binding_id = ?1 ORDER BY r.purpose",
+                &vals![binding_id],
             )
             .await?
             .iter()
             .map(|row| {
-                Ok(StorageBindingCredentialRevisionRecord {
-                    storage_binding_id: row.get(0)?,
+                Ok(BindingCredentialRevisionRecord {
+                    binding_id: row.get(0)?,
                     purpose: row.get(1)?,
                     generation: row.get(2)?,
                     secret_version_ref: row.get(3)?,
@@ -17097,15 +17080,15 @@ impl Database {
     /// Returns an error for invalid fields, a stale expected generation,
     /// conflicting reuse, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn set_storage_binding_credential_revision(
+    pub async fn set_binding_credential_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         secret_version_ref: &str,
         expected_current_generation: i64,
         credential_fingerprint: &str,
         actor: &str,
-    ) -> Result<StorageBindingCredentialRevisionRecord> {
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(purpose, "read" | "write" | "delete" | "list" | "presign") {
             bail!("invalid storage credential purpose '{purpose}'");
         }
@@ -17120,20 +17103,18 @@ impl Database {
         if let Some(row) = self
             .backend
             .query_opt(
-                "SELECT generation FROM storage_binding_credential_revisions
-                 WHERE storage_binding_id = ?1 AND purpose = ?2 AND secret_version_ref = ?3",
-                &vals![storage_binding_id, purpose, secret_version_ref],
+                "SELECT generation FROM binding_credential_revisions
+                 WHERE binding_id = ?1 AND purpose = ?2 AND secret_version_ref = ?3",
+                &vals![binding_id, purpose, secret_version_ref],
             )
             .await?
         {
             let generation = row.get(0)?;
             let existing = self
-                .storage_binding_credential_revision(storage_binding_id, purpose, generation)
+                .binding_credential_revision(binding_id, purpose, generation)
                 .await?
                 .context("credential revision disappeared")?;
-            let current = self
-                .current_storage_binding_credential(storage_binding_id, purpose)
-                .await?;
+            let current = self.current_binding_credential(binding_id, purpose).await?;
             if existing.credential_fingerprint == credential_fingerprint
                 && current.as_ref().map(|head| head.generation) == Some(existing.generation)
                 && existing.generation == expected_current_generation + 1
@@ -17145,9 +17126,7 @@ impl Database {
             }
             bail!("secret version reference is already bound to different content");
         }
-        let head = self
-            .current_storage_binding_credential(storage_binding_id, purpose)
-            .await?;
+        let head = self.current_binding_credential(binding_id, purpose).await?;
         let current_generation = head.as_ref().map_or(0, |head| head.generation);
         if current_generation != expected_current_generation {
             bail!("credential head generation is stale");
@@ -17155,26 +17134,26 @@ impl Database {
         let generation = current_generation + 1;
         let now = unix_now();
         let insert_sql = if current_generation == 0 {
-            "INSERT INTO storage_binding_credential_revisions
-             (storage_binding_id, purpose, generation, secret_version_ref,
+            "INSERT INTO binding_credential_revisions
+             (binding_id, purpose, generation, secret_version_ref,
               validation_state, credential_fingerprint, created_by, created_at)
              SELECT id, ?2, ?3, ?4, 'unknown', ?5, ?6, ?7
-             FROM storage_bindings WHERE id = ?1
-               AND NOT EXISTS (SELECT 1 FROM storage_binding_credential_heads
-                 WHERE storage_binding_id = ?1 AND purpose = ?2)"
+             FROM bindings WHERE id = ?1
+               AND NOT EXISTS (SELECT 1 FROM binding_credential_heads
+                 WHERE binding_id = ?1 AND purpose = ?2)"
         } else {
-            "INSERT INTO storage_binding_credential_revisions
-             (storage_binding_id, purpose, generation, secret_version_ref,
+            "INSERT INTO binding_credential_revisions
+             (binding_id, purpose, generation, secret_version_ref,
               validation_state, credential_fingerprint, created_by, created_at)
              SELECT id, ?2, ?3, ?4, 'unknown', ?5, ?6, ?7
-             FROM storage_bindings WHERE id = ?1
-               AND EXISTS (SELECT 1 FROM storage_binding_credential_heads
-                 WHERE storage_binding_id = ?1 AND purpose = ?2
+             FROM bindings WHERE id = ?1
+               AND EXISTS (SELECT 1 FROM binding_credential_heads
+                 WHERE binding_id = ?1 AND purpose = ?2
                    AND current_generation = ?8)"
         };
         let insert_values = if current_generation == 0 {
             vals![
-                storage_binding_id,
+                binding_id,
                 purpose,
                 generation,
                 secret_version_ref,
@@ -17185,7 +17164,7 @@ impl Database {
             .to_vec()
         } else {
             vals![
-                storage_binding_id,
+                binding_id,
                 purpose,
                 generation,
                 secret_version_ref,
@@ -17200,23 +17179,23 @@ impl Database {
         if current_generation == 0 {
             statements.push(
                 Statement::new(
-                    "INSERT INTO storage_binding_credential_heads
-                 (storage_binding_id, purpose, current_generation, updated_at)
+                    "INSERT INTO binding_credential_heads
+                 (binding_id, purpose, current_generation, updated_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                    vals![storage_binding_id, purpose, generation, now].to_vec(),
+                    vals![binding_id, purpose, generation, now].to_vec(),
                 )
                 .expecting(1),
             );
         } else {
             statements.push(
                 Statement::new(
-                    "UPDATE storage_binding_credential_heads
+                    "UPDATE binding_credential_heads
                  SET current_generation = ?3, resource_version = resource_version + 1,
                      updated_at = ?4
-                 WHERE storage_binding_id = ?1 AND purpose = ?2
+                 WHERE binding_id = ?1 AND purpose = ?2
                    AND current_generation = ?5
                    AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
-                     WHERE ticket.storage_binding_id = ?1
+                     WHERE ticket.binding_id = ?1
                        AND (ticket.write_credential_purpose = ?2
                          OR (?2 = 'presign'
                            AND ticket.presign_credential_generation IS NOT NULL))
@@ -17226,22 +17205,15 @@ impl Database {
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                      JOIN surface_placements placement
                        ON placement.id = job.placement_id
-                     WHERE placement.storage_binding_id = ?1
+                     WHERE placement.binding_id = ?1
                        AND ?2 = 'delete' AND job.active_slot = 1)",
-                    vals![
-                        storage_binding_id,
-                        purpose,
-                        generation,
-                        now,
-                        current_generation
-                    ]
-                    .to_vec(),
+                    vals![binding_id, purpose, generation, now, current_generation].to_vec(),
                 )
                 .expecting(1),
             );
         }
         self.backend.checked_batch(&statements).await?;
-        self.storage_binding_credential_revision(storage_binding_id, purpose, generation)
+        self.binding_credential_revision(binding_id, purpose, generation)
             .await?
             .context("created credential revision disappeared")
     }
@@ -17252,23 +17224,23 @@ impl Database {
     ///
     /// Returns an error for invalid state, stale version, a non-current
     /// generation, or database failure.
-    pub async fn validate_storage_binding_credential_revision(
+    pub async fn validate_binding_credential_revision(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         generation: i64,
         state: &str,
         validation_error: Option<&str>,
         expected_resource_version: i64,
-    ) -> Result<StorageBindingCredentialRevisionRecord> {
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(state, "valid" | "invalid") || (state == "valid") != validation_error.is_none()
         {
             bail!("credential validation must be valid without an error or invalid with an error");
         }
         let binding = self
-            .storage_binding(storage_binding_id)
+            .binding(binding_id)
             .await?
-            .context("storage binding does not exist")?;
+            .context("binding does not exist")?;
         let now = unix_now();
         let event_id = format!("topology-event:{}", uuid::Uuid::new_v4().simple());
         let event_name = if state == "valid" {
@@ -17278,8 +17250,8 @@ impl Database {
         };
         let payload_json = serde_json::to_string(&serde_json::json!({
             "type": event_name,
-            "resource_kind": "storage_binding_credential",
-            "storage_binding_id": binding.stable_id,
+            "resource_kind": "binding_credential",
+            "binding_id": binding.stable_id,
             "purpose": purpose,
             "generation": generation,
             "result": state,
@@ -17287,14 +17259,14 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "UPDATE storage_binding_credential_revisions
+                    "UPDATE binding_credential_revisions
                      SET validation_state = ?4, validated_at = ?5, validation_error = ?6
-                     WHERE storage_binding_id = ?1 AND purpose = ?2 AND generation = ?3
-                       AND EXISTS (SELECT 1 FROM storage_binding_credential_heads h
-                         WHERE h.storage_binding_id = ?1 AND h.purpose = ?2
+                     WHERE binding_id = ?1 AND purpose = ?2 AND generation = ?3
+                       AND EXISTS (SELECT 1 FROM binding_credential_heads h
+                         WHERE h.binding_id = ?1 AND h.purpose = ?2
                            AND h.current_generation = ?3 AND h.resource_version = ?7)",
                     vals![
-                        storage_binding_id,
+                        binding_id,
                         purpose,
                         generation,
                         state,
@@ -17306,12 +17278,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE storage_binding_credential_heads
+                    "UPDATE binding_credential_heads
                      SET resource_version = resource_version + 1, updated_at = ?4
-                     WHERE storage_binding_id = ?1 AND purpose = ?2
+                     WHERE binding_id = ?1 AND purpose = ?2
                        AND current_generation = ?3 AND resource_version = ?5",
                     vals![
-                        storage_binding_id,
+                        binding_id,
                         purpose,
                         generation,
                         now,
@@ -17324,7 +17296,7 @@ impl Database {
                     event_id: &event_id,
                     event_name,
                     owner_scope_key: &binding.owner_scope_key,
-                    resource_kind: "storage_binding_credential",
+                    resource_kind: "binding_credential",
                     resource_stable_id: &binding.stable_id,
                     resource_generation_key: generation,
                     actor_kind: "system",
@@ -17336,7 +17308,7 @@ impl Database {
             ])
             .await?;
         let record = self
-            .storage_binding_credential_revision(storage_binding_id, purpose, generation)
+            .binding_credential_revision(binding_id, purpose, generation)
             .await?
             .context("validated credential revision disappeared")?;
         if record.validation_state != state
@@ -17348,28 +17320,28 @@ impl Database {
         Ok(record)
     }
 
-    /// Look up a storage binding by id.
+    /// Look up a binding by id.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding(&self, id: i64) -> Result<Option<StorageBindingRecord>> {
+    pub async fn binding(&self, id: i64) -> Result<Option<BindingRecord>> {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-                 FROM storage_bindings WHERE id = ?1",
+                 FROM bindings WHERE id = ?1",
                 &vals![id],
             )
             .await
-            .context("loading storage binding by id")?
-            .map(|row| row_to_storage_binding(&row))
+            .context("loading binding by id")?
+            .map(|row| row_to_binding(&row))
             .transpose()
     }
 
-    /// Returns the singleton instance-level default storage binding.
+    /// Returns the singleton instance-level default binding.
     ///
     /// The binding is an explicitly addressable topology resource and a default
     /// for creation workflows. Surfaces never inherit it implicitly: every
@@ -17378,19 +17350,19 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn instance_default_binding(&self) -> Result<Option<StorageBindingRecord>> {
+    pub async fn instance_default_binding(&self) -> Result<Option<BindingRecord>> {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-                 FROM storage_bindings WHERE is_instance_default = 1 LIMIT 1",
+                 FROM bindings WHERE is_instance_default = 1 LIMIT 1",
                 &[],
             )
             .await
-            .context("loading instance default storage binding")?
-            .map(|row| row_to_storage_binding(&row))
+            .context("loading instance default binding")?
+            .map(|row| row_to_binding(&row))
             .transpose()
     }
 
@@ -17404,18 +17376,18 @@ impl Database {
         kind: &str,
         local_root_path: Option<&str>,
         object_bucket: Option<&str>,
-    ) -> Result<StorageBindingRecord> {
+    ) -> Result<BindingRecord> {
         let binding = if let Some(binding) = self.instance_default_binding().await? {
             if binding.kind != kind
                 || binding.local_root_path.as_deref() != local_root_path
                 || binding.object_bucket.as_deref() != object_bucket
             {
-                bail!("instance-default storage binding disagrees with deployment storage");
+                bail!("instance-default binding disagrees with deployment storage");
             }
             binding
         } else {
             let created = self
-                .create_topology_storage_binding(
+                .create_topology_binding(
                     None,
                     "instance-default",
                     "instance",
@@ -17452,10 +17424,7 @@ impl Database {
     /// object-store credentials. Their deployment attachment is nevertheless
     /// an immutable authorization input, so it receives the same validated
     /// credential and write-revision history used by external providers.
-    async fn ensure_deployment_owned_write_revision(
-        &self,
-        binding: &StorageBindingRecord,
-    ) -> Result<()> {
+    async fn ensure_deployment_owned_write_revision(&self, binding: &BindingRecord) -> Result<()> {
         let version_ref = match binding.kind.as_str() {
             "local_fs" => "native://aos-hub/default-storage/v1",
             "deployment_r2" => "worker://aos-hub/default-storage/v1",
@@ -17469,13 +17438,10 @@ impl Database {
         ))?;
         let credential_fingerprint = hex::encode(sha2::Sha256::digest(&provider_identity));
 
-        let credential = match self
-            .current_storage_binding_credential(binding.id, "write")
-            .await?
-        {
+        let credential = match self.current_binding_credential(binding.id, "write").await? {
             Some(credential) => credential,
             None => match self
-                .set_storage_binding_credential_revision(
+                .set_binding_credential_revision(
                     binding.id,
                     "write",
                     version_ref,
@@ -17487,7 +17453,7 @@ impl Database {
             {
                 Ok(credential) => credential,
                 Err(error) => self
-                    .current_storage_binding_credential(binding.id, "write")
+                    .current_binding_credential(binding.id, "write")
                     .await?
                     .ok_or(error)?,
             },
@@ -17500,7 +17466,7 @@ impl Database {
         let credential = match credential.validation_state.as_str() {
             "valid" => credential,
             "unknown" => match self
-                .validate_storage_binding_credential_revision(
+                .validate_binding_credential_revision(
                     binding.id,
                     "write",
                     credential.generation,
@@ -17512,9 +17478,8 @@ impl Database {
             {
                 Ok(credential) => credential,
                 Err(error) => {
-                    let Some(current) = self
-                        .current_storage_binding_credential(binding.id, "write")
-                        .await?
+                    let Some(current) =
+                        self.current_binding_credential(binding.id, "write").await?
                     else {
                         return Err(error);
                     };
@@ -17538,8 +17503,8 @@ impl Database {
             capability_fingerprint.as_str(),
         ))?));
         let revision = self
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding.id,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding.id,
                 write_credential_generation: credential.generation,
                 writes_supported: true,
                 conditional_writes_supported: false,
@@ -17548,12 +17513,12 @@ impl Database {
             })
             .await?;
         let observation = self
-            .storage_binding_write_observation(binding.id, revision.revision)
+            .binding_write_observation(binding.id, revision.revision)
             .await?;
         match observation {
             None => {
                 if let Err(error) = self
-                    .observe_storage_binding_write_revision(
+                    .observe_binding_write_revision(
                         binding.id,
                         revision.revision,
                         "valid",
@@ -17563,7 +17528,7 @@ impl Database {
                     .await
                 {
                     let current = self
-                        .storage_binding_write_observation(binding.id, revision.revision)
+                        .binding_write_observation(binding.id, revision.revision)
                         .await?;
                     if !current
                         .as_ref()
@@ -17580,14 +17545,14 @@ impl Database {
             ),
         }
         let state = self
-            .storage_binding_write_state(binding.id)
+            .binding_write_state(binding.id)
             .await?
             .context("instance-default write state is missing")?;
         match state.current_write_revision {
             Some(current) if current == revision.revision => {}
             None => {
                 if let Err(error) = self
-                    .set_current_storage_binding_write_revision(
+                    .set_current_binding_write_revision(
                         binding.id,
                         revision.revision,
                         state.resource_version,
@@ -17595,7 +17560,7 @@ impl Database {
                     .await
                 {
                     let current = self
-                        .storage_binding_write_state(binding.id)
+                        .binding_write_state(binding.id)
                         .await?
                         .context("instance-default write state disappeared")?;
                     if current.current_write_revision != Some(revision.revision) {
@@ -17608,37 +17573,33 @@ impl Database {
         Ok(())
     }
 
-    /// Look up a storage binding by `(org_id, name)`.
+    /// Look up a binding by `(org_id, name)`.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_by_name(
-        &self,
-        org_id: i64,
-        name: &str,
-    ) -> Result<Option<StorageBindingRecord>> {
+    pub async fn binding_by_name(&self, org_id: i64, name: &str) -> Result<Option<BindingRecord>> {
         self.backend
             .query_opt(
                 "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key,
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-                 FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
+                 FROM bindings WHERE org_id = ?1 AND name = ?2",
                 &vals![org_id, name],
             )
             .await
-            .context("loading storage binding by name")?
-            .map(|row| row_to_storage_binding(&row))
+            .context("loading binding by name")?
+            .map(|row| row_to_binding(&row))
             .transpose()
     }
 
-    /// List an org's storage bindings, ordered by name.
+    /// List an org's bindings, ordered by name.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_storage_bindings(&self, org_id: i64) -> Result<Vec<StorageBindingRecord>> {
+    pub async fn list_bindings(&self, org_id: i64) -> Result<Vec<BindingRecord>> {
         let rows = self
             .backend
             .query(
@@ -17646,44 +17607,42 @@ impl Database {
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-             FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
+             FROM bindings WHERE org_id = ?1 ORDER BY name",
                 &vals![org_id],
             )
             .await?;
-        rows.iter().map(row_to_storage_binding).collect()
+        rows.iter().map(row_to_binding).collect()
     }
 
     /// Lists an organization's non-sensitive storage-binding summaries.
     ///
     /// The SQL projection excludes provider coordinates and all credential
     /// material, making this the only inventory query suitable for principals
-    /// with `storage_binding.read` but not `storage_binding.manage`.
+    /// with `binding.read` but not `binding.manage`.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_storage_binding_read_summaries(
+    pub async fn list_binding_read_summaries(
         &self,
         org_id: i64,
-    ) -> Result<Vec<StorageBindingReadSummary>> {
+    ) -> Result<Vec<BindingReadSummary>> {
         let rows = self
             .backend
-            .query(STORAGE_BINDING_READ_SUMMARY_SQL, &vals![org_id])
+            .query(BINDING_READ_SUMMARY_SQL, &vals![org_id])
             .await?;
-        rows.iter()
-            .map(row_to_storage_binding_read_summary)
-            .collect()
+        rows.iter().map(row_to_binding_read_summary).collect()
     }
 
-    /// Lists storage bindings in one canonical owner scope by stable identity.
+    /// Lists bindings in one canonical owner scope by stable identity.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_storage_bindings_by_scope(
+    pub async fn list_bindings_by_scope(
         &self,
         owner_scope_key: &str,
-    ) -> Result<Vec<StorageBindingRecord>> {
+    ) -> Result<Vec<BindingRecord>> {
         let rows = self
             .backend
             .query(
@@ -17691,11 +17650,11 @@ impl Database {
                  local_root_path, object_bucket, object_prefix, endpoint_scheme,
                  endpoint_host_kind, endpoint_host_bytes, endpoint_port,
                  signing_region, access_mode, resource_version, created_at, updated_at
-                 FROM storage_bindings WHERE owner_scope_key = ?1 ORDER BY stable_id",
+                 FROM bindings WHERE owner_scope_key = ?1 ORDER BY stable_id",
                 &vals![owner_scope_key],
             )
             .await?;
-        rows.iter().map(row_to_storage_binding).collect()
+        rows.iter().map(row_to_binding).collect()
     }
 
     /// Returns live topology references that prevent storage-binding deletion.
@@ -17703,23 +17662,23 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn storage_binding_delete_blockers(&self, id: i64) -> Result<Vec<String>> {
+    pub async fn binding_delete_blockers(&self, id: i64) -> Result<Vec<String>> {
         let checks = [
             (
                 "placements",
-                "SELECT COUNT(*) FROM surface_placements WHERE storage_binding_id = ?1",
+                "SELECT COUNT(*) FROM surface_placements WHERE binding_id = ?1",
             ),
             (
-                "storage gateways",
-                "SELECT COUNT(*) FROM storage_gateways WHERE storage_binding_id = ?1",
+                "gateways",
+                "SELECT COUNT(*) FROM gateways WHERE binding_id = ?1",
             ),
             (
                 "topology defaults",
-                "SELECT COUNT(*) FROM topology_defaults WHERE storage_binding_id = ?1",
+                "SELECT COUNT(*) FROM topology_defaults WHERE binding_id = ?1",
             ),
             (
                 "active consumer grants",
-                "SELECT COUNT(*) FROM storage_binding_consumer_scopes WHERE storage_binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'",
+                "SELECT COUNT(*) FROM binding_consumer_scopes WHERE binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner'",
             ),
         ];
         let mut blockers = Vec::new();
@@ -17742,7 +17701,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delete_topology_storage_binding(
+    pub async fn delete_topology_binding(
         &self,
         id: i64,
         expected_resource_version: i64,
@@ -17750,10 +17709,10 @@ impl Database {
         Ok(self
             .backend
             .execute(
-                "DELETE FROM storage_bindings
+                "DELETE FROM bindings
                  WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
-                   AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE storage_binding_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM storage_gateways WHERE storage_binding_id = ?1)",
+                   AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM gateways WHERE binding_id = ?1)",
                 &vals![id, expected_resource_version],
             )
             .await?
@@ -18579,25 +18538,25 @@ impl Database {
         let grants = self
             .backend
             .query(
-                "SELECT 'storage_binding', b.stable_id, 0, g.grant_generation,
+                "SELECT 'binding', b.stable_id, 0, g.grant_generation,
                         g.resource_version
-                   FROM storage_binding_consumer_scopes g
-                   JOIN storage_bindings b ON b.id = g.storage_binding_id
+                   FROM binding_consumer_scopes g
+                   JOIN bindings b ON b.id = g.binding_id
                   WHERE g.consumer_scope_key = ?1 AND g.state = 'active'
                  UNION ALL
-                 SELECT 'network_boundary', g.boundary_id, 0, g.grant_generation,
+                 SELECT 'network_policy', g.boundary_id, 0, g.grant_generation,
                         g.resource_version
-                   FROM network_boundary_consumer_scopes g
+                   FROM network_policy_consumer_scopes g
                   WHERE g.consumer_scope_key = ?1 AND g.state = 'active'
                  UNION ALL
-                 SELECT 'delivery_endpoint', g.endpoint_id, g.endpoint_generation,
+                 SELECT 'endpoint', g.endpoint_id, g.endpoint_generation,
                         g.grant_generation, g.resource_version
-                   FROM delivery_endpoint_route_scopes g
+                   FROM endpoint_route_scopes g
                   WHERE g.consumer_scope_key = ?1 AND g.state = 'active'
                  UNION ALL
-                 SELECT 'storage_gateway', g.gateway_id, g.generation,
+                 SELECT 'gateway', g.gateway_id, g.generation,
                         g.grant_generation, g.resource_version
-                   FROM storage_gateway_revision_route_scopes g
+                   FROM gateway_revision_route_scopes g
                   WHERE g.consumer_scope_key = ?1 AND g.state = 'active'",
                 &vals![scope],
             )
@@ -18610,12 +18569,12 @@ impl Database {
         statements.push(
             Statement::new(
                 format!(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                  SET consumer_version = consumer_version + 1
                  WHERE state = 'active' AND {guard}
-                   AND EXISTS (SELECT 1 FROM network_boundary_serving_pins p
-                     WHERE p.boundary_id = network_boundary_revision_lifecycle.boundary_id
-                       AND p.revision = network_boundary_revision_lifecycle.revision
+                   AND EXISTS (SELECT 1 FROM network_policy_serving_pins p
+                     WHERE p.boundary_id = network_policy_revision_lifecycle.boundary_id
+                       AND p.revision = network_policy_revision_lifecycle.revision
                        AND p.consumer_scope_key = ?2)"
                 ),
                 vals![org_id, scope, now],
@@ -18623,10 +18582,10 @@ impl Database {
             .unchecked(),
         );
         for table in [
-            "storage_binding_scope_grant_pins",
-            "delivery_endpoint_scope_grant_pins",
-            "storage_gateway_scope_grant_pins",
-            "network_boundary_serving_pins",
+            "binding_scope_grant_pins",
+            "endpoint_scope_grant_pins",
+            "gateway_scope_grant_pins",
+            "network_policy_serving_pins",
         ] {
             statements.push(
                 Statement::new(
@@ -18654,27 +18613,27 @@ impl Database {
                             'system:org-purge', ?3, ?9
                       WHERE {guard}
                         AND EXISTS (
-                          SELECT 1 FROM storage_binding_consumer_scopes g
-                          JOIN storage_bindings b ON b.id = g.storage_binding_id
-                           WHERE ?5 = 'storage_binding' AND b.stable_id = ?6
+                          SELECT 1 FROM binding_consumer_scopes g
+                          JOIN bindings b ON b.id = g.binding_id
+                           WHERE ?5 = 'binding' AND b.stable_id = ?6
                              AND ?7 = 0 AND g.consumer_scope_key = ?2
                              AND g.grant_generation = ?8 AND g.resource_version = ?10
                              AND g.state = 'active'
                           UNION ALL
-                          SELECT 1 FROM network_boundary_consumer_scopes g
-                           WHERE ?5 = 'network_boundary' AND g.boundary_id = ?6
+                          SELECT 1 FROM network_policy_consumer_scopes g
+                           WHERE ?5 = 'network_policy' AND g.boundary_id = ?6
                              AND ?7 = 0 AND g.consumer_scope_key = ?2
                              AND g.grant_generation = ?8 AND g.resource_version = ?10
                              AND g.state = 'active'
                           UNION ALL
-                          SELECT 1 FROM delivery_endpoint_route_scopes g
-                           WHERE ?5 = 'delivery_endpoint' AND g.endpoint_id = ?6
+                          SELECT 1 FROM endpoint_route_scopes g
+                           WHERE ?5 = 'endpoint' AND g.endpoint_id = ?6
                              AND g.endpoint_generation = ?7 AND g.consumer_scope_key = ?2
                              AND g.grant_generation = ?8 AND g.resource_version = ?10
                              AND g.state = 'active'
                           UNION ALL
-                          SELECT 1 FROM storage_gateway_revision_route_scopes g
-                           WHERE ?5 = 'storage_gateway' AND g.gateway_id = ?6
+                          SELECT 1 FROM gateway_revision_route_scopes g
+                           WHERE ?5 = 'gateway' AND g.gateway_id = ?6
                              AND g.generation = ?7 AND g.consumer_scope_key = ?2
                              AND g.grant_generation = ?8 AND g.resource_version = ?10
                              AND g.state = 'active')"
@@ -18751,10 +18710,10 @@ impl Database {
             .expecting(1),
         );
         for table in [
-            "storage_binding_consumer_scopes",
-            "network_boundary_consumer_scopes",
-            "delivery_endpoint_route_scopes",
-            "storage_gateway_revision_route_scopes",
+            "binding_consumer_scopes",
+            "network_policy_consumer_scopes",
+            "endpoint_route_scopes",
+            "gateway_revision_route_scopes",
         ] {
             statements.push(
                 Statement::new(
@@ -23940,11 +23899,11 @@ fn operation_target_control_permission(
         "placement" => Permission::PlacementManage,
         "placement_policy" => Permission::PlacementPolicyManage,
         "domain" => Permission::DomainManage,
-        "network_boundary" => Permission::NetworkBoundaryManage,
-        "delivery_endpoint" => Permission::DeliveryEndpointManage,
-        "storage_gateway" => Permission::StorageGatewayManage,
-        "delivery_route" => Permission::RouteManage,
-        "storage_binding" => Permission::StorageBindingManage,
+        "network_policy" => Permission::NetworkPolicyManage,
+        "endpoint" => Permission::EndpointManage,
+        "gateway" => Permission::GatewayManage,
+        "route" => Permission::RouteManage,
+        "binding" => Permission::BindingManage,
         _ => primary_permission,
     }
 }
@@ -23969,7 +23928,7 @@ const REGISTRY_COLUMNS: &str = "id, stable_id, scope_key, owner_scope_key, slug,
 ///
 /// A cache is a first-class sibling of a [`RegistryRecord`]: an org-scoped (or
 /// instance-level) logical surface with zero or more topology placements,
-/// optionally associated with a retained signing-key usage and exposed through delivery routes.
+/// optionally associated with a retained signing-key usage and exposed through routes.
 /// Where a registry serves a git wire surface, a cache serves a Nix
 /// binary cache (`nix-cache-info` + content-addressed NARs + Ed25519-signed
 /// `.narinfo`). See RFC-0004 `11-caches`.
@@ -24179,7 +24138,7 @@ fn validate_placement_spec(
     Ok(())
 }
 
-const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_binding_id,
+const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, binding_id,
     prefix, derived_role, state, completeness, hash_range_start, hash_range_end,
     mutable_publication_id, effective_read_enabled, effective_write_enabled, read_order,
     created_at, updated_at,
@@ -24193,11 +24152,11 @@ const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_bindin
     authority_desired_generation, authority_observed_generation,
     authority_reconciliation_state";
 const PLACEMENT_COLUMN_COUNT: usize = 37;
-const BINDING_WRITE_REVISION_COLUMNS: &str = "storage_binding_id, revision,
+const BINDING_WRITE_REVISION_COLUMNS: &str = "binding_id, revision,
     write_credential_version_ref, write_credential_purpose, write_credential_generation,
     writes_supported, conditional_writes_supported,
     revision_fingerprint, capability_fingerprint, created_at";
-const BINDING_WRITE_OBSERVATION_COLUMNS: &str = "storage_binding_id, revision, state,
+const BINDING_WRITE_OBSERVATION_COLUMNS: &str = "binding_id, revision, state,
     validated_at, error, observation_version";
 const WRITE_AUTHORITY_COLUMNS: &str = "id, incarnation_id, registry_id, cache_id, mode,
     desired_placement_id, desired_write_spec_version, desired_binding_write_revision,
@@ -24243,7 +24202,7 @@ fn row_to_surface_placement(row: &Row) -> Result<SurfacePlacementRecord> {
         registry_id: row.get(1)?,
         cache_id: row.get(2)?,
         name: row.get(3)?,
-        storage_binding_id: row.get(4)?,
+        binding_id: row.get(4)?,
         prefix: row.get(5)?,
         derived_role: row.get(6)?,
         state: row.get(7)?,
@@ -24279,9 +24238,9 @@ fn row_to_surface_placement(row: &Row) -> Result<SurfacePlacementRecord> {
     })
 }
 
-fn row_to_storage_binding_write_revision(row: &Row) -> Result<StorageBindingWriteRevisionRecord> {
-    Ok(StorageBindingWriteRevisionRecord {
-        storage_binding_id: row.get(0)?,
+fn row_to_binding_write_revision(row: &Row) -> Result<BindingWriteRevisionRecord> {
+    Ok(BindingWriteRevisionRecord {
+        binding_id: row.get(0)?,
         revision: row.get(1)?,
         write_credential_version_ref: row.get(2)?,
         write_credential_purpose: row.get(3)?,
@@ -24294,11 +24253,9 @@ fn row_to_storage_binding_write_revision(row: &Row) -> Result<StorageBindingWrit
     })
 }
 
-fn row_to_storage_binding_write_observation(
-    row: &Row,
-) -> Result<StorageBindingWriteObservationRecord> {
-    Ok(StorageBindingWriteObservationRecord {
-        storage_binding_id: row.get(0)?,
+fn row_to_binding_write_observation(row: &Row) -> Result<BindingWriteObservationRecord> {
+    Ok(BindingWriteObservationRecord {
+        binding_id: row.get(0)?,
         revision: row.get(1)?,
         state: row.get(2)?,
         validated_at: row.get(3)?,
@@ -24510,8 +24467,8 @@ fn row_to_org(row: &Row) -> Result<OrgRecord> {
     })
 }
 
-fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
-    Ok(StorageBindingRecord {
+fn row_to_binding(row: &Row) -> Result<BindingRecord> {
+    Ok(BindingRecord {
         id: row.get(0)?,
         org_id: row.get(1)?,
         name: row.get(2)?,
@@ -24534,8 +24491,8 @@ fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
     })
 }
 
-fn row_to_storage_binding_read_detail(row: &Row) -> Result<StorageBindingReadDetail> {
-    Ok(StorageBindingReadDetail {
+fn row_to_binding_read_detail(row: &Row) -> Result<BindingReadDetail> {
+    Ok(BindingReadDetail {
         id: row.get(0)?,
         org_id: row.get(1)?,
         name: row.get(2)?,
@@ -24549,8 +24506,8 @@ fn row_to_storage_binding_read_detail(row: &Row) -> Result<StorageBindingReadDet
     })
 }
 
-fn row_to_storage_binding_read_summary(row: &Row) -> Result<StorageBindingReadSummary> {
-    Ok(StorageBindingReadSummary {
+fn row_to_binding_read_summary(row: &Row) -> Result<BindingReadSummary> {
+    Ok(BindingReadSummary {
         id: row.get(0)?,
         org_id: row.get(1)?,
         name: row.get(2)?,
@@ -24731,7 +24688,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_binding_read_sql_projects_only_non_sensitive_columns() {
+    fn binding_read_sql_projects_only_non_sensitive_columns() {
         fn projected_columns(sql: &str) -> Vec<&str> {
             sql.split_once("FROM")
                 .unwrap()
@@ -24743,7 +24700,7 @@ mod tests {
                 .collect::<Vec<_>>()
         }
         assert_eq!(
-            projected_columns(STORAGE_BINDING_READ_DETAIL_SQL),
+            projected_columns(BINDING_READ_DETAIL_SQL),
             [
                 "id",
                 "org_id",
@@ -24758,7 +24715,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            projected_columns(STORAGE_BINDING_READ_SUMMARY_SQL),
+            projected_columns(BINDING_READ_SUMMARY_SQL),
             [
                 "id",
                 "org_id",
@@ -24768,10 +24725,7 @@ mod tests {
                 "stable_id",
             ],
         );
-        for sql in [
-            STORAGE_BINDING_READ_DETAIL_SQL,
-            STORAGE_BINDING_READ_SUMMARY_SQL,
-        ] {
+        for sql in [BINDING_READ_DETAIL_SQL, BINDING_READ_SUMMARY_SQL] {
             for forbidden in [
                 "local_root_path",
                 "object_bucket",
@@ -24807,7 +24761,7 @@ mod tests {
         assert_eq!(first.id, second.id);
 
         let credential = db
-            .current_storage_binding_credential(first.id, "write")
+            .current_binding_credential(first.id, "write")
             .await
             .unwrap()
             .unwrap();
@@ -24816,13 +24770,9 @@ mod tests {
             credential.secret_version_ref,
             "worker://aos-hub/default-storage/v1"
         );
-        let state = db
-            .storage_binding_write_state(first.id)
-            .await
-            .unwrap()
-            .unwrap();
+        let state = db.binding_write_state(first.id).await.unwrap().unwrap();
         let revision = db
-            .storage_binding_write_revision(first.id, state.current_write_revision.unwrap())
+            .binding_write_revision(first.id, state.current_write_revision.unwrap())
             .await
             .unwrap()
             .unwrap();
@@ -24833,8 +24783,8 @@ mod tests {
         let count: i64 = db
             .backend
             .query_opt(
-                "SELECT COUNT(*) FROM storage_binding_write_revisions
-                 WHERE storage_binding_id = ?1",
+                "SELECT COUNT(*) FROM binding_write_revisions
+                 WHERE binding_id = ?1",
                 &vals![first.id],
             )
             .await
@@ -24851,7 +24801,7 @@ mod tests {
 
     async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
         let owner = db.org_by_id(org_id).await.unwrap().unwrap();
-        db.create_topology_storage_binding(
+        db.create_topology_binding(
             Some(org_id),
             &Uuid::new_v4().simple().to_string(),
             &owner.stable_id,
@@ -24877,12 +24827,12 @@ mod tests {
         secret_ref: &str,
     ) -> i64 {
         let expected = db
-            .current_storage_binding_credential(binding_id, "write")
+            .current_binding_credential(binding_id, "write")
             .await
             .unwrap()
             .map_or(0, |revision| revision.generation);
         let revision = db
-            .set_storage_binding_credential_revision(
+            .set_binding_credential_revision(
                 binding_id,
                 "write",
                 secret_ref,
@@ -24892,7 +24842,7 @@ mod tests {
             )
             .await
             .unwrap();
-        db.validate_storage_binding_credential_revision(
+        db.validate_binding_credential_revision(
             binding_id,
             "write",
             revision.generation,
@@ -25175,7 +25125,7 @@ source_nar_hash = ""
         for forbidden in [
             "credential_ref",
             "CREATE TABLE frontends",
-            "storage_bindings_instance_default_idx",
+            "bindings_instance_default_idx",
             " root TEXT",
             " access TEXT",
             " endpoint TEXT",
@@ -25188,7 +25138,7 @@ source_nar_hash = ""
         let removed_identity_columns: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('registries')
-                 WHERE name IN ('source_url', 'storage_binding_id', 'prefix')",
+                 WHERE name IN ('source_url', 'binding_id', 'prefix')",
                 [],
                 |row| row.get(0),
             )
@@ -25200,12 +25150,12 @@ source_nar_hash = ""
             "surface_placements",
             "surface_write_authorities",
             "domains",
-            "network_boundaries",
-            "delivery_endpoints",
-            "storage_gateways",
-            "delivery_routes",
-            "delivery_route_configurations",
-            "canonical_routes",
+            "network_policies",
+            "endpoints",
+            "gateways",
+            "routes",
+            "route_configurations",
+            "route_advertisements",
             "image_snapshots",
             "image_snapshot_references",
             "image_snapshot_leases",
@@ -25232,7 +25182,7 @@ source_nar_hash = ""
         }
 
         let route_columns: Vec<String> = connection
-            .prepare("PRAGMA table_info(delivery_routes)")
+            .prepare("PRAGMA table_info(routes)")
             .unwrap()
             .query_map([], |row| row.get(1))
             .unwrap()
@@ -25261,7 +25211,7 @@ source_nar_hash = ""
         let public_boundary: (i64, String) = connection
             .query_row(
                 "SELECT d.revision, d.state
-                 FROM network_boundary_defaults d
+                 FROM network_policy_defaults d
                  WHERE d.boundary_id = 'instance:public'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -25868,7 +25818,7 @@ source_nar_hash = ""
         let binding_id = create_test_binding(&db, org_id, "images", "/tmp/image-roots").await;
         let mut placement =
             topology_placement(SurfaceTarget::Registry(registry_id), "primary", "system", 0);
-        placement.storage_binding_id = binding_id;
+        placement.binding_id = binding_id;
         let placement = db.create_surface_placement(&placement).await.unwrap();
         let placement = db
             .observe_surface_placement(placement.id, "ready", "complete", 1)
@@ -26156,7 +26106,7 @@ source_nar_hash = ""
             "replica",
             10,
         );
-        replica_spec.storage_binding_id = binding_id;
+        replica_spec.binding_id = binding_id;
         let replica = db.create_surface_placement(&replica_spec).await.unwrap();
         let replica = db
             .observe_surface_placement(replica.id, "ready", "complete", 1)
@@ -28132,11 +28082,11 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
-    async fn storage_bindings_use_only_the_typed_topology_shape() {
+    async fn bindings_use_only_the_typed_topology_shape() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
         let id = create_test_binding(&db, org, "primary", "/srv/aos-hub").await;
-        let binding = db.storage_binding(id).await.unwrap().unwrap();
+        let binding = db.binding(id).await.unwrap().unwrap();
         assert_eq!(binding.name, "primary");
         assert_eq!(binding.kind, "r2");
         assert_eq!(binding.local_root_path, None);
@@ -28144,21 +28094,17 @@ source_nar_hash = ""
         assert_eq!(binding.object_prefix.as_deref(), Some("srv/aos-hub"));
         assert_eq!(binding.access_mode.as_deref(), Some("private"));
         assert_eq!(
-            db.storage_binding_by_name(org, "primary")
+            db.binding_by_name(org, "primary")
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
             id
         );
-        assert!(db
-            .storage_binding_by_name(org, "nope")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(db.binding_by_name(org, "nope").await.unwrap().is_none());
 
         create_test_binding(&db, org, "secondary", "/srv/other").await;
-        let all = db.list_storage_bindings(org).await.unwrap();
+        let all = db.list_bindings(org).await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].name, "primary");
         assert_eq!(all[1].name, "secondary");
@@ -28646,7 +28592,7 @@ source_nar_hash = ""
         let binding_id = create_test_binding(&db, org_id, "retired", "/tmp/retired").await;
         let mut placement =
             topology_placement(SurfaceTarget::Registry(id), "primary", "retired", 0);
-        placement.storage_binding_id = binding_id;
+        placement.binding_id = binding_id;
         let placement = db.create_surface_placement(&placement).await.unwrap();
         let placement = db
             .observe_surface_placement(placement.id, "ready", "complete", 1)
@@ -28655,8 +28601,8 @@ source_nar_hash = ""
         let write_generation =
             create_valid_write_credential(&db, binding_id, "secret://binding/retired/v1").await;
         let write_revision = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding_id,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding_id,
                 write_credential_generation: write_generation,
                 writes_supported: true,
                 conditional_writes_supported: false,
@@ -28665,15 +28611,9 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
-        db.observe_storage_binding_write_revision(
-            binding_id,
-            write_revision.revision,
-            "valid",
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.observe_binding_write_revision(binding_id, write_revision.revision, "valid", None, None)
+            .await
+            .unwrap();
         db.bind_surface_placement_write_capability(placement.id, write_revision.revision)
             .await
             .unwrap();
@@ -29034,7 +28974,7 @@ source_nar_hash = ""
             .unwrap();
         db.backend
             .execute(
-                "INSERT INTO network_boundary_serving_pins
+                "INSERT INTO network_policy_serving_pins
                  (pin_id, boundary_id, revision, consumer_scope_key, grant_generation,
                   grant_state, usage_kind, target_kind, target_stable_id,
                   target_generation_key, target_configuration_digest, acquired_by,
@@ -29048,7 +28988,7 @@ source_nar_hash = ""
             .unwrap();
         db.backend
             .execute(
-                "UPDATE network_boundary_revision_lifecycle
+                "UPDATE network_policy_revision_lifecycle
                  SET consumer_version = consumer_version + 1
                  WHERE boundary_id = 'instance:public' AND revision = 1",
                 &[],
@@ -29071,7 +29011,7 @@ source_nar_hash = ""
         let pin_count: i64 = db
             .backend
             .query_opt(
-                "SELECT COUNT(*) FROM network_boundary_serving_pins
+                "SELECT COUNT(*) FROM network_policy_serving_pins
                  WHERE consumer_scope_key = ?1",
                 &vals![original_scope],
             )
@@ -29084,7 +29024,7 @@ source_nar_hash = ""
         let grant_count: i64 = db
             .backend
             .query_opt(
-                "SELECT COUNT(*) FROM network_boundary_consumer_scopes
+                "SELECT COUNT(*) FROM network_policy_consumer_scopes
                  WHERE boundary_id = 'instance:public'
                    AND consumer_scope_key = ?1",
                 &vals![original_scope],
@@ -29134,7 +29074,7 @@ source_nar_hash = ""
         let recreated_grant: i64 = db
             .backend
             .query_opt(
-                "SELECT COUNT(*) FROM network_boundary_consumer_scopes
+                "SELECT COUNT(*) FROM network_policy_consumer_scopes
                  WHERE boundary_id = 'instance:public'
                    AND consumer_scope_key = ?1 AND state = 'active'",
                 &vals![recreated_scope],
@@ -29252,7 +29192,7 @@ source_nar_hash = ""
         let org_id = db.create_org("race", "Race").await.unwrap();
         let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
         db.revoke_consumer_scope(
-            crate::db::GrantResource::NetworkBoundary {
+            crate::db::GrantResource::NetworkPolicy {
                 id: "instance:public",
             },
             &scope,
@@ -29265,7 +29205,7 @@ source_nar_hash = ""
         db.soft_delete_org(org_id, 100).await.unwrap();
         assert!(db
             .grant_consumer_scope(
-                crate::db::GrantResource::NetworkBoundary {
+                crate::db::GrantResource::NetworkPolicy {
                     id: "instance:public",
                 },
                 &scope,
@@ -29436,7 +29376,7 @@ source_nar_hash = ""
         NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
-            storage_binding_id: 0,
+            binding_id: 0,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -29510,7 +29450,7 @@ source_nar_hash = ""
             .backend
             .execute(
                 "INSERT INTO surface_placements (registry_id, cache_id, name,
-                storage_binding_id, prefix, kind, desired_state,
+                binding_id, prefix, kind, desired_state,
                 desired_read_enabled, read_order, created_at, updated_at)
              VALUES (?1, ?2, 'invalid-xor', ?3, 'invalid-xor', 'complete',
                 'active', 1, 0, ?4, ?4)",
@@ -29523,7 +29463,7 @@ source_nar_hash = ""
         );
 
         let mut first = topology_placement(SurfaceTarget::Registry(registry), "one", "same", 0);
-        first.storage_binding_id = binding;
+        first.binding_id = binding;
         let first = db.create_surface_placement(&first).await.unwrap();
         let first = db
             .observe_surface_placement(first.id, "ready", "complete", 1)
@@ -29531,7 +29471,7 @@ source_nar_hash = ""
             .unwrap();
         let mut duplicate_name =
             topology_placement(SurfaceTarget::Registry(registry), "one", "different", 1);
-        duplicate_name.storage_binding_id = binding;
+        duplicate_name.binding_id = binding;
         let error = db
             .create_surface_placement(&duplicate_name)
             .await
@@ -29541,7 +29481,7 @@ source_nar_hash = ""
             Some(SurfacePlacementCreateFailureKind::AlreadyExists)
         );
         let mut collision = topology_placement(SurfaceTarget::BinaryCache(cache), "two", "same", 1);
-        collision.storage_binding_id = binding;
+        collision.binding_id = binding;
         let error = db.create_surface_placement(&collision).await.unwrap_err();
         assert_eq!(
             surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
@@ -29555,14 +29495,14 @@ source_nar_hash = ""
             "second-complete",
             3,
         );
-        second.storage_binding_id = binding;
+        second.binding_id = binding;
         db.create_surface_placement(&second).await.unwrap();
 
         let write_generation =
             create_valid_write_credential(&db, binding, "secret://binding/write/v1").await;
         let revision = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding,
                 write_credential_generation: write_generation,
                 writes_supported: true,
                 conditional_writes_supported: true,
@@ -29572,8 +29512,8 @@ source_nar_hash = ""
             .await
             .unwrap();
         let revision_retry = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding,
                 write_credential_generation: write_generation,
                 writes_supported: true,
                 conditional_writes_supported: true,
@@ -29583,16 +29523,12 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert_eq!(revision_retry, revision);
-        db.observe_storage_binding_write_revision(binding, revision.revision, "valid", None, None)
+        db.observe_binding_write_revision(binding, revision.revision, "valid", None, None)
             .await
             .unwrap();
+        let binding_write_state = db.binding_write_state(binding).await.unwrap().unwrap();
         let binding_write_state = db
-            .storage_binding_write_state(binding)
-            .await
-            .unwrap()
-            .unwrap();
-        let binding_write_state = db
-            .set_current_storage_binding_write_revision(
+            .set_current_binding_write_revision(
                 binding,
                 revision.revision,
                 binding_write_state.resource_version,
@@ -29640,8 +29576,8 @@ source_nar_hash = ""
         let rotated_generation =
             create_valid_write_credential(&db, binding, "secret://binding/write/v2").await;
         let rotated_revision = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding,
                 write_credential_generation: rotated_generation,
                 writes_supported: true,
                 conditional_writes_supported: true,
@@ -29650,17 +29586,11 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
-        db.observe_storage_binding_write_revision(
-            binding,
-            rotated_revision.revision,
-            "valid",
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.observe_binding_write_revision(binding, rotated_revision.revision, "valid", None, None)
+            .await
+            .unwrap();
         let binding_write_state = db
-            .set_current_storage_binding_write_revision(
+            .set_current_binding_write_revision(
                 binding,
                 rotated_revision.revision,
                 binding_write_state.resource_version,
@@ -29720,7 +29650,7 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert!(db
-            .retire_storage_binding_write_revision(binding, revision.revision)
+            .retire_binding_write_revision(binding, revision.revision)
             .await
             .is_err());
         let rotated = db
@@ -29736,7 +29666,7 @@ source_nar_hash = ""
             Some(rotated_revision.revision)
         );
         assert!(db
-            .retire_storage_binding_write_revision(binding, revision.revision)
+            .retire_binding_write_revision(binding, revision.revision)
             .await
             .unwrap());
         assert!(!db
@@ -29833,7 +29763,7 @@ source_nar_hash = ""
             "conditional-writer",
             4,
         );
-        conditional.storage_binding_id = binding;
+        conditional.binding_id = binding;
         conditional.requires_conditional_writes = true;
         let conditional = db.create_surface_placement(&conditional).await.unwrap();
         let conditional = db
@@ -29843,8 +29773,8 @@ source_nar_hash = ""
         let ordinary_generation =
             create_valid_write_credential(&db, binding, "secret://binding/write/v3").await;
         let ordinary_only = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding,
                 write_credential_generation: ordinary_generation,
                 writes_supported: true,
                 conditional_writes_supported: false,
@@ -29853,15 +29783,9 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
-        db.observe_storage_binding_write_revision(
-            binding,
-            ordinary_only.revision,
-            "valid",
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.observe_binding_write_revision(binding, ordinary_only.revision, "valid", None, None)
+            .await
+            .unwrap();
         db.bind_surface_placement_write_capability(conditional.id, ordinary_only.revision)
             .await
             .unwrap();
@@ -29883,7 +29807,7 @@ source_nar_hash = ""
             "invalid-shard",
             5,
         );
-        invalid_shard.storage_binding_id = binding;
+        invalid_shard.binding_id = binding;
         invalid_shard.kind = "shard".to_string();
         for range in [
             None,
@@ -29959,7 +29883,7 @@ source_nar_hash = ""
 
         let mut replica =
             topology_placement(SurfaceTarget::Registry(registry), "replica", "replica", 0);
-        replica.storage_binding_id = binding;
+        replica.binding_id = binding;
         let replica = db.create_surface_placement(&replica).await.unwrap();
         db.observe_surface_placement(replica.id, "ready", "complete", 1)
             .await
@@ -29967,7 +29891,7 @@ source_nar_hash = ""
 
         let mut writer =
             topology_placement(SurfaceTarget::Registry(registry), "writer", "writer", 100);
-        writer.storage_binding_id = binding;
+        writer.binding_id = binding;
         let writer = db.create_surface_placement(&writer).await.unwrap();
         let writer = db
             .observe_surface_placement(writer.id, "ready", "complete", 1)
@@ -29976,8 +29900,8 @@ source_nar_hash = ""
         let generation =
             create_valid_write_credential(&db, binding, "secret://binding/reader/v1").await;
         let revision = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding,
+            .create_binding_write_revision(&NewBindingWriteRevision {
+                binding_id: binding,
                 write_credential_generation: generation,
                 writes_supported: true,
                 conditional_writes_supported: true,
@@ -29986,7 +29910,7 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
-        db.observe_storage_binding_write_revision(binding, revision.revision, "valid", None, None)
+        db.observe_binding_write_revision(binding, revision.revision, "valid", None, None)
             .await
             .unwrap();
         db.bind_surface_placement_write_capability(writer.id, revision.revision)
@@ -30052,13 +29976,13 @@ source_nar_hash = ""
         ] {
             let mut input =
                 topology_placement(SurfaceTarget::Registry(registry), name, prefix, order);
-            input.storage_binding_id = binding;
+            input.binding_id = binding;
             db.create_surface_placement(&input).await.unwrap();
         }
         for (name, prefix) in [("binding-root", ""), ("alpha-child", "alpha/child")] {
             let mut conflicting =
                 topology_placement(SurfaceTarget::Registry(registry), name, prefix, 2);
-            conflicting.storage_binding_id = binding;
+            conflicting.binding_id = binding;
             assert!(db.create_surface_placement(&conflicting).await.is_err());
         }
         let placements = db
@@ -30096,7 +30020,7 @@ source_nar_hash = ""
             .is_err());
 
         let owner = db.org_by_id(org).await.unwrap().unwrap();
-        let binding = db.storage_binding(binding).await.unwrap().unwrap();
+        let binding = db.binding(binding).await.unwrap().unwrap();
         let defaults = db
             .set_stable_topology_defaults(
                 "organization",
@@ -30370,7 +30294,7 @@ source_nar_hash = ""
             .unwrap();
         let mut placement =
             topology_placement(SurfaceTarget::Registry(registry_id), "primary", "reuse", 0);
-        placement.storage_binding_id = binding_id;
+        placement.binding_id = binding_id;
         let placement = db.create_surface_placement(&placement).await.unwrap();
 
         let first_publication = "reusepublication000000000000000001";

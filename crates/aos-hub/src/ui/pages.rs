@@ -21,8 +21,8 @@
 use std::time::Instant;
 
 pub use aos_hub_core::web::browse_pages::{
-    channel_grid_pre, DeliveryRouteHealthRow, ImageBrowse, PackageBrowse, PackageClosure,
-    ResolvedDependency, SortColumn, SortDir, LIST_PER_PAGE, PACKAGES_PER_PAGE,
+    channel_grid_pre, ImageBrowse, PackageBrowse, PackageClosure, ResolvedDependency,
+    RouteHealthRow, SortColumn, SortDir, LIST_PER_PAGE, PACKAGES_PER_PAGE,
 };
 
 use aos_hub_core::db::{
@@ -236,7 +236,7 @@ pub fn health_page(
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
     repair_jobs: &[RepairJobRow],
-    routes: &[DeliveryRouteHealthRow],
+    routes: &[RouteHealthRow],
     started: Instant,
 ) -> String {
     aos_hub_core::web::browse_pages::health_page(

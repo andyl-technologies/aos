@@ -28,7 +28,7 @@ def typed_resources($plan):
    + [ $plan.topology.organizations[]? | {kind:"organization", stable_id} ]
    + [ $plan.topology.projects[]? | {kind:"project", stable_id} ]
    + [ $plan.topology.surfaces[]? | {kind:.kind, stable_id} ]
-   + [ $plan.topology.bindings[]? | {kind:"storage_binding", stable_id} ]
+   + [ $plan.topology.bindings[]? | {kind:"binding", stable_id} ]
    + [ $plan.topology.binding_capability_observations[]? | {kind:"binding_capability_observation", stable_id} ]
    + [ $plan.topology.credential_generations[]? | {kind:"credential_generation", stable_id} ]
    + [ $plan.topology.binding_write_revisions[]? | {kind:"binding_write_revision", stable_id} ]
@@ -36,11 +36,11 @@ def typed_resources($plan):
    + [ $plan.topology.storage_defaults[]? | {kind:"storage_default", stable_id} ]
    + [ $plan.topology.placements[]? | {kind:"placement", stable_id} ]
    + [ $plan.topology.write_authorities[]? | {kind:"write_authority", stable_id} ]
-   + [ $plan.topology.delivery_endpoints[]? | {kind:"delivery_endpoint", stable_id} ]
+   + [ $plan.topology.endpoints[]? | {kind:"endpoint", stable_id} ]
    + [ $plan.topology.domains[]? | {kind:"domain", stable_id} ]
-   + [ $plan.topology.network_boundaries[]? | {kind:"network_boundary", stable_id} ]
-   + [ $plan.topology.gateways[]? | {kind:"storage_gateway", stable_id} ]
-   + [ $plan.topology.routes[]? | {kind:"delivery_route", stable_id} ]
+   + [ $plan.topology.network_policies[]? | {kind:"network_policy", stable_id} ]
+   + [ $plan.topology.gateways[]? | {kind:"gateway", stable_id} ]
+   + [ $plan.topology.routes[]? | {kind:"route", stable_id} ]
    + [ $plan.topology.route_configurations[]? | {kind:"route_configuration", stable_id} ]
    + [ $plan.topology.placement_policies[]? | {kind:"placement_policy", stable_id} ]
    + [ $plan.topology.equivalence_sets[]? | {kind:"equivalence_set", stable_id} ]
@@ -155,8 +155,8 @@ def reference_contract_valid($plan):
   and ([ $routes[] as $route
          | ($surfaces | any(.stable_id == $route.surface.stable_id and .kind == $route.surface.kind))
            and exact_route_configuration($plan; $route)
-           and ($plan.topology.delivery_endpoints | any(.stable_id == $route.endpoint_generation_stable_id))
-           and ($plan.topology.network_boundaries | any(.stable_id == $route.boundary_generation_stable_id))
+           and ($plan.topology.endpoints | any(.stable_id == $route.endpoint_generation_stable_id))
+           and ($plan.topology.network_policies | any(.stable_id == $route.boundary_generation_stable_id))
            and ($route.gateway_generation_stable_id == null
                 or ($plan.topology.gateways | any(.stable_id == $route.gateway_generation_stable_id)))
            and ($plan.topology.placement_policies
@@ -573,8 +573,8 @@ def canonical_order_valid($plan; $report; $verification):
   and ([ ["instances", "organizations", "projects", "surfaces", "bindings",
         "binding_capability_observations", "credential_generations",
         "binding_write_revisions", "binding_grants", "storage_defaults",
-        "placements", "write_authorities", "delivery_endpoints", "domains",
-        "network_boundaries", "gateways", "routes", "route_configurations",
+        "placements", "write_authorities", "endpoints", "domains",
+        "network_policies", "gateways", "routes", "route_configurations",
         "placement_policies", "equivalence_sets", "registry_publications",
         "publication_bindings", "population_targets", "placement_manifests"][] as $name
        | $plan.topology[$name] == ($plan.topology[$name] | sort_by(.stable_id))

@@ -61,26 +61,26 @@ service ProjectService {
   rpc DeleteProject(ApplyProjectMutationRequest) returns (DeleteTopologyResourceResponse);
 }
 
-// Storage bindings (RFC-0004 "Storage: StorageBinding and shared buckets").
-service StorageBindingService {
-  rpc ListStorageBindings(ListStorageBindingsRequest) returns (ListStorageBindingsResponse);
-  rpc GetStorageBinding(GetStorageBindingRequest) returns (GetStorageBindingResponse);
-  rpc PlanCreateStorageBinding(PlanStorageBindingMutationRequest) returns (TopologyPlanResponse);
-  rpc CreateStorageBinding(ApplyStorageBindingMutationRequest) returns (StorageBindingResponse);
-  rpc PlanSetStorageBindingCredential(PlanStorageBindingCredentialRequest) returns (TopologyPlanResponse);
-  rpc SetStorageBindingCredential(ApplyStorageBindingCredentialRequest) returns (StorageBindingCredentialResponse);
-  rpc PlanRotateStorageBindingCredential(PlanStorageBindingCredentialRequest) returns (TopologyPlanResponse);
-  rpc RotateStorageBindingCredential(ApplyStorageBindingCredentialRequest) returns (StorageBindingCredentialResponse);
-  rpc PlanValidateStorageBindingCredential(PlanValidateStorageBindingCredentialRequest) returns (TopologyPlanResponse);
-  rpc ValidateStorageBindingCredential(ApplyTopologyPlanRequest) returns (OperationResponse);
-  rpc PlanGrantStorageBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc GrantStorageBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanRevokeStorageBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc RevokeStorageBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc ListStorageBindingWriteRevisions(ListStorageBindingWriteRevisionsRequest) returns (ListStorageBindingWriteRevisionsResponse);
-  rpc GetStorageBindingWriteRevision(GetStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
-  rpc PlanDeleteStorageBinding(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteStorageBinding(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+// Bindings (RFC-0004 "Storage: Binding and shared buckets").
+service BindingService {
+  rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
+  rpc GetBinding(GetBindingRequest) returns (GetBindingResponse);
+  rpc PlanCreateBinding(PlanBindingMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateBinding(ApplyBindingMutationRequest) returns (BindingResponse);
+  rpc PlanSetBindingCredential(PlanBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc SetBindingCredential(ApplyBindingCredentialRequest) returns (BindingCredentialResponse);
+  rpc PlanRotateBindingCredential(PlanBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc RotateBindingCredential(ApplyBindingCredentialRequest) returns (BindingCredentialResponse);
+  rpc PlanValidateBindingCredential(PlanValidateBindingCredentialRequest) returns (TopologyPlanResponse);
+  rpc ValidateBindingCredential(ApplyTopologyPlanRequest) returns (OperationResponse);
+  rpc PlanGrantBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeBindingScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeBindingScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc ListBindingWriteRevisions(ListBindingWriteRevisionsRequest) returns (ListBindingWriteRevisionsResponse);
+  rpc GetBindingWriteRevision(GetBindingWriteRevisionRequest) returns (BindingWriteRevisionResponse);
+  rpc PlanDeleteBinding(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteBinding(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
   rpc GetInstanceTopologyDefaults(GetInstanceTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
   rpc PlanSetInstanceTopologyDefaults(PlanSetTopologyDefaultsRequest) returns (TopologyPlanResponse);
   rpc SetInstanceTopologyDefaults(ApplySetTopologyDefaultsRequest) returns (TopologyDefaultsResponse);
@@ -104,81 +104,81 @@ service DomainService {
   rpc DeleteDomain(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
 }
 
-service NetworkBoundaryService {
-  rpc ListNetworkBoundaries(ListTopologyResourcesRequest) returns (ListNetworkBoundariesResponse);
-  rpc GetNetworkBoundary(GetTopologyResourceRequest) returns (NetworkBoundaryResponse);
-  rpc PlanCreateNetworkBoundary(PlanNetworkBoundaryMutationRequest) returns (TopologyPlanResponse);
-  rpc CreateNetworkBoundary(ApplyNetworkBoundaryMutationRequest) returns (NetworkBoundaryResponse);
-  rpc ListNetworkBoundaryRevisions(ListNetworkBoundaryRevisionsRequest) returns (ListNetworkBoundaryRevisionsResponse);
-  rpc GetNetworkBoundaryRevision(GetNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
-  rpc PlanReviseNetworkBoundary(PlanNetworkBoundaryRevisionRequest) returns (TopologyPlanResponse);
-  rpc ReviseNetworkBoundary(ApplyNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
-  rpc PlanActivateNetworkBoundaryRevision(PlanNetworkBoundaryLifecycleRequest) returns (TopologyPlanResponse);
-  rpc ActivateNetworkBoundaryRevision(ApplyNetworkBoundaryLifecycleRequest) returns (NetworkBoundaryRevisionResponse);
-  rpc PlanRetireNetworkBoundaryRevision(PlanNetworkBoundaryLifecycleRequest) returns (TopologyPlanResponse);
-  rpc RetireNetworkBoundaryRevision(ApplyNetworkBoundaryLifecycleRequest) returns (NetworkBoundaryRevisionResponse);
-  rpc PlanGrantNetworkBoundaryScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc GrantNetworkBoundaryScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanRevokeNetworkBoundaryScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc RevokeNetworkBoundaryScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanDeleteNetworkBoundary(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteNetworkBoundary(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+service NetworkPolicyService {
+  rpc ListNetworkPolicies(ListTopologyResourcesRequest) returns (ListNetworkPoliciesResponse);
+  rpc GetNetworkPolicy(GetTopologyResourceRequest) returns (NetworkPolicyResponse);
+  rpc PlanCreateNetworkPolicy(PlanNetworkPolicyMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateNetworkPolicy(ApplyNetworkPolicyMutationRequest) returns (NetworkPolicyResponse);
+  rpc ListNetworkPolicyRevisions(ListNetworkPolicyRevisionsRequest) returns (ListNetworkPolicyRevisionsResponse);
+  rpc GetNetworkPolicyRevision(GetNetworkPolicyRevisionRequest) returns (NetworkPolicyRevisionResponse);
+  rpc PlanReviseNetworkPolicy(PlanNetworkPolicyRevisionRequest) returns (TopologyPlanResponse);
+  rpc ReviseNetworkPolicy(ApplyNetworkPolicyRevisionRequest) returns (NetworkPolicyRevisionResponse);
+  rpc PlanActivateNetworkPolicyRevision(PlanNetworkPolicyLifecycleRequest) returns (TopologyPlanResponse);
+  rpc ActivateNetworkPolicyRevision(ApplyNetworkPolicyLifecycleRequest) returns (NetworkPolicyRevisionResponse);
+  rpc PlanRetireNetworkPolicyRevision(PlanNetworkPolicyLifecycleRequest) returns (TopologyPlanResponse);
+  rpc RetireNetworkPolicyRevision(ApplyNetworkPolicyLifecycleRequest) returns (NetworkPolicyRevisionResponse);
+  rpc PlanGrantNetworkPolicyScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantNetworkPolicyScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeNetworkPolicyScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeNetworkPolicyScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanDeleteNetworkPolicy(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteNetworkPolicy(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
 }
 
 service DeliveryService {
-  rpc ListDeliveryEndpoints(ListTopologyResourcesRequest) returns (ListDeliveryEndpointsResponse);
-  rpc GetDeliveryEndpoint(GetTopologyResourceRequest) returns (DeliveryEndpointResponse);
-  rpc PlanCreateDeliveryEndpoint(PlanDeliveryEndpointMutationRequest) returns (TopologyPlanResponse);
-  rpc CreateDeliveryEndpoint(ApplyDeliveryEndpointMutationRequest) returns (DeliveryEndpointResponse);
-  rpc ListDeliveryEndpointGenerations(ListDeliveryEndpointGenerationsRequest) returns (ListDeliveryEndpointGenerationsResponse);
-  rpc GetDeliveryEndpointGeneration(GetDeliveryEndpointGenerationRequest) returns (DeliveryEndpointGenerationResponse);
-  rpc PlanStageDeliveryEndpointGeneration(PlanStageDeliveryEndpointGenerationRequest) returns (TopologyPlanResponse);
-  rpc StageDeliveryEndpointGeneration(ApplyDeliveryEndpointGenerationRequest) returns (DeliveryEndpointGenerationResponse);
-  rpc PlanActivateDeliveryEndpointGeneration(PlanActivateDeliveryEndpointGenerationRequest) returns (TopologyPlanResponse);
-  rpc ActivateDeliveryEndpointGeneration(ApplyDeliveryEndpointGenerationRequest) returns (DeliveryEndpointResponse);
-  rpc PlanGrantDeliveryEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc GrantDeliveryEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanRevokeDeliveryEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc RevokeDeliveryEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanDeleteDeliveryEndpoint(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteDeliveryEndpoint(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  rpc ListEndpoints(ListTopologyResourcesRequest) returns (ListEndpointsResponse);
+  rpc GetEndpoint(GetTopologyResourceRequest) returns (EndpointResponse);
+  rpc PlanCreateEndpoint(PlanEndpointMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateEndpoint(ApplyEndpointMutationRequest) returns (EndpointResponse);
+  rpc ListEndpointGenerations(ListEndpointGenerationsRequest) returns (ListEndpointGenerationsResponse);
+  rpc GetEndpointGeneration(GetEndpointGenerationRequest) returns (EndpointGenerationResponse);
+  rpc PlanStageEndpointGeneration(PlanStageEndpointGenerationRequest) returns (TopologyPlanResponse);
+  rpc StageEndpointGeneration(ApplyEndpointGenerationRequest) returns (EndpointGenerationResponse);
+  rpc PlanActivateEndpointGeneration(PlanActivateEndpointGenerationRequest) returns (TopologyPlanResponse);
+  rpc ActivateEndpointGeneration(ApplyEndpointGenerationRequest) returns (EndpointResponse);
+  rpc PlanGrantEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeEndpointScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeEndpointScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanDeleteEndpoint(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteEndpoint(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
 
-  rpc ListStorageGateways(ListStorageGatewaysRequest) returns (ListStorageGatewaysResponse);
-  rpc GetStorageGateway(GetTopologyResourceRequest) returns (StorageGatewayResponse);
-  rpc PlanCreateStorageGateway(PlanStorageGatewayMutationRequest) returns (TopologyPlanResponse);
-  rpc CreateStorageGateway(ApplyStorageGatewayMutationRequest) returns (StorageGatewayResponse);
-  rpc PlanUpdateStorageGateway(PlanStorageGatewayMutationRequest) returns (TopologyPlanResponse);
-  rpc UpdateStorageGateway(ApplyStorageGatewayMutationRequest) returns (StorageGatewayResponse);
-  rpc PlanGrantStorageGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc GrantStorageGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
-  rpc PlanRevokeStorageGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
-  rpc RevokeStorageGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc ListGateways(ListGatewaysRequest) returns (ListGatewaysResponse);
+  rpc GetGateway(GetTopologyResourceRequest) returns (GatewayResponse);
+  rpc PlanCreateGateway(PlanGatewayMutationRequest) returns (TopologyPlanResponse);
+  rpc CreateGateway(ApplyGatewayMutationRequest) returns (GatewayResponse);
+  rpc PlanUpdateGateway(PlanGatewayMutationRequest) returns (TopologyPlanResponse);
+  rpc UpdateGateway(ApplyGatewayMutationRequest) returns (GatewayResponse);
+  rpc PlanGrantGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc GrantGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
+  rpc PlanRevokeGatewayScope(PlanConsumerScopeGrantRequest) returns (TopologyPlanResponse);
+  rpc RevokeGatewayScope(ApplyConsumerScopeGrantRequest) returns (ConsumerScopeGrantResponse);
   rpc PreviewGatewayRoutes(GetTopologyResourceRequest) returns (GatewayRoutePreviewResponse);
-  rpc PlanEnableStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc EnableStorageGateway(ApplyDeleteTopologyResourceRequest) returns (StorageGatewayResponse);
-  rpc PlanDisableStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DisableStorageGateway(ApplyDeleteTopologyResourceRequest) returns (StorageGatewayResponse);
-  rpc PlanDeleteStorageGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteStorageGateway(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  rpc PlanEnableGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc EnableGateway(ApplyDeleteTopologyResourceRequest) returns (GatewayResponse);
+  rpc PlanDisableGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DisableGateway(ApplyDeleteTopologyResourceRequest) returns (GatewayResponse);
+  rpc PlanDeleteGateway(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
+  rpc DeleteGateway(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
 }
 
 service RouteService {
   rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse);
-  rpc GetRoute(GetTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc GetRoute(GetTopologyResourceRequest) returns (RouteResponse);
   rpc PlanCreateRoute(PlanRouteMutationRequest) returns (TopologyPlanResponse);
-  rpc CreateRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc CreateRoute(ApplyRouteMutationRequest) returns (RouteResponse);
   rpc PlanUpdateRoute(PlanRouteMutationRequest) returns (TopologyPlanResponse);
-  rpc UpdateRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc UpdateRoute(ApplyRouteMutationRequest) returns (RouteResponse);
   rpc PlanReplaceRoute(PlanReplaceRouteRequest) returns (TopologyPlanResponse);
-  rpc ReplaceRoute(ApplyRouteMutationRequest) returns (DeliveryRouteResponse);
+  rpc ReplaceRoute(ApplyRouteMutationRequest) returns (RouteResponse);
   rpc PlanEnableRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc EnableRoute(ApplyDeleteTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc EnableRoute(ApplyDeleteTopologyResourceRequest) returns (RouteResponse);
   rpc PlanDisableRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DisableRoute(ApplyDeleteTopologyResourceRequest) returns (DeliveryRouteResponse);
+  rpc DisableRoute(ApplyDeleteTopologyResourceRequest) returns (RouteResponse);
   rpc PlanDeleteRoute(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
   rpc DeleteRoute(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
-  rpc PlanSetCanonicalRoute(PlanCanonicalRouteRequest) returns (TopologyPlanResponse);
-  rpc SetCanonicalRoute(ApplyCanonicalRouteRequest) returns (CanonicalRouteResponse);
+  rpc PlanSetRouteAdvertisement(PlanRouteAdvertisementRequest) returns (TopologyPlanResponse);
+  rpc SetRouteAdvertisement(ApplyRouteAdvertisementRequest) returns (RouteAdvertisementResponse);
   rpc ExplainRoute(ExplainRouteRequest) returns (ExplainRouteResponse);
 }
 
@@ -249,17 +249,17 @@ service RegistryMirrorService {
 // Fenced controller-only observations. These services are never routed through
 // the public API surface. Every request identifies the held controller lease,
 // fences its generation, and CASes the exact prior observation version.
-service StorageBindingControllerService {
-  rpc ReportStorageBindingWriteRevision(ReportStorageBindingWriteRevisionRequest) returns (StorageBindingWriteRevisionResponse);
+service BindingControllerService {
+  rpc ReportBindingWriteRevision(ReportBindingWriteRevisionRequest) returns (BindingWriteRevisionResponse);
 }
-service NetworkBoundaryControllerService {
-  rpc CompleteNetworkBoundaryRevisionProbe(CompleteNetworkBoundaryRevisionProbeRequest) returns (NetworkBoundaryRevisionResponse);
-  rpc ReportNetworkBoundaryRevision(ReportNetworkBoundaryRevisionRequest) returns (NetworkBoundaryRevisionResponse);
+service NetworkPolicyControllerService {
+  rpc CompleteNetworkPolicyRevisionProbe(CompleteNetworkPolicyRevisionProbeRequest) returns (NetworkPolicyRevisionResponse);
+  rpc ReportNetworkPolicyRevision(ReportNetworkPolicyRevisionRequest) returns (NetworkPolicyRevisionResponse);
 }
 service DeliveryControllerService {
-  rpc CompleteDeliveryEndpointProbe(CompleteDeliveryEndpointProbeRequest) returns (DeliveryEndpointResponse);
-  rpc ReportDeliveryEndpoint(ReportDeliveryEndpointRequest) returns (DeliveryEndpointResponse);
-  rpc ReportStorageGateway(ReportStorageGatewayRequest) returns (StorageGatewayResponse);
+  rpc CompleteEndpointProbe(CompleteEndpointProbeRequest) returns (EndpointResponse);
+  rpc ReportEndpoint(ReportEndpointRequest) returns (EndpointResponse);
+  rpc ReportGateway(ReportGatewayRequest) returns (GatewayResponse);
 }
 service RouteControllerService {
   rpc CompleteRouteProbe(CompleteRouteProbeRequest) returns (OperationResponse);
@@ -508,7 +508,7 @@ message SystemImage {
   string filename = 8;
   // Immutable byte URL. Private images resolve to the Hub control origin so
   // the caller can reuse its bearer or browser session; public images may
-  // resolve to a ready CDN/direct delivery route.
+  // resolve to a ready CDN/direct route.
   string download_url = 9;
   string media_type = 10;
   string compression = 11;
@@ -891,12 +891,12 @@ message GetSurfaceTopologyRequest { SurfaceRef surface = 1; }
 message GetSurfaceTopologyResponse {
   SurfaceRef surface = 1;
   repeated Placement placements = 2;
-  repeated DeliveryRoute routes = 3;
-  repeated CanonicalRoute canonical_routes = 4;
+  repeated Route routes = 3;
+  repeated RouteAdvertisement route_advertisements = 4;
   SurfaceWriteAuthority write_authority = 5;
   repeated PlacementPolicy placement_policies = 6;
   repeated PlacementEquivalence placement_equivalences = 7;
-  repeated DeliveryEndpoint canonical_endpoints = 8;
+  repeated Endpoint canonical_endpoints = 8;
   repeated OperationRef active_operations = 9;
 }
 message ExplainSurfaceRequestRequest {
@@ -968,7 +968,7 @@ message PlacementStatus {
 
 message Placement {
   string name = 1;
-  string storage_binding_name = 2;
+  string binding_name = 2;
   string prefix = 3;
   PlacementSpec spec = 4;
   PlacementObservation observation = 5;
@@ -1050,7 +1050,7 @@ message RemoveWriteAuthorityResponse {
 message PlanCreatePlacementRequest {
   SurfaceRef surface = 1;
   string name = 2;
-  string storage_binding_id = 3;
+  string binding_id = 3;
   string prefix = 4;
   string kind = 5;
   string desired_state = 6;
@@ -1190,7 +1190,7 @@ message OrderedFailoverPlacementPolicy {
 
 message LocalThenRemotePlacementPolicy {
   repeated PlacementPolicyReplicaGroup replica_groups = 1;
-  NetworkBoundaryRevisionRef local_boundary = 2;
+  NetworkPolicyRevisionRef local_boundary = 2;
   bool allow_remote_fallback = 3;
 }
 
@@ -1199,7 +1199,7 @@ message HashPartitionPlacementPolicy {
   repeated string complete_fallback_placements = 2;
 }
 
-message NetworkBoundaryRevisionRef {
+message NetworkPolicyRevisionRef {
   string boundary_id = 1;
   int64 revision = 2;
 }
@@ -1379,8 +1379,7 @@ message PlanUpdateRegistryRequest {
 // reads exactly what the serving path uses. Unset optionals (the numeric
 // `*_secs`/`*_bytes`) are conveyed as 0, meaning "use the built-in default".
 message InstanceSettings {
-  // Site title shown in the masthead and page titles; empty falls back to the
-  // deploy brand.
+  // Site title shown in the masthead and page titles; empty renders no title.
   string site_title = 1;
   // Short tagline shown beside the brand.
   string tagline = 2;
@@ -1977,15 +1976,15 @@ message OperationResourceRef {
     string binary_cache_id = 2;
     string placement_id = 3;
     string domain_id = 4;
-    string network_boundary_id = 5;
-    string delivery_endpoint_id = 6;
-    string storage_gateway_id = 7;
-    string delivery_route_id = 8;
+    string network_policy_id = 5;
+    string endpoint_id = 6;
+    string gateway_id = 7;
+    string route_id = 8;
     string placement_policy_id = 9;
     string retention_subscription_id = 10;
     string population_target_id = 11;
     string cache_gc_generation_id = 12;
-    string storage_binding_id = 13;
+    string binding_id = 13;
   }
 }
 message OperationTarget {
@@ -1995,15 +1994,15 @@ message OperationTarget {
     string binary_cache_id = 3;
     string placement_id = 4;
     string domain_id = 5;
-    string network_boundary_id = 6;
-    string delivery_endpoint_id = 7;
-    string storage_gateway_id = 8;
-    string delivery_route_id = 9;
+    string network_policy_id = 6;
+    string endpoint_id = 7;
+    string gateway_id = 8;
+    string route_id = 9;
     string placement_policy_id = 10;
     string retention_subscription_id = 11;
     string population_target_id = 12;
     string cache_gc_generation_id = 13;
-    string storage_binding_id = 14;
+    string binding_id = 14;
   }
   int64 generation_key = 20;
   string configuration_digest = 21;
@@ -3232,14 +3231,14 @@ message ApplyDeleteTopologyResourceRequest {
 
 message DeleteTopologyResourceResponse { bool deleted = 1; }
 
-message StorageBindingRef {
+message BindingRef {
   oneof target {
     bool instance_default = 1;
-    OrganizationStorageBindingRef organization = 2;
+    OrganizationBindingRef organization = 2;
   }
 }
 
-message OrganizationStorageBindingRef {
+message OrganizationBindingRef {
   string org_slug = 1;
   string name = 2;
 }
@@ -3254,7 +3253,7 @@ message StorageEndpoint {
   uint32 port = 5;
 }
 
-message StorageBindingSpec {
+message BindingSpec {
   string name = 1;
   oneof provider {
     LocalFilesystemStorageProvider local_filesystem = 2;
@@ -3288,7 +3287,7 @@ message DeploymentR2StorageProvider {
   string bucket_binding = 1;
 }
 
-message StorageBindingCapabilities {
+message BindingCapabilities {
   bool reads_supported = 1;
   bool writes_supported = 2;
   bool conditional_writes_supported = 3;
@@ -3297,52 +3296,52 @@ message StorageBindingCapabilities {
   bool presigns_supported = 6;
 }
 
-message StorageBindingHealth {
+message BindingHealth {
   string state = 1;
   int64 observed_at = 2;
   string error = 3;
 }
 
-message StorageBinding {
+message Binding {
   string stable_id = 1;
   string owner_scope_key = 2;
-  StorageBindingSpec spec = 3;
-  StorageBindingCapabilities capabilities = 4;
-  StorageBindingHealth health = 5;
+  BindingSpec spec = 3;
+  BindingCapabilities capabilities = 4;
+  BindingHealth health = 5;
   repeated ConsumerScopeGrant grants = 6;
   string resource_version = 7;
   int64 created_at = 8;
   int64 updated_at = 9;
 }
 
-message ListStorageBindingsRequest {
+message ListBindingsRequest {
   string owner_scope_key = 1;
   uint32 page_size = 2;
   string page_token = 3;
 }
-message ListStorageBindingsResponse {
-  repeated StorageBinding storage_bindings = 1;
+message ListBindingsResponse {
+  repeated Binding bindings = 1;
   string next_page_token = 2;
 }
-message GetStorageBindingRequest { StorageBindingRef storage_binding = 1; }
-message GetStorageBindingResponse { StorageBinding storage_binding = 1; }
-message PlanStorageBindingMutationRequest {
+message GetBindingRequest { BindingRef binding = 1; }
+message GetBindingResponse { Binding binding = 1; }
+message PlanBindingMutationRequest {
   string stable_id = 1;
   string owner_scope_key = 2;
-  StorageBindingSpec spec = 3;
+  BindingSpec spec = 3;
   string expected_resource_version = 4;
   string idempotency_key = 5;
   repeated string update_mask = 6;
 }
-message ApplyStorageBindingMutationRequest {
+message ApplyBindingMutationRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message StorageBindingResponse { StorageBinding storage_binding = 1; }
+message BindingResponse { Binding binding = 1; }
 
-message StorageBindingCredential {
-  string storage_binding_id = 1;
+message BindingCredential {
+  string binding_id = 1;
   string purpose = 2;
   int64 generation = 3;
   string secret_version_ref = 4;
@@ -3353,8 +3352,8 @@ message StorageBindingCredential {
   int64 created_at = 9;
   string resource_version = 10;
 }
-message PlanStorageBindingCredentialRequest {
-  string storage_binding_id = 1;
+message PlanBindingCredentialRequest {
+  string binding_id = 1;
   string purpose = 2;
   string secret_version_ref = 3;
   string expected_resource_version = 4;
@@ -3363,24 +3362,24 @@ message PlanStorageBindingCredentialRequest {
   // Required SHA-256 hex digest of the exact resolved provider value.
   string credential_fingerprint = 7;
 }
-message ApplyStorageBindingCredentialRequest {
+message ApplyBindingCredentialRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message PlanValidateStorageBindingCredentialRequest {
-  string storage_binding_id = 1;
+message PlanValidateBindingCredentialRequest {
+  string binding_id = 1;
   string purpose = 2;
   int64 generation = 3;
   string expected_resource_version = 4;
   string idempotency_key = 5;
 }
-message StorageBindingCredentialResponse {
-  StorageBindingCredential credential = 1;
+message BindingCredentialResponse {
+  BindingCredential credential = 1;
 }
 
-message StorageBindingWriteRevision {
-  string storage_binding_id = 1;
+message BindingWriteRevision {
+  string binding_id = 1;
   int64 revision = 2;
   string write_credential_purpose = 3;
   int64 write_credential_generation = 4;
@@ -3395,24 +3394,24 @@ message StorageBindingWriteRevision {
   int64 created_at = 13;
   string resource_version = 14;
 }
-message ListStorageBindingWriteRevisionsResponse {
-  repeated StorageBindingWriteRevision revisions = 1;
+message ListBindingWriteRevisionsResponse {
+  repeated BindingWriteRevision revisions = 1;
   string next_page_token = 2;
 }
-message ListStorageBindingWriteRevisionsRequest {
-  StorageBindingRef storage_binding = 1;
+message ListBindingWriteRevisionsRequest {
+  BindingRef binding = 1;
   uint32 page_size = 2;
   string page_token = 3;
 }
-message GetStorageBindingWriteRevisionRequest {
-  StorageBindingRef storage_binding = 1;
+message GetBindingWriteRevisionRequest {
+  BindingRef binding = 1;
   int64 revision = 2;
 }
-message StorageBindingWriteRevisionResponse {
-  StorageBindingWriteRevision revision = 1;
+message BindingWriteRevisionResponse {
+  BindingWriteRevision revision = 1;
 }
-message ReportStorageBindingWriteRevisionRequest {
-  string storage_binding_id = 1;
+message ReportBindingWriteRevisionRequest {
+  string binding_id = 1;
   int64 revision = 2;
   string state = 3;
   string validation_error = 4;
@@ -3423,12 +3422,12 @@ message ReportStorageBindingWriteRevisionRequest {
 
 message TopologyDefaults {
   string scope_key = 1;
-  string storage_binding_id = 2;
+  string binding_id = 2;
   string domain_id = 3;
-  string delivery_endpoint_id = 4;
-  int64 delivery_endpoint_generation = 5;
-  string storage_gateway_id = 6;
-  int64 storage_gateway_generation = 7;
+  string endpoint_id = 4;
+  int64 endpoint_generation = 5;
+  string gateway_id = 6;
+  int64 gateway_generation = 7;
   string resource_version = 8;
 }
 message GetInstanceTopologyDefaultsRequest {}
@@ -3599,7 +3598,7 @@ message ApplyDomainConfigurationRequest {
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message NetworkBoundaryIdentity {
+message NetworkPolicyIdentity {
   oneof identity {
     bool public = 1;
     ProviderResourceIdentity vpn = 2;
@@ -3636,20 +3635,20 @@ message SignedAssertionTrustedIngress {
   string audience = 2;
   string verification_key_secret_ref = 3;
 }
-message NetworkBoundaryRevisionSpec {
+message NetworkPolicyRevisionSpec {
   bool protected_transport_required = 1;
   TrustedIngressConfiguration trusted_ingress = 2;
   repeated string source_allowlist_cidrs = 3;
   string probe_location_configuration_ref = 4;
 }
-message NetworkBoundaryObservation {
+message NetworkPolicyObservation {
   string state = 1;
   bool protected_transport_observed = 2;
   string trusted_ingress_observed = 3;
   int64 observed_at = 4;
   string error = 5;
 }
-message NetworkBoundaryRevisionLifecycle {
+message NetworkPolicyRevisionLifecycle {
   string state = 1;
   string activation_mode = 2;
   int64 consumer_version = 3;
@@ -3657,21 +3656,21 @@ message NetworkBoundaryRevisionLifecycle {
   int64 retired_at = 5;
   string resource_version = 6;
 }
-message NetworkBoundaryRevision {
+message NetworkPolicyRevision {
   string boundary_id = 1;
   int64 revision = 2;
-  NetworkBoundaryRevisionSpec spec = 3;
-  NetworkBoundaryObservation observation = 4;
-  NetworkBoundaryRevisionLifecycle lifecycle = 5;
+  NetworkPolicyRevisionSpec spec = 3;
+  NetworkPolicyObservation observation = 4;
+  NetworkPolicyRevisionLifecycle lifecycle = 5;
   string content_digest = 6;
   int64 created_at = 7;
 }
-message NetworkBoundary {
+message NetworkPolicy {
   string stable_id = 1;
   string owner_scope_key = 2;
   string name = 3;
   string kind = 4;
-  NetworkBoundaryIdentity identity = 5;
+  NetworkPolicyIdentity identity = 5;
   string identity_fingerprint = 6;
   int64 default_revision = 7;
   repeated ConsumerScopeGrant grants = 8;
@@ -3679,71 +3678,71 @@ message NetworkBoundary {
   int64 created_at = 10;
   int64 updated_at = 11;
 }
-message ListNetworkBoundariesResponse {
-  repeated NetworkBoundary network_boundaries = 1;
+message ListNetworkPoliciesResponse {
+  repeated NetworkPolicy network_policies = 1;
   string next_page_token = 2;
 }
-message NetworkBoundaryResponse { NetworkBoundary network_boundary = 1; }
-message ListNetworkBoundaryRevisionsResponse {
-  repeated NetworkBoundaryRevision revisions = 1;
+message NetworkPolicyResponse { NetworkPolicy network_policy = 1; }
+message ListNetworkPolicyRevisionsResponse {
+  repeated NetworkPolicyRevision revisions = 1;
   string next_page_token = 2;
 }
-message ListNetworkBoundaryRevisionsRequest {
+message ListNetworkPolicyRevisionsRequest {
   string boundary_id = 1;
   uint32 page_size = 2;
   string page_token = 3;
 }
-message GetNetworkBoundaryRevisionRequest {
+message GetNetworkPolicyRevisionRequest {
   string boundary_id = 1;
   int64 revision = 2;
 }
-message NetworkBoundaryRevisionResponse {
-  NetworkBoundaryRevision revision = 1;
+message NetworkPolicyRevisionResponse {
+  NetworkPolicyRevision revision = 1;
   OperationRef coordination_operation = 2;
 }
-message PlanNetworkBoundaryMutationRequest {
+message PlanNetworkPolicyMutationRequest {
   string stable_id = 1;
   string owner_scope_key = 2;
   string name = 3;
   string kind = 4;
-  NetworkBoundaryIdentity identity = 5;
-  NetworkBoundaryRevisionSpec initial_revision = 6;
+  NetworkPolicyIdentity identity = 5;
+  NetworkPolicyRevisionSpec initial_revision = 6;
   string idempotency_key = 7;
   string expected_resource_version = 8;
 }
-message ApplyNetworkBoundaryMutationRequest {
+message ApplyNetworkPolicyMutationRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message PlanNetworkBoundaryRevisionRequest {
+message PlanNetworkPolicyRevisionRequest {
   string boundary_id = 1;
-  NetworkBoundaryRevisionSpec spec = 2;
+  NetworkPolicyRevisionSpec spec = 2;
   string expected_resource_version = 3;
   string idempotency_key = 4;
   repeated string update_mask = 5;
 }
-message ApplyNetworkBoundaryRevisionRequest {
+message ApplyNetworkPolicyRevisionRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message ReportNetworkBoundaryRevisionRequest {
+message ReportNetworkPolicyRevisionRequest {
   string boundary_id = 1;
   int64 revision = 2;
-  NetworkBoundaryObservation observation = 3;
+  NetworkPolicyObservation observation = 3;
   string expected_observation_version = 4;
   string controller_lease_id = 5;
   int64 controller_generation = 6;
 }
-message CompleteNetworkBoundaryRevisionProbeRequest {
+message CompleteNetworkPolicyRevisionProbeRequest {
   string boundary_id = 1;
   int64 revision = 2;
   string controller_lease_id = 3;
   int64 controller_generation = 4;
   string expected_observation_version = 5;
 }
-message PlanNetworkBoundaryLifecycleRequest {
+message PlanNetworkPolicyLifecycleRequest {
   string boundary_id = 1;
   int64 revision = 2;
   string activation_mode = 3;
@@ -3752,7 +3751,7 @@ message PlanNetworkBoundaryLifecycleRequest {
   string idempotency_key = 6;
   repeated PinResolution pin_resolutions = 7;
 }
-message ApplyNetworkBoundaryLifecycleRequest {
+message ApplyNetworkPolicyLifecycleRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
@@ -3776,7 +3775,7 @@ enum EndpointIngressKind {
   ENDPOINT_INGRESS_KIND_EXTERNAL = 2;
   ENDPOINT_INGRESS_KIND_LAYER7 = 3;
 }
-message DeliveryEndpointRevisionSpec {
+message EndpointRevisionSpec {
   int64 boundary_revision = 1;
   EndpointIngressKind ingress_kind = 2;
   string listener_configuration_ref = 3;
@@ -3792,32 +3791,32 @@ message EndpointObservedState {
   int64 observed_at = 6;
   string error = 7;
 }
-message DeliveryEndpoint {
+message Endpoint {
   string stable_id = 1;
   string owner_scope_key = 2;
   string scheme = 3;
   EndpointHost host = 4;
   uint32 effective_port = 5;
-  string network_boundary_id = 6;
+  string network_policy_id = 6;
   int64 desired_generation = 7;
   string endpoint_identity_digest = 8;
-  DeliveryEndpointRevisionSpec desired = 9;
+  EndpointRevisionSpec desired = 9;
   EndpointObservedState observed = 10;
   repeated ConsumerScopeGrant grants = 11;
   string resource_version = 12;
   int64 created_at = 13;
   int64 updated_at = 14;
 }
-message ListDeliveryEndpointsResponse {
-  repeated DeliveryEndpoint delivery_endpoints = 1;
+message ListEndpointsResponse {
+  repeated Endpoint endpoints = 1;
   string next_page_token = 2;
 }
-message DeliveryEndpointResponse { DeliveryEndpoint delivery_endpoint = 1; }
-message DeliveryEndpointGeneration {
+message EndpointResponse { Endpoint endpoint = 1; }
+message EndpointGeneration {
   string endpoint_id = 1;
   int64 generation = 2;
-  string network_boundary_id = 3;
-  DeliveryEndpointRevisionSpec desired = 4;
+  string network_policy_id = 3;
+  EndpointRevisionSpec desired = 4;
   EndpointObservedState observed = 5;
   repeated ConsumerScopeGrant grants = 6;
   string content_digest = 7;
@@ -3825,67 +3824,67 @@ message DeliveryEndpointGeneration {
   int64 created_at = 9;
   bool selected = 10;
 }
-message ListDeliveryEndpointGenerationsRequest {
+message ListEndpointGenerationsRequest {
   string endpoint_id = 1;
   uint32 page_size = 2;
   string page_token = 3;
 }
-message ListDeliveryEndpointGenerationsResponse {
-  repeated DeliveryEndpointGeneration generations = 1;
+message ListEndpointGenerationsResponse {
+  repeated EndpointGeneration generations = 1;
   string next_page_token = 2;
 }
-message GetDeliveryEndpointGenerationRequest {
+message GetEndpointGenerationRequest {
   string endpoint_id = 1;
   int64 generation = 2;
 }
-message DeliveryEndpointGenerationResponse {
-  DeliveryEndpointGeneration generation = 1;
+message EndpointGenerationResponse {
+  EndpointGeneration generation = 1;
 }
-message PlanDeliveryEndpointMutationRequest {
+message PlanEndpointMutationRequest {
   string stable_id = 1;
   string owner_scope_key = 2;
   string scheme = 3;
   EndpointHost host = 4;
   uint32 effective_port = 5;
-  string network_boundary_id = 6;
-  DeliveryEndpointRevisionSpec revision = 7;
+  string network_policy_id = 6;
+  EndpointRevisionSpec revision = 7;
   repeated string carry_forward_consumer_scopes = 8;
   string expected_resource_version = 9;
   string idempotency_key = 10;
   repeated string update_mask = 11;
 }
-message ApplyDeliveryEndpointMutationRequest {
+message ApplyEndpointMutationRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message PlanStageDeliveryEndpointGenerationRequest {
+message PlanStageEndpointGenerationRequest {
   string endpoint_id = 1;
-  DeliveryEndpointRevisionSpec revision = 2;
+  EndpointRevisionSpec revision = 2;
   repeated string carry_forward_consumer_scopes = 3;
   string expected_resource_version = 4;
   string idempotency_key = 5;
   repeated string update_mask = 6;
 }
-message PlanActivateDeliveryEndpointGenerationRequest {
+message PlanActivateEndpointGenerationRequest {
   string endpoint_id = 1;
   int64 generation = 2;
   string expected_resource_version = 3;
   string idempotency_key = 4;
 }
-message ApplyDeliveryEndpointGenerationRequest {
+message ApplyEndpointGenerationRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message ReportDeliveryEndpointRequest {
+message ReportEndpointRequest {
   string stable_id = 1;
   EndpointObservedState observation = 2;
   string expected_observation_version = 3;
   string controller_lease_id = 4;
   int64 controller_generation = 5;
 }
-message CompleteDeliveryEndpointProbeRequest {
+message CompleteEndpointProbeRequest {
   string stable_id = 1;
   string controller_lease_id = 2;
   int64 controller_generation = 3;
@@ -3920,15 +3919,15 @@ message DeliveryAccessPolicy {
     PrivateNetworkPolicy private_network = 4;
   }
 }
-message StorageGatewayRevisionSpec {
-  string storage_binding_id = 1;
+message GatewayRevisionSpec {
+  string binding_id = 1;
   string endpoint_id = 2;
   int64 endpoint_generation = 3;
   string client_base_path = 4;
   string origin_prefix = 5;
   DeliveryAccessPolicy access_policy = 6;
 }
-message StorageGateway {
+message Gateway {
   string stable_id = 1;
   string owner_scope_key = 2;
   bool enabled = 3;
@@ -3936,37 +3935,37 @@ message StorageGateway {
   int64 observed_generation = 5;
   string reconciliation_state = 6;
   string reconciliation_error = 7;
-  StorageGatewayRevisionSpec desired = 8;
+  GatewayRevisionSpec desired = 8;
   repeated ConsumerScopeGrant grants = 9;
   string resource_version = 10;
   int64 created_at = 11;
   int64 updated_at = 12;
 }
-message ListStorageGatewaysResponse {
-  repeated StorageGateway storage_gateways = 1;
+message ListGatewaysResponse {
+  repeated Gateway gateways = 1;
   string next_page_token = 2;
 }
-message ListStorageGatewaysRequest {
-  StorageBindingRef storage_binding = 1;
+message ListGatewaysRequest {
+  BindingRef binding = 1;
   uint32 page_size = 2;
   string page_token = 3;
 }
-message StorageGatewayResponse { StorageGateway storage_gateway = 1; }
-message PlanStorageGatewayMutationRequest {
+message GatewayResponse { Gateway gateway = 1; }
+message PlanGatewayMutationRequest {
   string stable_id = 1;
   string owner_scope_key = 2;
-  StorageGatewayRevisionSpec revision = 3;
+  GatewayRevisionSpec revision = 3;
   repeated string carry_forward_consumer_scopes = 4;
   string expected_resource_version = 5;
   string idempotency_key = 6;
   repeated string update_mask = 7;
 }
-message ApplyStorageGatewayMutationRequest {
+message ApplyGatewayMutationRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message ReportStorageGatewayRequest {
+message ReportGatewayRequest {
   string stable_id = 1;
   int64 observed_generation = 2;
   string state = 3;
@@ -4015,37 +4014,37 @@ message DirectGatewayPlacementTarget {
   string gateway_id = 2;
   int64 gateway_generation = 3;
 }
-message DeliveryRouteTarget {
+message RouteTarget {
   oneof target {
     HubPlacementTarget hub_placement = 1;
     HubPolicyRevisionTarget hub_policy_revision = 2;
     DirectGatewayPlacementTarget direct_gateway_placement = 3;
   }
 }
-message DeliveryRouteSpec {
+message RouteSpec {
   SurfaceRef surface = 1;
   string endpoint_id = 2;
   int64 endpoint_generation = 3;
   string base_path = 4;
-  DeliveryRouteTarget target = 5;
+  RouteTarget target = 5;
   DeliveryAccessPolicy access_policy = 6;
   RouteCapabilities capabilities = 7;
   bool enabled = 8;
 }
-message DeliveryRouteObservation {
+message RouteObservation {
   int64 configuration_generation = 1;
   string configuration_digest = 2;
   string state = 3;
   int64 observed_at = 4;
   string error = 5;
 }
-message DeliveryRoute {
+message Route {
   string stable_id = 1;
-  DeliveryRouteSpec spec = 2;
+  RouteSpec spec = 2;
   int64 configuration_generation = 3;
   string configuration_digest = 4;
   string canonical_rendered_url = 5;
-  DeliveryRouteObservation observation = 6;
+  RouteObservation observation = 6;
   string resource_version = 7;
   int64 created_at = 8;
   int64 updated_at = 9;
@@ -4056,13 +4055,13 @@ message ListRoutesRequest {
   string page_token = 3;
 }
 message ListRoutesResponse {
-  repeated DeliveryRoute routes = 1;
+  repeated Route routes = 1;
   string next_page_token = 2;
 }
-message DeliveryRouteResponse { DeliveryRoute route = 1; }
+message RouteResponse { Route route = 1; }
 message PlanRouteMutationRequest {
   string stable_id = 1;
-  DeliveryRouteSpec spec = 2;
+  RouteSpec spec = 2;
   string expected_resource_version = 3;
   string idempotency_key = 4;
   repeated string update_mask = 5;
@@ -4075,29 +4074,29 @@ message ApplyRouteMutationRequest {
 message PlanReplaceRouteRequest {
   string predecessor_route_id = 1;
   string stable_id = 2;
-  DeliveryRouteSpec spec = 3;
+  RouteSpec spec = 3;
   string expected_resource_version = 4;
   string idempotency_key = 5;
 }
-message PlanCanonicalRouteRequest {
+message PlanRouteAdvertisementRequest {
   SurfaceRef surface = 1;
   string audience = 2;
   string route_id = 3;
   string expected_resource_version = 4;
   string idempotency_key = 5;
 }
-message ApplyCanonicalRouteRequest {
+message ApplyRouteAdvertisementRequest {
   string plan_id = 1;
   string idempotency_key = 2;
   string confirmation_hash = 3;
 }
-message CanonicalRoute {
+message RouteAdvertisement {
   SurfaceRef surface = 1;
   string audience = 2;
   string route_id = 3;
   string resource_version = 4;
 }
-message CanonicalRouteResponse { CanonicalRoute canonical_route = 1; }
+message RouteAdvertisementResponse { RouteAdvertisement route_advertisement = 1; }
 message ExplainRouteRequest {
   string route_id = 1;
   string machine_path = 2;

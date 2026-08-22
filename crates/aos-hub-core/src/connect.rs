@@ -438,7 +438,7 @@ impl DeliveryTransportEvidence {
 /// Trusted route-access assertion supplied by a configured ingress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryAccessEvidence {
-    /// Exact verified private-network boundary.
+    /// Exact verified private-network policy.
     pub boundary: Option<(String, i64)>,
     /// Exact verified external provider `(kind, resource, revision)`.
     pub external_provider: Option<(String, String, String)>,
@@ -457,9 +457,9 @@ pub enum DeliveryAudience {
 
 /// Typed route resolution carried to the internal delivery handler.
 #[derive(Debug, Clone)]
-pub struct ResolvedDeliveryRoute {
+pub struct ResolvedRoute {
     /// Exact immutable route snapshot selected for this request.
-    pub route: crate::db::InboundDeliveryRouteRecord,
+    pub route: crate::db::InboundRouteRecord,
     /// Route-relative canonical path, without a leading slash.
     pub surface_path: String,
     /// Capability selected from the surface kind and path.
@@ -836,7 +836,7 @@ fn configured_control_authority(
 
 async fn require_route_access(
     svc: &RpcService,
-    route: &crate::db::InboundDeliveryRouteRecord,
+    route: &crate::db::InboundRouteRecord,
     headers: HeaderMap,
     attestation: Option<crate::delivery_attestation::VerifiedDeliveryAttestation>,
 ) -> Result<(), RpcError> {
@@ -919,7 +919,7 @@ async fn require_route_access(
 
 fn attestation_matches_route(
     attestation: &crate::delivery_attestation::VerifiedDeliveryAttestation,
-    route: &crate::db::InboundDeliveryRouteRecord,
+    route: &crate::db::InboundRouteRecord,
 ) -> bool {
     attestation.route_id == route.id
         && attestation.route_configuration_digest == route.configuration_digest
@@ -927,7 +927,7 @@ fn attestation_matches_route(
 
 fn attested_access_matches_route(
     access: &DeliveryAccessEvidence,
-    route: &crate::db::InboundDeliveryRouteRecord,
+    route: &crate::db::InboundRouteRecord,
 ) -> bool {
     match route.access_policy_kind.as_str() {
         "private_network" => access.boundary.as_ref().is_some_and(|boundary| {
@@ -960,7 +960,7 @@ fn attested_access_matches_route(
 /// Returns an early 404 for a disallowed route capability, 421 for a direct
 /// route, 503 for an unready Hub route, or 400 for an invalid internal rewrite
 /// URI.
-pub async fn rewrite_for_delivery_route(
+pub async fn rewrite_for_route(
     svc: &RpcService,
     mut request: Request,
 ) -> Result<Request, Response> {
@@ -978,13 +978,13 @@ pub async fn rewrite_for_delivery_route(
     let is_control_authority = control_authority == (host.clone(), port, scheme.clone());
     let Ok(routes) = svc
         .db
-        .inbound_delivery_routes(&host, port, &scheme, &ingress_kind)
+        .inbound_routes(&host, port, &scheme, &ingress_kind)
         .await
     else {
         return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
     };
     let host_is_delivery = if routes.is_empty() {
-        match svc.db.delivery_endpoint_host_exists(&host).await {
+        match svc.db.endpoint_host_exists(&host).await {
             Ok(exists) => exists,
             Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
         }
@@ -1017,7 +1017,7 @@ pub async fn rewrite_for_delivery_route(
         // The exact control authority may continue into its RPC, console, and
         // browse router. That router has no resource-slug byte fallback, so an
         // unmatched machine path becomes an ordinary 404. Every non-control
-        // authority still requires an explicit delivery route.
+        // authority still requires an explicit route.
         return if is_control_authority {
             Ok(request)
         } else {
@@ -1054,7 +1054,7 @@ pub async fn rewrite_for_delivery_route(
     if !route.ready {
         return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
     }
-    request.extensions_mut().insert(ResolvedDeliveryRoute {
+    request.extensions_mut().insert(ResolvedRoute {
         route: route.clone(),
         surface_path: surface_path.to_owned(),
         audience,
@@ -1076,7 +1076,7 @@ async fn serve_resolved_delivery(
     svc: Arc<RpcService>,
     method: axum::http::Method,
     headers: HeaderMap,
-    resolved: ResolvedDeliveryRoute,
+    resolved: ResolvedRoute,
 ) -> Response {
     let auth = auth_header(&headers);
     let session_secret = crate::web::session::session_secret_from_headers(&headers);
@@ -1213,7 +1213,7 @@ async fn serve_resolved_delivery(
 /// Private image resolutions use this same-origin path so browsers can present
 /// their host-only session cookie and CLI clients can present the bearer they
 /// used for discovery. Public resolutions remain free to select a CDN-backed
-/// canonical delivery route.
+/// route advertisement.
 async fn serve_control_image(
     svc: Arc<RpcService>,
     method: Method,
@@ -1305,7 +1305,7 @@ async fn resolved_delivery_handler(
     request: Request,
 ) -> Response {
     let method = request.method().clone();
-    let Some(resolved) = request.extensions().get::<ResolvedDeliveryRoute>().cloned() else {
+    let Some(resolved) = request.extensions().get::<ResolvedRoute>().cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     serve_resolved_delivery(from_state(state), method, headers, resolved).await
@@ -1315,9 +1315,9 @@ async fn resolved_delivery_handler(
 ///
 /// Native-only: `axum::middleware::from_fn` requires a `Send` future, which the
 /// Worker's `!Send` services cannot satisfy — the Worker instead calls
-/// [`rewrite_for_delivery_route`] directly from its request bridge.
+/// [`rewrite_for_route`] directly from its request bridge.
 #[cfg(not(target_arch = "wasm32"))]
-async fn dispatch_delivery_route(
+async fn dispatch_route(
     svc: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
     request: Request,
@@ -1345,7 +1345,7 @@ async fn dispatch_delivery_route(
             tls_identity: None,
         });
     }
-    match rewrite_for_delivery_route(&svc, request).await {
+    match rewrite_for_route(&svc, request).await {
         Ok(request) => next.run(request).await,
         Err(response) => response,
     }
@@ -1358,11 +1358,11 @@ async fn dispatch_delivery_route(
 /// typed delivery handler). The middleware captures `service` directly, so it composes
 /// regardless of the wrapped router's axum state type.
 ///
-/// Native-only (see [`dispatch_delivery_route`]); the Worker bridges
-/// [`rewrite_for_delivery_route`] directly.
+/// Native-only (see [`dispatch_route`]); the Worker bridges
+/// [`rewrite_for_route`] directly.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn with_delivery_route_dispatch(
+pub fn with_route_dispatch(
     router: Router,
     service: Arc<RpcService>,
     verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
@@ -1377,14 +1377,14 @@ pub fn with_delivery_route_dispatch(
         .layer(axum::middleware::from_fn(move |request, next| {
             let svc = Arc::clone(&service);
             let verifier = verifier.as_ref().map(Arc::clone);
-            async move { dispatch_delivery_route(svc, verifier, request, next).await }
+            async move { dispatch_route(svc, verifier, request, next).await }
         }))
 }
 
 /// Builds the Worker router with browse pages.
 pub fn router(service: Arc<RpcService>) -> Router {
     // The shared console router owns OAuth on both runtimes. Public bytes are
-    // still admitted only by `with_delivery_route_dispatch`.
+    // still admitted only by `with_route_dispatch`.
     build(service, true)
 }
 
@@ -1408,7 +1408,7 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
 /// mounts OAuth independently of this machine-plane router.
 fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     // The route-dispatch middleware targets this typed-only handler. A direct
-    // external request has no `ResolvedDeliveryRoute` extension and receives
+    // external request has no `ResolvedRoute` extension and receives
     // 404, so the internal name is not an alternate public surface URL.
     let mut r = Router::new()
         .route(
@@ -1621,125 +1621,121 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.ProjectService/DeleteProject",
         apply_delete_project
     );
-    // StorageBindingService — final topology identity/spec lifecycle.
+    // BindingService — final topology identity/spec lifecycle.
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/ListStorageBindings",
-        list_storage_bindings_v1
+        "/aos.hub.v1.BindingService/ListBindings",
+        list_bindings_v1
+    );
+    r = rpc_route!(r, "/aos.hub.v1.BindingService/GetBinding", get_binding_v1);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BindingService/PlanCreateBinding",
+        plan_create_binding
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/GetStorageBinding",
-        get_storage_binding_v1
+        "/aos.hub.v1.BindingService/CreateBinding",
+        apply_create_binding
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanCreateStorageBinding",
-        plan_create_storage_binding
+        "/aos.hub.v1.BindingService/PlanDeleteBinding",
+        plan_delete_binding
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/CreateStorageBinding",
-        apply_create_storage_binding
+        "/aos.hub.v1.BindingService/DeleteBinding",
+        apply_delete_binding
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanDeleteStorageBinding",
-        plan_delete_storage_binding
+        "/aos.hub.v1.BindingService/PlanSetBindingCredential",
+        plan_set_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/DeleteStorageBinding",
-        apply_delete_storage_binding
+        "/aos.hub.v1.BindingService/SetBindingCredential",
+        apply_set_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanSetStorageBindingCredential",
-        plan_set_storage_binding_credential
+        "/aos.hub.v1.BindingService/PlanRotateBindingCredential",
+        plan_rotate_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/SetStorageBindingCredential",
-        apply_set_storage_binding_credential
+        "/aos.hub.v1.BindingService/RotateBindingCredential",
+        apply_rotate_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanRotateStorageBindingCredential",
-        plan_rotate_storage_binding_credential
+        "/aos.hub.v1.BindingService/PlanValidateBindingCredential",
+        plan_validate_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/RotateStorageBindingCredential",
-        apply_rotate_storage_binding_credential
+        "/aos.hub.v1.BindingService/ValidateBindingCredential",
+        validate_binding_credential
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanValidateStorageBindingCredential",
-        plan_validate_storage_binding_credential
+        "/aos.hub.v1.BindingService/PlanGrantBindingScope",
+        plan_grant_binding_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/ValidateStorageBindingCredential",
-        validate_storage_binding_credential
+        "/aos.hub.v1.BindingService/GrantBindingScope",
+        apply_grant_binding_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanGrantStorageBindingScope",
-        plan_grant_storage_binding_scope
+        "/aos.hub.v1.BindingService/PlanRevokeBindingScope",
+        plan_revoke_binding_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/GrantStorageBindingScope",
-        apply_grant_storage_binding_scope
+        "/aos.hub.v1.BindingService/RevokeBindingScope",
+        apply_revoke_binding_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanRevokeStorageBindingScope",
-        plan_revoke_storage_binding_scope
+        "/aos.hub.v1.BindingService/ListBindingWriteRevisions",
+        list_binding_write_revisions
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/RevokeStorageBindingScope",
-        apply_revoke_storage_binding_scope
+        "/aos.hub.v1.BindingService/GetBindingWriteRevision",
+        get_binding_write_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/ListStorageBindingWriteRevisions",
-        list_storage_binding_write_revisions
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.StorageBindingService/GetStorageBindingWriteRevision",
-        get_storage_binding_write_revision
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults",
+        "/aos.hub.v1.BindingService/GetInstanceTopologyDefaults",
         get_instance_topology_defaults
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanSetInstanceTopologyDefaults",
+        "/aos.hub.v1.BindingService/PlanSetInstanceTopologyDefaults",
         plan_set_instance_topology_defaults
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/SetInstanceTopologyDefaults",
+        "/aos.hub.v1.BindingService/SetInstanceTopologyDefaults",
         apply_set_instance_topology_defaults
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/GetOrganizationTopologyDefaults",
+        "/aos.hub.v1.BindingService/GetOrganizationTopologyDefaults",
         get_organization_topology_defaults
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/PlanSetOrganizationTopologyDefaults",
+        "/aos.hub.v1.BindingService/PlanSetOrganizationTopologyDefaults",
         plan_set_organization_topology_defaults
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingService/SetOrganizationTopologyDefaults",
+        "/aos.hub.v1.BindingService/SetOrganizationTopologyDefaults",
         apply_set_organization_topology_defaults
     );
     // DomainService — immutable hostname identity and explicit desired/observed posture.
@@ -1783,227 +1779,215 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         plan_delete_domain
     );
     r = rpc_route!(r, "/aos.hub.v1.DomainService/DeleteDomain", delete_domain);
-    // NetworkBoundaryService — immutable identity, revision, and controller views.
+    // NetworkPolicyService — immutable identity, revision, and controller views.
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaries",
-        list_network_boundaries
+        "/aos.hub.v1.NetworkPolicyService/ListNetworkPolicies",
+        list_network_policies
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/GetNetworkBoundary",
-        get_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/GetNetworkPolicy",
+        get_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanCreateNetworkBoundary",
-        plan_create_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/PlanCreateNetworkPolicy",
+        plan_create_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/CreateNetworkBoundary",
-        create_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/CreateNetworkPolicy",
+        create_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaryRevisions",
-        list_network_boundary_revisions
+        "/aos.hub.v1.NetworkPolicyService/ListNetworkPolicyRevisions",
+        list_network_policy_revisions
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/GetNetworkBoundaryRevision",
-        get_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyService/GetNetworkPolicyRevision",
+        get_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanReviseNetworkBoundary",
-        plan_revise_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/PlanReviseNetworkPolicy",
+        plan_revise_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/ReviseNetworkBoundary",
-        revise_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/ReviseNetworkPolicy",
+        revise_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanActivateNetworkBoundaryRevision",
-        plan_activate_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyService/PlanActivateNetworkPolicyRevision",
+        plan_activate_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/ActivateNetworkBoundaryRevision",
-        activate_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyService/ActivateNetworkPolicyRevision",
+        activate_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanRetireNetworkBoundaryRevision",
-        plan_retire_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyService/PlanRetireNetworkPolicyRevision",
+        plan_retire_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/RetireNetworkBoundaryRevision",
-        retire_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyService/RetireNetworkPolicyRevision",
+        retire_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanGrantNetworkBoundaryScope",
-        plan_grant_network_boundary_scope
+        "/aos.hub.v1.NetworkPolicyService/PlanGrantNetworkPolicyScope",
+        plan_grant_network_policy_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/GrantNetworkBoundaryScope",
-        apply_grant_network_boundary_scope
+        "/aos.hub.v1.NetworkPolicyService/GrantNetworkPolicyScope",
+        apply_grant_network_policy_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanRevokeNetworkBoundaryScope",
-        plan_revoke_network_boundary_scope
+        "/aos.hub.v1.NetworkPolicyService/PlanRevokeNetworkPolicyScope",
+        plan_revoke_network_policy_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/RevokeNetworkBoundaryScope",
-        apply_revoke_network_boundary_scope
+        "/aos.hub.v1.NetworkPolicyService/RevokeNetworkPolicyScope",
+        apply_revoke_network_policy_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/PlanDeleteNetworkBoundary",
-        plan_delete_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/PlanDeleteNetworkPolicy",
+        plan_delete_network_policy
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryService/DeleteNetworkBoundary",
-        delete_network_boundary
+        "/aos.hub.v1.NetworkPolicyService/DeleteNetworkPolicy",
+        delete_network_policy
     );
     // DeliveryService — endpoint identity and controller-observation reads.
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/ListDeliveryEndpoints",
-        list_delivery_endpoints
+        "/aos.hub.v1.DeliveryService/ListEndpoints",
+        list_endpoints
+    );
+    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/GetEndpoint", get_endpoint);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanCreateEndpoint",
+        plan_create_endpoint
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/GetDeliveryEndpoint",
-        get_delivery_endpoint
+        "/aos.hub.v1.DeliveryService/CreateEndpoint",
+        apply_create_endpoint
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanCreateDeliveryEndpoint",
-        plan_create_delivery_endpoint
+        "/aos.hub.v1.DeliveryService/ListEndpointGenerations",
+        list_endpoint_generations
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/CreateDeliveryEndpoint",
-        apply_create_delivery_endpoint
+        "/aos.hub.v1.DeliveryService/GetEndpointGeneration",
+        get_endpoint_generation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/ListDeliveryEndpointGenerations",
-        list_delivery_endpoint_generations
+        "/aos.hub.v1.DeliveryService/PlanStageEndpointGeneration",
+        plan_stage_endpoint_generation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/GetDeliveryEndpointGeneration",
-        get_delivery_endpoint_generation
+        "/aos.hub.v1.DeliveryService/StageEndpointGeneration",
+        stage_endpoint_generation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanStageDeliveryEndpointGeneration",
-        plan_stage_delivery_endpoint_generation
+        "/aos.hub.v1.DeliveryService/PlanActivateEndpointGeneration",
+        plan_activate_endpoint_generation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/StageDeliveryEndpointGeneration",
-        stage_delivery_endpoint_generation
+        "/aos.hub.v1.DeliveryService/ActivateEndpointGeneration",
+        activate_endpoint_generation
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanActivateDeliveryEndpointGeneration",
-        plan_activate_delivery_endpoint_generation
+        "/aos.hub.v1.DeliveryService/PlanGrantEndpointScope",
+        plan_grant_endpoint_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/ActivateDeliveryEndpointGeneration",
-        activate_delivery_endpoint_generation
+        "/aos.hub.v1.DeliveryService/GrantEndpointScope",
+        apply_grant_endpoint_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanGrantDeliveryEndpointScope",
-        plan_grant_delivery_endpoint_scope
+        "/aos.hub.v1.DeliveryService/PlanRevokeEndpointScope",
+        plan_revoke_endpoint_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/GrantDeliveryEndpointScope",
-        apply_grant_delivery_endpoint_scope
+        "/aos.hub.v1.DeliveryService/RevokeEndpointScope",
+        apply_revoke_endpoint_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanRevokeDeliveryEndpointScope",
-        plan_revoke_delivery_endpoint_scope
+        "/aos.hub.v1.DeliveryService/PlanDeleteEndpoint",
+        plan_delete_endpoint
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/RevokeDeliveryEndpointScope",
-        apply_revoke_delivery_endpoint_scope
+        "/aos.hub.v1.DeliveryService/DeleteEndpoint",
+        delete_endpoint
+    );
+    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/ListGateways", list_gateways);
+    r = rpc_route!(r, "/aos.hub.v1.DeliveryService/GetGateway", get_gateway);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DeliveryService/PlanCreateGateway",
+        plan_create_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanDeleteDeliveryEndpoint",
-        plan_delete_delivery_endpoint
+        "/aos.hub.v1.DeliveryService/CreateGateway",
+        create_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/DeleteDeliveryEndpoint",
-        delete_delivery_endpoint
+        "/aos.hub.v1.DeliveryService/PlanUpdateGateway",
+        plan_update_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/ListStorageGateways",
-        list_storage_gateways
+        "/aos.hub.v1.DeliveryService/UpdateGateway",
+        update_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/GetStorageGateway",
-        get_storage_gateway
+        "/aos.hub.v1.DeliveryService/PlanGrantGatewayScope",
+        plan_grant_gateway_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanCreateStorageGateway",
-        plan_create_storage_gateway
+        "/aos.hub.v1.DeliveryService/GrantGatewayScope",
+        grant_gateway_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/CreateStorageGateway",
-        create_storage_gateway
+        "/aos.hub.v1.DeliveryService/PlanRevokeGatewayScope",
+        plan_revoke_gateway_scope
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanUpdateStorageGateway",
-        plan_update_storage_gateway
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.DeliveryService/UpdateStorageGateway",
-        update_storage_gateway
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.DeliveryService/PlanGrantStorageGatewayScope",
-        plan_grant_storage_gateway_scope
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.DeliveryService/GrantStorageGatewayScope",
-        grant_storage_gateway_scope
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.DeliveryService/PlanRevokeStorageGatewayScope",
-        plan_revoke_storage_gateway_scope
-    );
-    r = rpc_route!(
-        r,
-        "/aos.hub.v1.DeliveryService/RevokeStorageGatewayScope",
-        revoke_storage_gateway_scope
+        "/aos.hub.v1.DeliveryService/RevokeGatewayScope",
+        revoke_gateway_scope
     );
     r = rpc_route!(
         r,
@@ -2012,33 +1996,33 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanEnableStorageGateway",
-        plan_enable_storage_gateway
+        "/aos.hub.v1.DeliveryService/PlanEnableGateway",
+        plan_enable_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/EnableStorageGateway",
-        enable_storage_gateway
+        "/aos.hub.v1.DeliveryService/EnableGateway",
+        enable_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanDisableStorageGateway",
-        plan_disable_storage_gateway
+        "/aos.hub.v1.DeliveryService/PlanDisableGateway",
+        plan_disable_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/DisableStorageGateway",
-        disable_storage_gateway
+        "/aos.hub.v1.DeliveryService/DisableGateway",
+        disable_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/PlanDeleteStorageGateway",
-        plan_delete_storage_gateway
+        "/aos.hub.v1.DeliveryService/PlanDeleteGateway",
+        plan_delete_gateway
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryService/DeleteStorageGateway",
-        delete_storage_gateway
+        "/aos.hub.v1.DeliveryService/DeleteGateway",
+        delete_gateway
     );
     // RouteService — explicit immutable route identities and plan/apply mutations.
     r = rpc_route!(r, "/aos.hub.v1.RouteService/ListRoutes", list_routes);
@@ -2081,13 +2065,13 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.RouteService/DeleteRoute", delete_route);
     r = rpc_route!(
         r,
-        "/aos.hub.v1.RouteService/PlanSetCanonicalRoute",
-        plan_set_canonical_route
+        "/aos.hub.v1.RouteService/PlanSetRouteAdvertisement",
+        plan_set_route_advertisement
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.RouteService/SetCanonicalRoute",
-        set_canonical_route
+        "/aos.hub.v1.RouteService/SetRouteAdvertisement",
+        set_route_advertisement
     );
     r = rpc_route!(r, "/aos.hub.v1.RouteService/ExplainRoute", explain_route);
     // TopologyService — typed registry/cache placement inventory.
@@ -3038,33 +3022,33 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     // requires a service-account token and an exact lease/generation/version fence.
     r = rpc_route!(
         r,
-        "/aos.hub.v1.StorageBindingControllerService/ReportStorageBindingWriteRevision",
-        report_storage_binding_write_revision
+        "/aos.hub.v1.BindingControllerService/ReportBindingWriteRevision",
+        report_binding_write_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryControllerService/CompleteNetworkBoundaryRevisionProbe",
-        complete_network_boundary_revision_probe
+        "/aos.hub.v1.NetworkPolicyControllerService/CompleteNetworkPolicyRevisionProbe",
+        complete_network_policy_revision_probe
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.NetworkBoundaryControllerService/ReportNetworkBoundaryRevision",
-        report_network_boundary_revision
+        "/aos.hub.v1.NetworkPolicyControllerService/ReportNetworkPolicyRevision",
+        report_network_policy_revision
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryControllerService/CompleteDeliveryEndpointProbe",
-        complete_delivery_endpoint_probe
+        "/aos.hub.v1.DeliveryControllerService/CompleteEndpointProbe",
+        complete_endpoint_probe
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryControllerService/ReportDeliveryEndpoint",
-        report_delivery_endpoint
+        "/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
+        report_endpoint
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.DeliveryControllerService/ReportStorageGateway",
-        report_storage_gateway
+        "/aos.hub.v1.DeliveryControllerService/ReportGateway",
+        report_gateway
     );
     r = rpc_route!(
         r,
@@ -3222,7 +3206,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             );
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
         // the `/{slug}/-/api/…` JSON read API. The reserved `/-/` namespace is
-        // control-plane-only and cannot be shadowed by a delivery route. The
+        // control-plane-only and cannot be shadowed by a route. The
         // bare `/{slug}/-/` registry-home route is registered
         // alongside the `/{slug}/-/{*rest}` wildcard because axum does not match
         // an empty `{*rest}` capture.
@@ -3631,7 +3615,7 @@ mod tests {
 
     #[test]
     fn attested_access_is_bound_to_exact_route_and_revision() {
-        let route = crate::db::InboundDeliveryRouteRecord {
+        let route = crate::db::InboundRouteRecord {
             id: "route-1".into(),
             configuration_generation: 3,
             configuration_digest:
@@ -3759,7 +3743,7 @@ mod tests {
             "/oauth2/token",
             "/aos.hub.v1.RouteService/ListRoutes",
             "/-/org/acme/caches",
-            "/acme/main/-/settings/delivery-routes",
+            "/acme/main/-/settings/routes",
             "/_assets/style.css",
             "/robots.txt",
             "/llms.txt",

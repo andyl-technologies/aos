@@ -184,7 +184,7 @@ fn assert_open_enum_field_inventory(descriptor: &FileDescriptorSet) -> BuildResu
         }
     }
     let expected = [
-        "DeliveryEndpointRevisionSpec.ingress_kind:.aos.hub.v1.EndpointIngressKind:single",
+        "EndpointRevisionSpec.ingress_kind:.aos.hub.v1.EndpointIngressKind:single",
         "HubPlacementTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
         "HubPolicyRevisionTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
         "PlacementPolicyReplicaGroup.access_class:.aos.hub.v1.AccessClass:single",

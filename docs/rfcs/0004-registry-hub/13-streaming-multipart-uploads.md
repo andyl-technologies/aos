@@ -234,7 +234,7 @@ The cache upload path is rebuilt for throughput, for all users:
 
 **Deployment.** The `default` cache was made presignable: a private `andyl/r2presign`
 R2 binding (virtual-hosted endpoint `aos-hub-surfaces.<acct>.r2.cloudflarestorage.com`,
-AES-GCM-sealed credentials), with `default.storage_binding_id` repointed to it.
+AES-GCM-sealed credentials), with `default.binding_id` repointed to it.
 No Worker redeploy was needed — `presign_cache` was already live.
 
 ### Remaining levers to saturate 3 Gbit

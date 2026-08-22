@@ -720,7 +720,7 @@ mod tests {
         let org = db.create_org("planner", "Planner").await.unwrap();
         let owner = db.org_by_id(org).await.unwrap().unwrap();
         let binding = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org),
                 "planner-binding",
                 &owner.stable_id,
@@ -747,7 +747,7 @@ mod tests {
                 .create_surface_placement(&NewSurfacePlacementSpec {
                     surface: SurfaceTarget::BinaryCache(cache),
                     name: name.to_string(),
-                    storage_binding_id: binding,
+                    binding_id: binding,
                     prefix: name.to_string(),
                     kind: "complete".to_string(),
                     desired_state: "active".to_string(),

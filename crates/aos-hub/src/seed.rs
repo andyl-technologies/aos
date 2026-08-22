@@ -51,8 +51,8 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::db::{
-    Database, DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec,
-    GrantResource, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget,
+    Database, EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
+    RouteSpec, SignupPolicy, SurfaceTarget,
 };
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
@@ -145,7 +145,7 @@ impl SeedReport {
 /// [`SeedOutcome::AlreadySeeded`] without touching the database. Otherwise it
 /// creates the instance/user/org/project/binding/registry described in the
 /// [module docs](self), generates and writes a correctly signed registry
-/// surface under the deployment's default storage binding, indexes it so it is immediately
+/// surface under the deployment's default binding, indexes it so it is immediately
 /// browsable, mints a sample publish token, and returns the
 /// [`SeedReport`].
 ///
@@ -221,16 +221,16 @@ pub async fn seed_dev_with_snapshots(
     let binding = db
         .instance_default_binding()
         .await?
-        .context("deployment default storage binding is not provisioned")?;
+        .context("deployment default binding is not provisioned")?;
     anyhow::ensure!(
         binding.kind == "local_fs",
-        "development seed requires a local deployment storage binding"
+        "development seed requires a local deployment binding"
     );
     let bucket = std::path::PathBuf::from(
         binding
             .local_root_path
             .as_deref()
-            .context("local deployment storage binding has no root path")?,
+            .context("local deployment binding has no root path")?,
     );
     std::fs::create_dir_all(&bucket)
         .with_context(|| format!("creating seed bucket {}", bucket.display()))?;
@@ -310,7 +310,7 @@ pub async fn seed_dev_with_snapshots(
     )
     .await
     .context("indexing private seeded registry")?;
-    seed_hub_delivery_routes(
+    seed_hub_routes(
         db,
         org_id,
         &org_scope,
@@ -438,10 +438,10 @@ async fn seed_placement_and_index(
         .context("seeded registry disappeared")?;
     let consumer_scope = registry.owner_scope_key.clone();
     let binding = db
-        .storage_binding(binding_id)
+        .binding(binding_id)
         .await?
-        .context("seed storage binding disappeared")?;
-    let binding_resource = GrantResource::StorageBinding {
+        .context("seed binding disappeared")?;
+    let binding_resource = GrantResource::Binding {
         id: binding_id,
         stable_id: &binding.stable_id,
     };
@@ -463,7 +463,7 @@ async fn seed_placement_and_index(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
             name: "primary".to_string(),
-            storage_binding_id: binding_id,
+            binding_id: binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -486,7 +486,7 @@ async fn seed_placement_and_index(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn seed_hub_delivery_routes(
+async fn seed_hub_routes(
     db: &Database,
     org_id: i64,
     org_scope: &str,
@@ -497,7 +497,7 @@ async fn seed_hub_delivery_routes(
     config: &SeedRouteConfig<'_>,
 ) -> Result<()> {
     const ENDPOINT_ID: &str = "seed-hub";
-    let boundary = GrantResource::NetworkBoundary {
+    let boundary = GrantResource::NetworkPolicy {
         id: "instance:public",
     };
     if !db
@@ -518,11 +518,11 @@ async fn seed_hub_delivery_routes(
 
     let (host, port) = match config.listen_addr {
         SocketAddr::V4(address) => (
-            DeliveryEndpointHostInput::Ipv4(address.ip().octets()),
+            EndpointHostInput::Ipv4(address.ip().octets()),
             address.port(),
         ),
         SocketAddr::V6(address) => (
-            DeliveryEndpointHostInput::Ipv6(address.ip().octets()),
+            EndpointHostInput::Ipv6(address.ip().octets()),
             address.port(),
         ),
     };
@@ -534,7 +534,7 @@ async fn seed_hub_delivery_routes(
         matches!(scheme.as_str(), "http" | "https"),
         "seeded external URL must use HTTP or HTTPS"
     );
-    db.create_delivery_endpoint(
+    db.create_endpoint(
         ENDPOINT_ID,
         org_scope,
         Some(org_id),
@@ -542,7 +542,7 @@ async fn seed_hub_delivery_routes(
         &host,
         port,
         "instance:public",
-        &DeliveryEndpointRevisionSpec {
+        &EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: "hub".to_string(),
             listener_configuration: format!("native:{}", config.listen_addr),
@@ -558,7 +558,7 @@ async fn seed_hub_delivery_routes(
         "seed-hub-endpoint",
     )
     .await?;
-    db.reconcile_delivery_endpoint(
+    db.reconcile_endpoint(
         ENDPOINT_ID,
         1,
         1,
@@ -584,7 +584,7 @@ async fn seed_hub_delivery_routes(
             "private",
         ),
     ] {
-        seed_hub_delivery_route(
+        seed_hub_route(
             db,
             org_scope,
             registry_id,
@@ -600,7 +600,7 @@ async fn seed_hub_delivery_routes(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn seed_hub_delivery_route(
+async fn seed_hub_route(
     db: &Database,
     org_scope: &str,
     registry_id: i64,
@@ -613,9 +613,9 @@ async fn seed_hub_delivery_route(
     let base_path = format!("/{DEMO_ORG}/{registry_name}");
     let canonical_url = format!("{}{}", config.external_url.trim_end_matches('/'), base_path);
     let endpoint = db
-        .delivery_endpoint(endpoint_id)
+        .endpoint(endpoint_id)
         .await?
-        .context("seeded delivery endpoint disappeared")?;
+        .context("seeded endpoint disappeared")?;
     let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest)
         .context("decoding seeded endpoint identity digest")?;
     let active = config
@@ -653,10 +653,10 @@ async fn seed_hub_delivery_route(
     let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
     let route_id = format!("seed-{registry_name}");
     let route = db
-        .create_delivery_route(
+        .create_route(
             &route_id,
             SurfaceTarget::Registry(registry_id),
-            &DeliveryRouteSpec {
+            &RouteSpec {
                 consumer_scope_key: org_scope.to_string(),
                 endpoint_id: endpoint_id.to_string(),
                 endpoint_generation: 1,
@@ -675,9 +675,9 @@ async fn seed_hub_delivery_route(
                 external_provider_kind: None,
                 external_provider_resource_id: None,
                 external_provider_revision: None,
-                storage_gateway_id: None,
+                gateway_id: None,
                 gateway_generation: None,
-                target_storage_binding_id: None,
+                target_binding_id: None,
                 gateway_client_base_path: None,
                 target_placement_prefix: None,
                 placement_id: Some(placement_id),
@@ -695,7 +695,7 @@ async fn seed_hub_delivery_route(
             "seed",
         )
         .await?;
-    db.reconcile_delivery_route(
+    db.reconcile_route(
         &route_id,
         route
             .configuration_generation
@@ -713,7 +713,7 @@ async fn seed_hub_delivery_route(
     )
     .await?;
     for audience in ["git", "web"] {
-        db.set_canonical_route(
+        db.set_route_advertisement(
             SurfaceTarget::Registry(registry_id),
             audience,
             &route_id,

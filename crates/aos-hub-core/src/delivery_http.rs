@@ -1,4 +1,4 @@
-//! Portable HTTP semantics for RFC-0012 delivery routes.
+//! Portable HTTP semantics for RFC-0012 routes.
 //!
 //! This module is the protocol kernel shared by the native Hub and the Worker.
 //! It deliberately contains no framework, clock, storage, or platform types:
@@ -18,7 +18,7 @@ use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use crate::delivery::CanonicalRoutePath;
+use crate::delivery::RouteAdvertisementPath;
 
 /// Cache policy for a publicly readable immutable object.
 pub const PUBLIC_IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -45,7 +45,7 @@ pub enum DeliveryMethod {
 }
 
 impl DeliveryMethod {
-    /// Parses an HTTP method admitted by a delivery route.
+    /// Parses an HTTP method admitted by a route.
     ///
     /// # Errors
     ///
@@ -62,7 +62,7 @@ impl DeliveryMethod {
 
 /// A method that the read-only delivery data plane does not accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("delivery routes accept only GET and HEAD")]
+#[error("routes accept only GET and HEAD")]
 pub struct MethodError;
 
 /// A second-precision HTTP date expressed relative to the Unix epoch.
@@ -1412,7 +1412,7 @@ fn evaluate_request(
 /// disk images, that already proved exact publication eligibility separately
 /// and therefore do not need a full [`DeliveryObjectContext`]. It preserves
 /// the same precondition precedence, `HEAD` behavior, and range resolution as
-/// ordinary delivery routes.
+/// ordinary routes.
 #[must_use]
 pub fn evaluate_verified_representation(
     method: DeliveryMethod,
@@ -1926,7 +1926,7 @@ impl PlacementAuthBoundary {
 /// D from being combined after independent lookups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryObjectContext {
-    request_path: CanonicalRoutePath,
+    request_path: RouteAdvertisementPath,
     origin_object_path: CanonicalOriginObjectPath,
     authorization: PlacementAuthBoundary,
     eligibility: ExactPublicationEligibility,
@@ -1934,20 +1934,20 @@ pub struct DeliveryObjectContext {
     redirect_boundary: RedirectBoundaryRequirement,
 }
 
-/// The external network boundary a redirect capability must preserve.
+/// The external network policy a redirect capability must preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectBoundaryRequirement {
     /// No private-network proof is required for this route.
     Unrestricted,
     /// The capability must remain inside this exact private-network revision.
-    PrivateNetwork(PrivateNetworkBoundaryRequirement),
+    PrivateNetwork(PrivateNetworkPolicyRequirement),
 }
 
 impl DeliveryObjectContext {
     /// Couples one already-validated delivery object boundary.
     #[must_use]
     pub const fn new(
-        request_path: CanonicalRoutePath,
+        request_path: RouteAdvertisementPath,
         origin_object_path: CanonicalOriginObjectPath,
         authorization: PlacementAuthBoundary,
         eligibility: ExactPublicationEligibility,
@@ -1966,7 +1966,7 @@ impl DeliveryObjectContext {
 
     /// Returns the canonical inbound request path.
     #[must_use]
-    pub const fn request_path(&self) -> &CanonicalRoutePath {
+    pub const fn request_path(&self) -> &RouteAdvertisementPath {
         &self.request_path
     }
 
@@ -2283,29 +2283,29 @@ pub enum CanonicalPresignedLocationError {
     NonCanonical,
 }
 
-/// A required private-network boundary revision for a redirect capability.
+/// A required private-network policy revision for a redirect capability.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateNetworkBoundaryRequirement {
+pub struct PrivateNetworkPolicyRequirement {
     boundary_id: String,
     revision: u64,
 }
 
-impl PrivateNetworkBoundaryRequirement {
+impl PrivateNetworkPolicyRequirement {
     /// Constructs a required stable boundary/revision pair.
     ///
     /// # Errors
     ///
-    /// Returns [`PrivateNetworkBoundaryError`] for an invalid id or revision zero.
+    /// Returns [`PrivateNetworkPolicyError`] for an invalid id or revision zero.
     pub fn new(
         boundary_id: impl Into<String>,
         revision: u64,
-    ) -> Result<Self, PrivateNetworkBoundaryError> {
+    ) -> Result<Self, PrivateNetworkPolicyError> {
         let boundary_id = boundary_id.into();
         if !is_stable_reference(&boundary_id) {
-            return Err(PrivateNetworkBoundaryError::InvalidId);
+            return Err(PrivateNetworkPolicyError::InvalidId);
         }
         if revision == 0 {
-            return Err(PrivateNetworkBoundaryError::ZeroRevision);
+            return Err(PrivateNetworkPolicyError::ZeroRevision);
         }
         Ok(Self {
             boundary_id,
@@ -2328,7 +2328,7 @@ impl PrivateNetworkBoundaryRequirement {
 
 /// Evidence reported by the presigner/private-network reconciler.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateNetworkBoundaryEvidence {
+pub struct PrivateNetworkPolicyEvidence {
     /// The observed stable boundary id.
     pub boundary_id: String,
     /// The observed immutable boundary revision.
@@ -2339,14 +2339,14 @@ pub struct PrivateNetworkBoundaryEvidence {
     pub valid_through: HttpTimestamp,
 }
 
-/// An invalid private-network boundary requirement or proof.
+/// An invalid private-network policy requirement or proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PrivateNetworkBoundaryError {
+pub enum PrivateNetworkPolicyError {
     /// The stable boundary id is invalid.
-    #[error("private-network boundary id is invalid")]
+    #[error("private-network policy id is invalid")]
     InvalidId,
     /// Revision zero is not an observed immutable revision.
-    #[error("private-network boundary revision must be nonzero")]
+    #[error("private-network policy revision must be nonzero")]
     ZeroRevision,
 }
 
@@ -2360,7 +2360,7 @@ pub struct PresignedCapabilityEvidence {
     /// The claimed exact method.
     pub method: DeliveryMethod,
     /// The claimed exact canonical inbound request path.
-    pub request_path: CanonicalRoutePath,
+    pub request_path: RouteAdvertisementPath,
     /// The claimed mapped origin object path.
     pub origin_object_path: CanonicalOriginObjectPath,
     /// The claimed placement binding capability and revision.
@@ -2374,7 +2374,7 @@ pub struct PresignedCapabilityEvidence {
     /// Whether the returned capability signature was verified.
     pub signature_verified: bool,
     /// The observed private-network proof, when one is required.
-    pub private_network: Option<PrivateNetworkBoundaryEvidence>,
+    pub private_network: Option<PrivateNetworkPolicyEvidence>,
 }
 
 /// A private proof that a presigned capability matches one evaluated object.
@@ -2383,14 +2383,14 @@ pub struct PresignedCapabilityAttestation {
     location: CanonicalPresignedLocation,
     expires_at: HttpTimestamp,
     method: DeliveryMethod,
-    request_path: CanonicalRoutePath,
+    request_path: RouteAdvertisementPath,
     origin_object_path: CanonicalOriginObjectPath,
     authorization: PlacementAuthBoundary,
     eligibility: ExactPublicationEligibility,
     representation: VerifiedRepresentation,
     preconditions: RequestPreconditions,
     range: Option<SingleByteRange>,
-    private_network: Option<PrivateNetworkBoundaryRequirement>,
+    private_network: Option<PrivateNetworkPolicyRequirement>,
     status: PresignedCapabilityStatus,
 }
 
@@ -2500,7 +2500,7 @@ impl PresignedCapabilityAttestation {
 
     /// Returns the exact canonical inbound request path.
     #[must_use]
-    pub const fn request_path(&self) -> &CanonicalRoutePath {
+    pub const fn request_path(&self) -> &RouteAdvertisementPath {
         &self.request_path
     }
 
@@ -2542,7 +2542,7 @@ impl PresignedCapabilityAttestation {
 
     /// Returns the exact verified private-network requirement, when applicable.
     #[must_use]
-    pub const fn private_network(&self) -> Option<&PrivateNetworkBoundaryRequirement> {
+    pub const fn private_network(&self) -> Option<&PrivateNetworkPolicyRequirement> {
         self.private_network.as_ref()
     }
 
@@ -2575,7 +2575,7 @@ pub enum PresignedCapabilityAttestationError {
     #[error("presigned capability claims do not match the evaluated request")]
     ClaimMismatch,
     /// The required private-network revision was absent, stale, or mismatched.
-    #[error("presigned capability lacks a valid private-network boundary proof")]
+    #[error("presigned capability lacks a valid private-network policy proof")]
     PrivateNetworkMismatch,
 }
 
@@ -3077,7 +3077,7 @@ mod tests {
 
     fn object_context(representation: VerifiedRepresentation) -> DeliveryObjectContext {
         DeliveryObjectContext::new(
-            CanonicalRoutePath::parse_raw_target("/cache/object")
+            RouteAdvertisementPath::parse_raw_target("/cache/object")
                 .expect("test request path must be canonical"),
             CanonicalOriginObjectPath::parse("nar/object")
                 .expect("test origin path must be canonical"),
@@ -3972,7 +3972,8 @@ mod tests {
             if_range: Some(IfRangeCondition::EntityTag(tag("\"current\""))),
         };
         let context = DeliveryObjectContext::new(
-            CanonicalRoutePath::parse_raw_target("/cache/object").expect("request path must parse"),
+            RouteAdvertisementPath::parse_raw_target("/cache/object")
+                .expect("request path must parse"),
             CanonicalOriginObjectPath::parse("nar/object").expect("origin path must parse"),
             boundary.clone(),
             ExactPublicationEligibility::new(3, 4).expect("eligibility must parse"),
@@ -4058,7 +4059,8 @@ mod tests {
         let eligibility =
             ExactPublicationEligibility::new(9, 11).expect("eligibility proof must be valid");
         let context = DeliveryObjectContext::new(
-            CanonicalRoutePath::parse_raw_target("/cache/object").expect("request path must parse"),
+            RouteAdvertisementPath::parse_raw_target("/cache/object")
+                .expect("request path must parse"),
             CanonicalOriginObjectPath::parse("nar/object").expect("origin path must parse"),
             PlacementAuthBoundary::new("placement", "capability", 2).expect("boundary must parse"),
             eligibility,
@@ -4106,7 +4108,7 @@ mod tests {
     fn redirect_capability_and_direct_miss_metadata_is_safe() {
         let boundary = PlacementAuthBoundary::new("placement-1", "binding:capability-2", 7)
             .expect("boundary must be valid");
-        let path = CanonicalRoutePath::parse_raw_target("/cache/nar/object.nar.zst")
+        let path = RouteAdvertisementPath::parse_raw_target("/cache/nar/object.nar.zst")
             .expect("path must be canonical");
         let origin_path = CanonicalOriginObjectPath::parse("nar/object.nar.zst")
             .expect("origin path must be canonical");
@@ -4120,7 +4122,7 @@ mod tests {
             ..RequestPreconditions::default()
         };
         let range = Some(SingleByteRange::Closed { start: 10, end: 19 });
-        let network = PrivateNetworkBoundaryRequirement::new("corp-vpn", 12)
+        let network = PrivateNetworkPolicyRequirement::new("corp-vpn", 12)
             .expect("network requirement must be valid");
         let context = DeliveryObjectContext::new(
             path.clone(),
@@ -4156,7 +4158,7 @@ mod tests {
                 range,
                 presign_succeeded,
                 signature_verified,
-                private_network: Some(PrivateNetworkBoundaryEvidence {
+                private_network: Some(PrivateNetworkPolicyEvidence {
                     boundary_id: "corp-vpn".to_string(),
                     revision: 12,
                     verified: true,
@@ -4264,7 +4266,7 @@ mod tests {
             range: None,
             presign_succeeded: true,
             signature_verified: true,
-            private_network: Some(PrivateNetworkBoundaryEvidence {
+            private_network: Some(PrivateNetworkPolicyEvidence {
                 boundary_id: "corp-vpn".to_string(),
                 revision: 12,
                 verified: true,

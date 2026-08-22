@@ -1,8 +1,8 @@
 //! Storage-binding kinds and the per-runtime capability model (RFC-0004).
 //!
-//! A *storage binding* is a per-org named storage backend that a managed
+//! A *binding* is a per-org named storage backend that a managed
 //! registry or cache roots its surface on. The on-disk/wire form of a binding's
-//! backend type is a short string in the `kind` column of `storage_bindings`;
+//! backend type is a short string in the `kind` column of `bindings`;
 //! this module gives that string a typed face ([`BindingKind`]) and pins the
 //! authoritative set of strings (`local_fs`, `s3`, `r2`, `deployment_r2`).
 //!
@@ -42,7 +42,7 @@
 /// A storage backend kind a binding can target.
 ///
 /// The string form (see [`BindingKind::as_str`]) is the value persisted in the
-/// `storage_bindings.kind` column and carried on the wire in the proto
+/// `bindings.kind` column and carried on the wire in the proto
 /// the public storage-binding topology messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingKind {
@@ -86,7 +86,7 @@ impl BindingKind {
 
     /// Returns the canonical wire/storage string for this kind.
     ///
-    /// This is the value written to `storage_bindings.kind` and round-trips
+    /// This is the value written to `bindings.kind` and round-trips
     /// through [`BindingKind::parse`].
     pub fn as_str(&self) -> &'static str {
         match self {

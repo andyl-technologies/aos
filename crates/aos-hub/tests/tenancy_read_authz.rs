@@ -20,9 +20,8 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    ChannelSummary, Database, DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec,
-    DeliveryRouteSpec, IndexSnapshot, NewStorageBindingWriteRevision, NewSurfacePlacementSpec,
-    SurfaceTarget, TokenAuth,
+    ChannelSummary, Database, EndpointHostInput, EndpointRevisionSpec, IndexSnapshot,
+    NewBindingWriteRevision, NewSurfacePlacementSpec, RouteSpec, SurfaceTarget, TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -200,7 +199,7 @@ async fn seed_placement(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
-            storage_binding_id: binding_id,
+            binding_id: binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -509,12 +508,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "registry/private",
     )
     .await;
-    let binding_stable_id = db
-        .storage_binding(binding)
-        .await
-        .unwrap()
-        .unwrap()
-        .stable_id;
+    let binding_stable_id = db.binding(binding).await.unwrap().unwrap().stable_id;
     let owner_scope = common::org_scope(&db, "placement-owner").await;
     let other_scope = common::org_scope(&db, "placement-other").await;
     let owner_admin_id = db.create_user("admin@placement.test", None).await.unwrap();
@@ -563,8 +557,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v1")
             .await;
     let binding_revision = db
-        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-            storage_binding_id: binding,
+        .create_binding_write_revision(&NewBindingWriteRevision {
+            binding_id: binding,
             write_credential_generation: write_generation,
             writes_supported: true,
             conditional_writes_supported: true,
@@ -573,21 +567,11 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         })
         .await
         .unwrap();
-    db.observe_storage_binding_write_revision(
-        binding,
-        binding_revision.revision,
-        "valid",
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    let binding_state = db
-        .storage_binding_write_state(binding)
+    db.observe_binding_write_revision(binding, binding_revision.revision, "valid", None, None)
         .await
-        .unwrap()
         .unwrap();
-    db.set_current_storage_binding_write_revision(
+    let binding_state = db.binding_write_state(binding).await.unwrap().unwrap();
+    db.set_current_binding_write_revision(
         binding,
         binding_revision.revision,
         binding_state.resource_version,
@@ -600,8 +584,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v2")
             .await;
     let no_writes = db
-        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-            storage_binding_id: binding,
+        .create_binding_write_revision(&NewBindingWriteRevision {
+            binding_id: binding,
             write_credential_generation: no_writes_generation,
             writes_supported: false,
             conditional_writes_supported: false,
@@ -610,16 +594,12 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         })
         .await
         .unwrap();
-    db.observe_storage_binding_write_revision(binding, no_writes.revision, "valid", None, None)
+    db.observe_binding_write_revision(binding, no_writes.revision, "valid", None, None)
         .await
         .unwrap();
+    let write_state = db.binding_write_state(binding).await.unwrap().unwrap();
     let write_state = db
-        .storage_binding_write_state(binding)
-        .await
-        .unwrap()
-        .unwrap();
-    let write_state = db
-        .set_current_storage_binding_write_revision(
+        .set_current_binding_write_revision(
             binding,
             no_writes.revision,
             write_state.resource_version,
@@ -644,8 +624,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v3")
             .await;
     let ordinary_only = db
-        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-            storage_binding_id: binding,
+        .create_binding_write_revision(&NewBindingWriteRevision {
+            binding_id: binding,
             write_credential_generation: ordinary_generation,
             writes_supported: true,
             conditional_writes_supported: false,
@@ -654,11 +634,11 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         })
         .await
         .unwrap();
-    db.observe_storage_binding_write_revision(binding, ordinary_only.revision, "valid", None, None)
+    db.observe_binding_write_revision(binding, ordinary_only.revision, "valid", None, None)
         .await
         .unwrap();
     let write_state = db
-        .set_current_storage_binding_write_revision(
+        .set_current_binding_write_revision(
             binding,
             ordinary_only.revision,
             write_state.resource_version,
@@ -669,7 +649,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry),
             name: "conditional".to_string(),
-            storage_binding_id: binding,
+            binding_id: binding,
             prefix: "registry/conditional".to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -701,7 +681,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         StatusCode::BAD_REQUEST,
         "conditional writes: {resp}"
     );
-    db.set_current_storage_binding_write_revision(
+    db.set_current_binding_write_revision(
         binding,
         binding_revision.revision,
         write_state.resource_version,
@@ -1146,15 +1126,15 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     assert_eq!(status, StatusCode::OK, "get read-only authority: {resp}");
     assert!(resp["authority"].is_null());
 
-    db.create_delivery_endpoint(
+    db.create_endpoint(
         "endpoint:placement-route-test",
         &owner_scope,
         Some(org),
         "http",
-        &DeliveryEndpointHostInput::Ipv4([192, 0, 2, 44]),
+        &EndpointHostInput::Ipv4([192, 0, 2, 44]),
         8420,
         "instance:public",
-        &DeliveryEndpointRevisionSpec {
+        &EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: "hub".into(),
             listener_configuration: "listener:placement-route-test".into(),
@@ -1169,10 +1149,10 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .unwrap();
     let access_policy_json = "{}".to_string();
     let route = db
-        .create_delivery_route(
+        .create_route(
             "route:placement-pin-test",
             SurfaceTarget::Registry(registry),
-            &DeliveryRouteSpec {
+            &RouteSpec {
                 consumer_scope_key: owner_scope.clone(),
                 endpoint_id: "endpoint:placement-route-test".into(),
                 endpoint_generation: 1,
@@ -1187,9 +1167,9 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
                 external_provider_kind: None,
                 external_provider_resource_id: None,
                 external_provider_revision: None,
-                storage_gateway_id: None,
+                gateway_id: None,
                 gateway_generation: None,
-                target_storage_binding_id: None,
+                target_binding_id: None,
                 gateway_client_base_path: None,
                 target_placement_prefix: None,
                 placement_id: Some(observed.id),
@@ -1226,12 +1206,9 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         StatusCode::BAD_REQUEST,
         "route-pinned drain: {resp}"
     );
-    assert_eq!(
-        resp["message"],
-        "placement is pinned by a direct delivery route"
-    );
+    assert_eq!(resp["message"], "placement is pinned by a direct route");
     assert!(db
-        .delete_delivery_route(&route.id, route.resource_version, "user", None, "test")
+        .delete_route(&route.id, route.resource_version, "user", None, "test")
         .await
         .unwrap());
 
@@ -1722,7 +1699,7 @@ async fn list_projects_requires_membership() {
 }
 
 #[tokio::test]
-async fn list_storage_bindings_requires_storage_management_authority() {
+async fn list_bindings_requires_storage_management_authority() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
     let org_scope = db.org_by_id(org).await.unwrap().unwrap().stable_id;
@@ -1732,7 +1709,7 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     // Anonymous is denied — the host path never leaks.
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListStorageBindings",
+        "BindingService/ListBindings",
         serde_json::json!({ "ownerScopeKey": org_scope }),
         None,
     )
@@ -1754,7 +1731,7 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListStorageBindings",
+        "BindingService/ListBindings",
         serde_json::json!({ "ownerScopeKey": org_scope }),
         Some(&member),
     )
@@ -1773,11 +1750,11 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     let admin = bearer(
         Principal::user(admin_id),
         &org_scope,
-        &[Permission::StorageBindingRead, Permission::StorageManage],
+        &[Permission::BindingRead, Permission::StorageManage],
     );
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListStorageBindings",
+        "BindingService/ListBindings",
         serde_json::json!({ "ownerScopeKey": org_scope }),
         Some(&admin),
     )

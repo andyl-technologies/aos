@@ -10,7 +10,7 @@ use leptos::leptos_dom::helpers::window_event_listener;
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 
-use crate::route::{ConsoleRoute, ConsoleScope, PageSpec};
+use crate::route::{ConsoleRoute, ConsoleScope, PageSpec, AUTHENTICATED_PRIMARY_NAVIGATION};
 use crate::transport::ApiClient;
 use crate::workflows::ResourceWorkflow;
 
@@ -152,15 +152,10 @@ fn ManagementShell(
                     {page_label}
                 </span>
                 <span class="session">
-                    <a href="/">"registries"</a>
-                    " · "
-                    <a href="/-/caches">"caches"</a>
-                    " · "
-                    <a href="/-/orgs">"organizations"</a>
-                    " · "
-                    <a href="/-/instance">"hub settings"</a>
-                    " · "
-                    <a href="/-/account">"account"</a>
+                    {AUTHENTICATED_PRIMARY_NAVIGATION.iter().enumerate().map(|(index, item)| view! {
+                        {(index > 0).then_some(" · ")}
+                        <a href=item.href>{item.label}</a>
+                    }).collect_view()}
                     " · "
                     <span class="who"><Suspense fallback=move || "signed-in user">{move || Suspend::new(async move { session.await.as_ref().ok().and_then(|client| client.session().principal.map(|principal| principal.email)).unwrap_or_else(|| "signed-in user".to_string()) })}</Suspense></span>
                     " · "
@@ -245,7 +240,7 @@ fn topology_context(
         ConsoleScope::Registry { .. } => (
             vec![
                 ("Placements", sibling("placements")),
-                ("Delivery routes", sibling("delivery")),
+                ("Routes", sibling("delivery")),
             ],
             vec![("Binary caches", sibling("caches"))],
             Vec::new(),
@@ -253,15 +248,15 @@ fn topology_context(
         ConsoleScope::Cache { .. } => (
             vec![
                 ("Placements", sibling("placements")),
-                ("Delivery routes", sibling("delivery")),
+                ("Routes", sibling("delivery")),
             ],
             Vec::new(),
             vec![("Registry integrations", sibling("integrations"))],
         ),
         ConsoleScope::Organization { .. } => (
             vec![
-                ("Storage bindings", sibling("storage-bindings")),
-                ("Delivery endpoints", sibling("delivery-endpoints")),
+                ("Bindings", sibling("bindings")),
+                ("Endpoints", sibling("endpoints")),
             ],
             Vec::new(),
             vec![
@@ -271,8 +266,8 @@ fn topology_context(
         ),
         ConsoleScope::Instance => (
             vec![
-                ("Storage bindings", sibling("storage-bindings")),
-                ("Delivery endpoints", sibling("delivery-endpoints")),
+                ("Bindings", sibling("bindings")),
+                ("Endpoints", sibling("endpoints")),
             ],
             Vec::new(),
             vec![("Organizations", "/-/orgs".to_string())],
@@ -417,7 +412,7 @@ fn shell_meta(name: &str) -> Option<String> {
 
 fn scope_title(scope: &ConsoleScope) -> String {
     match scope {
-        ConsoleScope::Instance => "Hub settings".to_string(),
+        ConsoleScope::Instance => "Settings".to_string(),
         ConsoleScope::Caches => "Caches".to_string(),
         ConsoleScope::Organizations => "Organizations".to_string(),
         ConsoleScope::Organization { slug } => slug.clone(),
@@ -492,7 +487,10 @@ mod tests {
 
     #[test]
     fn masthead_exposes_instance_settings() {
-        let source = include_str!("app.rs");
-        assert!(source.contains("href=\"/-/instance\">\"hub settings\""));
+        let settings = AUTHENTICATED_PRIMARY_NAVIGATION
+            .iter()
+            .find(|item| item.href == "/-/instance")
+            .expect("settings navigation item");
+        assert_eq!(settings.label, "settings");
     }
 }
