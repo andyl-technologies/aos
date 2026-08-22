@@ -119,7 +119,7 @@ impl BackendNetworkOutput {
         let wire: BackendNetworkOutputWire = ciborium::de::from_reader(bytes)
             .map_err(|_| BackendNetworkOutputCodecError::Encoding)?;
         let output = Self::try_from(wire)?;
-        if output.canonical_bytes()?.as_slice() != bytes {
+        if output.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(BackendNetworkOutputCodecError::Noncanonical);
         }
         Ok(output)
@@ -262,22 +262,39 @@ impl TryFrom<BackendNetworkFaultContinuationWire> for BackendNetworkFaultContinu
     type Error = BackendNetworkOutputCodecError;
 
     fn try_from(wire: BackendNetworkFaultContinuationWire) -> Result<Self, Self::Error> {
-        let preserved_availability = wire
-            .preserved_availability
-            .into_iter()
-            .map(|entry| {
-                entry
-                    .target
-                    .validate()
-                    .map_err(|_| BackendNetworkOutputCodecError::Invalid("preserved target"))?;
-                Ok(BackendNetworkPreservedAvailability {
-                    binding: entry.binding,
-                    target: entry.target,
-                    phase: entry.phase,
-                    transition_sequence: entry.transition_sequence,
-                })
-            })
-            .collect::<Result<Vec<_>, BackendNetworkOutputCodecError>>()?;
+        if wire.preserved_availability.len() > HARD_BACKEND_NETWORK_CURSOR_PHASES {
+            return Err(backend_network_resource(
+                "preserved availability",
+                0,
+                wire.preserved_availability.len(),
+                HARD_BACKEND_NETWORK_CURSOR_PHASES,
+                HARD_BACKEND_NETWORK_CURSOR_PHASES,
+            ));
+        }
+        let mut preserved_availability = Vec::new();
+        preserved_availability
+            .try_reserve_exact(wire.preserved_availability.len())
+            .map_err(|_| {
+                backend_network_resource(
+                    "preserved availability",
+                    0,
+                    wire.preserved_availability.len(),
+                    HARD_BACKEND_NETWORK_CURSOR_PHASES,
+                    HARD_BACKEND_NETWORK_CURSOR_PHASES,
+                )
+            })?;
+        for entry in wire.preserved_availability {
+            entry
+                .target
+                .validate()
+                .map_err(|_| BackendNetworkOutputCodecError::Invalid("preserved target"))?;
+            preserved_availability.push(BackendNetworkPreservedAvailability {
+                binding: entry.binding,
+                target: entry.target,
+                phase: entry.phase,
+                transition_sequence: entry.transition_sequence,
+            });
+        }
         let forced_route_destination = wire
             .forced_route_destination
             .map(|name| {
@@ -315,20 +332,28 @@ impl TryFrom<BackendNetworkFaultCursorWire> for BackendNetworkFaultCursor {
                 HARD_BACKEND_NETWORK_CURSOR_PHASES,
             ));
         }
-        let completed_phases = wire
-            .completed_phases
-            .into_iter()
-            .map(|entry| {
-                entry
-                    .target
-                    .validate()
-                    .map_err(|_| BackendNetworkOutputCodecError::Invalid("completed target"))?;
-                Ok(BackendNetworkCompletedFaultPhase {
-                    target: entry.target,
-                    phase: entry.phase,
-                })
-            })
-            .collect::<Result<Vec<_>, BackendNetworkOutputCodecError>>()?;
+        let mut completed_phases = Vec::new();
+        completed_phases
+            .try_reserve_exact(wire.completed_phases.len())
+            .map_err(|_| {
+                backend_network_resource(
+                    "completed phases",
+                    0,
+                    wire.completed_phases.len(),
+                    HARD_BACKEND_NETWORK_CURSOR_PHASES,
+                    HARD_BACKEND_NETWORK_CURSOR_PHASES,
+                )
+            })?;
+        for entry in wire.completed_phases {
+            entry
+                .target
+                .validate()
+                .map_err(|_| BackendNetworkOutputCodecError::Invalid("completed target"))?;
+            completed_phases.push(BackendNetworkCompletedFaultPhase {
+                target: entry.target,
+                phase: entry.phase,
+            });
+        }
         if completed_phases.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(BackendNetworkOutputCodecError::Noncanonical);
         }

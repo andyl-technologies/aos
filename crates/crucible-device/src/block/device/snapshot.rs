@@ -140,7 +140,7 @@ impl BlockSnapshot {
         maximum: u64,
     ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
         admit_snapshot_resources(self)?;
-        validate_snapshot(self)?;
+        validate_snapshot(self, maximum)?;
         let wire = BlockSnapshotEncodeWire {
             core: bounded_bytes(
                 self.core
@@ -239,7 +239,7 @@ impl BlockSnapshot {
             ),
         };
         admit_snapshot_resources(&snapshot)?;
-        validate_snapshot(&snapshot)?;
+        validate_snapshot(&snapshot, maximum)?;
         if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(BlockSnapshotCodecError::Noncanonical);
         }
@@ -379,8 +379,14 @@ fn resource_limit(
     }
 }
 
-fn validate_snapshot(snapshot: &BlockSnapshot) -> Result<(), BlockSnapshotCodecError> {
-    snapshot.core.canonical_bytes().map_err(map_io_core_error)?;
+fn validate_snapshot(
+    snapshot: &BlockSnapshot,
+    maximum: u64,
+) -> Result<(), BlockSnapshotCodecError> {
+    snapshot
+        .core
+        .canonical_length_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
+        .map_err(map_io_core_error)?;
     snapshot
         .storage_faults
         .validate_restore(snapshot.device_length)

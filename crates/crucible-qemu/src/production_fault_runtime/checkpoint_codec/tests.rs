@@ -47,7 +47,7 @@ fn empty_network(adapter_state: Vec<u8>) -> ProductionNetworkStateCheckpoint {
         ContentHash::from_bytes(b"network semantic identity"),
         SchedulerNetworkCheckpoint {
             links: Vec::new(),
-            rng_positions: BTreeMap::new(),
+            rng_positions: Vec::new(),
             signal_fault_wakeup_nanos: None,
         },
         crucible::VirtualTime { ticks: 17 },

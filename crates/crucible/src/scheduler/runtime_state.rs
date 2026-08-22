@@ -262,7 +262,7 @@ pub struct SchedulerNetworkCheckpoint {
     /// Directed link snapshots in canonical link/direction order.
     pub links: Vec<SchedulerNetworkLinkCheckpoint>,
     /// Shared RNG positions in canonical link order.
-    pub rng_positions: BTreeMap<LinkId, u64>,
+    pub rng_positions: Vec<(LinkId, u64)>,
     /// Exact signal-driven wakeup armed at capture time.
     pub signal_fault_wakeup_nanos: Option<u64>,
 }

@@ -89,6 +89,11 @@ fn drained_event_checkpoint_round_trips_and_rejects_trailing_bytes() {
         DequeuedFaultEvent::from_canonical_bytes(&bytes).expect("canonical drained event decodes");
     assert_eq!(restored, event);
     assert_eq!(
+        DequeuedFaultEvent::from_canonical_vec(bytes.clone())
+            .expect("owned canonical drained event decodes"),
+        event
+    );
+    assert_eq!(
         restored
             .canonical_bytes()
             .expect("restored event remains valid"),

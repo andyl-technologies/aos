@@ -293,8 +293,10 @@ fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
 #[test]
 fn pending_qemu_observation_identity_reserves_before_growth() {
     let observation = pending_qemu_observation();
-    let mut limits = FaultResourceLimits::default();
-    limits.event_log_bytes = 1;
+    let limits = FaultResourceLimits {
+        event_log_bytes: 1,
+        ..FaultResourceLimits::default()
+    };
 
     assert!(matches!(
         observation_identity_material(&observation, limits),
@@ -313,8 +315,10 @@ fn pending_qemu_observation_identity_reserves_before_growth() {
 #[test]
 fn pending_observation_reports_the_exhausted_checkpoint_resource() {
     let observation = pending_qemu_observation();
-    let mut limits = FaultResourceLimits::default();
-    limits.fat_checkpoint_bytes = 64;
+    let limits = FaultResourceLimits {
+        fat_checkpoint_bytes: 64,
+        ..FaultResourceLimits::default()
+    };
 
     assert!(matches!(
         observation_identity_material_at_checkpoint_offset(&observation, limits, 63),
