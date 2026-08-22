@@ -323,11 +323,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   credential drop and `exec`; replacement of the diagnostic path therefore
   cannot redirect launch. The production owner must still exclude concurrent
   namespace mutation until QEMU has opened every relative artifact.
-  A nondroppable daemon owner preserving the lifecycle-bound combined
-  child/cgroup/watcher process quarantine, aggregate
-  filesystem quota, execution-quantum counter composition, exclusive run-
-  directory namespace ownership through artifact open, the modeled attempt
-  driver, and concrete session wiring remain open. Real-node exact-checkpoint
+  A crate-internal nondroppable process-quarantine worker now accepts only a
+  lifecycle-matched child, watcher, and cgroup; it retries ordinary cleanup
+  failures, parks with authority after an invariant panic, and remains live
+  after its observation handle is dropped. Concrete failed-launch and active-
+  node handoff into that owner, aggregate filesystem quota, execution-quantum
+  counter composition, exclusive run-directory namespace ownership through
+  artifact open, the modeled attempt driver, and concrete session wiring remain
+  open. Real-node exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
   paused VMState/host-I/O capture. The daemon now prepares and durably publishes
@@ -358,9 +361,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   contract and resource guard, routes target and thin-base VMState through
   disjoint launch capabilities, serializes their process generations, and
   reaps the final generation before promotion; failure quarantines the guard
-  without writes. The nondroppable direct-child/cgroup/watcher quarantine
-  owner, concrete warm-restore lifecycle composition, and lifecycle resume
-  remain open.
+  without writes. The nondroppable direct-child/cgroup/watcher worker now
+  exists crate-internally; concrete failure handoff into it, warm-restore
+  lifecycle composition, and lifecycle resume remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable
