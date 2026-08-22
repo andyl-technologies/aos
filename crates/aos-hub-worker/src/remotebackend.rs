@@ -7,6 +7,9 @@
 //! bridge because both the Worker route and Durable Object endpoint require the
 //! deployment seal.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use anyhow::{anyhow, bail, Context as _, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -61,17 +64,76 @@ pub(crate) struct RemoteSqlResponse {
     rows: Option<Vec<Row>>,
 }
 
+/// Per-activation counters for SQL operations crossing into `HubDb`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RemoteSqlMetricsSnapshot {
+    /// Internal SQL requests issued.
+    pub(crate) calls: u64,
+    /// Aggregate internal SQL request latency in milliseconds.
+    pub(crate) duration_ms: u64,
+    /// Rows returned by query operations.
+    pub(crate) rows_read: u64,
+}
+
+impl RemoteSqlMetricsSnapshot {
+    /// Returns the counter delta since `before`.
+    #[must_use]
+    pub(crate) fn since(self, before: Self) -> Self {
+        Self {
+            calls: self.calls.saturating_sub(before.calls),
+            duration_ms: self.duration_ms.saturating_sub(before.duration_ms),
+            rows_read: self.rows_read.saturating_sub(before.rows_read),
+        }
+    }
+}
+
+/// Shared metrics recorder cloned with a [`RemoteHubBackend`].
+#[derive(Clone, Default)]
+pub(crate) struct RemoteSqlMetrics(Rc<Cell<RemoteSqlMetricsSnapshot>>);
+
+impl RemoteSqlMetrics {
+    /// Returns the current cumulative snapshot.
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> RemoteSqlMetricsSnapshot {
+        self.0.get()
+    }
+
+    fn record(&self, duration_ms: u64, rows_read: usize) {
+        let current = self.0.get();
+        self.0.set(RemoteSqlMetricsSnapshot {
+            calls: current.calls.saturating_add(1),
+            duration_ms: current.duration_ms.saturating_add(duration_ms),
+            rows_read: current
+                .rows_read
+                .saturating_add(u64::try_from(rows_read).unwrap_or(u64::MAX)),
+        });
+    }
+}
+
 /// Shared-database backend used outside the Durable Object isolate.
 #[derive(Clone)]
 pub(crate) struct RemoteHubBackend {
     env: Env,
+    metrics: RemoteSqlMetrics,
 }
 
 impl RemoteHubBackend {
     /// Builds a backend from the queue handler's Worker environment.
     #[must_use]
     pub(crate) fn new(env: &Env) -> Self {
-        Self { env: env.clone() }
+        Self {
+            env: env.clone(),
+            metrics: RemoteSqlMetrics::default(),
+        }
+    }
+
+    /// Builds a backend that reports into the supplied activation recorder.
+    #[must_use]
+    pub(crate) fn with_metrics(env: &Env, metrics: RemoteSqlMetrics) -> Self {
+        Self {
+            env: env.clone(),
+            metrics,
+        }
     }
 
     async fn call(&self, operation: &RemoteSqlRequest) -> Result<RemoteSqlResponse> {
@@ -106,6 +168,7 @@ impl RemoteHubBackend {
             .with_body(Some(JsValue::from_str(&body)));
         let request = Request::new_with_init(&format!("https://hub{REMOTE_SQL_PATH}"), &init)
             .map_err(|error| anyhow!("building remote SQL request: {error}"))?;
+        let started_at = worker::Date::now().as_millis();
         let mut response = stub
             .fetch_with_request(request)
             .await
@@ -114,10 +177,15 @@ impl RemoteHubBackend {
             let detail = response.text().await.unwrap_or_default();
             bail!("remote SQL returned {}: {detail}", response.status_code());
         }
-        response
+        let decoded: RemoteSqlResponse = response
             .json()
             .await
-            .map_err(|error| anyhow!("decoding remote SQL response: {error}"))
+            .map_err(|error| anyhow!("decoding remote SQL response: {error}"))?;
+        self.metrics.record(
+            worker::Date::now().as_millis().saturating_sub(started_at),
+            decoded.rows.as_ref().map_or(0, Vec::len),
+        );
+        Ok(decoded)
     }
 }
 
