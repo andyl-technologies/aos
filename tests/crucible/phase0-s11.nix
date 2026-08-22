@@ -24,7 +24,7 @@
   # proof to the canonical long-horizon S11 run.
   requireRrSwitchEvents ? true,
   # This bounds host wall time only. The deterministic proof horizon remains
-  # the content-addressed stopAt node-icount under all host load conditions.
+  # the content-addressed stopAt node-icount under host preemption.
   runTimeoutSeconds ? 2400,
   # Drop-one probes need a successful derivation even when a full-minus-patch
   # QEMU produces a divergent trace. The canonical gate keeps this false.
@@ -34,6 +34,7 @@
   # without attempting this runtime discriminator.
   skipUnlessBuilt ? null,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -380,6 +381,9 @@ in
       ACCELERATOR = accelerator;
       RUN_TIMEOUT_SECONDS = builtins.toString runTimeoutSeconds;
       PAUSE_WAIT_SECONDS = builtins.toString (runTimeoutSeconds - 60);
+      BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+      BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+      BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
       REQUIRE_GUEST_PASS =
         if requireGuestPass
         then "1"
@@ -431,6 +435,7 @@ in
           name = "run-s11-multi-vcpu-fingerprint";
           script = ''
             set -eu
+            grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
             unset LD_LIBRARY_PATH || true
 
@@ -446,15 +451,11 @@ in
               exit 0
             fi
 
-            active_qemu_pid=""
             active_timer_sink_pid=""
             active_hmp_client_pid=""
+            . "$BOUNDED_PREEMPTION_HARNESS"
             cleanup_active_qemu() {
-              if [ -n "$active_qemu_pid" ]; then
-                kill "$active_qemu_pid" 2>/dev/null || true
-                wait "$active_qemu_pid" 2>/dev/null || true
-                active_qemu_pid=""
-              fi
+              bounded_preemption_cleanup
               if [ -n "$active_hmp_client_pid" ]; then
                 kill "$active_hmp_client_pid" 2>/dev/null || true
                 wait "$active_hmp_client_pid" 2>/dev/null || true
@@ -466,6 +467,9 @@ in
                 active_timer_sink_pid=""
               fi
             }
+            trap 'cleanup_active_qemu' EXIT
+            trap 'cleanup_active_qemu; exit 143' TERM
+            trap 'cleanup_active_qemu; exit 130' INT
 
             fail() {
               cleanup_active_qemu
@@ -525,26 +529,6 @@ in
               [ "$digest" != "$zero_sha256" ] \
                 || fail "zero S11 provenance digest is not accepted"
             done
-
-            jitter_pids=""
-            start_jitter() {
-              i=0
-              while [ "$i" -lt 3 ]; do
-                yes > /dev/null &
-                jitter_pids="$jitter_pids $!"
-                i=$((i + 1))
-              done
-            }
-
-            stop_jitter() {
-              for pid in $jitter_pids; do
-                kill "$pid" 2>/dev/null || true
-              done
-              for pid in $jitter_pids; do
-                wait "$pid" 2>/dev/null || true
-              done
-              jitter_pids=""
-            }
 
             qmp_exchange() {
               socket="$1"
@@ -783,9 +767,22 @@ in
                 fail "guest $label launch is not diskless"
               fi
 
+              launch_timeout="$RUN_TIMEOUT_SECONDS"
+              if [ -z "$STOP_AT" ]; then
+                launch_timeout=600
+              fi
+              bounded_preemption_launch_qemu \
+                "$launch_timeout" "$TMPDIR/qemu-target-$label.pid" - "$QEMU" "$@" \
+                || fail "QEMU guest $label launch failed"
+              if [ "$label" = b ]; then
+                # S11 proves RR trace identity despite host scheduling. Six
+                # bounded pauses of QEMU itself are sufficient to perturb that
+                # schedule; a two-second watchdog guarantees resume.
+                bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+                  || fail "QEMU guest $label scheduler adversary did not start"
+              fi
+
               if [ -n "$STOP_AT" ]; then
-                timeout "$RUN_TIMEOUT_SECONDS" "$@" &
-                active_qemu_pid="$!"
                 wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
                 if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
                   wait_for_socket "$hmp_socket" \
@@ -803,9 +800,13 @@ in
                     || fail "failed to start realtime-deadline probe guest $label"
                 fi
                 wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
+                if [ "$label" = b ]; then
+                  bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                    || fail "QEMU guest $label scheduler adversary was incomplete"
+                fi
                 qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
-                wait "$active_qemu_pid" || fail "QEMU guest $label exited unsuccessfully"
-                active_qemu_pid=""
+                bounded_preemption_wait_qemu \
+                  || fail "QEMU guest $label exited unsuccessfully"
                 if [ -n "$active_hmp_client_pid" ]; then
                   kill "$active_hmp_client_pid" 2>/dev/null || true
                   wait "$active_hmp_client_pid" 2>/dev/null || true
@@ -817,7 +818,12 @@ in
                   active_timer_sink_pid=""
                 fi
               else
-                timeout 600 "$@"
+                if [ "$label" = b ]; then
+                  bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                    || fail "QEMU guest $label scheduler adversary was incomplete"
+                fi
+                bounded_preemption_wait_qemu \
+                  || fail "QEMU guest $label exited unsuccessfully"
               fi
               cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
               cp "$serial_path" "$TMPDIR/serial-$label.log"
@@ -827,9 +833,7 @@ in
             }
 
             run_one a
-            start_jitter
             run_one b
-            stop_jitter
 
             diagnose_trace_structure() {
               label="$1"
@@ -1093,6 +1097,7 @@ in
             fi
 
             mkdir -p "$out"
+            cp "$TMPDIR/preemption-b.log" "$out/preemption-b.log"
             for label in a b; do
               jq -r '
                 select(.kind == "rr_switch")
@@ -1513,7 +1518,13 @@ in
               else
                 echo det_ipi_probe=disabled
               fi
-              echo host_adversary=jitter-load
+              echo host_adversary=bounded-scheduler-preemption
+              echo host_adversary_perturbations=6
+              echo host_adversary_configured_pause_milliseconds=15
+              echo host_adversary_configured_total_stopped_milliseconds=90
+              echo host_adversary_nominal_worker_wall_milliseconds=240
+              echo host_adversary_worker_wall_timeout_seconds=2
+              echo host_adversary_busy_workers=0
               echo authoritative_trace_scope="$authoritative_trace_scope"
               if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
                 echo rr_cursor_export=sim

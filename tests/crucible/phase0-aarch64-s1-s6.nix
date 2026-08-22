@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   linuxSource = import ../../pkgs/kernel/_source.nix {fetchurl = pkgs.fetchurl;};
 
   kernel = pkgs.mkDerivation {
@@ -254,6 +255,9 @@ in
     KERNEL = "${kernel}/boot/Image";
     INITRAMFS = "${initramfs}/initrd.img";
     PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
+    BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+    BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+    BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
 
     phases = [
       {
@@ -261,6 +265,7 @@ in
         script = ''
           set -eu
           unset LD_LIBRARY_PATH || true
+          grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
           fail() {
             echo "FAIL: $*" >&2
@@ -284,32 +289,10 @@ in
             00 10 c0 06 5e ed 00 10 00 10 c0 06 5e ed 00 11 \
             00 10 c0 06 5e ed 00 12 00 10 c0 06 5e ed 00 13
 
-          jitter_pids=""
-          qemu_pid=""
-          stop_jitter() {
-            for pid in $jitter_pids; do
-              kill "$pid" 2>/dev/null || true
-            done
-            for pid in $jitter_pids; do
-              wait "$pid" 2>/dev/null || true
-            done
-            jitter_pids=""
-          }
-          cleanup() {
-            stop_jitter
-            if [ -n "$qemu_pid" ]; then
-              kill "$qemu_pid" 2>/dev/null || true
-              wait "$qemu_pid" 2>/dev/null || true
-            fi
-          }
-          trap cleanup EXIT
-
-          start_jitter() {
-            for ignored in 1 2 3; do
-              yes >/dev/null &
-              jitter_pids="$jitter_pids $!"
-            done
-          }
+          . "$BOUNDED_PREEMPTION_HARNESS"
+          trap 'bounded_preemption_cleanup' EXIT
+          trap 'bounded_preemption_cleanup; exit 143' TERM
+          trap 'bounded_preemption_cleanup; exit 130' INT
 
           run_one() {
             mode="$1"
@@ -322,7 +305,7 @@ in
               append="$append nokaslr norandmaps"
             fi
 
-            qemu-system-aarch64 \
+            set -- qemu-system-aarch64 \
               -nodefaults \
               -no-user-config \
               -display none \
@@ -342,9 +325,20 @@ in
               -serial "file:$serial" \
               -plugin "$PLUGIN,out=$trace,cadence=25000000,stop_at=25000000,extended=on,mem_events=off,rr_switch_events=on,vcpus=1" \
               -no-reboot \
-              -no-shutdown \
-              >"$TMPDIR/stdout-$label.log" 2>"$TMPDIR/stderr-$label.log" &
-            qemu_pid="$!"
+              -no-shutdown
+            qemu_binary=$(command -v "$1")
+            bounded_preemption_launch_qemu \
+              1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+              >"$TMPDIR/stdout-$label.log" 2>"$TMPDIR/stderr-$label.log" \
+              || fail "$label QEMU launch failed"
+            qemu_pid="$BOUNDED_QEMU_PID"
+            if [ "$label" = randomized-b ]; then
+              # This comparison proves the seeded ASLR/KASLR result is
+              # independent of host scheduling. Direct finite preemption is a
+              # causal perturbation of the actual QEMU execution schedule.
+              bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+                || fail "$label scheduler adversary did not start"
+            fi
 
             waited=0
             while [ "$waited" -lt 1800 ]; do
@@ -375,8 +369,13 @@ in
             grep -q '"observed_icount":25000000' "$trace" \
               || fail "$label terminal fingerprint missed the exact horizon"
 
+            if [ "$label" = randomized-b ]; then
+              bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                || fail "$label scheduler adversary was incomplete"
+            fi
+
             kill -9 "$qemu_pid" || fail "$label QEMU could not be terminated"
-            wait "$qemu_pid" 2>/dev/null || true
+            bounded_preemption_wait_qemu 2>/dev/null || true
             qemu_pid=""
             jq -c '
               select(.observed_icount == 25000000)
@@ -401,16 +400,14 @@ in
 
           run_one control a
           run_one randomized a
-          start_jitter
           run_one randomized b
-          stop_jitter
 
           cmp "$TMPDIR/bases-randomized-a" "$TMPDIR/bases-randomized-b" \
-            || fail "aarch64 ASLR bases differed under host load"
+            || fail "aarch64 ASLR bases differed under bounded scheduler preemption"
           cmp "$TMPDIR/kernel-offset-randomized-a" "$TMPDIR/kernel-offset-randomized-b" \
-            || fail "aarch64 KASLR offset differed under host load"
+            || fail "aarch64 KASLR offset differed under bounded scheduler preemption"
           cmp "$TMPDIR/horizon-randomized-a.json" "$TMPDIR/horizon-randomized-b.json" \
-            || fail "aarch64 S1 extended fingerprints differed under host load"
+            || fail "aarch64 S1 extended fingerprints differed under bounded scheduler preemption"
           if cmp -s "$TMPDIR/bases-control-a" "$TMPDIR/bases-randomized-a"; then
             fail "randomized aarch64 PIE/ASLR bases equal the no-randomization control"
           fi
@@ -422,6 +419,7 @@ in
           echo "$final_hash" | grep -Eq '^[0-9a-f]{64}$'
 
           mkdir -p "$out"
+          cp "$TMPDIR/preemption-randomized-b.log" "$out/preemption-randomized-b.log"
           cp "$TMPDIR"/bases-* "$out/"
           cp "$TMPDIR"/kernel-offset-* "$out/"
           cp "$TMPDIR"/trace-randomized-*.jsonl "$out/"
@@ -437,7 +435,13 @@ in
             echo randomized_kernel_offset_reproducible=true
             echo randomized_pie_aslr_layout_reproducible=true
             echo randomized_layout_differs_from_control=true
-            echo host_load_applied=true
+            echo host_adversary=bounded-scheduler-preemption
+            echo host_adversary_perturbations=6
+            echo host_adversary_configured_pause_milliseconds=15
+            echo host_adversary_configured_total_stopped_milliseconds=90
+            echo host_adversary_nominal_worker_wall_milliseconds=240
+            echo host_adversary_worker_wall_timeout_seconds=2
+            echo host_adversary_busy_workers=0
             echo extended_fingerprint_match=true
             echo exact_horizon_icount=25000000
             echo final_extended_hash="$final_hash"

@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   cadence = 200000000;
   horizon = 3600000000;
   rrSwitchQuantum = 4096;
@@ -206,6 +207,9 @@ in
     CADENCE = builtins.toString cadence;
     HORIZON = builtins.toString horizon;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
+    BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+    BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+    BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
 
     phases = [
       {
@@ -214,6 +218,7 @@ in
           set -eu
 
           unset LD_LIBRARY_PATH || true
+          grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
           fail() {
             echo "FAIL: $*" >&2
@@ -255,36 +260,10 @@ in
           seed="$TMPDIR/seed.bin"
           printf 'crucible-phase0-s6-seed-v1\n' > "$seed"
 
-          jitter_pids=""
-          qemu_pid=""
-          start_jitter() {
-            i=0
-            while [ "$i" -lt 3 ]; do
-              yes > /dev/null &
-              jitter_pids="$jitter_pids $!"
-              i=$((i + 1))
-            done
-          }
-
-          stop_jitter() {
-            for pid in $jitter_pids; do
-              kill "$pid" 2>/dev/null || true
-            done
-            for pid in $jitter_pids; do
-              wait "$pid" 2>/dev/null || true
-            done
-            jitter_pids=""
-          }
-
-          cleanup_qemu() {
-            if [ -n "$qemu_pid" ]; then
-              kill "$qemu_pid" 2>/dev/null || true
-              wait "$qemu_pid" 2>/dev/null || true
-              qemu_pid=""
-            fi
-          }
-
-          trap 'stop_jitter; cleanup_qemu' EXIT
+          . "$BOUNDED_PREEMPTION_HARNESS"
+          trap 'bounded_preemption_cleanup' EXIT
+          trap 'bounded_preemption_cleanup; exit 143' TERM
+          trap 'bounded_preemption_cleanup; exit 130' INT
 
           qmp_cmd() {
             socket="$1"
@@ -439,8 +418,17 @@ in
                 ;;
             esac
 
-            timeout 1200 "$@" &
-            qemu_pid="$!"
+            qemu_binary=$(command -v "$1")
+            bounded_preemption_launch_qemu \
+              1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+              || fail "guest $label QEMU launch failed"
+            if [ "''${label##*-}" = b ]; then
+              # ASLR/KASLR fingerprints must depend on scenario inputs, never
+              # on host scheduling. Finite preemption targets that invariant
+              # directly and costs no synthetic busy CPU time.
+              bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+                || fail "guest $label scheduler adversary did not start"
+            fi
 
             wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             wait_for_horizon_pause "$label" "$qmp_socket" \
@@ -451,17 +439,19 @@ in
               fi
               fail "guest $label did not report TEST_RESULT:PASS before horizon"
             fi
+            if [ "''${label##*-}" = b ]; then
+              bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                || fail "guest $label scheduler adversary was incomplete"
+            fi
             qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
-            wait "$qemu_pid" || fail "guest $label QEMU exited unsuccessfully"
-            qemu_pid=""
+            bounded_preemption_wait_qemu \
+              || fail "guest $label QEMU exited unsuccessfully"
           }
 
           run_pair() {
             mode="$1"
             run_one "$mode" a
-            start_jitter
             run_one "$mode" b
-            stop_jitter
           }
 
           extract_bases() {
@@ -600,6 +590,8 @@ in
           }
 
           mkdir -p "$out"
+          cp "$TMPDIR/preemption-control-b.log" "$out/preemption-control-b.log"
+          cp "$TMPDIR/preemption-kaslr-b.log" "$out/preemption-kaslr-b.log"
 
           run_pair control
           run_pair kaslr
@@ -796,7 +788,14 @@ in
             echo vcpus=1
             echo cadence="$CADENCE"
             echo horizon_icount="$HORIZON"
-            echo host_adversary=jitter-load
+            echo host_adversary=bounded-scheduler-preemption
+            echo host_adversary_perturbations_per_run=6
+            echo host_adversary_runs=2
+            echo host_adversary_configured_pause_milliseconds=15
+            echo host_adversary_configured_total_stopped_milliseconds_per_run=90
+            echo host_adversary_nominal_worker_wall_milliseconds_per_run=240
+            echo host_adversary_worker_wall_timeout_seconds=2
+            echo host_adversary_busy_workers=0
             echo qemu_internal_seed=0x0010c006
             echo guest_entropy_seed=fw_cfg_and_deterministic_virtio_rng
             echo process_argv_comparison=canonical_launch_with_run_local_output_paths_normalized

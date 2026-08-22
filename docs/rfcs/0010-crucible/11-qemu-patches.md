@@ -1329,8 +1329,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   can change the guest instruction at which a pending interrupt is observed.
   The finite remaining RR budget provides the next natural RCU quiescent state.
 - **Micro-test:** runs the real four-vCPU deterministic fingerprint workload
-  twice through a non-cadence terminal horizon, adds sustained host CPU load to
-  only the second run, and requires the canonical all-vCPU, RR-switch,
+  twice through a non-cadence terminal horizon, applies six configured 15 ms
+  SIGSTOP/SIGCONT preemptions to QEMU only in the second run under a two-second
+  resume watchdog, and requires the canonical all-vCPU, RR-switch,
   deterministic-IPI, RAM, and device evidence to compare equal. The stock
   source proves the forced-kick path remains the default outside the guarded
   mode.
@@ -1366,7 +1367,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   execution. Raw observed icount, QEMU runstate, and `rr_current_cpu` are not
   used as execution proxies.
 - **Micro-test:** the production four-vCPU fingerprint workload compares two
-  exact-horizon executions while only the second has sustained host CPU load.
+  exact-horizon executions while only the second has bounded scheduler preemption.
   It requires equal canonical all-vCPU, RR, deterministic-IPI, RAM, and device
   evidence and bounded QMP stop/teardown. Stock QEMU supplies the immediate-kick
   negative control. The production single-vCPU fingerprint gate separately
@@ -1438,7 +1439,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   pending state and explicitly kicks the vCPU; committed terminal, lifecycle,
   and interrupt state retains immediate `cpu_exit()`.
 - **Micro-test:** the production four-vCPU fingerprint compares complete
-  canonical streams with host CPU load applied only to the second run. S1 and
+  canonical streams with bounded scheduler preemption applied only to the second run. S1 and
   live-network gates prove startup, between-slice, terminal-pause, and device
   wake liveness. Structural checks require the single-vCPU liveness exception,
   the idle/active/pending handshake and its canonical service points, plus cleanup on
