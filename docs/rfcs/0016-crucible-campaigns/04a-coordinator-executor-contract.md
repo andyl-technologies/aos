@@ -1202,6 +1202,16 @@ GetAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id | attempt_id 
 GetAttemptExecutionResponseV2 = version | daemon_epoch | attempt_id | execution_id |
                                 request_digest | disposition
 
+ResumeAttemptExecutionRequestV2 = version | assignment_id | daemon_epoch |
+                                  lineage_id | attempt_id | prior_execution_id |
+                                  exact_checkpoint_id | resource_limits |
+                                  retention_intent
+
+ResumeAttemptExecutionResponseV2 = version | assignment_id | daemon_epoch |
+                                   attempt_id | prior_execution_id |
+                                   exact_checkpoint_id | request_digest |
+                                   disposition
+
 CheckpointAttemptExecutionRequestV2 = version | daemon_epoch | lineage_id |
                                       attempt_id | execution_id |
                                       execution_basis_digest
@@ -1276,6 +1286,27 @@ only then may it release the process-local execution reservation. A retry
 returns the exact durable phase and root. A different root for the same
 execution is a stable conflict and MUST NOT replace the staged root.
 
+`ResumeAttemptExecution` is the idempotent admission request for a fresh local
+execution incarnation from one exact durable `paused(root)` state. Its request
+digest is
+`H("crucible.campaign.resume-attempt-execution-request.v2",
+canonical_request)`. The request carries the new assignment and daemon epoch,
+the semantic lineage and attempt, and the exact prior execution and checkpoint
+that must still own the paused state. Resource limits and retention form the
+same assignment-neutral execution basis used by `SubmitAttempt`; resume MUST
+reject a changed basis rather than silently run the checkpoint under different
+operational terms. Its closed disposition vocabulary is
+`accepted(new execution ID) | already-running(new execution ID) |
+already-completed(observation ID) | already-canceled | not-current |
+rejected(incompatible | backpressure | unavailable-input | unauthorized |
+conflicting-assignment)`. The response repeats the assignment, new daemon
+epoch, attempt, prior execution, checkpoint, and exact request digest. Absence
+or any paused-root, prior-execution, lineage, attempt, or basis mismatch is
+`not-current` and MUST NOT launch a guest. Exact retry reproduces the same new
+execution incarnation. After restart, an admitted resume remains bound to the
+same checkpoint and cannot degrade to an ordinary execution from the attempt's
+starting configuration.
+
 `CancelAttemptExecution` is the idempotent mutation for the same exact
 execution basis. Its request digest is
 `H("crucible.campaign.cancel-attempt-execution-request.v2", canonical_request)`;
@@ -1290,7 +1321,10 @@ executor continues charging physical capacity until the worker acknowledges
 exit. `already-completed` is independently authenticated and incorporated by
 the observation owner.
 
-The implementor-facing Rust `ExecutorService` trait implements this same vocabulary.
+The implementor-facing Rust executor traits currently implement submit,
+status, checkpoint, and cancellation with this vocabulary. The strict resume
+messages and exact-response validator are implemented; their service,
+supervisor, worker, and loopback wiring remains an explicit next checkpoint.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
 `ExecutorClient` wraps both direct and future RPC services and rejects a

@@ -43,6 +43,8 @@ crucible.campaign.submit-attempt-request	2	crucible-campaign::execution	componen
 crucible.campaign.submit-attempt-response	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.get-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.resume-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
+crucible.campaign.resume-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.cancel-attempt-execution-response	2	crucible-campaign::execution	component-message	gate:component-contract
 crucible.campaign.checkpoint-attempt-execution-request	2	crucible-campaign::execution	component-message	gate:component-contract

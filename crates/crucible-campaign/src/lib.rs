@@ -71,7 +71,9 @@ pub use execution::{
     ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorControlService,
     ExecutorRejection, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
     GetAttemptExecutionRequest, GetAttemptExecutionResponse, MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
+    SubmitAttemptResponse,
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
