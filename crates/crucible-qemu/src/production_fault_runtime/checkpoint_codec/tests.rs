@@ -121,6 +121,28 @@ fn aggregate_codec_rejects_trailing_bytes() {
 }
 
 #[test]
+fn scheduler_network_resource_coordinates_cross_production_envelope() {
+    assert_eq!(
+        map_scheduler_network_error(
+            crucible::SchedulerNetworkCheckpointCodecError::ResourceLimit {
+                field: "directed links",
+                current: 0,
+                requested: 65_537,
+                configured: 65_536,
+                hard: 65_536,
+            },
+        ),
+        ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "directed links",
+            current: 0,
+            requested: 65_537,
+            configured: 65_536,
+            hard: 65_536,
+        }
+    );
+}
+
+#[test]
 fn aggregate_codec_rejects_pre_policy_version() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"old policy checkpoint seed");

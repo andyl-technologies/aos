@@ -1,5 +1,6 @@
 //! Resource admission and error translation for production fault checkpoints.
 
+use crucible::SchedulerNetworkCheckpointCodecError;
 use crucible::model::{FaultResourceLimitError, FaultResourceLimits, FaultRuntimeError};
 
 use super::{
@@ -69,6 +70,21 @@ pub(super) fn map_runtime_error(
     match error {
         FaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
         _ => ProductionFaultRuntimeCheckpointCodecError::Runtime,
+    }
+}
+
+pub(super) fn map_scheduler_network_error(
+    error: SchedulerNetworkCheckpointCodecError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        SchedulerNetworkCheckpointCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => resource_limit(field, current, requested, configured, hard),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Network,
     }
 }
 

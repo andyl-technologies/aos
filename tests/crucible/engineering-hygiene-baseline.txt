@@ -219,7 +219,6 @@ shape-line|crates/crucible/src/scheduler/control_state.rs|1028
 shape-line|crates/crucible/src/scheduler/event_codec.rs|2139
 shape-line|crates/crucible/src/scheduler/event_log.rs|2096
 shape-line|crates/crucible/src/scheduler/event_log/backend_loop.rs|751
-shape-line|crates/crucible/src/scheduler/runtime_state.rs|821
 shape-line|crates/crucible/src/scheduler/scenario.rs|719
 shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|1939
 shape-line|crates/crucible/src/scheduler/single_scheduler_state.rs|1700
