@@ -153,7 +153,7 @@ impl ProductionFaultRuntimeCheckpoint {
             network_state: self
                 .network_state
                 .as_ref()
-                .map(encode_network)
+                .map(|network| encode_network(network, maximum))
                 .transpose()?,
             emitted_events: &self.emitted_events,
             pending_qemu_observations: &self.pending_qemu_observations,
@@ -245,7 +245,10 @@ impl ProductionFaultRuntimeCheckpoint {
             plan.resource_limits(),
         )
         .map_err(map_host_error)?;
-        let network_state = wire.network_state.map(decode_network).transpose()?;
+        let network_state = wire
+            .network_state
+            .map(|network| decode_network(network, fat_checkpoint_bytes))
+            .transpose()?;
         let mut pending_qemu_events = BTreeMap::new();
         for (node, events) in wire.pending_qemu_events {
             let events = events.into_inner();
@@ -335,6 +338,7 @@ pub enum ProductionFaultRuntimeCheckpointCodecError {
 
 fn encode_network(
     checkpoint: &ProductionNetworkStateCheckpoint,
+    maximum: u64,
 ) -> Result<NetworkEncodeWire<'_>, ProductionFaultRuntimeCheckpointCodecError> {
     let mut pending_outputs = Vec::new();
     pending_outputs
@@ -347,8 +351,8 @@ fn encode_network(
         })?;
     for output in &checkpoint.pending_outputs {
         let encoded = output
-            .canonical_bytes()
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?;
+            .canonical_bytes_with_limit(maximum)
+            .map_err(map_backend_network_output_error)?;
         pending_outputs.push(bounded_checkpoint_bytes(encoded)?);
     }
     let pending_outputs = BoundedVec::new(pending_outputs).map_err(map_bounded_cbor_error)?;
@@ -373,6 +377,7 @@ fn encode_network(
 
 fn decode_network(
     wire: NetworkWire,
+    maximum: u64,
 ) -> Result<ProductionNetworkStateCheckpoint, ProductionFaultRuntimeCheckpointCodecError> {
     let pending_outputs = wire.pending_outputs.into_inner();
     let mut decoded_outputs = Vec::new();
@@ -383,8 +388,8 @@ fn decode_network(
         })?;
     for encoded in pending_outputs {
         decoded_outputs.push(
-            BackendNetworkOutput::from_canonical_bytes(encoded.as_slice())
-                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Network)?,
+            BackendNetworkOutput::from_canonical_bytes_with_limit(encoded.as_slice(), maximum)
+                .map_err(map_backend_network_output_error)?,
         );
     }
 

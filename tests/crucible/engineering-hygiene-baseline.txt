@@ -171,7 +171,6 @@ shape-line|crates/crucible-shmem/tests/gate_layer1_injection.rs|699
 shape-line|crates/crucible-sim/src/contract_a.rs|1045
 shape-line|crates/crucible-sim/tests/contract_a.rs|773
 shape-line|crates/crucible/src/backend.rs|624
-shape-line|crates/crucible/src/backend/io.rs|1149
 shape-line|crates/crucible/src/decision.rs|1015
 shape-line|crates/crucible/src/device_subnode.rs|1228
 shape-line|crates/crucible/src/example_corpus.rs|2223
