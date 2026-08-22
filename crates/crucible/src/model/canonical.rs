@@ -18,6 +18,16 @@ pub(super) fn content_hash_from_canonical_material(domain: &str, material: &str)
     }
 }
 
+pub(super) fn content_hash_from_canonical_hex_bytes(domain: &str, bytes: &[u8]) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.content-hash.v1");
+    hasher.write_bytes(domain.as_bytes());
+    hasher.write_hex_bytes(bytes);
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
 pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.configuration.v1");
@@ -430,6 +440,32 @@ impl MaterialHasher {
         self.bytes_written = self.bytes_written.wrapping_add(bytes.len() as u64);
     }
 
+    fn write_hex_bytes(&mut self, bytes: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        let encoded_length = (bytes.len() as u64).wrapping_mul(2);
+        self.write_u64(encoded_length);
+
+        let mut word = [0; 8];
+        let mut word_length = 0;
+        for byte in bytes {
+            for nibble in [byte >> 4, byte & 0x0f] {
+                word[word_length] = HEX[usize::from(nibble)];
+                word_length += 1;
+                if word_length == word.len() {
+                    self.mix_word(u64::from_le_bytes(word));
+                    word = [0; 8];
+                    word_length = 0;
+                }
+            }
+        }
+        if word_length != 0 {
+            self.mix_word(u64::from_le_bytes(word));
+        }
+
+        self.bytes_written = self.bytes_written.wrapping_add(encoded_length);
+    }
+
     fn finish(&self) -> [u8; 32] {
         let mut lanes = self.lanes;
         for (index, lane) in lanes.iter_mut().enumerate() {
@@ -472,4 +508,31 @@ fn finalize_hash_word(mut word: u64) -> u64 {
     word ^= word >> 27;
     word = word.wrapping_mul(0x94d0_49bb_1331_11eb);
     word ^ (word >> 31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hexadecimal_byte_hash_matches_legacy_material_string() {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for bytes in [
+            Vec::new(),
+            vec![0],
+            vec![0xab, 0xcd, 0xef],
+            (0_u8..=31).collect(),
+        ] {
+            let mut encoded = String::with_capacity(bytes.len() * 2);
+            for byte in &bytes {
+                encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+
+            assert_eq!(
+                content_hash_from_canonical_hex_bytes("crucible.test.hex-stream.v1", &bytes),
+                content_hash_from_canonical_material("crucible.test.hex-stream.v1", &encoded)
+            );
+        }
+    }
 }

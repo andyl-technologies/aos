@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "checkpoint_identity_material.rs"]
+mod material;
+
+use material::*;
+
 pub(super) fn validate_production_event_state(
     emitted_events: &[ReferencedSignalEvent],
     additional_emitted_events: &[ReferencedSignalEvent],
@@ -284,6 +289,7 @@ pub(super) fn append_length_prefixed(
 )]
 pub(super) fn production_checkpoint_identity(
     plan: ContentHash,
+    resource_limits: FaultResourceLimits,
     runtime: Option<&FaultRuntimeCheckpoint>,
     host: &HostFaultActionState,
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
@@ -297,22 +303,21 @@ pub(super) fn production_checkpoint_identity(
     pending_qemu_observations: &[FaultObservation],
     pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
 ) -> Result<ContentHash, ProductionFaultRuntimeError> {
-    let mut material = Vec::new();
-    material.extend_from_slice(&plan.bytes);
-    material.extend_from_slice(&host.digest().bytes);
+    let mut material = BoundedCheckpointIdentityMaterial::new(resource_limits);
+    material.append(&plan.bytes)?;
+    material.append(&host.digest().bytes)?;
     match network_state {
         Some(network_state) => {
-            material.push(1);
-            material.extend_from_slice(&network_state.id().bytes);
-            append_length_prefixed(
-                &mut material,
-                &network_state.scheduler.canonical_bytes().map_err(|_| {
-                    ProductionFaultRuntimeError::CheckpointEncoding {
-                        component: "scheduler network",
-                    }
-                })?,
+            material.push(1)?;
+            material.append(&network_state.id().bytes)?;
+            let scheduler_maximum = material.remaining_after_length_prefix()?;
+            material.append_length_prefixed(
+                &network_state
+                    .scheduler
+                    .canonical_bytes_with_limit(scheduler_maximum)
+                    .map_err(map_identity_scheduler_error)?,
             )?;
-            material.extend_from_slice(&network_state.committed_frontier.ticks.to_be_bytes());
+            material.append(&network_state.committed_frontier.ticks.to_be_bytes())?;
             let pending_output_count =
                 u64::try_from(network_state.pending_outputs.len()).map_err(|_| {
                     FaultResourceLimitError::Representation {
@@ -320,65 +325,63 @@ pub(super) fn production_checkpoint_identity(
                         value: u64::MAX,
                     }
                 })?;
-            material.extend_from_slice(&pending_output_count.to_be_bytes());
+            material.append(&pending_output_count.to_be_bytes())?;
             for output in &network_state.pending_outputs {
-                append_length_prefixed(
-                    &mut material,
-                    &output.canonical_bytes().map_err(|_| {
-                        ProductionFaultRuntimeError::CheckpointEncoding {
-                            component: "pending network output",
-                        }
-                    })?,
+                let output_maximum = material.remaining_after_length_prefix()?;
+                material.append_length_prefixed(
+                    &output
+                        .canonical_bytes_with_limit(output_maximum)
+                        .map_err(map_identity_network_output_error)?,
                 )?;
             }
-            append_length_prefixed(&mut material, &network_state.adapter_state)?;
+            material.append_length_prefixed(&network_state.adapter_state)?;
         }
-        None => material.push(0),
+        None => material.push(0)?,
     }
     if let Some(runtime) = runtime {
-        material.extend_from_slice(
+        material.append(
             &runtime
                 .content_id()
                 .map_err(FaultExecutionError::from)?
                 .bytes,
-        );
+        )?;
     }
     for event in emitted_events {
-        material.extend_from_slice(event.signal.as_str().as_bytes());
-        material.push(0);
-        material.extend_from_slice(&event.coordinate.virtual_nanos.to_be_bytes());
-        material.extend_from_slice(
+        material.append(event.signal.as_str().as_bytes())?;
+        material.push(0)?;
+        material.append(&event.coordinate.virtual_nanos.to_be_bytes())?;
+        material.append(
             &event
                 .coordinate
                 .retired_instructions
                 .unwrap_or(u64::MAX)
                 .to_be_bytes(),
-        );
-        material.extend_from_slice(&event.same_coordinate_sequence.to_be_bytes());
-        material.extend_from_slice(&event.evidence.bytes);
+        )?;
+        material.append(&event.same_coordinate_sequence.to_be_bytes())?;
+        material.append(&event.evidence.bytes)?;
     }
     for observation in pending_qemu_observations {
-        append_length_prefixed(&mut material, &observation_identity_material(observation)?)?;
+        material.append_length_prefixed(&observation_identity_material(observation)?)?;
     }
     for (node, events) in pending_qemu_events {
-        material.extend_from_slice(node.name.as_bytes());
-        material.push(0);
+        material.append(node.name.as_bytes())?;
+        material.push(0)?;
         for event in events {
-            material.extend_from_slice(&event.header.encode());
-            material.extend_from_slice(&event.payload);
+            material.append(&event.header.encode())?;
+            material.append(&event.payload)?;
         }
     }
     for (node, fingerprint) in qemu_fingerprints {
-        append_length_prefixed(&mut material, node.name.as_bytes())?;
-        material.extend_from_slice(&fingerprint.bytes);
+        material.append_length_prefixed(node.name.as_bytes())?;
+        material.append(&fingerprint.bytes)?;
         let command_sequence = qemu_fault_sequences
             .get(node)
             .ok_or(FaultExecutionError::CheckpointPresence)?;
         let event_sequence = qemu_fault_event_sequences
             .get(node)
             .ok_or(FaultExecutionError::CheckpointPresence)?;
-        material.extend_from_slice(&command_sequence.to_be_bytes());
-        material.extend_from_slice(&event_sequence.to_be_bytes());
+        material.append(&command_sequence.to_be_bytes())?;
+        material.append(&event_sequence.to_be_bytes())?;
     }
     if qemu_fault_sequences.keys().ne(qemu_fingerprints.keys())
         || qemu_fault_event_sequences
@@ -388,25 +391,25 @@ pub(super) fn production_checkpoint_identity(
         return Err(FaultExecutionError::CheckpointPresence.into());
     }
     for (identity, action) in qemu_issued_actions {
-        material.extend_from_slice(&identity.bytes);
-        material.extend_from_slice(&action.id().bytes);
+        material.append(&identity.bytes)?;
+        material.append(&action.id().bytes)?;
         let commit = qemu_action_commits
             .get(identity)
             .ok_or(FaultExecutionError::CheckpointPresence)?;
-        material.extend_from_slice(&commit.command_sequence.to_be_bytes());
-        material.extend_from_slice(&commit.command_kind.to_be_bytes());
-        material.extend_from_slice(&commit.before_hash);
-        material.extend_from_slice(&commit.after_hash);
+        material.append(&commit.command_sequence.to_be_bytes())?;
+        material.append(&commit.command_kind.to_be_bytes())?;
+        material.append(&commit.before_hash)?;
+        material.append(&commit.after_hash)?;
     }
     if qemu_action_commits.keys().ne(qemu_issued_actions.keys()) {
         return Err(FaultExecutionError::CheckpointPresence.into());
     }
     for identity in qemu_active_rule_ids {
-        material.extend_from_slice(&identity.bytes);
+        material.append(&identity.bytes)?;
     }
-    Ok(ContentHash::from_canonical_material(
+    Ok(ContentHash::from_canonical_hex_bytes(
         "crucible.production-fault-runtime-checkpoint.v8",
-        &hex_bytes(&material),
+        material.as_slice(),
     ))
 }
 
@@ -499,14 +502,4 @@ pub(super) fn validate_ready_marker_admission(
         }
     }
     Ok(())
-}
-
-pub(super) fn hex_bytes(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }

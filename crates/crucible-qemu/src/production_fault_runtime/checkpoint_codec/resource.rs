@@ -8,6 +8,7 @@ use super::{
     ProductionFaultRuntimeCheckpointCodecError,
 };
 use crate::checkpoint::bounded_cbor::BoundedCborError;
+use crate::production_fault_runtime::ProductionFaultRuntimeError;
 
 pub(super) fn map_bounded_cbor_error(
     error: BoundedCborError,
@@ -70,6 +71,15 @@ pub(super) fn map_runtime_error(
     match error {
         FaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
         _ => ProductionFaultRuntimeCheckpointCodecError::Runtime,
+    }
+}
+
+pub(super) fn map_identity_error(
+    error: ProductionFaultRuntimeError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        ProductionFaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Invalid,
     }
 }
 

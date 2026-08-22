@@ -476,9 +476,10 @@ fn validate_checkpoint(
         &checkpoint.pending_qemu_events,
         plan.resource_limits(),
     )
-    .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
+    .map_err(map_identity_error)?;
     let identity = production_checkpoint_identity(
         plan.id(),
+        plan.resource_limits(),
         checkpoint.runtime.as_ref(),
         &checkpoint.host,
         &checkpoint.qemu_fingerprints,
@@ -492,7 +493,7 @@ fn validate_checkpoint(
         &checkpoint.pending_qemu_observations,
         &checkpoint.pending_qemu_events,
     )
-    .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
+    .map_err(map_identity_error)?;
     if identity != checkpoint.identity {
         return Err(ProductionFaultRuntimeCheckpointCodecError::Invalid);
     }

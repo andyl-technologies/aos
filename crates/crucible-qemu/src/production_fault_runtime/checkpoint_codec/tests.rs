@@ -23,6 +23,7 @@ fn empty_checkpoint(
     };
     checkpoint.identity = production_checkpoint_identity(
         plan.id(),
+        plan.resource_limits(),
         checkpoint.runtime.as_ref(),
         &checkpoint.host,
         &checkpoint.qemu_fingerprints,
@@ -105,6 +106,69 @@ fn aggregate_identity_binds_network_adapter_bytes() {
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),
         Err(ProductionFaultRuntimeCheckpointCodecError::Invalid)
+    ));
+}
+
+#[test]
+fn aggregate_identity_preserves_legacy_hex_material_hash() {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let plan = FaultSignalPlan::empty();
+    let checkpoint = empty_checkpoint(&plan, None);
+    let mut material = Vec::new();
+    material.extend_from_slice(&plan.id().bytes);
+    material.extend_from_slice(&checkpoint.host.digest().bytes);
+    material.push(0);
+    let mut encoded = String::with_capacity(material.len() * 2);
+    for byte in material {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+
+    assert_eq!(
+        checkpoint.identity,
+        ContentHash::from_canonical_material(
+            "crucible.production-fault-runtime-checkpoint.v8",
+            &encoded,
+        )
+    );
+}
+
+#[test]
+fn aggregate_identity_enforces_authored_limit_before_growth() {
+    let plan = FaultSignalPlan::empty();
+    let checkpoint = empty_checkpoint(&plan, None);
+    let mut limits = plan.resource_limits();
+    limits.fat_checkpoint_bytes = 64;
+
+    assert!(matches!(
+        production_checkpoint_identity(
+            plan.id(),
+            limits,
+            checkpoint.runtime.as_ref(),
+            &checkpoint.host,
+            &checkpoint.qemu_fingerprints,
+            &checkpoint.qemu_fault_sequences,
+            &checkpoint.qemu_fault_event_sequences,
+            &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
+            &checkpoint.qemu_active_rule_ids,
+            checkpoint.network_state.as_ref(),
+            &checkpoint.emitted_events,
+            &checkpoint.pending_qemu_observations,
+            &checkpoint.pending_qemu_events,
+        ),
+        Err(
+            crate::production_fault_runtime::ProductionFaultRuntimeError::ResourceLimit(
+                crucible::model::FaultResourceLimitError::Exceeded {
+                    field: "fat_checkpoint_bytes",
+                    current: 64,
+                    requested: 1,
+                    configured: 64,
+                    hard: 68_719_476_736,
+                }
+            )
+        )
     ));
 }
 
