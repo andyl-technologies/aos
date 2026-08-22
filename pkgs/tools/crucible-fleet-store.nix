@@ -2,7 +2,6 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoVendor,
   grep,
   crucible-controller,
 }: let
