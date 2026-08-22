@@ -570,6 +570,9 @@ mod tests {
     use super::*;
     use crate::db::{NewRegistryPublication, SurfaceTarget};
 
+    #[cfg(feature = "query-timing")]
+    use crate::backend::{QueryTimings, SqlxBackend, TimingBackend};
+
     #[tokio::test]
     async fn manifest_pages_are_atomic_and_idempotent() {
         let db = Database::open_in_memory().await.unwrap();
@@ -804,5 +807,70 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[cfg(feature = "query-timing")]
+    #[tokio::test]
+    async fn manifest_page_crosses_the_backend_in_one_atomic_batch() {
+        let timings = QueryTimings::new();
+        let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+        let db = Database::with_backend(Box::new(TimingBackend::new(backend, timings.clone())))
+            .await
+            .unwrap();
+        let registry_id = db
+            .register_registry("manifest-backend-batch", &[], false)
+            .await
+            .unwrap();
+        let publication_id = "publication-manifest-backend-batch";
+        let manifest_digest = "a".repeat(64);
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-manifest-backend-batch".into(),
+            manifest_digest: manifest_digest.clone(),
+            refs_digest: "b".repeat(64),
+            default_commit: None,
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let object_count = 64_i64;
+        db.begin_registry_publication_manifest_session(
+            publication_id,
+            registry_id,
+            &manifest_digest,
+            object_count,
+            "lease-batch",
+            100,
+        )
+        .await
+        .unwrap();
+        let objects = (0..object_count)
+            .map(|index| RegistryPublicationManifestObject {
+                object_key: format!("objects/aa/{index:04}"),
+                expected_hash: format!("{index:064x}"),
+                expected_size: index + 1,
+                object_kind: "immutable".into(),
+            })
+            .collect::<Vec<_>>();
+
+        let before = timings.spans().len();
+        db.append_registry_publication_manifest_chunk(
+            publication_id,
+            "lease-batch",
+            0,
+            &"c".repeat(64),
+            &objects,
+            101,
+        )
+        .await
+        .unwrap();
+        let spans = timings.spans();
+        let operations = spans[before..]
+            .iter()
+            .map(|span| span.op)
+            .collect::<Vec<_>>();
+
+        assert_eq!(operations, ["query", "checked_batch", "query"]);
     }
 }
