@@ -15,7 +15,8 @@ use crucible::model::{
 };
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, Configuration,
-    ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ScenarioDef,
+    ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, RuntimeState,
+    ScenarioDef, World,
 };
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy,
@@ -28,13 +29,15 @@ use crucible_cas::content_store::{
     StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use crucible_qemu::{
-    DeterministicLaunchProfile, QemuChildProcessContract, QemuFaultCapabilityRequirement,
+    DeterministicLaunchProfile, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
+    QemuCachedAncestor, QemuChildProcessContract, QemuFaultCapabilityRequirement,
     QemuGuardedNodeRealizationLauncher, QemuLaunchArtifact, QemuLaunchCommand,
-    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuNodeLauncher,
-    QemuNodeRealizationExecutor, QemuNodeRestorePlan, QemuPreparedRunDirectory,
-    QemuRealizedNodeBackend, QemuReplayOracleValidation, QemuVmLaunchConfig,
-    QemuVmRealizationError, QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmSnapshot,
-    QemuVmStateBinding,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLoadvmCommandAuthorization,
+    QemuLoadvmRealizationAdmission, QemuNodeLauncher, QemuNodeRealizationExecutor,
+    QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuRealizedNodeBackend, QemuReplayOracleCheck,
+    QemuReplayOracleValidation, QemuVmLaunchConfig, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
+    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
 };
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
@@ -63,6 +66,10 @@ impl TestDurableBackend {
             .cancel_vmstate_read
             .lock()
             .expect("canceling backend lock") = Some(cancellation);
+    }
+
+    fn object_count(&self) -> usize {
+        self.memory.object_count().expect("count test objects")
     }
 }
 
@@ -293,6 +300,113 @@ struct GuardedResumeGuard {
     resources: AttemptResourceLimits,
     cancellation: crate::ExecutionCancellation,
     process_contract: QemuChildProcessContract,
+}
+
+struct ReplayValidationStore {
+    baked: QemuBakedGenesisSnapshot,
+}
+
+impl QemuVmRealizationStore for ReplayValidationStore {
+    fn exact_snapshot(
+        &mut self,
+        _config: &Configuration,
+    ) -> Result<Option<QemuVmSnapshot>, QemuVmRealizationError> {
+        Ok(None)
+    }
+
+    fn nearest_cached_ancestor(
+        &mut self,
+        _config: &Configuration,
+    ) -> Result<Option<QemuCachedAncestor>, QemuVmRealizationError> {
+        Ok(None)
+    }
+
+    fn baked_genesis(
+        &mut self,
+        _world: &World,
+        _def: &ScenarioDef,
+    ) -> Result<QemuBakedGenesisSnapshot, QemuVmRealizationError> {
+        Ok(self.baked.clone())
+    }
+}
+
+struct ReplayValidationExecutor {
+    runtime: ContentHash,
+    probe_calls: usize,
+    baked_calls: usize,
+}
+
+impl QemuVmRealizationExecutor for ReplayValidationExecutor {
+    fn load_exact_snapshot(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+        _admission: QemuLoadvmRealizationAdmission,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        Ok(replay_validation_runtime(
+            config,
+            snapshot.checkpoint(),
+            self.runtime,
+        ))
+    }
+
+    fn load_exact_snapshot_for_replay_oracle_probe(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        _authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        self.probe_calls += 1;
+        Ok(replay_validation_runtime(
+            config,
+            snapshot.checkpoint(),
+            self.runtime,
+        ))
+    }
+
+    fn load_baked_genesis(
+        &mut self,
+        config: &Configuration,
+        admission: QemuBakedGenesisRestoreAdmission<'_>,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        self.baked_calls += 1;
+        Ok(replay_validation_runtime(
+            config,
+            admission.checkpoint(),
+            self.runtime,
+        ))
+    }
+
+    fn replay_one_quantum(
+        &mut self,
+        _runtime: RuntimeState,
+        _request: QemuVmReplayRequest,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "replay exact-pin validation test quantum",
+            message: String::from("genesis validation must not replay a suffix"),
+        })
+    }
+}
+
+fn replay_validation_runtime(
+    configuration: &Configuration,
+    checkpoint: &Checkpoint,
+    runtime: ContentHash,
+) -> RuntimeState {
+    let state = checkpoint
+        .state
+        .as_ref()
+        .expect("materialized replay-validation checkpoint");
+    RuntimeState {
+        id: runtime,
+        configuration: configuration.id(),
+        node_blobs: checkpoint.node_blobs.clone(),
+        node_icounts: checkpoint.node_icounts.clone(),
+        scheduler: state.scheduler.clone(),
+        event_log: state.event_log,
+    }
 }
 
 impl crate::QemuAttemptOperationalBoundary for GuardedResumeGuard {
@@ -529,6 +643,179 @@ fn unvalidated_materialization_is_rejected_before_guarded_launch() {
         ))
     ));
     assert_eq!(launches.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn selected_raw_checkpoint_promotes_to_a_bound_oracle_match_without_vmstate_rewrite() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("oracle-promotion", backend.clone());
+    let temp = tempfile::tempdir().expect("oracle promotion workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    select_fixture(&mut selections, &fixture).expect("select raw checkpoint");
+    let source = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load selected raw checkpoint");
+    let source_vmstate = source.vmstate_id();
+    let runtime_hash = ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.runtime.v1",
+        "oracle-promotion",
+    );
+    let count_before = backend.object_count();
+    let foreign = QemuReplayOracleCheck::from_unvalidated_test_result(
+        ContentHash::from_canonical_material(
+            "crucible.test.exact-pin-materialization.foreign-snapshot.v1",
+            "oracle-promotion",
+        ),
+        QemuReplayOracleValidation::Match { runtime_hash },
+    );
+
+    assert!(matches!(
+        selections.promote_replay_oracle_match(
+            &fixture.repository,
+            &fixture.checkpoints,
+            &fixture.campaign,
+            fixture.configuration,
+            foreign,
+        ),
+        Err(ExactPinRetentionError::ReplayOracle(
+            QemuVmRealizationError::InvalidCheckpoint {
+                role: "replay-oracle promotion",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(backend.object_count(), count_before);
+
+    let check = QemuReplayOracleCheck::from_unvalidated_test_result(
+        source.snapshot().id(),
+        QemuReplayOracleValidation::Match { runtime_hash },
+    );
+    let promotion = selections
+        .promote_replay_oracle_match(
+            &fixture.repository,
+            &fixture.checkpoints,
+            &fixture.campaign,
+            fixture.configuration,
+            check,
+        )
+        .expect("promote selected checkpoint");
+
+    assert_eq!(promotion.source(), fixture.checkpoint);
+    assert_ne!(promotion.promoted(), fixture.checkpoint);
+    assert_eq!(
+        promotion.disposition(),
+        ExactPinSelectionDisposition::Replaced
+    );
+    assert_eq!(backend.object_count(), count_before + 2);
+    let promoted = fixture
+        .checkpoints
+        .load(promotion.promoted())
+        .expect("load promoted checkpoint");
+    assert_eq!(promoted.vmstate_id(), source_vmstate);
+    assert_eq!(
+        promoted.snapshot().replay_oracle_validation(),
+        QemuReplayOracleValidation::Match { runtime_hash }
+    );
+    let mut fence = selections
+        .acquire_exact_pin_retention_fence()
+        .expect("selection fence");
+    assert_eq!(
+        fence
+            .selection(&fixture.campaign, fixture.configuration)
+            .expect("load promoted selection")
+            .expect("promoted selection")
+            .checkpoint(),
+        promotion.promoted()
+    );
+}
+
+#[test]
+fn selected_checkpoint_fat_thin_validation_promotes_exact_root() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("oracle-validator", backend.clone());
+    let temp = tempfile::tempdir().expect("oracle validator workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    select_fixture(&mut selections, &fixture).expect("select raw checkpoint");
+    let source = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load selected raw checkpoint");
+    let source_vmstate = source.vmstate_id();
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "oracle-validator",
+    ));
+    assert_eq!(
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes)),
+        fixture.configuration
+    );
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.world.v1",
+        "oracle-validator",
+    ));
+    let runtime_hash = ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.runtime.v1",
+        "oracle-validator",
+    );
+    let mut store = ReplayValidationStore {
+        baked: QemuBakedGenesisSnapshot {
+            world_id: world.id,
+            checkpoint: source.snapshot().checkpoint().clone(),
+        },
+    };
+    let mut executor = ReplayValidationExecutor {
+        runtime: runtime_hash,
+        probe_calls: 0,
+        baked_calls: 0,
+    };
+    let count_before = backend.object_count();
+
+    let promotion = ExactPinReplayValidator::new(&mut store, &mut executor)
+        .validate_and_promote(
+            &fixture.repository,
+            &fixture.checkpoints,
+            &mut selections,
+            ExactPinReplayTarget::new(
+                &world,
+                &configuration,
+                &fixture.campaign,
+                fixture.configuration,
+            ),
+        )
+        .expect("validate and promote selected checkpoint");
+
+    assert_eq!(executor.probe_calls, 1);
+    assert_eq!(executor.baked_calls, 1);
+    assert_eq!(promotion.source(), fixture.checkpoint);
+    assert_ne!(promotion.promoted(), fixture.checkpoint);
+    assert_eq!(
+        promotion.disposition(),
+        ExactPinSelectionDisposition::Replaced
+    );
+    assert_eq!(backend.object_count(), count_before + 2);
+    let promoted = fixture
+        .checkpoints
+        .load(promotion.promoted())
+        .expect("load replay-validated checkpoint");
+    assert_eq!(promoted.vmstate_id(), source_vmstate);
+    assert_eq!(
+        promoted.snapshot().replay_oracle_validation(),
+        QemuReplayOracleValidation::Match { runtime_hash }
+    );
+    let mut fence = selections
+        .acquire_exact_pin_retention_fence()
+        .expect("selection fence");
+    assert_eq!(
+        fence
+            .selection(&fixture.campaign, fixture.configuration)
+            .expect("load promoted selection")
+            .expect("promoted selection")
+            .checkpoint(),
+        promotion.promoted()
+    );
 }
 
 #[test]

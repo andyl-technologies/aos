@@ -350,9 +350,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and uses the sealed child-process contract for pre-`exec` containment. The
   daemon resume adapter derives production replay admission inside the QEMU
   boundary, rejects `NotRun` or mismatched oracle evidence before launch, and
-  checks the guard immediately before and after realization. Concrete
-  resource-guard ownership through warm restore, production replay-oracle
-  validation of newly captured checkpoints, and lifecycle resume remain open.
+  checks the guard immediately before and after realization. The single-host
+  owner now validates the exact selected raw root through independent fat/thin
+  realization, retains a source-bound comparison result, publishes a matching
+  metadata/root promotion without rewriting VMState, and durably replaces the
+  exact-pin selection. Concrete resource-guard ownership around validation and
+  warm restore, plus lifecycle resume, remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable

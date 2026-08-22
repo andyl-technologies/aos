@@ -163,9 +163,9 @@ pub use exact_checkpoint_store::{
 pub use exact_pin_retention::{
     DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA,
     EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA_VERSION, ExactPinMaterializationSelection,
-    ExactPinRetentionAdmin, ExactPinRetentionError, ExactPinRetentionFence,
-    ExactPinSelectionClearDisposition, ExactPinSelectionDisposition,
-    MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
+    ExactPinReplayPromotion, ExactPinReplayTarget, ExactPinReplayValidator, ExactPinRetentionAdmin,
+    ExactPinRetentionError, ExactPinRetentionFence, ExactPinSelectionClearDisposition,
+    ExactPinSelectionDisposition, MAX_EXACT_PIN_MATERIALIZATION_SELECTIONS,
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{

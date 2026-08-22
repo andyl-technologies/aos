@@ -17,7 +17,7 @@ use crucible_cas::content_store::{
     BackendCapabilities, BlobSource, ByteRange, DirectoryBlobBackend, MemoryBlobBackend,
     PlacementReceipt,
 };
-use crucible_qemu::QemuReplayOracleValidation;
+use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation};
 
 use super::*;
 use crate::{
@@ -166,6 +166,53 @@ fn prepare_is_write_free_and_publication_round_trips_streamed_vmstate() {
         publication
     );
     assert_eq!(backend.object_count(), 3);
+}
+
+#[test]
+fn replay_oracle_promotion_reuses_vmstate_and_publishes_a_new_exact_root() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let snapshot = snapshot("oracle-promotion");
+    let vmstate = vec![0x6d; 4096];
+    let source = store
+        .prepare(&snapshot, BlobHandle::from_bytes(vmstate.clone()))
+        .and_then(|prepared| store.publish(&prepared))
+        .expect("publish unvalidated source");
+    let loaded = store.load(source.root()).expect("load unvalidated source");
+    let source_vmstate = loaded.vmstate_id();
+    let source_count = backend.object_count();
+    let runtime_hash = crucible::ContentHash::from_canonical_material(
+        "crucible.test.exact-checkpoint-store.runtime.v1",
+        "oracle-promotion",
+    );
+    let check = QemuReplayOracleCheck::from_unvalidated_test_result(
+        snapshot.id(),
+        QemuReplayOracleValidation::Match { runtime_hash },
+    );
+
+    let capture = loaded
+        .promote_replay_oracle_match(check)
+        .expect("promote exact source");
+    let promoted = store.prepare_capture(capture).expect("prepare promotion");
+
+    assert_eq!(backend.object_count(), source_count);
+    assert_ne!(promoted.root(), source.root());
+    assert_eq!(promoted.vmstate_id(), source_vmstate);
+    let published = store.publish(&promoted).expect("publish promotion");
+    let reloaded = store.load(published.root()).expect("load promotion");
+    assert_eq!(reloaded.vmstate_id(), source_vmstate);
+    let mut reloaded_vmstate = Vec::new();
+    assert_eq!(
+        reloaded
+            .copy_vmstate_to(&mut reloaded_vmstate)
+            .expect("copy promoted VMState"),
+        vmstate.len() as u64
+    );
+    assert_eq!(reloaded_vmstate, vmstate);
+    assert_eq!(
+        reloaded.snapshot().replay_oracle_validation(),
+        QemuReplayOracleValidation::Match { runtime_hash }
+    );
 }
 
 #[test]
