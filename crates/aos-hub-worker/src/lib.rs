@@ -1337,11 +1337,87 @@ mod entry {
                         };
                         let reindexer =
                             WorkerReindexer::new(bucket, Arc::clone(&db), secret_versions, egress);
-                        if let Err(err) = reindexer.reindex(&registry).await {
+                        let claim = db
+                            .claim_registry_index_build(
+                                *registry_id,
+                                &envelope.operation_id,
+                                now_for_worker(),
+                                900,
+                            )
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation claim: {error:#}"
+                                ))
+                            })?;
+                        let (owner_token, base_generation, target_generation) = match claim {
+                            aos_hub_core::db::RegistryIndexBuildClaim::Acquired {
+                                owner_token,
+                                base_generation,
+                                target_generation,
+                            } => (owner_token, base_generation, target_generation),
+                            aos_hub_core::db::RegistryIndexBuildClaim::Busy => {
+                                worker::console_log!(
+                                    "job reindex {registry_id}: another generation is building"
+                                );
+                                return Ok(());
+                            }
+                            aos_hub_core::db::RegistryIndexBuildClaim::AlreadyFinished => {
+                                worker::console_log!(
+                                    "job reindex {registry_id}: generation already finished"
+                                );
+                                return Ok(());
+                            }
+                        };
+                        if let Err(error) = reindexer.reindex(&registry).await {
+                            let detail = bounded_job_error(&format!("{error:#}"));
+                            if let Err(failure_error) = db
+                                .fail_registry_index_build(
+                                    *registry_id,
+                                    &envelope.operation_id,
+                                    &owner_token,
+                                    &detail,
+                                    now_for_worker(),
+                                )
+                                .await
+                            {
+                                return Err(worker::Error::RustError(format!(
+                                    "job reindex {registry_id}: {error:#}; recording generation failure: {failure_error:#}"
+                                )));
+                            }
                             return Err(worker::Error::RustError(format!(
-                                "job reindex {registry_id}: {err:#}"
+                                "job reindex {registry_id}: {error:#}"
                             )));
                         }
+                        let status = db
+                            .index_status(*registry_id)
+                            .await
+                            .map_err(|error| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation status: {error:#}"
+                                ))
+                            })?
+                            .ok_or_else(|| {
+                                worker::Error::RustError(format!(
+                                    "job reindex {registry_id} generation status disappeared"
+                                ))
+                            })?;
+                        db.complete_registry_index_build(
+                            *registry_id,
+                            &envelope.operation_id,
+                            &owner_token,
+                            base_generation,
+                            target_generation,
+                            status.generation,
+                            status.content_digest.as_deref(),
+                            now_for_worker(),
+                        )
+                        .await
+                        .map_err(|error| {
+                            worker::Error::RustError(format!(
+                                "job reindex {registry_id} generation completion: {error:#}"
+                            ))
+                        })?;
                     }
                     Ok(None) => worker::console_log!("job reindex {registry_id}: registry gone"),
                     Err(err) => {

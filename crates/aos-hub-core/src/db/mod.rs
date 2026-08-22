@@ -334,11 +334,13 @@ pub use gc_topology::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
+mod registry_index_build;
 mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
 pub use publication_admission::*;
+pub use registry_index_build::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -390,6 +392,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("cache_multipart_creation.sql"),
     include_str!("publication_object_evidence.sql"),
     include_str!("worker_jobs.sql"),
+    include_str!("registry_index_build.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
