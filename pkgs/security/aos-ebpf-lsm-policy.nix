@@ -15,6 +15,8 @@
   targetArch =
     targetArchBySystem.${stdenv.system}
     or (throw "aos-ebpf-lsm-policy: unsupported system '${stdenv.system}'");
+  bpfSource = ./aos-ebpf-lsm-policy.bpf.c;
+  loaderSource = ./aos-ebpf-lsm-policy.c;
 in
   mkDerivation {
     pname = "aos-ebpf-lsm-policy";
@@ -31,19 +33,21 @@ in
       json-c
     ];
     propagatedDeps = [];
+    disallowedReferences = [bpfSource loaderSource];
 
     phases = [
       {
         name = "build";
         script = ''
           mkdir -p $out/bin $out/lib/bpf $out/share/aos/ebpf-lsm
+          cp ${bpfSource} aos-ebpf-lsm-policy.bpf.c
 
           ${llvm}/bin/clang -target bpf -O2 -g \
             -D__TARGET_ARCH_${targetArch} \
             -I${linux-headers}/include \
             -I${libbpf}/include \
             -Wall -Wextra -Werror -Wno-unused-parameter \
-            -c ${./aos-ebpf-lsm-policy.bpf.c} \
+            -c aos-ebpf-lsm-policy.bpf.c \
             -o $out/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o
 
           # clang -g emits BTF (for CO-RE) but also DWARF embedding the
@@ -53,7 +57,7 @@ in
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \
             -o $out/bin/aos-ebpf-lsm-policy \
-            ${./aos-ebpf-lsm-policy.c} \
+            ${loaderSource} \
             $(pkg-config --cflags --libs libbpf json-c)
 
           cat > $out/share/aos/ebpf-lsm/aos-task-audit.json <<'JSON'

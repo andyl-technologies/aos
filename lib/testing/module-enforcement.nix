@@ -64,10 +64,34 @@
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
+  defaultRootPartitionHasHeadroom =
+    healthySystem.config.aos.image.rootPartitionMiB == 1024
+    && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
 
-  # Image budgets are both release ceilings and storage geometry. Reject an
-  # ESP contract that cannot hold two maximum-sized UKIs before any image or
-  # installer derivation is realized.
+  overriddenRootPartitionSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.image.rootPartitionMiB = 1536;}
+    ];
+  };
+  rootPartitionOverridePropagates =
+    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB == 1536
+    && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
+
+  undersizedRootPartitionSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.image.rootPartitionMiB = 511;}
+    ];
+  };
+  undersizedRootPartitionRejected =
+    !(
+      builtins.tryEval undersizedRootPartitionSystem.config.system.build.toplevel.name
+    )
+    .success;
+
+  # The ESP budget is also its storage geometry. Reject a contract that cannot
+  # hold two maximum-sized UKIs before any image derivation is realized.
   undersizedEspSystem = aos.mkSystem {
     modules = [
       ../../systems/server.nix
@@ -974,6 +998,18 @@
       {
         ok = imageBudgetCheckWired;
         message = "per-image budget check must be exposed";
+      }
+      {
+        ok = defaultRootPartitionHasHeadroom;
+        message = "default root partition must retain headroom above the artifact budget";
+      }
+      {
+        ok = rootPartitionOverridePropagates;
+        message = "root partition override must propagate to default ZFS slot capacity";
+      }
+      {
+        ok = undersizedRootPartitionRejected;
+        message = "root partition smaller than its artifact budget must throw";
       }
       {
         ok = undersizedEspRejected;
