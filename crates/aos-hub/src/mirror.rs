@@ -21,7 +21,7 @@
 //!    a consumer who only changed the URL in their `registries.d` still
 //!    verifies against upstream's roster.
 //!
-//! 2. **Pull-through cache** ([`fetch_through`]) — a Hub delivery route that
+//! 2. **Pull-through cache** ([`fetch_through`]) — a Hub route that
 //!    fetches-on-miss from upstream, verifies, persists the loose objects it
 //!    can hash-check to the local binding, and serves. Loose `objects/<oid>`
 //!    are verified by oid and frozen. Narinfos are signature-verified against
@@ -146,9 +146,9 @@ pub async fn sync_full_mirror(
         .await
         .with_context(|| format!("mirror '{}' has no reconciled writer", registry.slug))?;
     let binding = db
-        .storage_binding(placement.storage_binding_id)
+        .binding(placement.binding_id)
         .await?
-        .context("mirror placement references a missing storage binding")?;
+        .context("mirror placement references a missing binding")?;
     if binding.kind != "local_fs" {
         bail!("native full-mirror sync currently requires a local_fs write placement");
     }

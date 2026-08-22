@@ -65,10 +65,10 @@
   "$defs": {
     "placement": {
       "type": "object",
-      "required": ["name", "storage_binding_name", "prefix", "spec", "observation", "status", "resource_version"],
+      "required": ["name", "binding_name", "prefix", "spec", "observation", "status", "resource_version"],
       "properties": {
         "name": { "type": "string" },
-        "storage_binding_name": { "type": "string" },
+        "binding_name": { "type": "string" },
         "prefix": { "type": "string" },
         "spec": { "type": "object" },
         "observation": { "type": "object" },

@@ -33,8 +33,7 @@ use aos_hub::db::Database;
 use aos_hub::domain::{Permission, Principal};
 use aos_hub_core::db::{
     BeginCacheGcGeneration, CacheGcCoverageError, CacheInventoryNarinfoCandidate,
-    CacheObjectPresenceObservation, NewStorageBindingWriteRevision, SurfacePlacementRecord,
-    SurfaceTarget,
+    CacheObjectPresenceObservation, NewBindingWriteRevision, SurfacePlacementRecord, SurfaceTarget,
 };
 
 mod common;
@@ -282,8 +281,8 @@ async fn configure_dialect_writers(
     let credential_generation =
         common::create_valid_write_credential(db, binding_id, "secret://dialect/write/v1").await;
     let revision = db
-        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-            storage_binding_id: binding_id,
+        .create_binding_write_revision(&NewBindingWriteRevision {
+            binding_id: binding_id,
             write_credential_generation: credential_generation,
             writes_supported: true,
             conditional_writes_supported: true,
@@ -292,15 +291,11 @@ async fn configure_dialect_writers(
         })
         .await
         .unwrap();
-    db.observe_storage_binding_write_revision(binding_id, revision.revision, "valid", None, None)
+    db.observe_binding_write_revision(binding_id, revision.revision, "valid", None, None)
         .await
         .unwrap();
-    let binding_state = db
-        .storage_binding_write_state(binding_id)
-        .await
-        .unwrap()
-        .unwrap();
-    db.set_current_storage_binding_write_revision(
+    let binding_state = db.binding_write_state(binding_id).await.unwrap().unwrap();
+    db.set_current_binding_write_revision(
         binding_id,
         revision.revision,
         binding_state.resource_version,
@@ -569,7 +564,7 @@ async fn exercise(db: &Database) {
         "unknown secret rejected"
     );
 
-    // -- storage binding + managed registry -----------------------------------
+    // -- binding + managed registry -----------------------------------
     let binding = common::create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
     db.create_project(org, "infra/prod", "Production")
         .await

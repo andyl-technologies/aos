@@ -75,9 +75,9 @@ const TOPOLOGY_ARRAYS: &[&str] = &[
     "storage_defaults",
     "placements",
     "write_authorities",
-    "delivery_endpoints",
+    "endpoints",
     "domains",
-    "network_boundaries",
+    "network_policies",
     "gateways",
     "routes",
     "route_configurations",
@@ -1009,7 +1009,7 @@ fn topology_resource_kind<'a>(array_name: &str, value: &'a Value) -> Result<&'a 
         "organizations" => "organization",
         "projects" => "project",
         "surfaces" => required_string(value, "kind")?,
-        "bindings" => "storage_binding",
+        "bindings" => "binding",
         "binding_capability_observations" => "binding_capability_observation",
         "credential_generations" => "credential_generation",
         "binding_write_revisions" => "binding_write_revision",
@@ -1017,11 +1017,11 @@ fn topology_resource_kind<'a>(array_name: &str, value: &'a Value) -> Result<&'a 
         "storage_defaults" => "storage_default",
         "placements" => "placement",
         "write_authorities" => "write_authority",
-        "delivery_endpoints" => "delivery_endpoint",
+        "endpoints" => "endpoint",
         "domains" => "domain",
-        "network_boundaries" => "network_boundary",
-        "gateways" => "storage_gateway",
-        "routes" => "delivery_route",
+        "network_policies" => "network_policy",
+        "gateways" => "gateway",
+        "routes" => "route",
         "route_configurations" => "route_configuration",
         "placement_policies" => "placement_policy",
         "equivalence_sets" => "equivalence_set",
@@ -1071,23 +1071,17 @@ fn validate_typed_references(plan: &Value, targets: &BTreeMap<String, String>) -
         )?;
     }
     for grant in topology_array(plan, "binding_grants")? {
-        require(
-            required_string(grant, "source_stable_id")?,
-            &["storage_binding"],
-        )?;
+        require(required_string(grant, "source_stable_id")?, &["binding"])?;
         require(required_string(grant, "target_stable_id")?, owner_kinds)?;
     }
     for default in topology_array(plan, "storage_defaults")? {
         require(required_string(default, "source_stable_id")?, owner_kinds)?;
-        require(
-            required_string(default, "target_stable_id")?,
-            &["storage_binding"],
-        )?;
+        require(required_string(default, "target_stable_id")?, &["binding"])?;
     }
     for placement in topology_array(plan, "placements")? {
         require(
             required_string(placement, "binding_stable_id")?,
-            &["storage_binding"],
+            &["binding"],
         )?;
         let surface = pointer(placement, "/surface")?;
         let kind = required_string(surface, "kind")?;
@@ -1159,17 +1153,17 @@ fn validate_typed_references(plan: &Value, targets: &BTreeMap<String, String>) -
         }
         require(
             required_string(route, "endpoint_generation_stable_id")?,
-            &["delivery_endpoint"],
+            &["endpoint"],
         )?;
         require(
             required_string(route, "boundary_generation_stable_id")?,
-            &["network_boundary"],
+            &["network_policy"],
         )?;
         if let Some(gateway) = route
             .get("gateway_generation_stable_id")
             .and_then(Value::as_str)
         {
-            require(gateway, &["storage_gateway"])?;
+            require(gateway, &["gateway"])?;
         }
         let policy_id = required_string(route, "placement_policy_generation_stable_id")?;
         require(policy_id, &["placement_policy"])?;
@@ -1198,10 +1192,7 @@ fn validate_typed_references(plan: &Value, targets: &BTreeMap<String, String>) -
         }
     }
     for domain in topology_array(plan, "domains")? {
-        require(
-            required_string(domain, "route_stable_id")?,
-            &["delivery_route"],
-        )?;
+        require(required_string(domain, "route_stable_id")?, &["route"])?;
         let route = exact_by(
             topology_array(plan, "routes")?,
             "stable_id",
@@ -1316,7 +1307,7 @@ fn validate_routes(plan: &Value) -> Result<()> {
             required_string(route, "audience")?,
         );
         if !canonical.insert(key) {
-            bail!("canonical_route_invalid");
+            bail!("route_advertisement_invalid");
         }
     }
     Ok(())

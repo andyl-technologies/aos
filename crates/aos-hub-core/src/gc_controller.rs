@@ -172,7 +172,7 @@ impl CacheGcDeletionController {
         let placement = match self.db.surface_placement(receipt.placement_id).await {
             Ok(Some(placement))
                 if placement.cache_id == Some(receipt.cache_id)
-                    && placement.storage_binding_id == receipt.storage_binding_id =>
+                    && placement.binding_id == receipt.binding_id =>
             {
                 placement
             }

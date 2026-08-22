@@ -93,7 +93,7 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("Default 40", "leave at 40 unless you are deliberately ordering this cache ahead of or behind another."),
             ],
         ),
-        // -- storage bindings ------------------------------------------------
+        // -- bindings ------------------------------------------------
         "binding.kind" => c(
             "Backend kind",
             "storage",
@@ -266,7 +266,7 @@ pub fn card(key: &str) -> Option<HelpCard> {
         "cache.prefix" => c(
             "Prefix",
             "cache",
-            "Path prefix within the storage binding where this cache's objects live.",
+            "Path prefix within the binding where this cache's objects live.",
             &[
                 ("Set", "the cache's narinfo/.nar objects are stored under this sub-path."),
                 ("Empty", "defaults to the cache slug on the deployment's default storage."),
@@ -275,7 +275,7 @@ pub fn card(key: &str) -> Option<HelpCard> {
         "registry.prefix" => c(
             "Prefix",
             "registry",
-            "Path prefix within the storage binding for this registry's surface.",
+            "Path prefix within the binding for this registry's surface.",
             &[
                 ("Set", "the registry's git/index surface lives under this sub-path of the binding."),
                 ("Empty", "defaults to the registry slug."),

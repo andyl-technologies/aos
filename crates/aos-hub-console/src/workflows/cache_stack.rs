@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -105,7 +105,7 @@ fn render_stack(
     let version = stack.resource_version.clone();
     view! {
         <div class="resource-identity">
-            <div><span>"Indexed commit"</span><code>{display_or(&stack.indexed_commit, "not indexed")}</code></div>
+            <div><span>"Indexed commit"</span>{if stack.indexed_commit.is_empty() { view! { <span>"not indexed"</span> }.into_any() } else { view! { <HashValue value=stack.indexed_commit/> }.into_any() }}</div>
             <div><span>"Version"</span><code>{display_or(&version, "initial")}</code></div>
         </div>
         <div class="binding-list">

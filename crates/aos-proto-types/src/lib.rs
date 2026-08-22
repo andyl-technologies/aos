@@ -239,10 +239,9 @@ impl_open_proto_enum!(
 mod tests {
     use super::{
         endpoint_host, surface_ref, BrowserSessionGrant, BrowserSessionPrincipal,
-        BrowserSessionTokenResponse, DeliveryEndpointRevisionSpec, EndpointHost,
-        EndpointIngressKind, GetRegistryResponse, PlanRunPlacementEvictionRequest,
-        PlanSetInstanceSettingsRequest, Platform, PolicyFailureContract, PolicyRetryCondition,
-        SurfaceRef,
+        BrowserSessionTokenResponse, EndpointHost, EndpointIngressKind, EndpointRevisionSpec,
+        GetRegistryResponse, PlanRunPlacementEvictionRequest, PlanSetInstanceSettingsRequest,
+        Platform, PolicyFailureContract, PolicyRetryCondition, SurfaceRef,
     };
 
     #[test]
@@ -277,7 +276,7 @@ mod tests {
         assert_eq!(extrema.nar_size, u64::MAX);
         assert_eq!(extrema.closure_size, 9_007_199_254_740_993);
 
-        let revision = DeliveryEndpointRevisionSpec {
+        let revision = EndpointRevisionSpec {
             boundary_revision: i64::MIN,
             ingress_kind: EndpointIngressKind::Hub as i32,
             listener_configuration_ref: String::new(),
@@ -287,7 +286,7 @@ mod tests {
         let json = serde_json::to_value(&revision).unwrap();
         assert_eq!(json["boundaryRevision"], i64::MIN.to_string());
 
-        let numeric: DeliveryEndpointRevisionSpec = serde_json::from_value(serde_json::json!({
+        let numeric: EndpointRevisionSpec = serde_json::from_value(serde_json::json!({
             "boundaryRevision": i64::MIN,
             "ingressKind": 1
         }))
@@ -297,7 +296,7 @@ mod tests {
 
     #[test]
     fn enums_emit_names_and_accept_names_or_numbers() {
-        let spec = DeliveryEndpointRevisionSpec {
+        let spec = EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: EndpointIngressKind::Layer7 as i32,
             listener_configuration_ref: String::new(),
@@ -311,17 +310,17 @@ mod tests {
             serde_json::json!("ENDPOINT_INGRESS_KIND_EXTERNAL"),
             serde_json::json!(2),
         ] {
-            let decoded: DeliveryEndpointRevisionSpec =
+            let decoded: EndpointRevisionSpec =
                 serde_json::from_value(serde_json::json!({ "ingressKind": value })).unwrap();
             assert_eq!(decoded.ingress_kind, EndpointIngressKind::External as i32);
         }
 
-        let unknown: DeliveryEndpointRevisionSpec =
+        let unknown: EndpointRevisionSpec =
             serde_json::from_value(serde_json::json!({ "ingressKind": 99 })).unwrap();
         assert_eq!(unknown.ingress_kind, 99);
         assert_eq!(serde_json::to_value(&unknown).unwrap()["ingressKind"], 99);
         assert_eq!(
-            serde_json::to_value(DeliveryEndpointRevisionSpec {
+            serde_json::to_value(EndpointRevisionSpec {
                 ingress_kind: 99,
                 ..Default::default()
             })
@@ -329,7 +328,7 @@ mod tests {
             99
         );
         assert!(
-            serde_json::from_value::<DeliveryEndpointRevisionSpec>(serde_json::json!({
+            serde_json::from_value::<EndpointRevisionSpec>(serde_json::json!({
                 "ingressKind": "ENDPOINT_INGRESS_KIND_FUTURE"
             }))
             .is_err()
@@ -398,7 +397,7 @@ mod tests {
 
     #[test]
     fn null_leaves_ordinary_fields_unset() {
-        let revision: DeliveryEndpointRevisionSpec = serde_json::from_value(serde_json::json!({
+        let revision: EndpointRevisionSpec = serde_json::from_value(serde_json::json!({
             "boundaryRevision": null,
             "ingressKind": null
         }))
@@ -418,19 +417,19 @@ mod tests {
 
     #[test]
     fn parser_accepts_proto_names_and_rejects_alias_duplicates_and_unknowns() {
-        let revision: DeliveryEndpointRevisionSpec =
+        let revision: EndpointRevisionSpec =
             serde_json::from_value(serde_json::json!({ "boundary_revision": "1e2" })).unwrap();
         assert_eq!(revision.boundary_revision, 100);
 
         assert!(
-            serde_json::from_value::<DeliveryEndpointRevisionSpec>(serde_json::json!({
+            serde_json::from_value::<EndpointRevisionSpec>(serde_json::json!({
                 "boundaryRevision": "1",
                 "boundary_revision": "1"
             }))
             .is_err()
         );
         assert!(
-            serde_json::from_value::<DeliveryEndpointRevisionSpec>(serde_json::json!({
+            serde_json::from_value::<EndpointRevisionSpec>(serde_json::json!({
                 "futureField": true
             }))
             .is_err()

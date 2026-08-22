@@ -28,7 +28,7 @@ GC plans for every existing surface before it mutates production state.
 - [ ] Finalize typed storage-binding capabilities, purpose-scoped credentials,
       immutable write revisions and validation observations,
       instance-singleton behavior, and organization/instance topology defaults.
-- [ ] Ship `StorageBindingService`, `aos hub storage-binding`, topology-default
+- [ ] Ship `BindingService`, `aos hub storage-binding`, topology-default
       CLI families, and organization/instance Web editors before placement
       creation depends on them.
 - [ ] Add placement specification, separately writable observations, placement
@@ -63,17 +63,17 @@ generation-checked writer; promotion cannot produce two Hub writers; a read
 failure on the observed-authority placement is visible without silently moving
 authority; and the runtime reports which placement served the object.
 
-## Phase 2: domains, endpoints, and delivery routes
+## Phase 2: domains, endpoints, and routes
 
 - [ ] Normalize DNS lifecycle into `domains`; model revisioned, observed
-      `network_boundaries`; and migrate every client URL into a typed
-      immutable-identity `delivery_endpoint` with explicit scheme,
+      `network_policies`; and migrate every client URL into a typed
+      immutable-identity `endpoint` with explicit scheme,
       DNS/IPv4/IPv6 host, effective port, and pinned endpoint/boundary
       revisions.
 - [ ] Provision the non-deletable instance public-boundary singleton and
       eagerly materialize its exact instance-default organization grants.
-- [ ] Add delivery routes, permanent privacy-minimized URL reservations,
-      canonical routes, storage gateways, and append-only route audit events.
+- [ ] Add routes, permanent privacy-minimized URL reservations,
+      route advertisements, gateways, and append-only route audit events.
 - [ ] Migrate registry/cache frontends to routes and binding frontends to
       gateways plus explicit reviewed direct routes for supported old URLs.
 - [ ] Implement one raw-request-target parser and segment-boundary
@@ -98,7 +98,7 @@ authority; and the runtime reports which placement served the object.
       config migration for every URL that will not exist after cutover.
 - [ ] Ship the Delivery Web UI, `aos hub
       {domain,network-boundary,endpoint,gateway,route}` commands, and
-      `DomainService`/`NetworkBoundaryService`/`DeliveryService`/
+      `DomainService`/`NetworkPolicyService`/`DeliveryService`/
       `RouteService` methods together.
 
 **Done when:** a public registry and cache are simultaneously usable through a
@@ -317,7 +317,7 @@ end-user capability.
 
 **Done when:** repository search, schema inspection, generated API descriptors,
 CLI `--help`, route inventory, and Web UI routing prove the old topology is
-absent. Any retained external URL is a normal delivery route, not a legacy
+absent. Any retained external URL is a normal route, not a legacy
 alias or special-case handler.
 
 ## Required rename and deletion ledger
@@ -328,8 +328,8 @@ source and generated artifacts:
 | Current name/shape | Final name/shape |
 | --- | --- |
 | `caches` system-of-record table / generic managed `Cache` messages | `binary_caches` / `BinaryCache` |
-| `frontends` / `FrontendRecord` | `delivery_routes` / `DeliveryRoute` |
-| binding-targeted frontend | `StorageGateway` plus explicit user-owned routes |
+| `frontends` / `FrontendRecord` | `routes` / `Route` |
+| binding-targeted frontend | `Gateway` plus explicit user-owned routes |
 | resource `advertise_storage_frontend` toggle | removed |
 | `cache_registry_links` / `CacheRegistryLink` | separate retention and population records; signed stack remains registry content |
 | `cache_gc_roots`, `CacheGcRoot`, pin/unpin root RPC shapes | manual retention roots, lease history, and provenance-bearing root reasons |
@@ -356,7 +356,7 @@ source and generated artifacts:
 | `direct_consumer_url`/inheritance resolver | canonical delivery-route and placement-policy resolution |
 | `aos.registry.v1` | `aos.hub.v1` |
 | `RegistryHubClient` and registry-only generated names | `HubClient` and Hub resource names |
-| `OrgService`, `StorageService`, `ConfigService`, `IamService`, registry-package `CacheService` | `OrganizationService`, `StorageBindingService`, `RegistryConfigurationService`, `IdentityService`, `BinaryCacheService` |
+| `OrgService`, `StorageService`, `ConfigService`, `IamService`, registry-package `CacheService` | `OrganizationService`, `BindingService`, `RegistryConfigurationService`, `IdentityService`, `BinaryCacheService` |
 | old storage/serving/cache settings handlers | new placements/delivery/cache-integration handlers only |
 
 Historical RFC prose may retain old names to explain provenance. Runtime code,
@@ -431,7 +431,7 @@ storage, and Worker Durable Object SQLite/R2 where the runtime supports the bind
 
 - Hub proxy, Hub redirect, public direct CDN, direct backend;
 - external-auth and private-network declarations;
-- several base paths on one delivery endpoint and longest-prefix match;
+- several base paths on one endpoint and longest-prefix match;
 - omitted and explicit `/` route/gateway path defaults produce identical plans
   and derived URLs;
 - Git/Nix-cache path and header conformance;
@@ -487,13 +487,13 @@ storage, and Worker Durable Object SQLite/R2 where the runtime supports the bind
   candidate under every retained key version, rejects reuse across rotations,
   and fails closed on key loss until backup restore on native databases and Durable Object SQLite;
 - URL reservation vectors allow the same private IP/path in two distinct
-  NetworkBoundary identity fingerprints but deny reuse of that IP/path in one
+  NetworkPolicy identity fingerprints but deny reuse of that IP/path in one
   boundary; deleting/recreating an identical typed boundary spec still denies
   reuse because its stable fingerprint is unchanged;
 - each instance, organization, registry, and cache scope root renders Overview
   and activates the first navbar item;
 - grouped navbar order is stable for every scope and permission class;
-- canonical routes, the observed write-authority placement, and defaults sort
+- route advertisements, the observed write-authority placement, and defaults sort
   before alternates; a desired pending candidate is visibly distinct;
 - organization resource inventories and all creation workflows have distinct
   paths, with no full create form appended to a list page;

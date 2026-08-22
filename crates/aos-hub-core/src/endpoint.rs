@@ -1,9 +1,9 @@
-//! Typed delivery endpoint origins and request-authority validation.
+//! Typed endpoint origins and request-authority validation.
 //!
-//! Delivery endpoints are inbound client identities, not storage origins. This
+//! Endpoints are inbound client identities, not storage origins. This
 //! module canonicalizes their scheme, DNS/IPv4/IPv6 host, and effective port;
 //! rejects URL aliases that could split routing identity; and derives the
-//! stable RFC-0012 endpoint digest using a NetworkBoundary identity
+//! stable RFC-0012 endpoint digest using a NetworkPolicy identity
 //! fingerprint rather than a replaceable database id.
 
 use sha2::{Digest, Sha256};
@@ -14,7 +14,7 @@ use url::{Host, Url};
 
 const ENDPOINT_IDENTITY_DOMAIN: &[u8] = b"aos-hub-delivery-endpoint-v1\0";
 
-/// The transport scheme of a delivery endpoint.
+/// The transport scheme of a endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeliveryScheme {
     /// Cleartext HTTP, permitted only under RFC-0012's explicit policy gates.
@@ -70,7 +70,7 @@ impl fmt::Display for DeliveryScheme {
     }
 }
 
-/// A canonical delivery endpoint host.
+/// A canonical endpoint host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DeliveryHost {
     /// An IDNA-ASCII, lowercase DNS name without a trailing dot.
@@ -133,7 +133,7 @@ pub enum TlsEndpointIdentity<'a> {
 
 /// One canonical inbound delivery origin.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DeliveryEndpointOrigin {
+pub struct EndpointOrigin {
     /// HTTP transport scheme.
     scheme: DeliveryScheme,
     /// Typed canonical host.
@@ -142,7 +142,7 @@ pub struct DeliveryEndpointOrigin {
     port: u16,
 }
 
-impl DeliveryEndpointOrigin {
+impl EndpointOrigin {
     /// Parses an endpoint origin URL with no path, query, fragment, or userinfo.
     ///
     /// # Errors
@@ -299,7 +299,7 @@ impl DeliveryEndpointOrigin {
     }
 }
 
-impl fmt::Display for DeliveryEndpointOrigin {
+impl fmt::Display for EndpointOrigin {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.canonical_origin())
     }
@@ -309,7 +309,7 @@ impl fmt::Display for DeliveryEndpointOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EndpointOriginError {
     /// URL parsing failed.
-    #[error("invalid delivery endpoint URL: {detail}")]
+    #[error("invalid endpoint URL: {detail}")]
     InvalidUrl {
         /// Parser diagnostic without credentials.
         detail: String,
@@ -321,49 +321,49 @@ pub enum EndpointOriginError {
         detail: String,
     },
     /// The scheme was not HTTP(S).
-    #[error("unsupported delivery endpoint scheme '{0}'")]
+    #[error("unsupported endpoint scheme '{0}'")]
     UnsupportedScheme(String),
     /// No host was present.
-    #[error("delivery endpoint origin has no host")]
+    #[error("endpoint origin has no host")]
     MissingHost,
     /// No effective port was available.
-    #[error("delivery endpoint origin has no effective port")]
+    #[error("endpoint origin has no effective port")]
     MissingPort,
     /// Port zero cannot identify an HTTP listener.
-    #[error("delivery endpoint port must be from 1 through 65535")]
+    #[error("endpoint port must be from 1 through 65535")]
     InvalidPort,
     /// Userinfo could leak credentials or create an origin alias.
-    #[error("delivery endpoint origin cannot contain userinfo")]
+    #[error("endpoint origin cannot contain userinfo")]
     UserInfo,
     /// A path, query, or fragment was present.
-    #[error("delivery endpoint must be an origin without path, query, or fragment")]
+    #[error("endpoint must be an origin without path, query, or fragment")]
     NonOriginComponents,
     /// A DNS trailing-dot alias was supplied.
-    #[error("delivery endpoint DNS name cannot have a trailing dot")]
+    #[error("endpoint DNS name cannot have a trailing dot")]
     TrailingDot,
     /// A DNS name was empty or invalid after IDNA processing.
-    #[error("delivery endpoint DNS name is invalid")]
+    #[error("endpoint DNS name is invalid")]
     InvalidDnsName,
     /// An IPv6 zone id was supplied.
-    #[error("delivery endpoint IPv6 address cannot contain a zone id")]
+    #[error("endpoint IPv6 address cannot contain a zone id")]
     Ipv6ZoneId,
     /// An IPv4 address used an IPv4-mapped IPv6 alias.
-    #[error("delivery endpoint rejects IPv4-mapped IPv6 aliases")]
+    #[error("endpoint rejects IPv4-mapped IPv6 aliases")]
     Ipv4MappedIpv6,
     /// The incoming scheme/authority did not identify this endpoint.
-    #[error("request scheme or authority does not match the delivery endpoint")]
+    #[error("request scheme or authority does not match the endpoint")]
     OriginMismatch,
     /// HTTPS did not provide identity evidence from the validated handshake.
-    #[error("HTTPS delivery endpoint requires verified TLS identity evidence")]
+    #[error("HTTPS endpoint requires verified TLS identity evidence")]
     MissingTlsIdentity,
     /// Cleartext HTTP unexpectedly carried TLS identity evidence.
-    #[error("HTTP delivery endpoint cannot use TLS identity evidence")]
+    #[error("HTTP endpoint cannot use TLS identity evidence")]
     UnexpectedTlsIdentity,
     /// TLS SNI disagreed with the endpoint DNS identity.
-    #[error("TLS SNI does not match the delivery endpoint")]
+    #[error("TLS SNI does not match the endpoint")]
     SniMismatch,
     /// The validated certificate IP SAN disagreed with the endpoint identity.
-    #[error("TLS certificate IP subject alternative name does not match the delivery endpoint")]
+    #[error("TLS certificate IP subject alternative name does not match the endpoint")]
     IpSanMismatch,
 }
 
@@ -419,14 +419,14 @@ mod tests {
 
     #[test]
     fn canonicalizes_dns_ip_and_effective_ports() {
-        let dns = DeliveryEndpointOrigin::parse("https://BÜCHER.example:443").unwrap();
+        let dns = EndpointOrigin::parse("https://BÜCHER.example:443").unwrap();
         assert_eq!(dns.canonical_origin(), "https://xn--bcher-kva.example");
         assert_eq!(dns.port(), 443);
 
-        let ipv4 = DeliveryEndpointOrigin::parse("http://192.0.2.10:8080").unwrap();
+        let ipv4 = EndpointOrigin::parse("http://192.0.2.10:8080").unwrap();
         assert_eq!(ipv4.canonical_origin(), "http://192.0.2.10:8080");
 
-        let ipv6 = DeliveryEndpointOrigin::parse("https://[2001:db8::1]").unwrap();
+        let ipv6 = EndpointOrigin::parse("https://[2001:db8::1]").unwrap();
         assert_eq!(ipv6.canonical_origin(), "https://[2001:db8::1]");
     }
 
@@ -446,13 +446,13 @@ mod tests {
             "https://[::ffff:192.0.2.1]/",
             "https://[fe80::1%25eth0]/",
         ] {
-            assert!(DeliveryEndpointOrigin::parse(origin).is_err(), "{origin}");
+            assert!(EndpointOrigin::parse(origin).is_err(), "{origin}");
         }
     }
 
     #[test]
     fn request_validation_requires_exact_scheme_authority_port_and_sni() {
-        let endpoint = DeliveryEndpointOrigin::parse("https://example.com:8443").unwrap();
+        let endpoint = EndpointOrigin::parse("https://example.com:8443").unwrap();
         assert!(endpoint
             .validate_request(
                 DeliveryScheme::Https,
@@ -477,7 +477,7 @@ mod tests {
             )
             .is_err());
 
-        let ip = DeliveryEndpointOrigin::parse("https://192.0.2.10:8443").unwrap();
+        let ip = EndpointOrigin::parse("https://192.0.2.10:8443").unwrap();
         assert!(ip
             .validate_request(
                 DeliveryScheme::Https,
@@ -500,12 +500,12 @@ mod tests {
 
     #[test]
     fn endpoint_digest_uses_stable_boundary_identity() {
-        let endpoint = DeliveryEndpointOrigin::parse("https://10.0.0.1/cache");
+        let endpoint = EndpointOrigin::parse("https://10.0.0.1/cache");
         assert!(
             endpoint.is_err(),
             "endpoint origins cannot include route paths"
         );
-        let endpoint = DeliveryEndpointOrigin::parse("https://10.0.0.1").unwrap();
+        let endpoint = EndpointOrigin::parse("https://10.0.0.1").unwrap();
         let boundary_a = [0x11; 32];
         let boundary_b = [0x22; 32];
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
             ),
         ];
         for (origin, boundary, expected) in cases {
-            let endpoint = DeliveryEndpointOrigin::parse(origin).unwrap();
+            let endpoint = EndpointOrigin::parse(origin).unwrap();
             assert_eq!(hex::encode(endpoint.identity_digest(&boundary)), expected);
         }
     }

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders filters and provenance for effective retention roots.
@@ -132,7 +132,7 @@ fn RootReasonCard(reason: aos_proto_types::RootReason) -> impl IntoView {
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{reason.store_hash}</strong><code>{reason.reason_id}</code></div>
+                <div><HashValue value=reason.store_hash/><code>{reason.reason_id}</code></div>
                 <StatusBadge state=reason.source_kind positive=true/>
             </div>
             <div class="resource-identity">

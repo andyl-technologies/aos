@@ -47,8 +47,8 @@ After signing in, use:
 
 Organization resource inventories keep creation separate from browsing:
 `/-/org/<org>/projects/new`, `registries/new`, `caches/new`,
-`storage-bindings/new`, `domains/new`, `network-boundaries/new`,
-`delivery-endpoints/new`, and `storage-gateways/new` open focused reviewed-
+`bindings/new`, `domains/new`, `network-policies/new`,
+`endpoints/new`, and `gateways/new` open focused reviewed-
 creation workflows below the same organization root. The inventory pages link
 to those routes and do not mix full create forms into the resource list.
 Deployment-wide domain, network-boundary, delivery-endpoint, and

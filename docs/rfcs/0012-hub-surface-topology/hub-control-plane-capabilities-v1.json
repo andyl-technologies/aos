@@ -78,15 +78,15 @@
       "methods": ["ListProjects", "GetProject", "PlanCreateProject", "CreateProject", "PlanDeleteProject", "DeleteProject"]
     },
     {
-      "service": "StorageBindingService",
+      "service": "BindingService",
       "audience": "end-user",
       "cli_families": ["storage-binding", "instance topology-defaults", "org topology-defaults"],
-      "web_workflows": ["storage-bindings", "storage-binding-credentials", "storage-binding-grants", "topology-defaults"],
+      "web_workflows": ["bindings", "storage-binding-credentials", "storage-binding-grants", "topology-defaults"],
       "web_method_exceptions": [
-        {"method": "GetStorageBinding", "reason": "ListStorageBindings returns the complete redacted binding and grant model used by the editor."},
-        {"method": "GetStorageBindingWriteRevision", "reason": "ListStorageBindingWriteRevisions returns the complete revision rows rendered by the editor."}
+        {"method": "GetBinding", "reason": "ListBindings returns the complete redacted binding and grant model used by the editor."},
+        {"method": "GetBindingWriteRevision", "reason": "ListBindingWriteRevisions returns the complete revision rows rendered by the editor."}
       ],
-      "methods": ["ListStorageBindings", "GetStorageBinding", "PlanCreateStorageBinding", "CreateStorageBinding", "PlanSetStorageBindingCredential", "SetStorageBindingCredential", "PlanRotateStorageBindingCredential", "RotateStorageBindingCredential", "PlanValidateStorageBindingCredential", "ValidateStorageBindingCredential", "PlanGrantStorageBindingScope", "GrantStorageBindingScope", "PlanRevokeStorageBindingScope", "RevokeStorageBindingScope", "ListStorageBindingWriteRevisions", "GetStorageBindingWriteRevision", "PlanDeleteStorageBinding", "DeleteStorageBinding", "GetInstanceTopologyDefaults", "PlanSetInstanceTopologyDefaults", "SetInstanceTopologyDefaults", "GetOrganizationTopologyDefaults", "PlanSetOrganizationTopologyDefaults", "SetOrganizationTopologyDefaults"]
+      "methods": ["ListBindings", "GetBinding", "PlanCreateBinding", "CreateBinding", "PlanSetBindingCredential", "SetBindingCredential", "PlanRotateBindingCredential", "RotateBindingCredential", "PlanValidateBindingCredential", "ValidateBindingCredential", "PlanGrantBindingScope", "GrantBindingScope", "PlanRevokeBindingScope", "RevokeBindingScope", "ListBindingWriteRevisions", "GetBindingWriteRevision", "PlanDeleteBinding", "DeleteBinding", "GetInstanceTopologyDefaults", "PlanSetInstanceTopologyDefaults", "SetInstanceTopologyDefaults", "GetOrganizationTopologyDefaults", "PlanSetOrganizationTopologyDefaults", "SetOrganizationTopologyDefaults"]
     },
     {
       "service": "DomainService",
@@ -99,37 +99,37 @@
       "methods": ["ListDomains", "GetDomain", "PlanCreateDomain", "CreateDomain", "PlanConfigureDomainDns", "ConfigureDomainDns", "PlanConfigureDomainCertificate", "ConfigureDomainCertificate", "PlanVerifyDomain", "VerifyDomain", "PlanDeleteDomain", "DeleteDomain"]
     },
     {
-      "service": "NetworkBoundaryService",
+      "service": "NetworkPolicyService",
       "audience": "end-user",
       "cli_families": ["network-boundary"],
-      "web_workflows": ["network-boundaries"],
+      "web_workflows": ["network-policies"],
       "web_method_exceptions": [
-        {"method": "GetNetworkBoundary", "reason": "ListNetworkBoundaries returns the complete boundary model rendered by the editor."},
-        {"method": "GetNetworkBoundaryRevision", "reason": "ListNetworkBoundaryRevisions returns the complete immutable revision rows rendered by the editor."}
+        {"method": "GetNetworkPolicy", "reason": "ListNetworkPolicies returns the complete boundary model rendered by the editor."},
+        {"method": "GetNetworkPolicyRevision", "reason": "ListNetworkPolicyRevisions returns the complete immutable revision rows rendered by the editor."}
       ],
-      "methods": ["ListNetworkBoundaries", "GetNetworkBoundary", "PlanCreateNetworkBoundary", "CreateNetworkBoundary", "ListNetworkBoundaryRevisions", "GetNetworkBoundaryRevision", "PlanReviseNetworkBoundary", "ReviseNetworkBoundary", "PlanActivateNetworkBoundaryRevision", "ActivateNetworkBoundaryRevision", "PlanRetireNetworkBoundaryRevision", "RetireNetworkBoundaryRevision", "PlanGrantNetworkBoundaryScope", "GrantNetworkBoundaryScope", "PlanRevokeNetworkBoundaryScope", "RevokeNetworkBoundaryScope", "PlanDeleteNetworkBoundary", "DeleteNetworkBoundary"]
+      "methods": ["ListNetworkPolicies", "GetNetworkPolicy", "PlanCreateNetworkPolicy", "CreateNetworkPolicy", "ListNetworkPolicyRevisions", "GetNetworkPolicyRevision", "PlanReviseNetworkPolicy", "ReviseNetworkPolicy", "PlanActivateNetworkPolicyRevision", "ActivateNetworkPolicyRevision", "PlanRetireNetworkPolicyRevision", "RetireNetworkPolicyRevision", "PlanGrantNetworkPolicyScope", "GrantNetworkPolicyScope", "PlanRevokeNetworkPolicyScope", "RevokeNetworkPolicyScope", "PlanDeleteNetworkPolicy", "DeleteNetworkPolicy"]
     },
     {
       "service": "DeliveryService",
       "audience": "end-user",
       "cli_families": ["endpoint", "gateway"],
-      "web_workflows": ["delivery-endpoints", "storage-gateways"],
+      "web_workflows": ["endpoints", "gateways"],
       "web_method_exceptions": [
-        {"method": "GetDeliveryEndpoint", "reason": "ListDeliveryEndpoints returns the complete endpoint model rendered by the editor."},
-        {"method": "GetDeliveryEndpointGeneration", "reason": "ListDeliveryEndpointGenerations returns the complete immutable generation rows rendered by the editor."},
-        {"method": "GetStorageGateway", "reason": "ListStorageGateways returns the complete gateway model rendered by the editor."}
+        {"method": "GetEndpoint", "reason": "ListEndpoints returns the complete endpoint model rendered by the editor."},
+        {"method": "GetEndpointGeneration", "reason": "ListEndpointGenerations returns the complete immutable generation rows rendered by the editor."},
+        {"method": "GetGateway", "reason": "ListGateways returns the complete gateway model rendered by the editor."}
       ],
-      "methods": ["ListDeliveryEndpoints", "GetDeliveryEndpoint", "PlanCreateDeliveryEndpoint", "CreateDeliveryEndpoint", "ListDeliveryEndpointGenerations", "GetDeliveryEndpointGeneration", "PlanStageDeliveryEndpointGeneration", "StageDeliveryEndpointGeneration", "PlanActivateDeliveryEndpointGeneration", "ActivateDeliveryEndpointGeneration", "PlanGrantDeliveryEndpointScope", "GrantDeliveryEndpointScope", "PlanRevokeDeliveryEndpointScope", "RevokeDeliveryEndpointScope", "PlanDeleteDeliveryEndpoint", "DeleteDeliveryEndpoint", "ListStorageGateways", "GetStorageGateway", "PlanCreateStorageGateway", "CreateStorageGateway", "PlanUpdateStorageGateway", "UpdateStorageGateway", "PlanGrantStorageGatewayScope", "GrantStorageGatewayScope", "PlanRevokeStorageGatewayScope", "RevokeStorageGatewayScope", "PreviewGatewayRoutes", "PlanEnableStorageGateway", "EnableStorageGateway", "PlanDisableStorageGateway", "DisableStorageGateway", "PlanDeleteStorageGateway", "DeleteStorageGateway"]
+      "methods": ["ListEndpoints", "GetEndpoint", "PlanCreateEndpoint", "CreateEndpoint", "ListEndpointGenerations", "GetEndpointGeneration", "PlanStageEndpointGeneration", "StageEndpointGeneration", "PlanActivateEndpointGeneration", "ActivateEndpointGeneration", "PlanGrantEndpointScope", "GrantEndpointScope", "PlanRevokeEndpointScope", "RevokeEndpointScope", "PlanDeleteEndpoint", "DeleteEndpoint", "ListGateways", "GetGateway", "PlanCreateGateway", "CreateGateway", "PlanUpdateGateway", "UpdateGateway", "PlanGrantGatewayScope", "GrantGatewayScope", "PlanRevokeGatewayScope", "RevokeGatewayScope", "PreviewGatewayRoutes", "PlanEnableGateway", "EnableGateway", "PlanDisableGateway", "DisableGateway", "PlanDeleteGateway", "DeleteGateway"]
     },
     {
       "service": "RouteService",
       "audience": "end-user",
       "cli_families": ["route"],
-      "web_workflows": ["delivery-routes"],
+      "web_workflows": ["routes"],
       "web_method_exceptions": [
         {"method": "GetRoute", "reason": "ListRoutes returns the complete route generation and status model rendered by the editor."}
       ],
-      "methods": ["ListRoutes", "GetRoute", "PlanCreateRoute", "CreateRoute", "PlanUpdateRoute", "UpdateRoute", "PlanReplaceRoute", "ReplaceRoute", "PlanEnableRoute", "EnableRoute", "PlanDisableRoute", "DisableRoute", "PlanDeleteRoute", "DeleteRoute", "PlanSetCanonicalRoute", "SetCanonicalRoute", "ExplainRoute"]
+      "methods": ["ListRoutes", "GetRoute", "PlanCreateRoute", "CreateRoute", "PlanUpdateRoute", "UpdateRoute", "PlanReplaceRoute", "ReplaceRoute", "PlanEnableRoute", "EnableRoute", "PlanDisableRoute", "DisableRoute", "PlanDeleteRoute", "DeleteRoute", "PlanSetRouteAdvertisement", "SetRouteAdvertisement", "ExplainRoute"]
     },
     {
       "service": "TopologyService",
@@ -151,28 +151,28 @@
       "methods": ["GetRegistryMirror", "PlanSetRegistryMirror", "SetRegistryMirror", "PlanDeleteRegistryMirror", "DeleteRegistryMirror", "PlanSyncRegistryMirror", "SyncRegistryMirror"]
     },
     {
-      "service": "StorageBindingControllerService",
+      "service": "BindingControllerService",
       "audience": "controller",
       "exclusion": "Authenticated storage-controller observation; never end-user porcelain.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["ReportStorageBindingWriteRevision"]
+      "methods": ["ReportBindingWriteRevision"]
     },
     {
-      "service": "NetworkBoundaryControllerService",
+      "service": "NetworkPolicyControllerService",
       "audience": "controller",
       "exclusion": "Authenticated network-boundary reconciliation and probe completion.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["CompleteNetworkBoundaryRevisionProbe", "ReportNetworkBoundaryRevision"]
+      "methods": ["CompleteNetworkPolicyRevisionProbe", "ReportNetworkPolicyRevision"]
     },
     {
       "service": "DeliveryControllerService",
       "audience": "controller",
-      "exclusion": "Authenticated delivery endpoint and gateway reconciliation.",
+      "exclusion": "Authenticated endpoint and gateway reconciliation.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["CompleteDeliveryEndpointProbe", "ReportDeliveryEndpoint", "ReportStorageGateway"]
+      "methods": ["CompleteEndpointProbe", "ReportEndpoint", "ReportGateway"]
     },
     {
       "service": "RouteControllerService",

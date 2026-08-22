@@ -3,7 +3,7 @@
 //! The fixture surface is served by an actual TCP listener inside the
 //! test, the hub indexes it through [`HttpFetch`] exactly as it would a
 //! public CDN. Indexing an external source does not implicitly create a
-//! delivery route; byte delivery remains unavailable until topology declares
+//! route; byte delivery remains unavailable until topology declares
 //! an endpoint and route explicitly.
 
 mod common;

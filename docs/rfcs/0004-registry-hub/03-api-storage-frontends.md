@@ -9,7 +9,7 @@ third-party tooling share one schema:
 | `OrgService` | orgs, membership, invitations |
 | `ProjectService` | project tree CRUD, role grants |
 | `RegistryService` | create/import/configure registries, visibility, trust-anchor display, freshness/health, mirror sources |
-| `StorageService` | storage bindings, bucket provisioning, frontend domains, cache stores |
+| `StorageService` | bindings, bucket provisioning, frontend domains, cache stores |
 | `PackageService` | search, package/version/platform metadata, closures, narinfo lookups, reverse-deps |
 | `ChannelService` | channel list, 256-partition state, floor history; reviewed advance/init against an exact signing-key generation |
 | `PublishService` | the write path: stage release, mint upload credentials (`MintUploadCredentials`), finalize, status stream, publish leases |
@@ -36,13 +36,13 @@ Direct-to-bucket publishers bypass the lease by definition — for them
 the hub can only detect and flag races after the fact, which the
 registry page surfaces as a health warning.
 
-### Storage: `StorageBinding` and shared buckets
+### Storage: `Binding` and shared buckets
 
 A registry never owns a bucket directly; it references a
-**StorageBinding** plus a sub-prefix:
+**Binding** plus a sub-prefix:
 
 ```text
-StorageBinding {
+Binding {
   id, org_id,
   kind:        HubManagedR2 | ExternalS3 | ExternalR2 | LocalFs,
   endpoint, region, bucket, root_prefix,
@@ -53,7 +53,7 @@ StorageBinding {
                   public_base_url: Option<Url> },
   health
 }
-Registry { …, storage_binding_id, prefix: "{org}/{proj…}/{reg}/" }
+Registry { …, binding_id, prefix: "{org}/{proj…}/{reg}/" }
 ```
 
 Credential purposes are kept distinct because their blast radii
@@ -108,7 +108,7 @@ R2).
 > *caches* too (a nullable `frontends.cache_id`); that file also adds what this
 > sketch omitted and the thin shipped schema lacks — explicit proxy settings
 > (timeouts, streaming, retry/failover, range passthrough), a
-> `storage_bindings.access = public | private` mode with `public_base_url`,
+> `bindings.access = public | private` mode with `public_base_url`,
 > hub-proxy-to-authenticated-origin (SigV4 / native R2 binding) with presigned
 > GET (`302`) reads, LRU access-signal handling under direct mode, and the
 > cross-visibility pointing matrix (public registry → private cache rejected;

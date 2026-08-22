@@ -29,20 +29,19 @@ fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
     for path in sources {
         let source = fs::read_to_string(&path)?;
         assert!(
-            !source.contains("PlanUpdateDeliveryEndpoint")
-                && !source.contains("UpdateDeliveryEndpoint"),
+            !source.contains("PlanUpdateEndpoint") && !source.contains("UpdateEndpoint"),
             "legacy endpoint update survives in {}",
             path.display()
         );
     }
     let proto = fs::read_to_string(root.join("crates/aos-proto/src/proto/aos/hub/v1/hub.proto"))?;
     for method in [
-        "ListDeliveryEndpointGenerations",
-        "GetDeliveryEndpointGeneration",
-        "PlanStageDeliveryEndpointGeneration",
-        "StageDeliveryEndpointGeneration",
-        "PlanActivateDeliveryEndpointGeneration",
-        "ActivateDeliveryEndpointGeneration",
+        "ListEndpointGenerations",
+        "GetEndpointGeneration",
+        "PlanStageEndpointGeneration",
+        "StageEndpointGeneration",
+        "PlanActivateEndpointGeneration",
+        "ActivateEndpointGeneration",
     ] {
         assert!(
             proto.contains(method),
@@ -284,9 +283,9 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     assert!(!webhook.contains("enqueue_delivery"));
     for event in [
         "webhook.created",
-        "topology.storage_gateway.created",
-        "topology.delivery_route.revised",
-        "topology.delivery_endpoint.generation_activated",
+        "topology.gateway.created",
+        "topology.route.revised",
+        "topology.endpoint.generation_activated",
     ] {
         assert!(webhook.contains(event), "webhook taxonomy omits {event}");
     }
@@ -316,10 +315,10 @@ fn pin_resolution_controller_is_fail_closed_and_typed() -> Result<()> {
         );
     }
     for family in [
-        "NetworkBoundaryGrant",
-        "DeliveryEndpointGrant",
-        "StorageGatewayGrant",
-        "StorageBindingGrant",
+        "NetworkPolicyGrant",
+        "EndpointGrant",
+        "GatewayGrant",
+        "BindingGrant",
     ] {
         assert!(service.contains(family), "missing grant family {family}");
     }

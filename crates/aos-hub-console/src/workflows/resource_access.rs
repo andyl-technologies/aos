@@ -151,7 +151,7 @@ fn AccessOverview(context: AccessContext) -> impl IntoView {
                     <div><span>"Infrastructure owner"</span><code>{context.owner_scope}</code></div>
                 </div>
                 <p class="muted">
-                    "Visibility is resource policy. Human and service-account grants are memberships. API credentials are scoped tokens. Client-facing HTTP authorization is configured on each simultaneous delivery route."
+                    "Visibility is resource policy. Human and service-account grants are memberships. API credentials are scoped tokens. Client-facing HTTP authorization is configured on each simultaneous route."
                 </p>
             </section>
             <section class="resource-grid">

@@ -257,7 +257,7 @@ struct PlacementCreatePlanInput {
     registry_id: Option<i64>,
     cache_id: Option<i64>,
     org_id: Option<i64>,
-    storage_binding_db_id: i64,
+    binding_db_id: i64,
 }
 
 /// Immutable preconditions and replacement desired state for a placement.
@@ -358,8 +358,8 @@ struct PlacementEquivalenceDeletePlanInput {
 
 /// Immutable inputs for creating or replacing a storage-binding spec.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageBindingMutationPlanInput {
-    request: pb::PlanStorageBindingMutationRequest,
+struct BindingMutationPlanInput {
+    request: pb::PlanBindingMutationRequest,
     org_id: Option<i64>,
     binding_db_id: Option<i64>,
     baseline_resource_version: Option<i64>,
@@ -367,7 +367,7 @@ struct StorageBindingMutationPlanInput {
 
 /// Immutable preconditions for storage-binding deletion.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageBindingDeletePlanInput {
+struct BindingDeletePlanInput {
     stable_id: String,
     owner_scope_key: String,
     org_id: Option<i64>,
@@ -377,8 +377,8 @@ struct StorageBindingDeletePlanInput {
 
 /// Immutable preconditions for setting or rotating one credential purpose.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageBindingCredentialPlanInput {
-    request: pb::PlanStorageBindingCredentialRequest,
+struct BindingCredentialPlanInput {
+    request: pb::PlanBindingCredentialRequest,
     binding_db_id: i64,
     owner_scope_key: String,
     credential_fingerprint: String,
@@ -386,7 +386,7 @@ struct StorageBindingCredentialPlanInput {
 
 /// Immutable preconditions for granting or revoking binding consumption.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageBindingGrantPlanInput {
+struct BindingGrantPlanInput {
     request: pb::PlanConsumerScopeGrantRequest,
     binding_db_id: i64,
     owner_scope_key: String,
@@ -622,34 +622,34 @@ struct DomainDeletePlanInput {
 
 /// Immutable inputs sealed by a network-boundary creation plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryCreatePlanInput {
-    request: pb::PlanNetworkBoundaryMutationRequest,
+struct NetworkPolicyCreatePlanInput {
+    request: pb::PlanNetworkPolicyMutationRequest,
     org_id: Option<i64>,
 }
 
 /// Immutable inputs sealed by a network-boundary revision plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryRevisionPlanInput {
-    request: pb::PlanNetworkBoundaryRevisionRequest,
+struct NetworkPolicyRevisionPlanInput {
+    request: pb::PlanNetworkPolicyRevisionRequest,
     expected_boundary_version: i64,
 }
 
 /// Immutable inputs sealed by a network-boundary lifecycle plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryLifecyclePlanInput {
-    request: pb::PlanNetworkBoundaryLifecycleRequest,
+struct NetworkPolicyLifecyclePlanInput {
+    request: pb::PlanNetworkPolicyLifecycleRequest,
     expected_lifecycle_version: i64,
     expected_consumer_version: i64,
-    default_cas: Option<NetworkBoundaryDefaultPlanSeal>,
+    default_cas: Option<NetworkPolicyDefaultPlanSeal>,
     coordination_operation_id: Option<String>,
-    coordination_impacts: Vec<crate::db::NetworkBoundaryServingPinRecord>,
-    coordination_revisions: Vec<crate::db::NetworkBoundaryCoordinationRevisionSeal>,
-    coordination_resolutions: Vec<crate::db::NetworkBoundaryPinResolutionSeal>,
+    coordination_impacts: Vec<crate::db::NetworkPolicyServingPinRecord>,
+    coordination_revisions: Vec<crate::db::NetworkPolicyCoordinationRevisionSeal>,
+    coordination_resolutions: Vec<crate::db::NetworkPolicyPinResolutionSeal>,
 }
 
 /// Serializable form of the exact default-pointer CAS sealed by a lifecycle plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryDefaultPlanSeal {
+struct NetworkPolicyDefaultPlanSeal {
     boundary_resource_version: i64,
     previous_revision: Option<i64>,
     previous_resource_version: Option<i64>,
@@ -657,7 +657,7 @@ struct NetworkBoundaryDefaultPlanSeal {
 
 /// Immutable inputs sealed by a network-boundary grant plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryGrantPlanInput {
+struct NetworkPolicyGrantPlanInput {
     request: pb::PlanConsumerScopeGrantRequest,
     owner_scope_key: String,
     baseline_grant_resource_version: Option<i64>,
@@ -666,7 +666,7 @@ struct NetworkBoundaryGrantPlanInput {
 
 /// Immutable inputs sealed by a network-boundary deletion plan.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkBoundaryDeletePlanInput {
+struct NetworkPolicyDeletePlanInput {
     request: pb::PlanDeleteTopologyResourceRequest,
     owner_scope_key: String,
     expected_resource_version: i64,
@@ -674,32 +674,32 @@ struct NetworkBoundaryDeletePlanInput {
 
 /// Immutable endpoint creation/update inputs with exact grant carry-forward seals.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DeliveryEndpointMutationPlanInput {
-    request: pb::PlanDeliveryEndpointMutationRequest,
+struct EndpointMutationPlanInput {
+    request: pb::PlanEndpointMutationRequest,
     org_id: Option<i64>,
     expected_resource_version: Option<i64>,
-    owner_grant: Option<DeliveryEndpointGrantPlanSeal>,
-    carried_grants: Vec<DeliveryEndpointGrantPlanSeal>,
-    affected_resources: Vec<crate::db::DeliveryEndpointImpactRecord>,
+    owner_grant: Option<EndpointGrantPlanSeal>,
+    carried_grants: Vec<EndpointGrantPlanSeal>,
+    affected_resources: Vec<crate::db::EndpointImpactRecord>,
     old_boundary_revision: Option<DeliveryBoundaryRevisionPlanSeal>,
     new_boundary_revision: DeliveryBoundaryRevisionPlanSeal,
 }
 
 /// Exact source and target seals for selecting a staged endpoint generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DeliveryEndpointActivationPlanInput {
+struct EndpointActivationPlanInput {
     endpoint_id: String,
     source_generation: i64,
     source_content_digest: String,
     target_generation: i64,
     target_content_digest: String,
     expected_resource_version: i64,
-    affected_resources: Vec<crate::db::DeliveryEndpointImpactRecord>,
+    affected_resources: Vec<crate::db::EndpointImpactRecord>,
 }
 
 /// Exact source grant copied into a new endpoint generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DeliveryEndpointGrantPlanSeal {
+struct EndpointGrantPlanSeal {
     consumer_scope_key: String,
     grant_generation: i64,
     resource_version: i64,
@@ -720,7 +720,7 @@ struct DeliveryBoundaryRevisionPlanSeal {
 
 /// Immutable endpoint scope-grant plan inputs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DeliveryEndpointScopeGrantPlanInput {
+struct EndpointScopeGrantPlanInput {
     request: pb::PlanConsumerScopeGrantRequest,
     owner_scope_key: String,
     endpoint_generation: i64,
@@ -730,7 +730,7 @@ struct DeliveryEndpointScopeGrantPlanInput {
 
 /// Immutable endpoint deletion inputs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DeliveryEndpointDeletePlanInput {
+struct EndpointDeletePlanInput {
     request: pb::PlanDeleteTopologyResourceRequest,
     owner_scope_key: String,
     expected_resource_version: i64,
@@ -738,7 +738,7 @@ struct DeliveryEndpointDeletePlanInput {
 
 /// Immutable gateway enable/disable/delete plan inputs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageGatewayLifecyclePlanInput {
+struct GatewayLifecyclePlanInput {
     request: pb::PlanDeleteTopologyResourceRequest,
     owner_scope_key: String,
     expected_resource_version: i64,
@@ -746,18 +746,18 @@ struct StorageGatewayLifecyclePlanInput {
 
 /// Immutable gateway creation/update inputs with exact grant carry-forward seals.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageGatewayMutationPlanInput {
-    request: pb::PlanStorageGatewayMutationRequest,
+struct GatewayMutationPlanInput {
+    request: pb::PlanGatewayMutationRequest,
     org_id: Option<i64>,
-    storage_binding_id: i64,
+    binding_id: i64,
     expected_resource_version: Option<i64>,
-    owner_grant: Option<StorageGatewayGrantPlanSeal>,
-    carried_grants: Vec<StorageGatewayGrantPlanSeal>,
+    owner_grant: Option<GatewayGrantPlanSeal>,
+    carried_grants: Vec<GatewayGrantPlanSeal>,
 }
 
 /// Exact source gateway grant copied into a new immutable generation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageGatewayGrantPlanSeal {
+struct GatewayGrantPlanSeal {
     consumer_scope_key: String,
     grant_generation: i64,
     resource_version: i64,
@@ -765,7 +765,7 @@ struct StorageGatewayGrantPlanSeal {
 
 /// Immutable gateway consumer-scope grant plan inputs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StorageGatewayScopeGrantPlanInput {
+struct GatewayScopeGrantPlanInput {
     request: pb::PlanConsumerScopeGrantRequest,
     owner_scope_key: String,
     gateway_generation: i64,
@@ -815,8 +815,8 @@ struct RouteLifecyclePlanInput {
 
 /// Immutable canonical-route selection plan inputs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CanonicalRoutePlanInput {
-    request: pb::PlanCanonicalRouteRequest,
+struct RouteAdvertisementPlanInput {
+    request: pb::PlanRouteAdvertisementRequest,
     surface: RouteSurfacePlanSeal,
     baseline_resource_version: Option<i64>,
 }
@@ -1582,7 +1582,7 @@ fn project_message(org_slug: String, project: crate::db::ProjectRecord) -> pb::P
 /// The canonical instance-settings keys editable over the API/CLI.
 ///
 /// This is the wire/CLI surface — the same keys the `/-/instance` console
-/// writes. Storage topology is configured through storage bindings and
+/// writes. Storage topology is configured through bindings and
 /// placements, not instance key/value settings.
 const INSTANCE_KEYS: &[&str] = &[
     "site_title",
@@ -2413,14 +2413,14 @@ pub struct RpcService {
     /// [`SurfaceFetch`](crate::fetch::SurfaceFetch) for the `GitService` reads.
     ///
     /// The native hub resolves a filesystem or HTTP fetcher per the registry's
-    /// storage binding; the Worker returns an R2-backed fetcher scoped to the
+    /// binding; the Worker returns an R2-backed fetcher scoped to the
     /// registry's prefix.
     pub surface: Arc<dyn SurfaceProvider>,
     /// The placement surface-write port used by typed cache uploads and
     /// placement-aware registry publications.
     ///
     /// The native hub returns a filesystem writer rooted at the registry's
-    /// storage binding (atomic temp-file + rename, symlink-contained); the Worker
+    /// binding (atomic temp-file + rename, symlink-contained); the Worker
     /// returns an R2-backed writer scoped to the registry's prefix.
     pub surface_write: Arc<dyn SurfaceWriteProvider>,
     /// The publish lease ([`PublishLease`]), serializing a registry's
@@ -2555,7 +2555,7 @@ struct CachedSession {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlannedConsumerCacheChange {
     request: pb::PlanCreateConsumerCacheChangesetRequest,
-    ready_routes: std::collections::BTreeMap<String, crate::db::ReadyCanonicalRouteIdentity>,
+    ready_routes: std::collections::BTreeMap<String, crate::db::ReadyRouteAdvertisementIdentity>,
 }
 
 impl CachedSession {
@@ -2594,11 +2594,11 @@ impl CachedSession {
 
 impl RpcService {
     reviewed_external_operation!(
-        plan_validate_storage_binding_credential,
-        validate_storage_binding_credential,
-        execute_validate_storage_binding_credential,
-        pb::PlanValidateStorageBindingCredentialRequest,
-        "validate_storage_binding_credential"
+        plan_validate_binding_credential,
+        validate_binding_credential,
+        execute_validate_binding_credential,
+        pb::PlanValidateBindingCredentialRequest,
+        "validate_binding_credential"
     );
     reviewed_external_operation!(
         plan_verify_domain,
@@ -2678,11 +2678,11 @@ impl RpcService {
         "run_coverage_repair"
     );
 
-    fn network_boundary_identity_spec(
+    fn network_policy_identity_spec(
         kind: &str,
-        identity: Option<pb::NetworkBoundaryIdentity>,
-    ) -> Result<crate::db::NetworkBoundaryIdentitySpec, RpcError> {
-        use pb::network_boundary_identity::Identity;
+        identity: Option<pb::NetworkPolicyIdentity>,
+    ) -> Result<crate::db::NetworkPolicyIdentitySpec, RpcError> {
+        use pb::network_policy_identity::Identity;
         let identity = identity
             .and_then(|value| value.identity)
             .ok_or_else(|| RpcError::invalid("identity is required"))?;
@@ -2690,12 +2690,10 @@ impl RpcService {
             (value.provider, value.account_or_tenant, value.resource_id)
         };
         match (kind, identity) {
-            ("public", Identity::Public(true)) => {
-                Ok(crate::db::NetworkBoundaryIdentitySpec::Public)
-            }
+            ("public", Identity::Public(true)) => Ok(crate::db::NetworkPolicyIdentitySpec::Public),
             ("vpn", Identity::Vpn(value)) => {
                 let (provider, account_or_tenant, resource_id) = provider_resource(value);
-                Ok(crate::db::NetworkBoundaryIdentitySpec::Vpn {
+                Ok(crate::db::NetworkPolicyIdentitySpec::Vpn {
                     provider,
                     account_or_tenant,
                     resource_id,
@@ -2705,7 +2703,7 @@ impl RpcService {
                 if !value.listener_id.is_empty() {
                     return Err(RpcError::invalid("vpc identity forbids listenerId"));
                 }
-                Ok(crate::db::NetworkBoundaryIdentitySpec::Vpc {
+                Ok(crate::db::NetworkPolicyIdentitySpec::Vpc {
                     provider: value.provider,
                     account_or_tenant: value.account_or_tenant,
                     resource_id: value.resource_id,
@@ -2713,14 +2711,14 @@ impl RpcService {
             }
             ("tunnel", Identity::Tunnel(value)) => {
                 let (provider, account_or_tenant, resource_id) = provider_resource(value);
-                Ok(crate::db::NetworkBoundaryIdentitySpec::Tunnel {
+                Ok(crate::db::NetworkPolicyIdentitySpec::Tunnel {
                     provider,
                     account_or_tenant,
                     resource_id,
                 })
             }
             ("source_allowlist", Identity::SourceAllowlistId(logical_id)) => {
-                Ok(crate::db::NetworkBoundaryIdentitySpec::SourceAllowlist { logical_id })
+                Ok(crate::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id })
             }
             ("trusted_ingress", Identity::TrustedIngress(value)) => {
                 if !value.resource_id.is_empty() {
@@ -2728,7 +2726,7 @@ impl RpcService {
                         "trusted ingress identity forbids resourceId",
                     ));
                 }
-                Ok(crate::db::NetworkBoundaryIdentitySpec::TrustedIngress {
+                Ok(crate::db::NetworkPolicyIdentitySpec::TrustedIngress {
                     provider: value.provider,
                     account_or_tenant: value.account_or_tenant,
                     listener_id: value.listener_id,
@@ -2740,13 +2738,13 @@ impl RpcService {
         }
     }
 
-    fn network_boundary_identity_message(
-        identity: crate::db::NetworkBoundaryIdentitySpec,
-    ) -> pb::NetworkBoundaryIdentity {
-        use pb::network_boundary_identity::Identity;
+    fn network_policy_identity_message(
+        identity: crate::db::NetworkPolicyIdentitySpec,
+    ) -> pb::NetworkPolicyIdentity {
+        use pb::network_policy_identity::Identity;
         let identity = match identity {
-            crate::db::NetworkBoundaryIdentitySpec::Public => Identity::Public(true),
-            crate::db::NetworkBoundaryIdentitySpec::Vpn {
+            crate::db::NetworkPolicyIdentitySpec::Public => Identity::Public(true),
+            crate::db::NetworkPolicyIdentitySpec::Vpn {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -2755,7 +2753,7 @@ impl RpcService {
                 account_or_tenant,
                 resource_id,
             }),
-            crate::db::NetworkBoundaryIdentitySpec::Vpc {
+            crate::db::NetworkPolicyIdentitySpec::Vpc {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -2765,7 +2763,7 @@ impl RpcService {
                 resource_id,
                 listener_id: String::new(),
             }),
-            crate::db::NetworkBoundaryIdentitySpec::Tunnel {
+            crate::db::NetworkPolicyIdentitySpec::Tunnel {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -2774,10 +2772,10 @@ impl RpcService {
                 account_or_tenant,
                 resource_id,
             }),
-            crate::db::NetworkBoundaryIdentitySpec::SourceAllowlist { logical_id } => {
+            crate::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id } => {
                 Identity::SourceAllowlistId(logical_id)
             }
-            crate::db::NetworkBoundaryIdentitySpec::TrustedIngress {
+            crate::db::NetworkPolicyIdentitySpec::TrustedIngress {
                 provider,
                 account_or_tenant,
                 listener_id,
@@ -2788,14 +2786,14 @@ impl RpcService {
                 listener_id,
             }),
         };
-        pb::NetworkBoundaryIdentity {
+        pb::NetworkPolicyIdentity {
             identity: Some(identity),
         }
     }
 
-    fn network_boundary_revision_spec(
-        spec: Option<pb::NetworkBoundaryRevisionSpec>,
-    ) -> Result<crate::db::NetworkBoundaryRevisionSpec, RpcError> {
+    fn network_policy_revision_spec(
+        spec: Option<pb::NetworkPolicyRevisionSpec>,
+    ) -> Result<crate::db::NetworkPolicyRevisionSpec, RpcError> {
         #[derive(serde::Serialize)]
         struct Mtls<'a> {
             ca_secret_ref: &'a str,
@@ -2834,7 +2832,7 @@ impl RpcService {
             ),
             _ => return Err(RpcError::invalid("invalid trustedIngress variant")),
         };
-        Ok(crate::db::NetworkBoundaryRevisionSpec {
+        Ok(crate::db::NetworkPolicyRevisionSpec {
             protected_transport_required: spec.protected_transport_required,
             trusted_ingress_kind,
             trusted_ingress_configuration,
@@ -2850,9 +2848,9 @@ impl RpcService {
         })
     }
 
-    fn network_boundary_revision_spec_message(
-        spec: &crate::db::NetworkBoundaryRevisionSpec,
-    ) -> Result<pb::NetworkBoundaryRevisionSpec, RpcError> {
+    fn network_policy_revision_spec_message(
+        spec: &crate::db::NetworkPolicyRevisionSpec,
+    ) -> Result<pb::NetworkPolicyRevisionSpec, RpcError> {
         use pb::trusted_ingress_configuration::Configuration;
         let configuration = match spec.trusted_ingress_kind.as_str() {
             "none" => Configuration::None(true),
@@ -2904,7 +2902,7 @@ impl RpcService {
                 )));
             }
         };
-        Ok(pb::NetworkBoundaryRevisionSpec {
+        Ok(pb::NetworkPolicyRevisionSpec {
             protected_transport_required: spec.protected_transport_required,
             trusted_ingress: Some(pb::TrustedIngressConfiguration {
                 configuration: Some(configuration),
@@ -2978,17 +2976,15 @@ impl RpcService {
         })
     }
 
-    async fn network_boundary_message(
+    async fn network_policy_message(
         &self,
-        record: crate::db::NetworkBoundaryRecord,
-    ) -> Result<pb::NetworkBoundary, RpcError> {
+        record: crate::db::NetworkPolicyRecord,
+    ) -> Result<pb::NetworkPolicy, RpcError> {
         let identity =
             serde_json::from_str(&record.identity_spec_json).map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::NetworkBoundary {
-                id: &record.id,
-            })
+            .list_consumer_scope_grants(crate::db::GrantResource::NetworkPolicy { id: &record.id })
             .await
             .map_err(RpcError::internal)?;
         let mut grants = Vec::with_capacity(grant_records.len());
@@ -2996,17 +2992,17 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::NetworkBoundary { id: &record.id },
+                    crate::db::GrantResource::NetworkPolicy { id: &record.id },
                 )
                 .await?,
             );
         }
-        Ok(pb::NetworkBoundary {
+        Ok(pb::NetworkPolicy {
             stable_id: record.id,
             owner_scope_key: record.owner_scope_key,
             name: record.name,
             kind: record.kind,
-            identity: Some(Self::network_boundary_identity_message(identity)),
+            identity: Some(Self::network_policy_identity_message(identity)),
             identity_fingerprint: record.identity_fingerprint,
             default_revision: record.default_revision.unwrap_or_default(),
             grants,
@@ -3016,21 +3012,21 @@ impl RpcService {
         })
     }
 
-    fn network_boundary_revision_message(
-        record: crate::db::NetworkBoundaryRevisionRecord,
-    ) -> Result<pb::NetworkBoundaryRevision, RpcError> {
-        Ok(pb::NetworkBoundaryRevision {
+    fn network_policy_revision_message(
+        record: crate::db::NetworkPolicyRevisionRecord,
+    ) -> Result<pb::NetworkPolicyRevision, RpcError> {
+        Ok(pb::NetworkPolicyRevision {
             boundary_id: record.boundary_id,
             revision: record.revision,
-            spec: Some(Self::network_boundary_revision_spec_message(&record.spec)?),
-            observation: Some(pb::NetworkBoundaryObservation {
+            spec: Some(Self::network_policy_revision_spec_message(&record.spec)?),
+            observation: Some(pb::NetworkPolicyObservation {
                 state: record.observation_state,
                 protected_transport_observed: record.protected_transport_observed,
                 trusted_ingress_observed: record.trusted_ingress_observed,
                 observed_at: record.observed_at,
                 error: record.observation_error.unwrap_or_default(),
             }),
-            lifecycle: Some(pb::NetworkBoundaryRevisionLifecycle {
+            lifecycle: Some(pb::NetworkPolicyRevisionLifecycle {
                 state: record.lifecycle_state,
                 activation_mode: record.activation_mode,
                 consumer_version: record.consumer_version,
@@ -3044,73 +3040,73 @@ impl RpcService {
     }
 
     /// Lists stable network-boundary identities in one owner scope.
-    pub async fn list_network_boundaries(
+    pub async fn list_network_policies(
         &self,
         auth: Option<&str>,
         req: pb::ListTopologyResourcesRequest,
-    ) -> Result<pb::ListNetworkBoundariesResponse, RpcError> {
-        self.require_delivery_scope(auth, &req.owner_scope_key, Permission::NetworkBoundaryRead)
+    ) -> Result<pb::ListNetworkPoliciesResponse, RpcError> {
+        self.require_delivery_scope(auth, &req.owner_scope_key, Permission::NetworkPolicyRead)
             .await?;
         let page = self
             .db
-            .list_network_boundaries_page(
+            .list_network_policies_page(
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
             )
             .await
             .map_err(RpcError::internal)?;
-        let mut network_boundaries = Vec::with_capacity(page.records.len());
+        let mut network_policies = Vec::with_capacity(page.records.len());
         for record in page.records {
-            network_boundaries.push(self.network_boundary_message(record).await?);
+            network_policies.push(self.network_policy_message(record).await?);
         }
-        Ok(pb::ListNetworkBoundariesResponse {
-            network_boundaries,
+        Ok(pb::ListNetworkPoliciesResponse {
+            network_policies,
             next_page_token: page.next_cursor.unwrap_or_default(),
         })
     }
 
     /// Returns one stable network-boundary identity.
-    pub async fn get_network_boundary(
+    pub async fn get_network_policy(
         &self,
         auth: Option<&str>,
         req: pb::GetTopologyResourceRequest,
-    ) -> Result<pb::NetworkBoundaryResponse, RpcError> {
+    ) -> Result<pb::NetworkPolicyResponse, RpcError> {
         let record = self
             .db
-            .network_boundary(&req.stable_id)
+            .network_policy(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &record.owner_scope_key,
-            Permission::NetworkBoundaryRead,
-            "network boundary",
+            Permission::NetworkPolicyRead,
+            "network policy",
         )
         .await?;
-        Ok(pb::NetworkBoundaryResponse {
-            network_boundary: Some(self.network_boundary_message(record).await?),
+        Ok(pb::NetworkPolicyResponse {
+            network_policy: Some(self.network_policy_message(record).await?),
         })
     }
 
-    /// Lists immutable revisions of one network boundary.
-    pub async fn list_network_boundary_revisions(
+    /// Lists immutable revisions of one network policy.
+    pub async fn list_network_policy_revisions(
         &self,
         auth: Option<&str>,
-        req: pb::ListNetworkBoundaryRevisionsRequest,
-    ) -> Result<pb::ListNetworkBoundaryRevisionsResponse, RpcError> {
+        req: pb::ListNetworkPolicyRevisionsRequest,
+    ) -> Result<pb::ListNetworkPolicyRevisionsResponse, RpcError> {
         let boundary = self
             .db
-            .network_boundary(&req.boundary_id)
+            .network_policy(&req.boundary_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryRead,
-            "network boundary",
+            Permission::NetworkPolicyRead,
+            "network policy",
         )
         .await?;
         let cursor = if req.page_token.is_empty() {
@@ -3122,57 +3118,57 @@ impl RpcService {
         };
         let page = self
             .db
-            .list_network_boundary_revisions_page(&req.boundary_id, req.page_size, cursor)
+            .list_network_policy_revisions_page(&req.boundary_id, req.page_size, cursor)
             .await
             .map_err(RpcError::internal)?;
         let revisions = page
             .records
             .into_iter()
-            .map(Self::network_boundary_revision_message)
+            .map(Self::network_policy_revision_message)
             .collect::<Result<_, _>>()?;
-        Ok(pb::ListNetworkBoundaryRevisionsResponse {
+        Ok(pb::ListNetworkPolicyRevisionsResponse {
             revisions,
             next_page_token: page.next_cursor.unwrap_or_default(),
         })
     }
 
     /// Returns one immutable network-boundary revision.
-    pub async fn get_network_boundary_revision(
+    pub async fn get_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::GetNetworkBoundaryRevisionRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
+        req: pb::GetNetworkPolicyRevisionRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
         let boundary = self
             .db
-            .network_boundary(&req.boundary_id)
+            .network_policy(&req.boundary_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryRead,
-            "network boundary",
+            Permission::NetworkPolicyRead,
+            "network policy",
         )
         .await?;
         let revision = self
             .db
-            .network_boundary_revision(&req.boundary_id, req.revision)
+            .network_policy_revision(&req.boundary_id, req.revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
-        Ok(pb::NetworkBoundaryRevisionResponse {
-            revision: Some(Self::network_boundary_revision_message(revision)?),
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
+        Ok(pb::NetworkPolicyRevisionResponse {
+            revision: Some(Self::network_policy_revision_message(revision)?),
             coordination_operation: None,
         })
     }
 
     /// Queues a controller-owned probe for an exact immutable boundary revision.
-    pub async fn complete_network_boundary_revision_probe(
+    pub async fn complete_network_policy_revision_probe(
         &self,
         auth: Option<&str>,
-        req: pb::CompleteNetworkBoundaryRevisionProbeRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
+        req: pb::CompleteNetworkPolicyRevisionProbeRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -3181,23 +3177,23 @@ impl RpcService {
         )?;
         let boundary = self
             .db
-            .network_boundary(&req.boundary_id)
+            .network_policy(&req.boundary_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryManage,
-            "network boundary",
+            Permission::NetworkPolicyManage,
+            "network policy",
         )
         .await?;
         let revision = self
             .db
-            .network_boundary_revision(&req.boundary_id, req.revision)
+            .network_policy_revision(&req.boundary_id, req.revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         let operation_id = hex::encode(Sha256::digest(
             format!(
                 "network-boundary-probe-v1\0{}\0{}\0{}",
@@ -3208,7 +3204,7 @@ impl RpcService {
         self.topology_probes
             .schedule(
                 &operation_id,
-                crate::topology_probe::TopologyProbe::NetworkBoundary {
+                crate::topology_probe::TopologyProbe::NetworkPolicy {
                     stable_id: revision.boundary_id.clone(),
                     revision: revision.revision,
                     configuration_digest: revision.content_digest.clone(),
@@ -3218,18 +3214,18 @@ impl RpcService {
             .map_err(|error| {
                 RpcError::FailedPrecondition(format!("schedule boundary probe: {error:#}"))
             })?;
-        Ok(pb::NetworkBoundaryRevisionResponse {
-            revision: Some(Self::network_boundary_revision_message(revision)?),
+        Ok(pb::NetworkPolicyRevisionResponse {
+            revision: Some(Self::network_policy_revision_message(revision)?),
             coordination_operation: None,
         })
     }
 
     /// Records a controller-owned observation under lifecycle CAS.
-    pub async fn report_network_boundary_revision(
+    pub async fn report_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::ReportNetworkBoundaryRevisionRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
+        req: pb::ReportNetworkPolicyRevisionRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -3238,15 +3234,15 @@ impl RpcService {
         )?;
         let boundary = self
             .db
-            .network_boundary(&req.boundary_id)
+            .network_policy(&req.boundary_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryManage,
-            "network boundary",
+            Permission::NetworkPolicyManage,
+            "network policy",
         )
         .await?;
         let observation = req
@@ -3258,7 +3254,7 @@ impl RpcService {
         }
         let record = self
             .db
-            .reconcile_network_boundary_revision(
+            .reconcile_network_policy_revision(
                 &req.boundary_id,
                 req.revision,
                 &observation.state,
@@ -3269,64 +3265,60 @@ impl RpcService {
             )
             .await
             .map_err(RpcError::internal)?;
-        Ok(pb::NetworkBoundaryRevisionResponse {
-            revision: Some(Self::network_boundary_revision_message(record)?),
+        Ok(pb::NetworkPolicyRevisionResponse {
+            revision: Some(Self::network_policy_revision_message(record)?),
             coordination_operation: None,
         })
     }
 
-    async fn managed_network_boundary(
+    async fn managed_network_policy(
         &self,
         auth: Option<&str>,
         stable_id: &str,
-    ) -> Result<crate::db::NetworkBoundaryRecord, RpcError> {
+    ) -> Result<crate::db::NetworkPolicyRecord, RpcError> {
         let record = self
             .db
-            .network_boundary(stable_id)
+            .network_policy(stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &record.owner_scope_key,
-            Permission::NetworkBoundaryManage,
-            "network boundary",
+            Permission::NetworkPolicyManage,
+            "network policy",
         )
         .await?;
         Ok(record)
     }
 
     /// Plans creation of a stable boundary identity and staged revision one.
-    pub async fn plan_create_network_boundary(
+    pub async fn plan_create_network_policy(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanNetworkBoundaryMutationRequest,
+        mut req: pb::PlanNetworkPolicyMutationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         require_absent_resource_version(&req.expected_resource_version)?;
         let claims = self.require_claims(auth)?;
-        self.require_delivery_scope(
-            auth,
-            &req.owner_scope_key,
-            Permission::NetworkBoundaryManage,
-        )
-        .await?;
+        self.require_delivery_scope(auth, &req.owner_scope_key, Permission::NetworkPolicyManage)
+            .await?;
         if req.stable_id.is_empty() || req.name.is_empty() {
             return Err(RpcError::invalid("stableId and name are required"));
         }
-        let identity = Self::network_boundary_identity_spec(&req.kind, req.identity.clone())?;
+        let identity = Self::network_policy_identity_spec(&req.kind, req.identity.clone())?;
         if identity.kind() != req.kind {
             return Err(RpcError::invalid("kind does not match identity"));
         }
-        Self::network_boundary_revision_spec(req.initial_revision.clone())?;
+        Self::network_policy_revision_spec(req.initial_revision.clone())?;
         if self
             .db
-            .network_boundary(&req.stable_id)
+            .network_policy(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
             .is_some()
         {
             return Err(RpcError::AlreadyExists(
-                "network boundary already exists".to_string(),
+                "network policy already exists".to_string(),
             ));
         }
         let (_scope_kind, org_id, _project_id) = self
@@ -3336,7 +3328,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("owner scope"))?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = NetworkBoundaryCreatePlanInput {
+        let input = NetworkPolicyCreatePlanInput {
             request: req,
             org_id,
         };
@@ -3345,12 +3337,12 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "create_network_boundary",
+            "create_network_policy",
             &input.request.owner_scope_key,
             &input,
             &idempotency_key,
             vec![format!(
-                "create network boundary '{}' with staged revision 1",
+                "create network policy '{}' with staged revision 1",
                 input.request.stable_id
             )],
             Vec::new(),
@@ -3360,16 +3352,16 @@ impl RpcService {
     }
 
     /// Applies a reviewed network-boundary creation plan exactly once.
-    pub async fn create_network_boundary(
+    pub async fn create_network_policy(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyNetworkBoundaryMutationRequest,
-    ) -> Result<pb::NetworkBoundaryResponse, RpcError> {
+        req: pb::ApplyNetworkPolicyMutationRequest,
+    ) -> Result<pb::NetworkPolicyResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "create_network_boundary",
+                "create_network_policy",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -3380,16 +3372,16 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "create_network_boundary",
+            "create_network_policy",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, NetworkBoundaryCreatePlanInput) = self
+        let (plan, input): (_, NetworkPolicyCreatePlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "create_network_boundary",
+                "create_network_policy",
                 Some(&req.confirmation_hash),
             )
             .await
@@ -3397,16 +3389,16 @@ impl RpcService {
         self.require_delivery_scope(
             auth,
             &input.request.owner_scope_key,
-            Permission::NetworkBoundaryManage,
+            Permission::NetworkPolicyManage,
         )
         .await?;
         let identity =
-            Self::network_boundary_identity_spec(&input.request.kind, input.request.identity)?;
-        let revision = Self::network_boundary_revision_spec(input.request.initial_revision)?;
+            Self::network_policy_identity_spec(&input.request.kind, input.request.identity)?;
+        let revision = Self::network_policy_revision_spec(input.request.initial_revision)?;
         let claims = self.require_claims(auth)?;
         let record = self
             .db
-            .create_network_boundary(
+            .create_network_policy(
                 &input.request.stable_id,
                 &input.request.owner_scope_key,
                 input.org_id,
@@ -3418,8 +3410,8 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::NetworkBoundaryResponse {
-            network_boundary: Some(self.network_boundary_message(record).await?),
+        let response = pb::NetworkPolicyResponse {
+            network_policy: Some(self.network_policy_message(record).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -3427,19 +3419,17 @@ impl RpcService {
     }
 
     /// Plans one append-only boundary protection revision under identity CAS.
-    pub async fn plan_revise_network_boundary(
+    pub async fn plan_revise_network_policy(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanNetworkBoundaryRevisionRequest,
+        mut req: pb::PlanNetworkPolicyRevisionRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let boundary = self
-            .managed_network_boundary(auth, &req.boundary_id)
-            .await?;
+        let boundary = self.managed_network_policy(auth, &req.boundary_id).await?;
         let expected = parse_resource_version(&req.expected_resource_version, 0)?;
         if expected <= 0 || expected != boundary.resource_version {
             return Err(RpcError::FailedPrecondition(
-                "network boundary resource version is required and must be current".to_string(),
+                "network policy resource version is required and must be current".to_string(),
             ));
         }
         const FIELDS: &[&str] = &[
@@ -3463,17 +3453,17 @@ impl RpcService {
         }
         let base_revision = if let Some(revision) = boundary.default_revision {
             self.db
-                .network_boundary_revision(&boundary.id, revision)
+                .network_policy_revision(&boundary.id, revision)
                 .await
                 .map_err(RpcError::internal)?
         } else {
             self.db
-                .latest_network_boundary_revision(&boundary.id)
+                .latest_network_policy_revision(&boundary.id)
                 .await
                 .map_err(RpcError::internal)?
         }
         .ok_or_else(|| RpcError::not_found("base boundary revision"))?;
-        let current_spec = Self::network_boundary_revision_spec_message(&base_revision.spec)?;
+        let current_spec = Self::network_policy_revision_spec_message(&base_revision.spec)?;
         let desired = req
             .spec
             .as_mut()
@@ -3491,9 +3481,9 @@ impl RpcService {
             desired.probe_location_configuration_ref =
                 current_spec.probe_location_configuration_ref;
         }
-        Self::network_boundary_revision_spec(req.spec.clone())?;
+        Self::network_policy_revision_spec(req.spec.clone())?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = NetworkBoundaryRevisionPlanInput {
+        let input = NetworkPolicyRevisionPlanInput {
             request: req,
             expected_boundary_version: expected,
         };
@@ -3502,12 +3492,12 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "revise_network_boundary",
+            "revise_network_policy",
             &boundary.owner_scope_key,
             &input,
             &idempotency_key,
             vec![format!(
-                "append a staged revision to network boundary '{}'",
+                "append a staged revision to network policy '{}'",
                 input.request.boundary_id
             )],
             Vec::new(),
@@ -3517,16 +3507,16 @@ impl RpcService {
     }
 
     /// Applies an append-only boundary revision plan exactly once.
-    pub async fn revise_network_boundary(
+    pub async fn revise_network_policy(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyNetworkBoundaryRevisionRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
+        req: pb::ApplyNetworkPolicyRevisionRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "revise_network_boundary",
+                "revise_network_policy",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -3537,26 +3527,26 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "revise_network_boundary",
+            "revise_network_policy",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, NetworkBoundaryRevisionPlanInput) = self
+        let (plan, input): (_, NetworkPolicyRevisionPlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "revise_network_boundary",
+                "revise_network_policy",
                 Some(&req.confirmation_hash),
             )
             .await?;
-        self.managed_network_boundary(auth, &input.request.boundary_id)
+        self.managed_network_policy(auth, &input.request.boundary_id)
             .await?;
-        let spec = Self::network_boundary_revision_spec(input.request.spec)?;
+        let spec = Self::network_policy_revision_spec(input.request.spec)?;
         let claims = self.require_claims(auth)?;
         let record = self
             .db
-            .revise_network_boundary(
+            .revise_network_policy(
                 &input.request.boundary_id,
                 &spec,
                 &claims.sub,
@@ -3564,8 +3554,8 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::NetworkBoundaryRevisionResponse {
-            revision: Some(Self::network_boundary_revision_message(record)?),
+        let response = pb::NetworkPolicyRevisionResponse {
+            revision: Some(Self::network_policy_revision_message(record)?),
             coordination_operation: None,
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
@@ -3578,9 +3568,9 @@ impl RpcService {
         auth: Option<&str>,
         boundary_id: &str,
         target_revision: i64,
-        impacts: &[crate::db::NetworkBoundaryServingPinRecord],
+        impacts: &[crate::db::NetworkPolicyServingPinRecord],
         requested: &[pb::PinResolution],
-    ) -> Result<Vec<crate::db::NetworkBoundaryPinResolutionSeal>, RpcError> {
+    ) -> Result<Vec<crate::db::NetworkPolicyPinResolutionSeal>, RpcError> {
         let mut by_pin = BTreeMap::new();
         for resolution in requested {
             if resolution.pin_id.is_empty() {
@@ -3628,7 +3618,7 @@ impl RpcService {
                     let target = action.replacement_endpoint.as_ref().ok_or_else(|| {
                         RpcError::invalid("moveEndpoint.replacementEndpoint is required")
                     })?;
-                    if target.resource_kind != "delivery_endpoint"
+                    if target.resource_kind != "endpoint"
                         || target.resource_stable_id != impact.target_stable_id
                         || target.resource_generation <= 0
                         || target.configuration_digest.is_empty()
@@ -3638,10 +3628,10 @@ impl RpcService {
                         ));
                     }
                     let endpoint = self
-                        .managed_delivery_endpoint(
+                        .managed_endpoint(
                             auth,
                             &target.resource_stable_id,
-                            Permission::DeliveryEndpointManage,
+                            Permission::EndpointManage,
                         )
                         .await?;
                     let target_version =
@@ -3657,14 +3647,11 @@ impl RpcService {
                     }
                     let revision = self
                         .db
-                        .delivery_endpoint_revision(
-                            &target.resource_stable_id,
-                            target.resource_generation,
-                        )
+                        .endpoint_revision(&target.resource_stable_id, target.resource_generation)
                         .await
                         .map_err(RpcError::internal)?
                         .ok_or_else(|| RpcError::not_found("replacement endpoint generation"))?;
-                    if revision.network_boundary_id != boundary_id
+                    if revision.network_policy_id != boundary_id
                         || revision.boundary_revision != target_revision
                         || revision.content_digest != target.configuration_digest
                     {
@@ -3689,11 +3676,7 @@ impl RpcService {
                     let source_version =
                         parse_resource_version(&action.expected_source_resource_version, 0)?;
                     let source = self
-                        .authorized_delivery_route(
-                            auth,
-                            &impact.target_stable_id,
-                            Permission::RouteManage,
-                        )
+                        .authorized_route(auth, &impact.target_stable_id, Permission::RouteManage)
                         .await?;
                     if source.resource_version != source_version
                         || source.configuration_generation != Some(impact.target_generation_key)
@@ -3707,21 +3690,17 @@ impl RpcService {
                     let target = action.replacement_route.as_ref().ok_or_else(|| {
                         RpcError::invalid("replaceRoute.replacementRoute is required")
                     })?;
-                    if target.resource_kind != "delivery_route"
+                    if target.resource_kind != "route"
                         || target.resource_stable_id == impact.target_stable_id
                         || target.resource_generation <= 0
                         || target.configuration_digest.is_empty()
                     {
                         return Err(RpcError::invalid(
-                            "route replacement requires a different exact delivery route",
+                            "route replacement requires a different exact route",
                         ));
                     }
                     let replacement = self
-                        .authorized_delivery_route(
-                            auth,
-                            &target.resource_stable_id,
-                            Permission::RouteManage,
-                        )
+                        .authorized_route(auth, &target.resource_stable_id, Permission::RouteManage)
                         .await?;
                     let target_version =
                         parse_resource_version(&target.expected_resource_version, 0)?;
@@ -3749,10 +3728,10 @@ impl RpcService {
                     match impact.target_kind.as_str() {
                         "endpoint" => {
                             let endpoint = self
-                                .managed_delivery_endpoint(
+                                .managed_endpoint(
                                     auth,
                                     &impact.target_stable_id,
-                                    Permission::DeliveryEndpointManage,
+                                    Permission::EndpointManage,
                                 )
                                 .await?;
                             if endpoint.resource_version != source_version {
@@ -3763,7 +3742,7 @@ impl RpcService {
                         }
                         "route" => {
                             let route = self
-                                .authorized_delivery_route(
+                                .authorized_route(
                                     auth,
                                     &impact.target_stable_id,
                                     Permission::RouteManage,
@@ -3804,7 +3783,7 @@ impl RpcService {
                     Some(version),
                 )
             });
-            sealed.push(crate::db::NetworkBoundaryPinResolutionSeal {
+            sealed.push(crate::db::NetworkPolicyPinResolutionSeal {
                 source: impact.clone(),
                 action_kind: action_kind.to_string(),
                 source_resource_version,
@@ -3870,7 +3849,7 @@ impl RpcService {
                     let target = action.replacement_route.clone().ok_or_else(|| {
                         RpcError::invalid("replaceRoute.replacementRoute is required")
                     })?;
-                    if target.resource_kind != "delivery_route"
+                    if target.resource_kind != "route"
                         || target.resource_stable_id == pin.target_stable_id
                     {
                         return Err(RpcError::invalid(
@@ -3893,7 +3872,7 @@ impl RpcService {
                     let target = action.replacement_endpoint.clone().ok_or_else(|| {
                         RpcError::invalid("moveEndpoint.replacementEndpoint is required")
                     })?;
-                    if target.resource_kind != "delivery_endpoint"
+                    if target.resource_kind != "endpoint"
                         || target.resource_stable_id != pin.target_stable_id
                     {
                         return Err(RpcError::invalid(
@@ -3916,11 +3895,7 @@ impl RpcService {
             match pin.target_kind.as_str() {
                 "route" => {
                     let route = self
-                        .authorized_delivery_route(
-                            auth,
-                            &pin.target_stable_id,
-                            Permission::RouteManage,
-                        )
+                        .authorized_route(auth, &pin.target_stable_id, Permission::RouteManage)
                         .await?;
                     if route.resource_version != source_version
                         || route.configuration_generation != Some(pin.target_generation_key)
@@ -3934,11 +3909,7 @@ impl RpcService {
                 }
                 "endpoint" | "listener" => {
                     let endpoint = self
-                        .managed_delivery_endpoint(
-                            auth,
-                            &pin.target_stable_id,
-                            Permission::DeliveryEndpointManage,
-                        )
+                        .managed_endpoint(auth, &pin.target_stable_id, Permission::EndpointManage)
                         .await?;
                     if endpoint.resource_version != source_version {
                         return Err(RpcError::FailedPrecondition(
@@ -3949,7 +3920,7 @@ impl RpcService {
                         if endpoint.desired_generation != Some(pin.target_generation_key)
                             || !self
                                 .db
-                                .delivery_endpoint_generation_impacts(
+                                .endpoint_generation_impacts(
                                     &pin.target_stable_id,
                                     pin.target_generation_key,
                                 )
@@ -4033,9 +4004,9 @@ impl RpcService {
                     ));
                 }
                 match target.resource_kind.as_str() {
-                    "delivery_route" => {
+                    "route" => {
                         let route = self
-                            .authorized_delivery_route(
+                            .authorized_route(
                                 auth,
                                 &target.resource_stable_id,
                                 Permission::RouteManage,
@@ -4052,17 +4023,17 @@ impl RpcService {
                             ));
                         }
                     }
-                    "delivery_endpoint" => {
+                    "endpoint" => {
                         let endpoint = self
-                            .managed_delivery_endpoint(
+                            .managed_endpoint(
                                 auth,
                                 &target.resource_stable_id,
-                                Permission::DeliveryEndpointManage,
+                                Permission::EndpointManage,
                             )
                             .await?;
                         let revision = self
                             .db
-                            .delivery_endpoint_revision(
+                            .endpoint_revision(
                                 &target.resource_stable_id,
                                 target.resource_generation,
                             )
@@ -4131,25 +4102,25 @@ impl RpcService {
             ))
         })?;
         let target = match primary.source.target_kind.as_str() {
-            "endpoint" | "listener" => crate::db::NewTopologyOperationTargetRef::DeliveryEndpoint(
+            "endpoint" | "listener" => crate::db::NewTopologyOperationTargetRef::Endpoint(
                 primary.source.target_stable_id.clone(),
             ),
-            "route" => crate::db::NewTopologyOperationTargetRef::DeliveryRoute(
+            "route" => crate::db::NewTopologyOperationTargetRef::Route(
                 primary.source.target_stable_id.clone(),
             ),
             "placement" => {
-                if resource_kind != "storage_binding" {
+                if resource_kind != "binding" {
                     return Err(RpcError::invalid(
                         "placement pins require a storage-binding grant",
                     ));
                 }
                 let binding = self
                     .db
-                    .storage_binding_by_stable_id(resource_stable_id)
+                    .binding_by_stable_id(resource_stable_id)
                     .await
                     .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::not_found("storage binding"))?;
-                crate::db::NewTopologyOperationTargetRef::StorageBinding(binding.id)
+                    .ok_or_else(|| RpcError::not_found("binding"))?;
+                crate::db::NewTopologyOperationTargetRef::Binding(binding.id)
             }
             _ => return Err(RpcError::invalid("unsupported grant pin target kind")),
         };
@@ -4198,22 +4169,20 @@ impl RpcService {
         })
     }
 
-    async fn plan_network_boundary_lifecycle(
+    async fn plan_network_policy_lifecycle(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanNetworkBoundaryLifecycleRequest,
+        mut req: pb::PlanNetworkPolicyLifecycleRequest,
         activate: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let boundary = self
-            .managed_network_boundary(auth, &req.boundary_id)
-            .await?;
+        let boundary = self.managed_network_policy(auth, &req.boundary_id).await?;
         let revision = self
             .db
-            .network_boundary_revision(&req.boundary_id, req.revision)
+            .network_policy_revision(&req.boundary_id, req.revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         let expected = parse_resource_version(&req.expected_resource_version, 0)?;
         if expected <= 0 || revision.resource_version != expected {
             return Err(RpcError::FailedPrecondition(
@@ -4247,11 +4216,11 @@ impl RpcService {
         let default_cas = if activate && req.default_for_new_plans {
             let seal = self
                 .db
-                .network_boundary_default_cas(&req.boundary_id)
+                .network_policy_default_cas(&req.boundary_id)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("network boundary"))?;
-            Some(NetworkBoundaryDefaultPlanSeal {
+                .ok_or_else(|| RpcError::not_found("network policy"))?;
+            Some(NetworkPolicyDefaultPlanSeal {
                 boundary_resource_version: seal.boundary_resource_version,
                 previous_revision: seal.previous_revision,
                 previous_resource_version: seal.previous_resource_version,
@@ -4261,7 +4230,7 @@ impl RpcService {
         };
         let coordination_impacts = if activate && req.activation_mode == "coordinated" {
             self.db
-                .network_boundary_coordination_impacts(&req.boundary_id, req.revision)
+                .network_policy_coordination_impacts(&req.boundary_id, req.revision)
                 .await
                 .map_err(RpcError::internal)?
         } else {
@@ -4284,7 +4253,7 @@ impl RpcService {
         for old_revision in impacted_revisions.iter().copied() {
             let old = self
                 .db
-                .network_boundary_revision(&req.boundary_id, old_revision)
+                .network_policy_revision(&req.boundary_id, old_revision)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| {
@@ -4297,7 +4266,7 @@ impl RpcService {
                     "live consumer references an unfenceable boundary revision".to_string(),
                 ));
             }
-            coordination_revisions.push(crate::db::NetworkBoundaryCoordinationRevisionSeal {
+            coordination_revisions.push(crate::db::NetworkPolicyCoordinationRevisionSeal {
                 revision: old.revision,
                 lifecycle_state: old.lifecycle_state,
                 resource_version: old.resource_version,
@@ -4320,7 +4289,7 @@ impl RpcService {
         let coordination_operation_id = (activate && req.activation_mode == "coordinated")
             .then(|| format!("operation:{}", uuid::Uuid::new_v4().simple()));
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = NetworkBoundaryLifecyclePlanInput {
+        let input = NetworkPolicyLifecyclePlanInput {
             request: req,
             expected_lifecycle_version: expected,
             expected_consumer_version: revision.consumer_version,
@@ -4331,9 +4300,9 @@ impl RpcService {
             coordination_resolutions,
         };
         let plan_kind = if activate {
-            "activate_network_boundary_revision"
+            "activate_network_policy_revision"
         } else {
-            "retire_network_boundary_revision"
+            "retire_network_policy_revision"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -4346,7 +4315,7 @@ impl RpcService {
             &idempotency_key,
             {
                 let mut effects = vec![format!(
-                    "{} network boundary '{}' revision {}",
+                    "{} network policy '{}' revision {}",
                     if activate {
                         "activate"
                     } else {
@@ -4370,33 +4339,33 @@ impl RpcService {
     }
 
     /// Plans activation of a verified staged boundary revision.
-    pub async fn plan_activate_network_boundary_revision(
+    pub async fn plan_activate_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::PlanNetworkBoundaryLifecycleRequest,
+        req: pb::PlanNetworkPolicyLifecycleRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_network_boundary_lifecycle(auth, req, true).await
+        self.plan_network_policy_lifecycle(auth, req, true).await
     }
 
     /// Plans one active-to-retiring or retiring-to-retired transition.
-    pub async fn plan_retire_network_boundary_revision(
+    pub async fn plan_retire_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::PlanNetworkBoundaryLifecycleRequest,
+        req: pb::PlanNetworkPolicyLifecycleRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_network_boundary_lifecycle(auth, req, false).await
+        self.plan_network_policy_lifecycle(auth, req, false).await
     }
 
-    async fn apply_network_boundary_lifecycle(
+    async fn apply_network_policy_lifecycle(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyNetworkBoundaryLifecycleRequest,
+        req: pb::ApplyNetworkPolicyLifecycleRequest,
         activate: bool,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
         let plan_kind = if activate {
-            "activate_network_boundary_revision"
+            "activate_network_policy_revision"
         } else {
-            "retire_network_boundary_revision"
+            "retire_network_policy_revision"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -4418,10 +4387,10 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, NetworkBoundaryLifecyclePlanInput) = self
+        let (plan, input): (_, NetworkPolicyLifecyclePlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
-        self.managed_network_boundary(auth, &input.request.boundary_id)
+        self.managed_network_policy(auth, &input.request.boundary_id)
             .await?;
         let claims = self.require_claims(auth)?;
         let record = if activate {
@@ -4429,14 +4398,14 @@ impl RpcService {
                 input
                     .default_cas
                     .as_ref()
-                    .map(|seal| crate::db::NetworkBoundaryDefaultCas {
+                    .map(|seal| crate::db::NetworkPolicyDefaultCas {
                         boundary_resource_version: seal.boundary_resource_version,
                         previous_revision: seal.previous_revision,
                         previous_resource_version: seal.previous_resource_version,
                     });
             let current_impacts = if input.coordination_operation_id.is_some() {
                 self.db
-                    .network_boundary_coordination_impacts(
+                    .network_policy_coordination_impacts(
                         &input.request.boundary_id,
                         input.request.revision,
                     )
@@ -4470,7 +4439,7 @@ impl RpcService {
             for seal in &input.coordination_revisions {
                 let current = self
                     .db
-                    .network_boundary_revision(&input.request.boundary_id, seal.revision)
+                    .network_policy_revision(&input.request.boundary_id, seal.revision)
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| {
@@ -4489,7 +4458,7 @@ impl RpcService {
                 }
             }
             self.db
-                .activate_network_boundary_revision(
+                .activate_network_policy_revision(
                     &input.request.boundary_id,
                     input.request.revision,
                     &input.request.activation_mode,
@@ -4506,7 +4475,7 @@ impl RpcService {
                 .await
         } else {
             self.db
-                .retire_network_boundary_revision(
+                .retire_network_policy_revision(
                     &input.request.boundary_id,
                     input.request.revision,
                     input.expected_lifecycle_version,
@@ -4538,8 +4507,8 @@ impl RpcService {
         } else {
             None
         };
-        let response = pb::NetworkBoundaryRevisionResponse {
-            revision: Some(Self::network_boundary_revision_message(record)?),
+        let response = pb::NetworkPolicyRevisionResponse {
+            revision: Some(Self::network_policy_revision_message(record)?),
             coordination_operation,
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
@@ -4548,59 +4517,58 @@ impl RpcService {
     }
 
     /// Applies an activation plan exactly once.
-    pub async fn activate_network_boundary_revision(
+    pub async fn activate_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyNetworkBoundaryLifecycleRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
-        self.apply_network_boundary_lifecycle(auth, req, true).await
+        req: pb::ApplyNetworkPolicyLifecycleRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
+        self.apply_network_policy_lifecycle(auth, req, true).await
     }
 
     /// Applies one retirement transition exactly once.
-    pub async fn retire_network_boundary_revision(
+    pub async fn retire_network_policy_revision(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyNetworkBoundaryLifecycleRequest,
-    ) -> Result<pb::NetworkBoundaryRevisionResponse, RpcError> {
-        self.apply_network_boundary_lifecycle(auth, req, false)
-            .await
+        req: pb::ApplyNetworkPolicyLifecycleRequest,
+    ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
+        self.apply_network_policy_lifecycle(auth, req, false).await
     }
 
-    async fn plan_network_boundary_grant(
+    async fn plan_network_policy_grant(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        if req.resource_kind != "network_boundary"
+        if req.resource_kind != "network_policy"
             || req.resource_generation != 0
             || req.consumer_scope_key.is_empty()
         {
             return Err(RpcError::invalid(
-                "resourceKind must be network_boundary, resourceGeneration must be zero, and consumerScopeKey is required",
+                "resourceKind must be network_policy, resourceGeneration must be zero, and consumerScopeKey is required",
             ));
         }
         let boundary = self
             .db
-            .network_boundary(&req.resource_stable_id)
+            .network_policy(&req.resource_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryGrant,
-            "network boundary",
+            Permission::NetworkPolicyGrant,
+            "network policy",
         )
         .await?;
         self.require_permission(
             &claims,
-            Permission::NetworkBoundaryGrant,
+            Permission::NetworkPolicyGrant,
             &parse_authorization_scope(&req.consumer_scope_key)?,
         )
         .await?;
-        let resource = crate::db::GrantResource::NetworkBoundary { id: &boundary.id };
+        let resource = crate::db::GrantResource::NetworkPolicy { id: &boundary.id };
         let grants = self
             .db
             .list_consumer_scope_grants(resource)
@@ -4658,16 +4626,16 @@ impl RpcService {
             Vec::new()
         };
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = NetworkBoundaryGrantPlanInput {
+        let input = NetworkPolicyGrantPlanInput {
             request: req,
             owner_scope_key: boundary.owner_scope_key.clone(),
             baseline_grant_resource_version: baseline,
             pin_resolutions,
         };
         let plan_kind = if revoke {
-            "revoke_network_boundary_scope"
+            "revoke_network_policy_scope"
         } else {
-            "grant_network_boundary_scope"
+            "grant_network_policy_scope"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -4679,7 +4647,7 @@ impl RpcService {
             &input,
             &idempotency_key,
             vec![format!(
-                "{} network boundary access for '{}'",
+                "{} network policy access for '{}'",
                 if revoke { "revoke" } else { "grant" },
                 input.request.consumer_scope_key
             )],
@@ -4689,34 +4657,34 @@ impl RpcService {
         .await
     }
 
-    /// Plans an explicit consumer-scope grant on a stable network boundary.
-    pub async fn plan_grant_network_boundary_scope(
+    /// Plans an explicit consumer-scope grant on a stable network policy.
+    pub async fn plan_grant_network_policy_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_network_boundary_grant(auth, req, false).await
+        self.plan_network_policy_grant(auth, req, false).await
     }
 
     /// Plans revocation of an unpinned explicit boundary grant.
-    pub async fn plan_revoke_network_boundary_scope(
+    pub async fn plan_revoke_network_policy_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_network_boundary_grant(auth, req, true).await
+        self.plan_network_policy_grant(auth, req, true).await
     }
 
-    async fn apply_network_boundary_grant(
+    async fn apply_network_policy_grant(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
         let plan_kind = if revoke {
-            "revoke_network_boundary_scope"
+            "revoke_network_policy_scope"
         } else {
-            "grant_network_boundary_scope"
+            "grant_network_policy_scope"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -4738,32 +4706,32 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, NetworkBoundaryGrantPlanInput) = self
+        let (plan, input): (_, NetworkPolicyGrantPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         let boundary = self
             .db
-            .network_boundary(&input.request.resource_stable_id)
+            .network_policy(&input.request.resource_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary"))?;
+            .ok_or_else(|| RpcError::not_found("network policy"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &boundary.owner_scope_key,
-            Permission::NetworkBoundaryGrant,
-            "network boundary",
+            Permission::NetworkPolicyGrant,
+            "network policy",
         )
         .await?;
         if boundary.owner_scope_key != input.owner_scope_key {
             return Err(RpcError::FailedPrecondition(
-                "network boundary owner scope changed after planning".to_string(),
+                "network policy owner scope changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::NetworkBoundary { id: &boundary.id };
+        let resource = crate::db::GrantResource::NetworkPolicy { id: &boundary.id };
         let claims = self.require_claims(auth)?;
         self.require_permission(
             &claims,
-            Permission::NetworkBoundaryGrant,
+            Permission::NetworkPolicyGrant,
             &parse_authorization_scope(&input.request.consumer_scope_key)?,
         )
         .await?;
@@ -4773,11 +4741,11 @@ impl RpcService {
                 .load_consumer_scope_grant(resource, &input.request.consumer_scope_key)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("network boundary consumer grant"))?;
+                .ok_or_else(|| RpcError::not_found("network policy consumer grant"))?;
             let coordination_operation = self
                 .schedule_grant_revocation(
                     &plan.plan_id,
-                    "network_boundary",
+                    "network_policy",
                     &boundary.id,
                     0,
                     &input.request.consumer_scope_key,
@@ -4787,7 +4755,7 @@ impl RpcService {
                     input.pin_resolutions,
                     &claims.sub,
                     &req.idempotency_key,
-                    Permission::NetworkBoundaryGrant,
+                    Permission::NetworkPolicyGrant,
                 )
                 .await?;
             let response = pb::ConsumerScopeGrantResponse {
@@ -4832,31 +4800,31 @@ impl RpcService {
     }
 
     /// Applies a boundary grant plan exactly once.
-    pub async fn apply_grant_network_boundary_scope(
+    pub async fn apply_grant_network_policy_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_network_boundary_grant(auth, req, false).await
+        self.apply_network_policy_grant(auth, req, false).await
     }
 
     /// Applies a boundary grant-revocation plan exactly once.
-    pub async fn apply_revoke_network_boundary_scope(
+    pub async fn apply_revoke_network_policy_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_network_boundary_grant(auth, req, true).await
+        self.apply_network_policy_grant(auth, req, true).await
     }
 
     /// Plans deletion of an unused network-boundary identity under CAS.
-    pub async fn plan_delete_network_boundary(
+    pub async fn plan_delete_network_policy(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanDeleteTopologyResourceRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let boundary = self.managed_network_boundary(auth, &req.stable_id).await?;
+        let boundary = self.managed_network_policy(auth, &req.stable_id).await?;
         let expected = req
             .expected_resource_version
             .as_deref()
@@ -4864,7 +4832,7 @@ impl RpcService {
             .and_then(|value| parse_resource_version(value, 0))?;
         if expected <= 0 || expected != boundary.resource_version {
             return Err(RpcError::FailedPrecondition(
-                "network boundary resource version is stale".to_string(),
+                "network policy resource version is stale".to_string(),
             ));
         }
         if boundary.id == "instance:public" {
@@ -4873,7 +4841,7 @@ impl RpcService {
             ));
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = NetworkBoundaryDeletePlanInput {
+        let input = NetworkPolicyDeletePlanInput {
             request: req,
             owner_scope_key: boundary.owner_scope_key.clone(),
             expected_resource_version: expected,
@@ -4883,19 +4851,19 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "delete_network_boundary",
+            "delete_network_policy",
             &boundary.owner_scope_key,
             &input,
             &idempotency_key,
-            vec![format!("delete network boundary '{}'", boundary.id)],
+            vec![format!("delete network policy '{}'", boundary.id)],
             Vec::new(),
             Some(confirmation_hash),
         )
         .await
     }
 
-    /// Applies deletion of an unreferenced network boundary exactly once.
-    pub async fn delete_network_boundary(
+    /// Applies deletion of an unreferenced network policy exactly once.
+    pub async fn delete_network_policy(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
@@ -4904,7 +4872,7 @@ impl RpcService {
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "delete_network_boundary",
+                "delete_network_policy",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -4915,29 +4883,29 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "delete_network_boundary",
+            "delete_network_policy",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, NetworkBoundaryDeletePlanInput) = self
+        let (plan, input): (_, NetworkPolicyDeletePlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "delete_network_boundary",
+                "delete_network_policy",
                 Some(&req.confirmation_hash),
             )
             .await?;
         let boundary = self
-            .managed_network_boundary(auth, &input.request.stable_id)
+            .managed_network_policy(auth, &input.request.stable_id)
             .await?;
         if boundary.owner_scope_key != input.owner_scope_key {
             return Err(RpcError::FailedPrecondition(
-                "network boundary owner changed after planning".to_string(),
+                "network policy owner changed after planning".to_string(),
             ));
         }
         self.db
-            .delete_network_boundary(&boundary.id, input.expected_resource_version)
+            .delete_network_policy(&boundary.id, input.expected_resource_version)
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let response = pb::DeleteTopologyResourceResponse { deleted: true };
@@ -4946,20 +4914,20 @@ impl RpcService {
         Ok(response)
     }
 
-    fn delivery_endpoint_host(
+    fn endpoint_host(
         host: Option<pb::EndpointHost>,
-    ) -> Result<crate::db::DeliveryEndpointHostInput, RpcError> {
+    ) -> Result<crate::db::EndpointHostInput, RpcError> {
         use pb::endpoint_host::Host;
         match host.and_then(|value| value.host) {
             Some(Host::DomainId(id)) if !id.is_empty() => {
-                Ok(crate::db::DeliveryEndpointHostInput::Domain(id))
+                Ok(crate::db::EndpointHostInput::Domain(id))
             }
-            Some(Host::Ipv4(bytes)) => Ok(crate::db::DeliveryEndpointHostInput::Ipv4(
+            Some(Host::Ipv4(bytes)) => Ok(crate::db::EndpointHostInput::Ipv4(
                 bytes
                     .try_into()
                     .map_err(|_| RpcError::invalid("ipv4 must contain exactly four bytes"))?,
             )),
-            Some(Host::Ipv6(bytes)) => Ok(crate::db::DeliveryEndpointHostInput::Ipv6(
+            Some(Host::Ipv6(bytes)) => Ok(crate::db::EndpointHostInput::Ipv6(
                 bytes
                     .try_into()
                     .map_err(|_| RpcError::invalid("ipv6 must contain exactly sixteen bytes"))?,
@@ -4968,8 +4936,8 @@ impl RpcService {
         }
     }
 
-    fn delivery_endpoint_host_message(
-        record: &crate::db::DeliveryEndpointRecord,
+    fn endpoint_host_message(
+        record: &crate::db::EndpointRecord,
     ) -> Result<pb::EndpointHost, RpcError> {
         use pb::endpoint_host::Host;
         let host = match (
@@ -4989,9 +4957,9 @@ impl RpcService {
         Ok(pb::EndpointHost { host: Some(host) })
     }
 
-    fn delivery_endpoint_revision_spec(
-        spec: Option<pb::DeliveryEndpointRevisionSpec>,
-    ) -> Result<crate::db::DeliveryEndpointRevisionSpec, RpcError> {
+    fn endpoint_revision_spec(
+        spec: Option<pb::EndpointRevisionSpec>,
+    ) -> Result<crate::db::EndpointRevisionSpec, RpcError> {
         #[derive(serde::Serialize)]
         struct Tls<'a> {
             provider: &'a str,
@@ -5014,7 +4982,7 @@ impl RpcService {
             .map_err(RpcError::internal)?,
             None => "{}".to_string(),
         };
-        Ok(crate::db::DeliveryEndpointRevisionSpec {
+        Ok(crate::db::EndpointRevisionSpec {
             boundary_revision: spec.boundary_revision,
             ingress_kind: ingress_kind.to_string(),
             listener_configuration: spec.listener_configuration_ref,
@@ -5023,9 +4991,9 @@ impl RpcService {
         })
     }
 
-    fn delivery_endpoint_revision_spec_message(
-        spec: &crate::db::DeliveryEndpointRevisionSpec,
-    ) -> Result<pb::DeliveryEndpointRevisionSpec, RpcError> {
+    fn endpoint_revision_spec_message(
+        spec: &crate::db::EndpointRevisionSpec,
+    ) -> Result<pb::EndpointRevisionSpec, RpcError> {
         let ingress_kind = match spec.ingress_kind.as_str() {
             "hub" => pb::EndpointIngressKind::Hub as i32,
             "external" => pb::EndpointIngressKind::External as i32,
@@ -5058,7 +5026,7 @@ impl RpcService {
                     .unwrap_or(false),
             })
         };
-        Ok(pb::DeliveryEndpointRevisionSpec {
+        Ok(pb::EndpointRevisionSpec {
             boundary_revision: spec.boundary_revision,
             ingress_kind,
             listener_configuration_ref: spec.listener_configuration.clone(),
@@ -5068,7 +5036,7 @@ impl RpcService {
     }
 
     fn delivery_boundary_revision_plan_seal(
-        record: crate::db::NetworkBoundaryRevisionRecord,
+        record: crate::db::NetworkPolicyRevisionRecord,
     ) -> DeliveryBoundaryRevisionPlanSeal {
         DeliveryBoundaryRevisionPlanSeal {
             boundary_id: record.boundary_id,
@@ -5082,27 +5050,27 @@ impl RpcService {
         }
     }
 
-    async fn delivery_endpoint_message(
+    async fn endpoint_message(
         &self,
-        record: crate::db::DeliveryEndpointRecord,
-    ) -> Result<pb::DeliveryEndpoint, RpcError> {
+        record: crate::db::EndpointRecord,
+    ) -> Result<pb::Endpoint, RpcError> {
         let generation = record.desired_generation.ok_or_else(|| {
             RpcError::internal(anyhow::anyhow!("endpoint has no desired generation"))
         })?;
         let revision = self
             .db
-            .delivery_endpoint_revision(&record.id, generation)
+            .endpoint_revision(&record.id, generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("endpoint revision is missing")))?;
         let observation = self
             .db
-            .delivery_endpoint_observation(&record.id)
+            .endpoint_observation(&record.id)
             .await
             .map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::DeliveryEndpoint {
+            .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
                 id: &record.id,
                 generation,
             })
@@ -5113,7 +5081,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::DeliveryEndpoint {
+                    crate::db::GrantResource::Endpoint {
                         id: &record.id,
                         generation,
                     },
@@ -5121,19 +5089,17 @@ impl RpcService {
                 .await?,
             );
         }
-        let host = Self::delivery_endpoint_host_message(&record)?;
-        Ok(pb::DeliveryEndpoint {
+        let host = Self::endpoint_host_message(&record)?;
+        Ok(pb::Endpoint {
             stable_id: record.id.clone(),
             owner_scope_key: record.owner_scope_key,
             scheme: record.scheme,
             host: Some(host),
             effective_port: u32::try_from(record.effective_port).map_err(RpcError::internal)?,
-            network_boundary_id: record.network_boundary_id,
+            network_policy_id: record.network_policy_id,
             desired_generation: generation,
             endpoint_identity_digest: record.endpoint_identity_digest,
-            desired: Some(Self::delivery_endpoint_revision_spec_message(
-                &revision.spec,
-            )?),
+            desired: Some(Self::endpoint_revision_spec_message(&revision.spec)?),
             observed: observation.map(|value| pb::EndpointObservedState {
                 observed_generation: value.observed_generation.unwrap_or_default(),
                 boundary_revision: value.boundary_revision.unwrap_or_default(),
@@ -5150,19 +5116,19 @@ impl RpcService {
         })
     }
 
-    async fn delivery_endpoint_generation_message(
+    async fn endpoint_generation_message(
         &self,
-        endpoint: &crate::db::DeliveryEndpointRecord,
-        revision: crate::db::DeliveryEndpointRevisionRecord,
-    ) -> Result<pb::DeliveryEndpointGeneration, RpcError> {
+        endpoint: &crate::db::EndpointRecord,
+        revision: crate::db::EndpointRevisionRecord,
+    ) -> Result<pb::EndpointGeneration, RpcError> {
         let observation = self
             .db
-            .delivery_endpoint_generation_observation(&endpoint.id, revision.generation)
+            .endpoint_generation_observation(&endpoint.id, revision.generation)
             .await
             .map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::DeliveryEndpoint {
+            .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
                 id: &endpoint.id,
                 generation: revision.generation,
             })
@@ -5173,7 +5139,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::DeliveryEndpoint {
+                    crate::db::GrantResource::Endpoint {
                         id: &endpoint.id,
                         generation: revision.generation,
                     },
@@ -5181,13 +5147,11 @@ impl RpcService {
                 .await?,
             );
         }
-        Ok(pb::DeliveryEndpointGeneration {
+        Ok(pb::EndpointGeneration {
             endpoint_id: revision.endpoint_id,
             generation: revision.generation,
-            network_boundary_id: revision.network_boundary_id,
-            desired: Some(Self::delivery_endpoint_revision_spec_message(
-                &revision.spec,
-            )?),
+            network_policy_id: revision.network_policy_id,
+            desired: Some(Self::endpoint_revision_spec_message(&revision.spec)?),
             observed: observation.map(|value| pb::EndpointObservedState {
                 observed_generation: value.observed_generation.unwrap_or_default(),
                 boundary_revision: value.boundary_revision.unwrap_or_default(),
@@ -5205,77 +5169,72 @@ impl RpcService {
         })
     }
 
-    async fn managed_delivery_endpoint(
+    async fn managed_endpoint(
         &self,
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::DeliveryEndpointRecord, RpcError> {
+    ) -> Result<crate::db::EndpointRecord, RpcError> {
         let record = self
             .db
-            .delivery_endpoint(stable_id)
+            .endpoint(stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery endpoint"))?;
-        self.require_cloaked_delivery_scope(
-            auth,
-            &record.owner_scope_key,
-            permission,
-            "delivery endpoint",
-        )
-        .await?;
+            .ok_or_else(|| RpcError::not_found("endpoint"))?;
+        self.require_cloaked_delivery_scope(auth, &record.owner_scope_key, permission, "endpoint")
+            .await?;
         Ok(record)
     }
 
-    /// Lists delivery endpoints in one exact owner scope.
-    pub async fn list_delivery_endpoints(
+    /// Lists endpoints in one exact owner scope.
+    pub async fn list_endpoints(
         &self,
         auth: Option<&str>,
         req: pb::ListTopologyResourcesRequest,
-    ) -> Result<pb::ListDeliveryEndpointsResponse, RpcError> {
-        self.require_delivery_scope(auth, &req.owner_scope_key, Permission::DeliveryEndpointRead)
+    ) -> Result<pb::ListEndpointsResponse, RpcError> {
+        self.require_delivery_scope(auth, &req.owner_scope_key, Permission::EndpointRead)
             .await?;
         let page = self
             .db
-            .list_delivery_endpoints_page(
+            .list_endpoints_page(
                 &req.owner_scope_key,
                 req.page_size,
                 (!req.page_token.is_empty()).then_some(req.page_token.as_str()),
             )
             .await
             .map_err(RpcError::internal)?;
-        let mut delivery_endpoints = Vec::with_capacity(page.records.len());
+        let mut endpoints = Vec::with_capacity(page.records.len());
         for record in page.records {
-            delivery_endpoints.push(self.delivery_endpoint_message(record).await?);
+            endpoints.push(self.endpoint_message(record).await?);
         }
-        Ok(pb::ListDeliveryEndpointsResponse {
-            delivery_endpoints,
+        Ok(pb::ListEndpointsResponse {
+            endpoints,
             next_page_token: page.next_cursor.unwrap_or_default(),
         })
     }
 
-    /// Returns one delivery endpoint with desired and observed generations.
-    pub async fn get_delivery_endpoint(
+    /// Returns one endpoint with desired and observed generations.
+    pub async fn get_endpoint(
         &self,
         auth: Option<&str>,
         req: pb::GetTopologyResourceRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
+    ) -> Result<pb::EndpointResponse, RpcError> {
         let record = self
-            .managed_delivery_endpoint(auth, &req.stable_id, Permission::DeliveryEndpointRead)
+            .managed_endpoint(auth, &req.stable_id, Permission::EndpointRead)
             .await?;
-        Ok(pb::DeliveryEndpointResponse {
-            delivery_endpoint: Some(self.delivery_endpoint_message(record).await?),
+        Ok(pb::EndpointResponse {
+            endpoint: Some(self.endpoint_message(record).await?),
         })
     }
 
     /// Lists immutable generations of one visible endpoint.
-    pub async fn list_delivery_endpoint_generations(
+    pub async fn list_endpoint_generations(
         &self,
         auth: Option<&str>,
-        req: pb::ListDeliveryEndpointGenerationsRequest,
-    ) -> Result<pb::ListDeliveryEndpointGenerationsResponse, RpcError> {
+        req: pb::ListEndpointGenerationsRequest,
+    ) -> Result<pb::ListEndpointGenerationsResponse, RpcError> {
         let endpoint = self
-            .managed_delivery_endpoint(auth, &req.endpoint_id, Permission::DeliveryEndpointRead)
+            .managed_endpoint(auth, &req.endpoint_id, Permission::EndpointRead)
             .await?;
         let after = if req.page_token.is_empty() {
             0
@@ -5293,7 +5252,7 @@ impl RpcService {
         };
         let records = self
             .db
-            .delivery_endpoint_revisions(&endpoint.id)
+            .endpoint_revisions(&endpoint.id)
             .await
             .map_err(RpcError::internal)?;
         let mut eligible = records
@@ -5311,48 +5270,48 @@ impl RpcService {
         let mut generations = Vec::with_capacity(page.len());
         for revision in page {
             generations.push(
-                self.delivery_endpoint_generation_message(&endpoint, revision)
+                self.endpoint_generation_message(&endpoint, revision)
                     .await?,
             );
         }
-        Ok(pb::ListDeliveryEndpointGenerationsResponse {
+        Ok(pb::ListEndpointGenerationsResponse {
             generations,
             next_page_token,
         })
     }
 
     /// Returns one immutable generation of a visible endpoint.
-    pub async fn get_delivery_endpoint_generation(
+    pub async fn get_endpoint_generation(
         &self,
         auth: Option<&str>,
-        req: pb::GetDeliveryEndpointGenerationRequest,
-    ) -> Result<pb::DeliveryEndpointGenerationResponse, RpcError> {
+        req: pb::GetEndpointGenerationRequest,
+    ) -> Result<pb::EndpointGenerationResponse, RpcError> {
         if req.generation <= 0 {
             return Err(RpcError::invalid("generation must be positive"));
         }
         let endpoint = self
-            .managed_delivery_endpoint(auth, &req.endpoint_id, Permission::DeliveryEndpointRead)
+            .managed_endpoint(auth, &req.endpoint_id, Permission::EndpointRead)
             .await?;
         let revision = self
             .db
-            .delivery_endpoint_revision(&endpoint.id, req.generation)
+            .endpoint_revision(&endpoint.id, req.generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-        Ok(pb::DeliveryEndpointGenerationResponse {
+        Ok(pb::EndpointGenerationResponse {
             generation: Some(
-                self.delivery_endpoint_generation_message(&endpoint, revision)
+                self.endpoint_generation_message(&endpoint, revision)
                     .await?,
             ),
         })
     }
 
     /// Queues controller observation for the exact desired endpoint generation.
-    pub async fn complete_delivery_endpoint_probe(
+    pub async fn complete_endpoint_probe(
         &self,
         auth: Option<&str>,
-        req: pb::CompleteDeliveryEndpointProbeRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
+        req: pb::CompleteEndpointProbeRequest,
+    ) -> Result<pb::EndpointResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -5360,14 +5319,14 @@ impl RpcService {
             &req.expected_observation_version,
         )?;
         let record = self
-            .managed_delivery_endpoint(auth, &req.stable_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
             .await?;
         let generation = record.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("endpoint has no desired generation".to_string())
         })?;
         let revision = self
             .db
-            .delivery_endpoint_revision(&record.id, generation)
+            .endpoint_revision(&record.id, generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
@@ -5381,7 +5340,7 @@ impl RpcService {
         self.topology_probes
             .schedule(
                 &operation_id,
-                crate::topology_probe::TopologyProbe::DeliveryEndpoint {
+                crate::topology_probe::TopologyProbe::Endpoint {
                     stable_id: record.id.clone(),
                     generation,
                     configuration_digest: revision.content_digest,
@@ -5391,17 +5350,17 @@ impl RpcService {
             .map_err(|error| {
                 RpcError::FailedPrecondition(format!("schedule endpoint probe: {error:#}"))
             })?;
-        Ok(pb::DeliveryEndpointResponse {
-            delivery_endpoint: Some(self.delivery_endpoint_message(record).await?),
+        Ok(pb::EndpointResponse {
+            endpoint: Some(self.endpoint_message(record).await?),
         })
     }
 
     /// Records controller-owned endpoint evidence under exact generation CAS.
-    pub async fn report_delivery_endpoint(
+    pub async fn report_endpoint(
         &self,
         auth: Option<&str>,
-        req: pb::ReportDeliveryEndpointRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
+        req: pb::ReportEndpointRequest,
+    ) -> Result<pb::EndpointResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -5409,7 +5368,7 @@ impl RpcService {
             &req.expected_observation_version,
         )?;
         let record = self
-            .managed_delivery_endpoint(auth, &req.stable_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
             .await?;
         let observation = req
             .observation
@@ -5421,7 +5380,7 @@ impl RpcService {
             ));
         }
         self.db
-            .reconcile_delivery_endpoint(
+            .reconcile_endpoint(
                 &record.id,
                 observation.observed_generation,
                 observation.boundary_revision,
@@ -5435,23 +5394,23 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let updated = self
             .db
-            .delivery_endpoint(&record.id)
+            .endpoint(&record.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery endpoint"))?;
-        Ok(pb::DeliveryEndpointResponse {
-            delivery_endpoint: Some(self.delivery_endpoint_message(updated).await?),
+            .ok_or_else(|| RpcError::not_found("endpoint"))?;
+        Ok(pb::EndpointResponse {
+            endpoint: Some(self.endpoint_message(updated).await?),
         })
     }
 
-    async fn plan_delivery_endpoint_mutation(
+    async fn plan_endpoint_mutation(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanDeliveryEndpointMutationRequest,
+        mut req: pb::PlanEndpointMutationRequest,
         update: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let _host = Self::delivery_endpoint_host(req.host.clone())?;
+        let _host = Self::endpoint_host(req.host.clone())?;
         let port = u16::try_from(req.effective_port)
             .map_err(|_| RpcError::invalid("effectivePort exceeds 65535"))?;
         if port == 0 || !matches!(req.scheme.as_str(), "http" | "https") {
@@ -5468,20 +5427,20 @@ impl RpcService {
         ): (
             Option<i64>,
             Option<i64>,
-            Option<DeliveryEndpointGrantPlanSeal>,
-            Vec<DeliveryEndpointGrantPlanSeal>,
-            Vec<crate::db::DeliveryEndpointImpactRecord>,
+            Option<EndpointGrantPlanSeal>,
+            Vec<EndpointGrantPlanSeal>,
+            Vec<crate::db::EndpointImpactRecord>,
             Option<(String, i64)>,
             String,
         ) = if update {
             let current = self
-                .managed_delivery_endpoint(auth, &req.stable_id, Permission::DeliveryEndpointManage)
+                .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
                 .await?;
             self.require_cloaked_delivery_scope(
                 auth,
                 &current.owner_scope_key,
-                Permission::DeliveryEndpointGrant,
-                "delivery endpoint",
+                Permission::EndpointGrant,
+                "endpoint",
             )
             .await?;
             let expected = parse_resource_version(&req.expected_resource_version, 0)?;
@@ -5490,11 +5449,11 @@ impl RpcService {
                     "endpoint resource version is required and must be current".to_string(),
                 ));
             }
-            let current_host = Self::delivery_endpoint_host_message(&current)?;
+            let current_host = Self::endpoint_host_message(&current)?;
             if req.owner_scope_key != current.owner_scope_key
                 || req.scheme != current.scheme
                 || req.effective_port != u32::try_from(current.effective_port).unwrap_or_default()
-                || req.network_boundary_id != current.network_boundary_id
+                || req.network_policy_id != current.network_policy_id
                 || req.host != Some(current_host)
             {
                 return Err(RpcError::invalid(
@@ -5526,12 +5485,11 @@ impl RpcService {
             })?;
             let current_revision = self
                 .db
-                .delivery_endpoint_revision(&current.id, generation)
+                .endpoint_revision(&current.id, generation)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-            let current_spec =
-                Self::delivery_endpoint_revision_spec_message(&current_revision.spec)?;
+            let current_spec = Self::endpoint_revision_spec_message(&current_revision.spec)?;
             let desired = req
                 .revision
                 .as_mut()
@@ -5553,7 +5511,7 @@ impl RpcService {
             }
             let grants = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::DeliveryEndpoint {
+                .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
                     id: &current.id,
                     generation,
                 })
@@ -5567,7 +5525,7 @@ impl RpcService {
                         && grant.state == "active"
                 })
                 .ok_or_else(|| RpcError::not_found("active endpoint owner grant"))?;
-            let owner_grant = DeliveryEndpointGrantPlanSeal {
+            let owner_grant = EndpointGrantPlanSeal {
                 consumer_scope_key: owner.consumer_scope_key.clone(),
                 grant_generation: owner.grant_generation,
                 resource_version: owner.resource_version,
@@ -5577,7 +5535,7 @@ impl RpcService {
             for consumer_scope_key in &req.carry_forward_consumer_scopes {
                 self.require_permission(
                     &claims,
-                    Permission::DeliveryEndpointGrant,
+                    Permission::EndpointGrant,
                     &parse_authorization_scope(consumer_scope_key)?,
                 )
                 .await?;
@@ -5592,7 +5550,7 @@ impl RpcService {
                             && grant.state == "active"
                     })
                     .ok_or_else(|| RpcError::not_found("active endpoint consumer grant"))?;
-                carried.push(DeliveryEndpointGrantPlanSeal {
+                carried.push(EndpointGrantPlanSeal {
                     consumer_scope_key: grant.consumer_scope_key.clone(),
                     grant_generation: grant.grant_generation,
                     resource_version: grant.resource_version,
@@ -5608,12 +5566,8 @@ impl RpcService {
                 current.owner_scope_key,
             )
         } else {
-            self.require_delivery_scope(
-                auth,
-                &req.owner_scope_key,
-                Permission::DeliveryEndpointManage,
-            )
-            .await?;
+            self.require_delivery_scope(auth, &req.owner_scope_key, Permission::EndpointManage)
+                .await?;
             if !req.expected_resource_version.is_empty()
                 || !req.update_mask.is_empty()
                 || !req.carry_forward_consumer_scopes.is_empty()
@@ -5624,13 +5578,13 @@ impl RpcService {
             }
             if self
                 .db
-                .delivery_endpoint(&req.stable_id)
+                .endpoint(&req.stable_id)
                 .await
                 .map_err(RpcError::internal)?
                 .is_some()
             {
                 return Err(RpcError::AlreadyExists(
-                    "delivery endpoint already exists".to_string(),
+                    "endpoint already exists".to_string(),
                 ));
             }
             let (_kind, org_id, _project_id) = self
@@ -5649,7 +5603,7 @@ impl RpcService {
                 req.owner_scope_key.clone(),
             )
         };
-        let revision = Self::delivery_endpoint_revision_spec(req.revision.clone())?;
+        let revision = Self::endpoint_revision_spec(req.revision.clone())?;
         crate::db::validate_endpoint_revision_spec(&revision)
             .map_err(|error| RpcError::invalid(format!("invalid endpoint revision: {error:#}")))?;
         if (req.scheme == "http" && revision.tls_configuration != "{}")
@@ -5661,10 +5615,10 @@ impl RpcService {
         }
         let new_boundary = self
             .db
-            .network_boundary_revision(&req.network_boundary_id, revision.boundary_revision)
+            .network_policy_revision(&req.network_policy_id, revision.boundary_revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         let new_boundary_revision = Self::delivery_boundary_revision_plan_seal(new_boundary);
         if ((!update && new_boundary_revision.lifecycle_state != "active")
             || (update
@@ -5686,16 +5640,16 @@ impl RpcService {
         let old_boundary_revision = if let Some((boundary_id, revision)) = old_boundary_ref {
             Some(Self::delivery_boundary_revision_plan_seal(
                 self.db
-                    .network_boundary_revision(&boundary_id, revision)
+                    .network_policy_revision(&boundary_id, revision)
                     .await
                     .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::not_found("network boundary revision"))?,
+                    .ok_or_else(|| RpcError::not_found("network policy revision"))?,
             ))
         } else {
             None
         };
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = DeliveryEndpointMutationPlanInput {
+        let input = EndpointMutationPlanInput {
             request: req,
             org_id,
             expected_resource_version,
@@ -5706,9 +5660,9 @@ impl RpcService {
             new_boundary_revision,
         };
         let plan_kind = if update {
-            "stage_delivery_endpoint_generation"
+            "stage_endpoint_generation"
         } else {
-            "create_delivery_endpoint"
+            "create_endpoint"
         };
         let mut warnings = Vec::new();
         if input.request.scheme == "http" {
@@ -5726,7 +5680,7 @@ impl RpcService {
             &input,
             &idempotency_key,
             vec![format!(
-                "{} delivery endpoint '{}'",
+                "{} endpoint '{}'",
                 if update {
                     "stage a generation for"
                 } else {
@@ -5741,33 +5695,33 @@ impl RpcService {
     }
 
     /// Plans creation of an immutable endpoint identity and generation one.
-    pub async fn plan_create_delivery_endpoint(
+    pub async fn plan_create_endpoint(
         &self,
         auth: Option<&str>,
-        req: pb::PlanDeliveryEndpointMutationRequest,
+        req: pb::PlanEndpointMutationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_delivery_endpoint_mutation(auth, req, false).await
+        self.plan_endpoint_mutation(auth, req, false).await
     }
 
     /// Plans append-only staging of an immutable endpoint generation.
-    pub async fn plan_stage_delivery_endpoint_generation(
+    pub async fn plan_stage_endpoint_generation(
         &self,
         auth: Option<&str>,
-        req: pb::PlanStageDeliveryEndpointGenerationRequest,
+        req: pb::PlanStageEndpointGenerationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let endpoint = self
-            .managed_delivery_endpoint(auth, &req.endpoint_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &req.endpoint_id, Permission::EndpointManage)
             .await?;
-        let host = Self::delivery_endpoint_host_message(&endpoint)?;
-        self.plan_delivery_endpoint_mutation(
+        let host = Self::endpoint_host_message(&endpoint)?;
+        self.plan_endpoint_mutation(
             auth,
-            pb::PlanDeliveryEndpointMutationRequest {
+            pb::PlanEndpointMutationRequest {
                 stable_id: endpoint.id,
                 owner_scope_key: endpoint.owner_scope_key,
                 scheme: endpoint.scheme,
                 host: Some(host),
                 effective_port: u32::try_from(endpoint.effective_port).unwrap_or_default(),
-                network_boundary_id: endpoint.network_boundary_id,
+                network_policy_id: endpoint.network_policy_id,
                 revision: req.revision,
                 carry_forward_consumer_scopes: req.carry_forward_consumer_scopes,
                 expected_resource_version: req.expected_resource_version,
@@ -5779,12 +5733,12 @@ impl RpcService {
         .await
     }
 
-    async fn apply_delivery_endpoint_creation(
+    async fn apply_endpoint_creation(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyDeliveryEndpointMutationRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
-        let plan_kind = "create_delivery_endpoint";
+        req: pb::ApplyEndpointMutationRequest,
+    ) -> Result<pb::EndpointResponse, RpcError> {
+        let plan_kind = "create_endpoint";
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -5805,27 +5759,27 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, DeliveryEndpointMutationPlanInput) = self
+        let (plan, input): (_, EndpointMutationPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         self.require_delivery_scope(
             auth,
             &input.request.owner_scope_key,
-            Permission::DeliveryEndpointManage,
+            Permission::EndpointManage,
         )
         .await?;
-        let revision = Self::delivery_endpoint_revision_spec(input.request.revision)?;
+        let revision = Self::endpoint_revision_spec(input.request.revision)?;
         let claims = self.require_claims(auth)?;
         let current_new_boundary = self
             .db
-            .network_boundary_revision(
+            .network_policy_revision(
                 &input.new_boundary_revision.boundary_id,
                 input.new_boundary_revision.revision,
             )
             .await
             .map_err(RpcError::internal)?
             .map(Self::delivery_boundary_revision_plan_seal)
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         if current_new_boundary != input.new_boundary_revision {
             return Err(RpcError::FailedPrecondition(
                 "new boundary revision changed after endpoint planning".to_string(),
@@ -5841,10 +5795,10 @@ impl RpcService {
                 "endpoint creation plan contains generation-stage seals"
             )));
         }
-        let host = Self::delivery_endpoint_host(input.request.host)?;
+        let host = Self::endpoint_host(input.request.host)?;
         let record = self
             .db
-            .create_delivery_endpoint(
+            .create_endpoint(
                 &input.request.stable_id,
                 &input.request.owner_scope_key,
                 input.org_id,
@@ -5852,7 +5806,7 @@ impl RpcService {
                 &host,
                 u16::try_from(input.request.effective_port)
                     .map_err(|_| RpcError::invalid("effectivePort exceeds 65535"))?,
-                &input.request.network_boundary_id,
+                &input.request.network_policy_id,
                 &revision,
                 (input.request.scheme == "http").then_some(clock::now_unix_secs()),
                 &claims.sub,
@@ -5860,8 +5814,8 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::DeliveryEndpointResponse {
-            delivery_endpoint: Some(self.delivery_endpoint_message(record).await?),
+        let response = pb::EndpointResponse {
+            endpoint: Some(self.endpoint_message(record).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -5869,21 +5823,21 @@ impl RpcService {
     }
 
     /// Applies an endpoint creation plan exactly once.
-    pub async fn apply_create_delivery_endpoint(
+    pub async fn apply_create_endpoint(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyDeliveryEndpointMutationRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
-        self.apply_delivery_endpoint_creation(auth, req).await
+        req: pb::ApplyEndpointMutationRequest,
+    ) -> Result<pb::EndpointResponse, RpcError> {
+        self.apply_endpoint_creation(auth, req).await
     }
 
     /// Applies an append-only endpoint generation staging plan exactly once.
-    pub async fn stage_delivery_endpoint_generation(
+    pub async fn stage_endpoint_generation(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyDeliveryEndpointGenerationRequest,
-    ) -> Result<pb::DeliveryEndpointGenerationResponse, RpcError> {
-        let plan_kind = "stage_delivery_endpoint_generation";
+        req: pb::ApplyEndpointGenerationRequest,
+    ) -> Result<pb::EndpointGenerationResponse, RpcError> {
+        let plan_kind = "stage_endpoint_generation";
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -5904,28 +5858,24 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, DeliveryEndpointMutationPlanInput) = self
+        let (plan, input): (_, EndpointMutationPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         let endpoint = self
-            .managed_delivery_endpoint(
-                auth,
-                &input.request.stable_id,
-                Permission::DeliveryEndpointManage,
-            )
+            .managed_endpoint(auth, &input.request.stable_id, Permission::EndpointManage)
             .await?;
         self.require_cloaked_delivery_scope(
             auth,
             &input.request.owner_scope_key,
-            Permission::DeliveryEndpointGrant,
-            "delivery endpoint",
+            Permission::EndpointGrant,
+            "endpoint",
         )
         .await?;
         let claims = self.require_claims(auth)?;
         for seal in &input.carried_grants {
             self.require_permission(
                 &claims,
-                Permission::DeliveryEndpointGrant,
+                Permission::EndpointGrant,
                 &parse_authorization_scope(&seal.consumer_scope_key)?,
             )
             .await?;
@@ -5942,11 +5892,11 @@ impl RpcService {
         {
             let current = self
                 .db
-                .network_boundary_revision(&sealed.boundary_id, sealed.revision)
+                .network_policy_revision(&sealed.boundary_id, sealed.revision)
                 .await
                 .map_err(RpcError::internal)?
                 .map(Self::delivery_boundary_revision_plan_seal)
-                .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+                .ok_or_else(|| RpcError::not_found("network policy revision"))?;
             if current != *sealed {
                 return Err(RpcError::FailedPrecondition(
                     "boundary revision changed after endpoint planning".to_string(),
@@ -5956,7 +5906,7 @@ impl RpcService {
         let owner = input.owner_grant.ok_or_else(|| {
             RpcError::internal(anyhow::anyhow!("stage plan has no owner grant seal"))
         })?;
-        let owner = crate::db::DeliveryEndpointGrantCarryForward {
+        let owner = crate::db::EndpointGrantCarryForward {
             consumer_scope_key: owner.consumer_scope_key,
             grant_generation: owner.grant_generation,
             resource_version: owner.resource_version,
@@ -5964,16 +5914,16 @@ impl RpcService {
         let carried = input
             .carried_grants
             .into_iter()
-            .map(|seal| crate::db::DeliveryEndpointGrantCarryForward {
+            .map(|seal| crate::db::EndpointGrantCarryForward {
                 consumer_scope_key: seal.consumer_scope_key,
                 grant_generation: seal.grant_generation,
                 resource_version: seal.resource_version,
             })
             .collect::<Vec<_>>();
-        let revision = Self::delivery_endpoint_revision_spec(input.request.revision)?;
+        let revision = Self::endpoint_revision_spec(input.request.revision)?;
         let staged = self
             .db
-            .stage_delivery_endpoint_generation(
+            .stage_endpoint_generation(
                 &endpoint.id,
                 &revision,
                 &owner,
@@ -5988,15 +5938,12 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let endpoint = self
             .db
-            .delivery_endpoint(&endpoint.id)
+            .endpoint(&endpoint.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery endpoint"))?;
-        let response = pb::DeliveryEndpointGenerationResponse {
-            generation: Some(
-                self.delivery_endpoint_generation_message(&endpoint, staged)
-                    .await?,
-            ),
+            .ok_or_else(|| RpcError::not_found("endpoint"))?;
+        let response = pb::EndpointGenerationResponse {
+            generation: Some(self.endpoint_generation_message(&endpoint, staged).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -6004,16 +5951,16 @@ impl RpcService {
     }
 
     /// Plans selection of one exact staged endpoint generation.
-    pub async fn plan_activate_delivery_endpoint_generation(
+    pub async fn plan_activate_endpoint_generation(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanActivateDeliveryEndpointGenerationRequest,
+        mut req: pb::PlanActivateEndpointGenerationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         if req.generation <= 0 {
             return Err(RpcError::invalid("generation must be positive"));
         }
         let endpoint = self
-            .managed_delivery_endpoint(auth, &req.endpoint_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &req.endpoint_id, Permission::EndpointManage)
             .await?;
         let expected = parse_resource_version(&req.expected_resource_version, 0)?;
         if expected <= 0 || expected != endpoint.resource_version {
@@ -6031,22 +5978,22 @@ impl RpcService {
         }
         let source = self
             .db
-            .delivery_endpoint_revision(&endpoint.id, source_generation)
+            .endpoint_revision(&endpoint.id, source_generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("selected endpoint generation"))?;
         let target = self
             .db
-            .delivery_endpoint_revision(&endpoint.id, req.generation)
+            .endpoint_revision(&endpoint.id, req.generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("staged endpoint generation"))?;
         let boundary = self
             .db
-            .network_boundary_revision(&target.network_boundary_id, target.boundary_revision)
+            .network_policy_revision(&target.network_policy_id, target.boundary_revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+            .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         if boundary.lifecycle_state != "active" || boundary.observation_state != "verified" {
             return Err(RpcError::FailedPrecondition(
                 "public endpoint activation requires an active verified boundary revision"
@@ -6055,7 +6002,7 @@ impl RpcService {
         }
         let affected_resources = self
             .db
-            .delivery_endpoint_generation_impacts(&endpoint.id, source_generation)
+            .endpoint_generation_impacts(&endpoint.id, source_generation)
             .await
             .map_err(RpcError::internal)?;
         if !affected_resources.is_empty() {
@@ -6065,7 +6012,7 @@ impl RpcService {
             ));
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = DeliveryEndpointActivationPlanInput {
+        let input = EndpointActivationPlanInput {
             endpoint_id: endpoint.id.clone(),
             source_generation,
             source_content_digest: source.content_digest,
@@ -6079,12 +6026,12 @@ impl RpcService {
         ));
         self.create_control_plan(
             &self.require_claims(auth)?,
-            "activate_delivery_endpoint_generation",
+            "activate_endpoint_generation",
             &endpoint.owner_scope_key,
             &input,
             &idempotency_key,
             vec![format!(
-                "select delivery endpoint '{}' generation {}",
+                "select endpoint '{}' generation {}",
                 endpoint.id, target.generation
             )],
             Vec::new(),
@@ -6094,12 +6041,12 @@ impl RpcService {
     }
 
     /// Applies one exact staged endpoint-generation selection plan.
-    pub async fn activate_delivery_endpoint_generation(
+    pub async fn activate_endpoint_generation(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyDeliveryEndpointGenerationRequest,
-    ) -> Result<pb::DeliveryEndpointResponse, RpcError> {
-        let plan_kind = "activate_delivery_endpoint_generation";
+        req: pb::ApplyEndpointGenerationRequest,
+    ) -> Result<pb::EndpointResponse, RpcError> {
+        let plan_kind = "activate_endpoint_generation";
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -6120,27 +6067,27 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, DeliveryEndpointActivationPlanInput) = self
+        let (plan, input): (_, EndpointActivationPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         let endpoint = self
-            .managed_delivery_endpoint(auth, &input.endpoint_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &input.endpoint_id, Permission::EndpointManage)
             .await?;
         let source = self
             .db
-            .delivery_endpoint_revision(&input.endpoint_id, input.source_generation)
+            .endpoint_revision(&input.endpoint_id, input.source_generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("selected endpoint generation"))?;
         let target = self
             .db
-            .delivery_endpoint_revision(&input.endpoint_id, input.target_generation)
+            .endpoint_revision(&input.endpoint_id, input.target_generation)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("staged endpoint generation"))?;
         let impacts = self
             .db
-            .delivery_endpoint_generation_impacts(&input.endpoint_id, input.source_generation)
+            .endpoint_generation_impacts(&input.endpoint_id, input.source_generation)
             .await
             .map_err(RpcError::internal)?;
         if endpoint.resource_version != input.expected_resource_version
@@ -6156,7 +6103,7 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         let updated = self
             .db
-            .activate_staged_delivery_endpoint_generation(
+            .activate_staged_endpoint_generation(
                 &input.endpoint_id,
                 input.target_generation,
                 input.expected_resource_version,
@@ -6167,36 +6114,32 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::DeliveryEndpointResponse {
-            delivery_endpoint: Some(self.delivery_endpoint_message(updated).await?),
+        let response = pb::EndpointResponse {
+            endpoint: Some(self.endpoint_message(updated).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
     }
 
-    async fn plan_delivery_endpoint_scope_grant(
+    async fn plan_endpoint_scope_grant(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        if req.resource_kind != "delivery_endpoint" || req.consumer_scope_key.is_empty() {
+        if req.resource_kind != "endpoint" || req.consumer_scope_key.is_empty() {
             return Err(RpcError::invalid(
-                "resourceKind must be delivery_endpoint and consumerScopeKey is required",
+                "resourceKind must be endpoint and consumerScopeKey is required",
             ));
         }
         let endpoint = self
-            .managed_delivery_endpoint(
-                auth,
-                &req.resource_stable_id,
-                Permission::DeliveryEndpointGrant,
-            )
+            .managed_endpoint(auth, &req.resource_stable_id, Permission::EndpointGrant)
             .await?;
         self.require_permission(
             &claims,
-            Permission::DeliveryEndpointGrant,
+            Permission::EndpointGrant,
             &parse_authorization_scope(&req.consumer_scope_key)?,
         )
         .await?;
@@ -6208,7 +6151,7 @@ impl RpcService {
                 "endpoint generation is stale".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::DeliveryEndpoint {
+        let resource = crate::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation,
         };
@@ -6256,7 +6199,7 @@ impl RpcService {
             Vec::new()
         };
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = DeliveryEndpointScopeGrantPlanInput {
+        let input = EndpointScopeGrantPlanInput {
             request: req,
             owner_scope_key: endpoint.owner_scope_key.clone(),
             endpoint_generation: generation,
@@ -6264,9 +6207,9 @@ impl RpcService {
             pin_resolutions,
         };
         let plan_kind = if revoke {
-            "revoke_delivery_endpoint_scope"
+            "revoke_endpoint_scope"
         } else {
-            "grant_delivery_endpoint_scope"
+            "grant_endpoint_scope"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -6290,35 +6233,33 @@ impl RpcService {
     }
 
     /// Plans an explicit consumer grant on one exact endpoint generation.
-    pub async fn plan_grant_delivery_endpoint_scope(
+    pub async fn plan_grant_endpoint_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_delivery_endpoint_scope_grant(auth, req, false)
-            .await
+        self.plan_endpoint_scope_grant(auth, req, false).await
     }
 
     /// Plans revocation of an unpinned endpoint-generation grant.
-    pub async fn plan_revoke_delivery_endpoint_scope(
+    pub async fn plan_revoke_endpoint_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_delivery_endpoint_scope_grant(auth, req, true)
-            .await
+        self.plan_endpoint_scope_grant(auth, req, true).await
     }
 
-    async fn apply_delivery_endpoint_scope_grant(
+    async fn apply_endpoint_scope_grant(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
         let plan_kind = if revoke {
-            "revoke_delivery_endpoint_scope"
+            "revoke_endpoint_scope"
         } else {
-            "grant_delivery_endpoint_scope"
+            "grant_endpoint_scope"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -6340,14 +6281,14 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, DeliveryEndpointScopeGrantPlanInput) = self
+        let (plan, input): (_, EndpointScopeGrantPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         let endpoint = self
-            .managed_delivery_endpoint(
+            .managed_endpoint(
                 auth,
                 &input.request.resource_stable_id,
-                Permission::DeliveryEndpointGrant,
+                Permission::EndpointGrant,
             )
             .await?;
         if endpoint.owner_scope_key != input.owner_scope_key
@@ -6357,14 +6298,14 @@ impl RpcService {
                 "endpoint owner or desired generation changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::DeliveryEndpoint {
+        let resource = crate::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation: input.endpoint_generation,
         };
         let claims = self.require_claims(auth)?;
         self.require_permission(
             &claims,
-            Permission::DeliveryEndpointGrant,
+            Permission::EndpointGrant,
             &parse_authorization_scope(&input.request.consumer_scope_key)?,
         )
         .await?;
@@ -6374,11 +6315,11 @@ impl RpcService {
                 .load_consumer_scope_grant(resource, &input.request.consumer_scope_key)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("delivery endpoint consumer grant"))?;
+                .ok_or_else(|| RpcError::not_found("endpoint consumer grant"))?;
             let coordination_operation = self
                 .schedule_grant_revocation(
                     &plan.plan_id,
-                    "delivery_endpoint",
+                    "endpoint",
                     &endpoint.id,
                     input.endpoint_generation,
                     &input.request.consumer_scope_key,
@@ -6388,7 +6329,7 @@ impl RpcService {
                     input.pin_resolutions,
                     &claims.sub,
                     &req.idempotency_key,
-                    Permission::DeliveryEndpointGrant,
+                    Permission::EndpointGrant,
                 )
                 .await?;
             let response = pb::ConsumerScopeGrantResponse {
@@ -6433,34 +6374,32 @@ impl RpcService {
     }
 
     /// Applies an endpoint grant plan exactly once.
-    pub async fn apply_grant_delivery_endpoint_scope(
+    pub async fn apply_grant_endpoint_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_delivery_endpoint_scope_grant(auth, req, false)
-            .await
+        self.apply_endpoint_scope_grant(auth, req, false).await
     }
 
     /// Applies endpoint grant revocation exactly once.
-    pub async fn apply_revoke_delivery_endpoint_scope(
+    pub async fn apply_revoke_endpoint_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_delivery_endpoint_scope_grant(auth, req, true)
-            .await
+        self.apply_endpoint_scope_grant(auth, req, true).await
     }
 
     /// Plans deletion of an unused endpoint under CAS.
-    pub async fn plan_delete_delivery_endpoint(
+    pub async fn plan_delete_endpoint(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanDeleteTopologyResourceRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let endpoint = self
-            .managed_delivery_endpoint(auth, &req.stable_id, Permission::DeliveryEndpointManage)
+            .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
             .await?;
         let expected = req
             .expected_resource_version
@@ -6473,7 +6412,7 @@ impl RpcService {
             ));
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = DeliveryEndpointDeletePlanInput {
+        let input = EndpointDeletePlanInput {
             request: req,
             owner_scope_key: endpoint.owner_scope_key.clone(),
             expected_resource_version: expected,
@@ -6483,11 +6422,11 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "delete_delivery_endpoint",
+            "delete_endpoint",
             &endpoint.owner_scope_key,
             &input,
             &idempotency_key,
-            vec![format!("delete delivery endpoint '{}'", endpoint.id)],
+            vec![format!("delete endpoint '{}'", endpoint.id)],
             Vec::new(),
             Some(confirmation_hash),
         )
@@ -6495,7 +6434,7 @@ impl RpcService {
     }
 
     /// Applies endpoint deletion exactly once.
-    pub async fn delete_delivery_endpoint(
+    pub async fn delete_endpoint(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
@@ -6504,7 +6443,7 @@ impl RpcService {
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "delete_delivery_endpoint",
+                "delete_endpoint",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -6515,25 +6454,21 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "delete_delivery_endpoint",
+            "delete_endpoint",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, DeliveryEndpointDeletePlanInput) = self
+        let (plan, input): (_, EndpointDeletePlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "delete_delivery_endpoint",
+                "delete_endpoint",
                 Some(&req.confirmation_hash),
             )
             .await?;
         let endpoint = self
-            .managed_delivery_endpoint(
-                auth,
-                &input.request.stable_id,
-                Permission::DeliveryEndpointManage,
-            )
+            .managed_endpoint(auth, &input.request.stable_id, Permission::EndpointManage)
             .await?;
         if endpoint.owner_scope_key != input.owner_scope_key {
             return Err(RpcError::FailedPrecondition(
@@ -6542,7 +6477,7 @@ impl RpcService {
         }
         let claims = self.require_claims(auth)?;
         self.db
-            .delete_delivery_endpoint(
+            .delete_endpoint(
                 &endpoint.id,
                 input.expected_resource_version,
                 &claims.owner_kind,
@@ -6557,14 +6492,14 @@ impl RpcService {
         Ok(response)
     }
 
-    async fn storage_gateway_message(
+    async fn gateway_message(
         &self,
-        record: crate::db::StorageGatewayRecord,
-    ) -> Result<pb::StorageGateway, RpcError> {
+        record: crate::db::GatewayRecord,
+    ) -> Result<pb::Gateway, RpcError> {
         let desired = if let Some(generation) = record.desired_generation {
             let revision = self
                 .db
-                .storage_gateway_revision(&record.id, generation)
+                .gateway_revision(&record.id, generation)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| {
@@ -6572,14 +6507,14 @@ impl RpcService {
                 })?;
             let binding = self
                 .db
-                .storage_binding(revision.spec.storage_binding_id)
+                .binding(revision.spec.binding_id)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::internal(anyhow::anyhow!("gateway binding is missing")))?;
             let access_policy = serde_json::from_str(&revision.spec.access_policy_json)
                 .map_err(RpcError::internal)?;
-            Some(pb::StorageGatewayRevisionSpec {
-                storage_binding_id: binding.stable_id,
+            Some(pb::GatewayRevisionSpec {
+                binding_id: binding.stable_id,
                 endpoint_id: revision.spec.endpoint_id,
                 endpoint_generation: revision.spec.endpoint_generation,
                 client_base_path: revision.spec.client_base_path,
@@ -6592,7 +6527,7 @@ impl RpcService {
         let generation = record.desired_generation.unwrap_or_default();
         let grant_records = if generation > 0 {
             self.db
-                .list_consumer_scope_grants(crate::db::GrantResource::StorageGateway {
+                .list_consumer_scope_grants(crate::db::GrantResource::Gateway {
                     id: &record.id,
                     generation,
                 })
@@ -6606,7 +6541,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::StorageGateway {
+                    crate::db::GrantResource::Gateway {
                         id: &record.id,
                         generation,
                     },
@@ -6614,7 +6549,7 @@ impl RpcService {
                 .await?,
             );
         }
-        Ok(pb::StorageGateway {
+        Ok(pb::Gateway {
             stable_id: record.id,
             owner_scope_key: record.owner_scope_key,
             enabled: record.enabled,
@@ -6630,32 +6565,27 @@ impl RpcService {
         })
     }
 
-    async fn authorized_storage_gateway(
+    async fn authorized_gateway(
         &self,
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::StorageGatewayRecord, RpcError> {
+    ) -> Result<crate::db::GatewayRecord, RpcError> {
         let record = self
             .db
-            .storage_gateway(stable_id)
+            .gateway(stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage gateway"))?;
-        self.require_cloaked_delivery_scope(
-            auth,
-            &record.owner_scope_key,
-            permission,
-            "storage gateway",
-        )
-        .await?;
+            .ok_or_else(|| RpcError::not_found("gateway"))?;
+        self.require_cloaked_delivery_scope(auth, &record.owner_scope_key, permission, "gateway")
+            .await?;
         Ok(record)
     }
 
-    fn storage_gateway_revision_spec(
-        spec: Option<pb::StorageGatewayRevisionSpec>,
-        storage_binding_id: i64,
-    ) -> Result<crate::db::StorageGatewayRevisionSpec, RpcError> {
+    fn gateway_revision_spec(
+        spec: Option<pb::GatewayRevisionSpec>,
+        binding_id: i64,
+    ) -> Result<crate::db::GatewayRevisionSpec, RpcError> {
         use pb::delivery_access_policy::Policy;
 
         let spec = spec.ok_or_else(|| RpcError::invalid("revision is required"))?;
@@ -6707,15 +6637,15 @@ impl RpcService {
             }
             Some(Policy::HubAuth(_)) => {
                 return Err(RpcError::invalid(
-                    "storage gateways do not support hubAuth access policy",
+                    "gateways do not support hubAuth access policy",
                 ));
             }
             _ => return Err(RpcError::invalid("invalid closed gateway access policy")),
         };
         let access_policy_json =
             serde_json::to_string(&access_policy).map_err(RpcError::internal)?;
-        Ok(crate::db::StorageGatewayRevisionSpec {
-            storage_binding_id,
+        Ok(crate::db::GatewayRevisionSpec {
+            binding_id,
             endpoint_id: spec.endpoint_id,
             endpoint_generation: spec.endpoint_generation,
             client_base_path: spec.client_base_path,
@@ -6730,22 +6660,22 @@ impl RpcService {
         })
     }
 
-    async fn plan_storage_gateway_mutation(
+    async fn plan_gateway_mutation(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanStorageGatewayMutationRequest,
+        mut req: pb::PlanGatewayMutationRequest,
         update: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let (org_id, expected_resource_version, owner_grant, carried_grants, scope) = if update {
             let current = self
-                .authorized_storage_gateway(auth, &req.stable_id, Permission::StorageGatewayManage)
+                .authorized_gateway(auth, &req.stable_id, Permission::GatewayManage)
                 .await?;
             self.require_cloaked_delivery_scope(
                 auth,
                 &current.owner_scope_key,
-                Permission::StorageGatewayGrant,
-                "storage gateway",
+                Permission::GatewayGrant,
+                "gateway",
             )
             .await?;
             if req.owner_scope_key != current.owner_scope_key {
@@ -6762,22 +6692,22 @@ impl RpcService {
             })?;
             let current_revision = self
                 .db
-                .storage_gateway_revision(&current.id, generation)
+                .gateway_revision(&current.id, generation)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("storage gateway generation"))?;
+                .ok_or_else(|| RpcError::not_found("gateway generation"))?;
             let binding = self
                 .db
-                .storage_binding(current_revision.spec.storage_binding_id)
+                .binding(current_revision.spec.binding_id)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("storage binding"))?;
+                .ok_or_else(|| RpcError::not_found("binding"))?;
             let mut desired = req
                 .revision
                 .take()
                 .ok_or_else(|| RpcError::invalid("revision is required"))?;
             const FIELDS: &[&str] = &[
-                "revision.storage_binding_id",
+                "revision.binding_id",
                 "revision.endpoint_id",
                 "revision.endpoint_generation",
                 "revision.client_base_path",
@@ -6797,8 +6727,8 @@ impl RpcService {
                     "updateMask must contain unique gateway revision fields",
                 ));
             }
-            let current_message = pb::StorageGatewayRevisionSpec {
-                storage_binding_id: binding.stable_id,
+            let current_message = pb::GatewayRevisionSpec {
+                binding_id: binding.stable_id,
                 endpoint_id: current_revision.spec.endpoint_id,
                 endpoint_generation: current_revision.spec.endpoint_generation,
                 client_base_path: current_revision.spec.client_base_path,
@@ -6808,8 +6738,8 @@ impl RpcService {
                         .map_err(RpcError::internal)?,
                 ),
             };
-            if !mask.contains("revision.storage_binding_id") {
-                desired.storage_binding_id = current_message.storage_binding_id;
+            if !mask.contains("revision.binding_id") {
+                desired.binding_id = current_message.binding_id;
             }
             if !mask.contains("revision.endpoint_id") {
                 desired.endpoint_id = current_message.endpoint_id;
@@ -6829,7 +6759,7 @@ impl RpcService {
             req.revision = Some(desired);
             let grants = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::StorageGateway {
+                .list_consumer_scope_grants(crate::db::GrantResource::Gateway {
                     id: &current.id,
                     generation,
                 })
@@ -6843,7 +6773,7 @@ impl RpcService {
                         && grant.state == "active"
                 })
                 .ok_or_else(|| RpcError::not_found("active gateway owner grant"))?;
-            let owner_grant = StorageGatewayGrantPlanSeal {
+            let owner_grant = GatewayGrantPlanSeal {
                 consumer_scope_key: owner.consumer_scope_key.clone(),
                 grant_generation: owner.grant_generation,
                 resource_version: owner.resource_version,
@@ -6853,7 +6783,7 @@ impl RpcService {
             for consumer_scope_key in &req.carry_forward_consumer_scopes {
                 self.require_permission(
                     &claims,
-                    Permission::StorageGatewayGrant,
+                    Permission::GatewayGrant,
                     &parse_authorization_scope(consumer_scope_key)?,
                 )
                 .await?;
@@ -6868,7 +6798,7 @@ impl RpcService {
                             && grant.state == "active"
                     })
                     .ok_or_else(|| RpcError::not_found("active gateway consumer grant"))?;
-                carried.push(StorageGatewayGrantPlanSeal {
+                carried.push(GatewayGrantPlanSeal {
                     consumer_scope_key: grant.consumer_scope_key.clone(),
                     grant_generation: grant.grant_generation,
                     resource_version: grant.resource_version,
@@ -6888,12 +6818,8 @@ impl RpcService {
                 current.owner_scope_key,
             )
         } else {
-            self.require_delivery_scope(
-                auth,
-                &req.owner_scope_key,
-                Permission::StorageGatewayManage,
-            )
-            .await?;
+            self.require_delivery_scope(auth, &req.owner_scope_key, Permission::GatewayManage)
+                .await?;
             if !req.expected_resource_version.is_empty()
                 || !req.update_mask.is_empty()
                 || !req.carry_forward_consumer_scopes.is_empty()
@@ -6904,13 +6830,13 @@ impl RpcService {
             }
             if self
                 .db
-                .storage_gateway(&req.stable_id)
+                .gateway(&req.stable_id)
                 .await
                 .map_err(RpcError::internal)?
                 .is_some()
             {
                 return Err(RpcError::AlreadyExists(
-                    "storage gateway already exists".to_string(),
+                    "gateway already exists".to_string(),
                 ));
             }
             let (_, org_id, _) = self
@@ -6924,36 +6850,36 @@ impl RpcService {
         let binding_stable_id = req
             .revision
             .as_ref()
-            .map(|revision| revision.storage_binding_id.as_str())
+            .map(|revision| revision.binding_id.as_str())
             .filter(|id| !id.is_empty())
             .ok_or_else(|| RpcError::invalid("storageBindingId is required"))?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(binding_stable_id)
+            .binding_by_stable_id(binding_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         self.require_cloaked_delivery_scope(
             auth,
             &binding.owner_scope_key,
-            Permission::StorageBindingRead,
-            "storage binding",
+            Permission::BindingRead,
+            "binding",
         )
         .await?;
-        Self::storage_gateway_revision_spec(req.revision.clone(), binding.id)?;
+        Self::gateway_revision_spec(req.revision.clone(), binding.id)?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = StorageGatewayMutationPlanInput {
+        let input = GatewayMutationPlanInput {
             request: req,
             org_id,
-            storage_binding_id: binding.id,
+            binding_id: binding.id,
             expected_resource_version,
             owner_grant,
             carried_grants,
         };
         let plan_kind = if update {
-            "update_storage_gateway"
+            "update_gateway"
         } else {
-            "create_storage_gateway"
+            "create_gateway"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -6965,7 +6891,7 @@ impl RpcService {
             &input,
             &idempotency_key,
             vec![format!(
-                "{} storage gateway '{}'",
+                "{} gateway '{}'",
                 if update {
                     "select a new generation for"
                 } else {
@@ -6980,33 +6906,33 @@ impl RpcService {
     }
 
     /// Plans creation of a gateway identity and immutable generation one.
-    pub async fn plan_create_storage_gateway(
+    pub async fn plan_create_gateway(
         &self,
         auth: Option<&str>,
-        req: pb::PlanStorageGatewayMutationRequest,
+        req: pb::PlanGatewayMutationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_mutation(auth, req, false).await
+        self.plan_gateway_mutation(auth, req, false).await
     }
 
     /// Plans selection of a new immutable gateway generation.
-    pub async fn plan_update_storage_gateway(
+    pub async fn plan_update_gateway(
         &self,
         auth: Option<&str>,
-        req: pb::PlanStorageGatewayMutationRequest,
+        req: pb::PlanGatewayMutationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_mutation(auth, req, true).await
+        self.plan_gateway_mutation(auth, req, true).await
     }
 
-    async fn apply_storage_gateway_mutation(
+    async fn apply_gateway_mutation(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageGatewayMutationRequest,
+        req: pb::ApplyGatewayMutationRequest,
         update: bool,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
+    ) -> Result<pb::GatewayResponse, RpcError> {
         let plan_kind = if update {
-            "update_storage_gateway"
+            "update_gateway"
         } else {
-            "create_storage_gateway"
+            "create_gateway"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -7028,54 +6954,53 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageGatewayMutationPlanInput) = self
+        let (plan, input): (_, GatewayMutationPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         self.require_delivery_scope(
             auth,
             &input.request.owner_scope_key,
-            Permission::StorageGatewayManage,
+            Permission::GatewayManage,
         )
         .await?;
         let binding_stable_id = input
             .request
             .revision
             .as_ref()
-            .map(|revision| revision.storage_binding_id.as_str())
+            .map(|revision| revision.binding_id.as_str())
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("gateway plan has no revision")))?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(binding_stable_id)
+            .binding_by_stable_id(binding_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
-        if binding.id != input.storage_binding_id {
+            .ok_or_else(|| RpcError::not_found("binding"))?;
+        if binding.id != input.binding_id {
             return Err(RpcError::FailedPrecondition(
-                "storage binding identity changed after planning".to_string(),
+                "binding identity changed after planning".to_string(),
             ));
         }
         self.require_cloaked_delivery_scope(
             auth,
             &binding.owner_scope_key,
-            Permission::StorageBindingRead,
-            "storage binding",
+            Permission::BindingRead,
+            "binding",
         )
         .await?;
-        let revision =
-            Self::storage_gateway_revision_spec(input.request.revision.clone(), binding.id)?;
+        let revision = Self::gateway_revision_spec(input.request.revision.clone(), binding.id)?;
         let claims = self.require_claims(auth)?;
         let record = if update {
             self.require_cloaked_delivery_scope(
                 auth,
                 &input.request.owner_scope_key,
-                Permission::StorageGatewayGrant,
-                "storage gateway",
+                Permission::GatewayGrant,
+                "gateway",
             )
             .await?;
             for seal in &input.carried_grants {
                 self.require_permission(
                     &claims,
-                    Permission::StorageGatewayGrant,
+                    Permission::GatewayGrant,
                     &parse_authorization_scope(&seal.consumer_scope_key)?,
                 )
                 .await?;
@@ -7083,7 +7008,7 @@ impl RpcService {
             let owner = input.owner_grant.ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!("gateway update plan has no owner grant"))
             })?;
-            let owner = crate::db::StorageGatewayGrantCarryForward {
+            let owner = crate::db::GatewayGrantCarryForward {
                 consumer_scope_key: owner.consumer_scope_key,
                 grant_generation: owner.grant_generation,
                 resource_version: owner.resource_version,
@@ -7091,14 +7016,14 @@ impl RpcService {
             let carried = input
                 .carried_grants
                 .into_iter()
-                .map(|seal| crate::db::StorageGatewayGrantCarryForward {
+                .map(|seal| crate::db::GatewayGrantCarryForward {
                     consumer_scope_key: seal.consumer_scope_key,
                     grant_generation: seal.grant_generation,
                     resource_version: seal.resource_version,
                 })
                 .collect::<Vec<_>>();
             self.db
-                .revise_storage_gateway(
+                .revise_gateway(
                     &input.request.stable_id,
                     &revision,
                     &owner,
@@ -7114,7 +7039,7 @@ impl RpcService {
                 .await
         } else {
             self.db
-                .create_storage_gateway(
+                .create_gateway(
                     &input.request.stable_id,
                     &input.request.owner_scope_key,
                     input.org_id,
@@ -7124,8 +7049,8 @@ impl RpcService {
                 .await
         }
         .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::StorageGatewayResponse {
-            storage_gateway: Some(self.storage_gateway_message(record).await?),
+        let response = pb::GatewayResponse {
+            gateway: Some(self.gateway_message(record).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -7133,45 +7058,41 @@ impl RpcService {
     }
 
     /// Applies a gateway creation plan exactly once.
-    pub async fn create_storage_gateway(
+    pub async fn create_gateway(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageGatewayMutationRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
-        self.apply_storage_gateway_mutation(auth, req, false).await
+        req: pb::ApplyGatewayMutationRequest,
+    ) -> Result<pb::GatewayResponse, RpcError> {
+        self.apply_gateway_mutation(auth, req, false).await
     }
 
     /// Applies a gateway generation-update plan exactly once.
-    pub async fn update_storage_gateway(
+    pub async fn update_gateway(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageGatewayMutationRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
-        self.apply_storage_gateway_mutation(auth, req, true).await
+        req: pb::ApplyGatewayMutationRequest,
+    ) -> Result<pb::GatewayResponse, RpcError> {
+        self.apply_gateway_mutation(auth, req, true).await
     }
 
-    async fn plan_storage_gateway_scope_grant(
+    async fn plan_gateway_scope_grant(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        if req.resource_kind != "storage_gateway" || req.consumer_scope_key.is_empty() {
+        if req.resource_kind != "gateway" || req.consumer_scope_key.is_empty() {
             return Err(RpcError::invalid(
-                "resourceKind must be storage_gateway and consumerScopeKey is required",
+                "resourceKind must be gateway and consumerScopeKey is required",
             ));
         }
         let gateway = self
-            .authorized_storage_gateway(
-                auth,
-                &req.resource_stable_id,
-                Permission::StorageGatewayGrant,
-            )
+            .authorized_gateway(auth, &req.resource_stable_id, Permission::GatewayGrant)
             .await?;
         self.require_permission(
             &claims,
-            Permission::StorageGatewayGrant,
+            Permission::GatewayGrant,
             &parse_authorization_scope(&req.consumer_scope_key)?,
         )
         .await?;
@@ -7183,7 +7104,7 @@ impl RpcService {
                 "gateway generation is stale".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::StorageGateway {
+        let resource = crate::db::GrantResource::Gateway {
             id: &gateway.id,
             generation,
         };
@@ -7231,7 +7152,7 @@ impl RpcService {
             Vec::new()
         };
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = StorageGatewayScopeGrantPlanInput {
+        let input = GatewayScopeGrantPlanInput {
             request: req,
             owner_scope_key: gateway.owner_scope_key.clone(),
             gateway_generation: generation,
@@ -7239,9 +7160,9 @@ impl RpcService {
             pin_resolutions,
         };
         let plan_kind = if revoke {
-            "revoke_storage_gateway_scope"
+            "revoke_gateway_scope"
         } else {
-            "grant_storage_gateway_scope"
+            "grant_gateway_scope"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -7265,34 +7186,33 @@ impl RpcService {
     }
 
     /// Plans an explicit consumer grant on one exact gateway generation.
-    pub async fn plan_grant_storage_gateway_scope(
+    pub async fn plan_grant_gateway_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_scope_grant(auth, req, false)
-            .await
+        self.plan_gateway_scope_grant(auth, req, false).await
     }
 
     /// Plans revocation of an unpinned gateway-generation grant.
-    pub async fn plan_revoke_storage_gateway_scope(
+    pub async fn plan_revoke_gateway_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_scope_grant(auth, req, true).await
+        self.plan_gateway_scope_grant(auth, req, true).await
     }
 
-    async fn apply_storage_gateway_scope_grant(
+    async fn apply_gateway_scope_grant(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
         let plan_kind = if revoke {
-            "revoke_storage_gateway_scope"
+            "revoke_gateway_scope"
         } else {
-            "grant_storage_gateway_scope"
+            "grant_gateway_scope"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -7314,14 +7234,14 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageGatewayScopeGrantPlanInput) = self
+        let (plan, input): (_, GatewayScopeGrantPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         let gateway = self
-            .authorized_storage_gateway(
+            .authorized_gateway(
                 auth,
                 &input.request.resource_stable_id,
-                Permission::StorageGatewayGrant,
+                Permission::GatewayGrant,
             )
             .await?;
         if gateway.owner_scope_key != input.owner_scope_key
@@ -7331,14 +7251,14 @@ impl RpcService {
                 "gateway owner or desired generation changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::StorageGateway {
+        let resource = crate::db::GrantResource::Gateway {
             id: &gateway.id,
             generation: input.gateway_generation,
         };
         let claims = self.require_claims(auth)?;
         self.require_permission(
             &claims,
-            Permission::StorageGatewayGrant,
+            Permission::GatewayGrant,
             &parse_authorization_scope(&input.request.consumer_scope_key)?,
         )
         .await?;
@@ -7348,11 +7268,11 @@ impl RpcService {
                 .load_consumer_scope_grant(resource, &input.request.consumer_scope_key)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("storage gateway consumer grant"))?;
+                .ok_or_else(|| RpcError::not_found("gateway consumer grant"))?;
             let coordination_operation = self
                 .schedule_grant_revocation(
                     &plan.plan_id,
-                    "storage_gateway",
+                    "gateway",
                     &gateway.id,
                     input.gateway_generation,
                     &input.request.consumer_scope_key,
@@ -7362,7 +7282,7 @@ impl RpcService {
                     input.pin_resolutions,
                     &claims.sub,
                     &req.idempotency_key,
-                    Permission::StorageGatewayGrant,
+                    Permission::GatewayGrant,
                 )
                 .await?;
             let response = pb::ConsumerScopeGrantResponse {
@@ -7407,35 +7327,33 @@ impl RpcService {
     }
 
     /// Applies a gateway consumer-grant plan exactly once.
-    pub async fn grant_storage_gateway_scope(
+    pub async fn grant_gateway_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_storage_gateway_scope_grant(auth, req, false)
-            .await
+        self.apply_gateway_scope_grant(auth, req, false).await
     }
 
     /// Applies a gateway consumer-grant revocation exactly once.
-    pub async fn revoke_storage_gateway_scope(
+    pub async fn revoke_gateway_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_storage_gateway_scope_grant(auth, req, true)
-            .await
+        self.apply_gateway_scope_grant(auth, req, true).await
     }
 
-    /// Lists authorized storage gateways, optionally filtered by binding.
-    pub async fn list_storage_gateways(
+    /// Lists authorized gateways, optionally filtered by binding.
+    pub async fn list_gateways(
         &self,
         auth: Option<&str>,
-        req: pb::ListStorageGatewaysRequest,
-    ) -> Result<pb::ListStorageGatewaysResponse, RpcError> {
+        req: pb::ListGatewaysRequest,
+    ) -> Result<pb::ListGatewaysResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let binding_id = match req.storage_binding {
+        let binding_id = match req.binding {
             Some(reference) => Some(
-                self.resolve_storage_binding_reference(auth, Some(reference))
+                self.resolve_binding_reference(auth, Some(reference))
                     .await?
                     .id,
             ),
@@ -7443,49 +7361,48 @@ impl RpcService {
         };
         let records = self
             .db
-            .list_storage_gateways(binding_id)
+            .list_gateways(binding_id)
             .await
             .map_err(RpcError::internal)?;
-        let mut storage_gateways = Vec::new();
+        let mut gateways = Vec::new();
         for record in records {
             let scope = Scope::try_parse(&record.owner_scope_key).ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!("gateway has invalid owner scope"))
             })?;
             if self
-                .claims_allow(Some(&claims), Permission::StorageGatewayRead, &scope)
+                .claims_allow(Some(&claims), Permission::GatewayRead, &scope)
                 .await
             {
-                storage_gateways.push(self.storage_gateway_message(record).await?);
+                gateways.push(self.gateway_message(record).await?);
             }
         }
-        let (storage_gateways, next_page_token) =
-            paginate(storage_gateways, req.page_size, &req.page_token)?;
-        Ok(pb::ListStorageGatewaysResponse {
-            storage_gateways,
+        let (gateways, next_page_token) = paginate(gateways, req.page_size, &req.page_token)?;
+        Ok(pb::ListGatewaysResponse {
+            gateways,
             next_page_token,
         })
     }
 
-    /// Returns one storage gateway with desired/observed generations.
-    pub async fn get_storage_gateway(
+    /// Returns one gateway with desired/observed generations.
+    pub async fn get_gateway(
         &self,
         auth: Option<&str>,
         req: pb::GetTopologyResourceRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
+    ) -> Result<pb::GatewayResponse, RpcError> {
         let record = self
-            .authorized_storage_gateway(auth, &req.stable_id, Permission::StorageGatewayRead)
+            .authorized_gateway(auth, &req.stable_id, Permission::GatewayRead)
             .await?;
-        Ok(pb::StorageGatewayResponse {
-            storage_gateway: Some(self.storage_gateway_message(record).await?),
+        Ok(pb::GatewayResponse {
+            gateway: Some(self.gateway_message(record).await?),
         })
     }
 
     /// Reconciles one exact desired gateway generation under CAS.
-    pub async fn report_storage_gateway(
+    pub async fn report_gateway(
         &self,
         auth: Option<&str>,
-        req: pb::ReportStorageGatewayRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
+        req: pb::ReportGatewayRequest,
+    ) -> Result<pb::GatewayResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -7493,7 +7410,7 @@ impl RpcService {
             &req.expected_observation_version,
         )?;
         let current = self
-            .authorized_storage_gateway(auth, &req.stable_id, Permission::StorageGatewayManage)
+            .authorized_gateway(auth, &req.stable_id, Permission::GatewayManage)
             .await?;
         let expected = parse_resource_version(&req.expected_observation_version, 0)?;
         if expected <= 0 || expected != current.resource_version {
@@ -7503,7 +7420,7 @@ impl RpcService {
         }
         let record = self
             .db
-            .observe_storage_gateway(
+            .observe_gateway(
                 &current.id,
                 req.observed_generation,
                 &req.state,
@@ -7512,8 +7429,8 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        Ok(pb::StorageGatewayResponse {
-            storage_gateway: Some(self.storage_gateway_message(record).await?),
+        Ok(pb::GatewayResponse {
+            gateway: Some(self.gateway_message(record).await?),
         })
     }
 
@@ -7524,14 +7441,14 @@ impl RpcService {
         req: pb::GetTopologyResourceRequest,
     ) -> Result<pb::GatewayRoutePreviewResponse, RpcError> {
         let gateway = self
-            .authorized_storage_gateway(auth, &req.stable_id, Permission::StorageGatewayRead)
+            .authorized_gateway(auth, &req.stable_id, Permission::GatewayRead)
             .await?;
         let generation = gateway.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("gateway has no desired generation".to_string())
         })?;
         let routes = self
             .db
-            .storage_gateway_route_preview(&gateway.id, generation)
+            .gateway_route_preview(&gateway.id, generation)
             .await
             .map_err(RpcError::internal)?
             .into_iter()
@@ -7549,7 +7466,7 @@ impl RpcService {
         Ok(pb::GatewayRoutePreviewResponse { routes })
     }
 
-    async fn plan_storage_gateway_lifecycle(
+    async fn plan_gateway_lifecycle(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanDeleteTopologyResourceRequest,
@@ -7557,7 +7474,7 @@ impl RpcService {
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let gateway = self
-            .authorized_storage_gateway(auth, &req.stable_id, Permission::StorageGatewayManage)
+            .authorized_gateway(auth, &req.stable_id, Permission::GatewayManage)
             .await?;
         let expected = req
             .expected_resource_version
@@ -7583,12 +7500,12 @@ impl RpcService {
             ));
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = StorageGatewayLifecyclePlanInput {
+        let input = GatewayLifecyclePlanInput {
             request: req,
             owner_scope_key: gateway.owner_scope_key.clone(),
             expected_resource_version: expected,
         };
-        let plan_kind = format!("{operation}_storage_gateway");
+        let plan_kind = format!("{operation}_gateway");
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
         ));
@@ -7598,7 +7515,7 @@ impl RpcService {
             &gateway.owner_scope_key,
             &input,
             &idempotency_key,
-            vec![format!("{operation} storage gateway '{}'", gateway.id)],
+            vec![format!("{operation} gateway '{}'", gateway.id)],
             Vec::new(),
             Some(confirmation_hash),
         )
@@ -7606,43 +7523,39 @@ impl RpcService {
     }
 
     /// Plans enabling a reconciled gateway.
-    pub async fn plan_enable_storage_gateway(
+    pub async fn plan_enable_gateway(
         &self,
         auth: Option<&str>,
         req: pb::PlanDeleteTopologyResourceRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_lifecycle(auth, req, "enable")
-            .await
+        self.plan_gateway_lifecycle(auth, req, "enable").await
     }
 
     /// Plans disabling a gateway.
-    pub async fn plan_disable_storage_gateway(
+    pub async fn plan_disable_gateway(
         &self,
         auth: Option<&str>,
         req: pb::PlanDeleteTopologyResourceRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_lifecycle(auth, req, "disable")
-            .await
+        self.plan_gateway_lifecycle(auth, req, "disable").await
     }
 
     /// Plans deletion of a disabled unreferenced gateway.
-    pub async fn plan_delete_storage_gateway(
+    pub async fn plan_delete_gateway(
         &self,
         auth: Option<&str>,
         req: pb::PlanDeleteTopologyResourceRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_gateway_lifecycle(auth, req, "delete")
-            .await
+        self.plan_gateway_lifecycle(auth, req, "delete").await
     }
 
-    async fn apply_storage_gateway_lifecycle(
+    async fn apply_gateway_lifecycle(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
         operation: &str,
-    ) -> Result<Result<pb::StorageGatewayResponse, pb::DeleteTopologyResourceResponse>, RpcError>
-    {
-        let plan_kind = format!("{operation}_storage_gateway");
+    ) -> Result<Result<pb::GatewayResponse, pb::DeleteTopologyResourceResponse>, RpcError> {
+        let plan_kind = format!("{operation}_gateway");
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
@@ -7651,15 +7564,11 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageGatewayLifecyclePlanInput) = self
+        let (plan, input): (_, GatewayLifecyclePlanInput) = self
             .load_control_plan(auth, &req.plan_id, &plan_kind, Some(&req.confirmation_hash))
             .await?;
         let gateway = self
-            .authorized_storage_gateway(
-                auth,
-                &input.request.stable_id,
-                Permission::StorageGatewayManage,
-            )
+            .authorized_gateway(auth, &input.request.stable_id, Permission::GatewayManage)
             .await?;
         if gateway.owner_scope_key != input.owner_scope_key {
             return Err(RpcError::FailedPrecondition(
@@ -7670,7 +7579,7 @@ impl RpcService {
         if operation == "delete" {
             let deleted = self
                 .db
-                .delete_storage_gateway(
+                .delete_gateway(
                     &gateway.id,
                     input.expected_resource_version,
                     &claims.owner_kind,
@@ -7691,7 +7600,7 @@ impl RpcService {
         } else {
             let record = self
                 .db
-                .set_storage_gateway_enabled(
+                .set_gateway_enabled(
                     &gateway.id,
                     operation == "enable",
                     input.expected_resource_version,
@@ -7701,8 +7610,8 @@ impl RpcService {
                 )
                 .await
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-            let response = pb::StorageGatewayResponse {
-                storage_gateway: Some(self.storage_gateway_message(record).await?),
+            let response = pb::GatewayResponse {
+                gateway: Some(self.gateway_message(record).await?),
             };
             self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
                 .await?;
@@ -7711,16 +7620,16 @@ impl RpcService {
     }
 
     /// Applies a gateway enable plan exactly once.
-    pub async fn enable_storage_gateway(
+    pub async fn enable_gateway(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
+    ) -> Result<pb::GatewayResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "enable_storage_gateway",
+                "enable_gateway",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -7728,22 +7637,22 @@ impl RpcService {
         {
             return Ok(response);
         }
-        self.apply_storage_gateway_lifecycle(auth, req, "enable")
+        self.apply_gateway_lifecycle(auth, req, "enable")
             .await?
             .map_err(|_| RpcError::internal(anyhow::anyhow!("enable returned delete response")))
     }
 
     /// Applies a gateway disable plan exactly once.
-    pub async fn disable_storage_gateway(
+    pub async fn disable_gateway(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::StorageGatewayResponse, RpcError> {
+    ) -> Result<pb::GatewayResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "disable_storage_gateway",
+                "disable_gateway",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -7751,13 +7660,13 @@ impl RpcService {
         {
             return Ok(response);
         }
-        self.apply_storage_gateway_lifecycle(auth, req, "disable")
+        self.apply_gateway_lifecycle(auth, req, "disable")
             .await?
             .map_err(|_| RpcError::internal(anyhow::anyhow!("disable returned delete response")))
     }
 
     /// Applies gateway deletion exactly once.
-    pub async fn delete_storage_gateway(
+    pub async fn delete_gateway(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
@@ -7766,7 +7675,7 @@ impl RpcService {
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "delete_storage_gateway",
+                "delete_gateway",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -7774,7 +7683,7 @@ impl RpcService {
         {
             return Ok(response);
         }
-        self.apply_storage_gateway_lifecycle(auth, req, "delete")
+        self.apply_gateway_lifecycle(auth, req, "delete")
             .await?
             .err()
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("delete returned gateway response")))
@@ -8123,25 +8032,25 @@ impl RpcService {
         })
     }
 
-    async fn authorized_delivery_route(
+    async fn authorized_route(
         &self,
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::DeliveryRouteRecord, RpcError> {
+    ) -> Result<crate::db::RouteRecord, RpcError> {
         let route = self
             .db
-            .delivery_route(stable_id)
+            .route(stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery route"))?;
+            .ok_or_else(|| RpcError::not_found("route"))?;
         let owner_scope_key = self
             .db
-            .topology_operation_target_scope("delivery_route", &route.id)
+            .topology_operation_target_scope("route", &route.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery route"))?;
-        self.require_cloaked_delivery_scope(auth, &owner_scope_key, permission, "delivery route")
+            .ok_or_else(|| RpcError::not_found("route"))?;
+        self.require_cloaked_delivery_scope(auth, &owner_scope_key, permission, "route")
             .await?;
         Ok(route)
     }
@@ -8165,7 +8074,7 @@ impl RpcService {
 
     async fn rendered_route_url(
         &self,
-        endpoint: &crate::db::DeliveryEndpointRecord,
+        endpoint: &crate::db::EndpointRecord,
         base_path: &str,
     ) -> Result<String, RpcError> {
         let host = if let Some(domain_id) = endpoint.domain_stable_id.as_deref() {
@@ -8202,7 +8111,7 @@ impl RpcService {
 
     async fn route_reservation_plan_seal(
         &self,
-        endpoint: &crate::db::DeliveryEndpointRecord,
+        endpoint: &crate::db::EndpointRecord,
         base_path: &str,
         canonical_url: &str,
     ) -> Result<RouteReservationPlanSeal, RpcError> {
@@ -8359,19 +8268,12 @@ impl RpcService {
         ))
     }
 
-    async fn delivery_route_spec(
+    async fn route_spec(
         &self,
         surface: SurfaceTarget,
         owner_scope_key: &str,
-        spec: pb::DeliveryRouteSpec,
-    ) -> Result<
-        (
-            crate::db::DeliveryRouteSpec,
-            String,
-            crate::db::DeliveryEndpointRecord,
-        ),
-        RpcError,
-    > {
+        spec: pb::RouteSpec,
+    ) -> Result<(crate::db::RouteSpec, String, crate::db::EndpointRecord), RpcError> {
         if spec.surface.as_ref() != Some(&self.route_surface_message(surface).await?) {
             return Err(RpcError::invalid(
                 "route spec surface does not match request surface",
@@ -8379,16 +8281,16 @@ impl RpcService {
         }
         let endpoint = self
             .db
-            .delivery_endpoint(&spec.endpoint_id)
+            .endpoint(&spec.endpoint_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery endpoint"))?;
+            .ok_or_else(|| RpcError::not_found("endpoint"))?;
         let endpoint_revision = self
             .db
-            .delivery_endpoint_revision(&endpoint.id, spec.endpoint_generation)
+            .endpoint_revision(&endpoint.id, spec.endpoint_generation)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery endpoint generation"))?;
+            .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
         let base_path = Self::normalize_route_base_path(&spec.base_path)?;
         let target = spec
             .target
@@ -8399,15 +8301,15 @@ impl RpcService {
             .list_surface_placements(surface)
             .await
             .map_err(RpcError::internal)?;
-        let mut storage_gateway_id = None;
+        let mut gateway_id = None;
         let mut gateway_generation = None;
-        let mut target_storage_binding_id = None;
+        let mut target_binding_id = None;
         let mut gateway_client_base_path = None;
         let mut target_placement_prefix = None;
         let mut placement_id = None;
         let mut placement_policy_revision_id = None;
         let mode = match target {
-            pb::delivery_route_target::Target::HubPlacement(target) => {
+            pb::route_target::Target::HubPlacement(target) => {
                 let placement = placements
                     .drain(..)
                     .find(|placement| placement.name == target.placement_name)
@@ -8419,7 +8321,7 @@ impl RpcService {
                     _ => return Err(RpcError::invalid("hub deliveryKind is required")),
                 }
             }
-            pb::delivery_route_target::Target::HubPolicyRevision(target) => {
+            pb::route_target::Target::HubPolicyRevision(target) => {
                 let identity = self
                     .db
                     .list_placement_policy_identities(surface)
@@ -8444,20 +8346,20 @@ impl RpcService {
                     _ => return Err(RpcError::invalid("hub deliveryKind is required")),
                 }
             }
-            pb::delivery_route_target::Target::DirectGatewayPlacement(target) => {
+            pb::route_target::Target::DirectGatewayPlacement(target) => {
                 let placement = placements
                     .drain(..)
                     .find(|placement| placement.name == target.placement_name)
                     .ok_or_else(|| RpcError::not_found("surface placement"))?;
                 let gateway = self
                     .db
-                    .storage_gateway_revision(&target.gateway_id, target.gateway_generation)
+                    .gateway_revision(&target.gateway_id, target.gateway_generation)
                     .await
                     .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::not_found("storage gateway generation"))?;
-                storage_gateway_id = Some(gateway.gateway_id);
+                    .ok_or_else(|| RpcError::not_found("gateway generation"))?;
+                gateway_id = Some(gateway.gateway_id);
                 gateway_generation = Some(gateway.generation);
-                target_storage_binding_id = Some(placement.storage_binding_id);
+                target_binding_id = Some(placement.binding_id);
                 gateway_client_base_path = Some(gateway.spec.client_base_path);
                 target_placement_prefix = Some(placement.prefix.clone());
                 placement_id = Some(placement.id);
@@ -8482,7 +8384,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::invalid("capabilities are required"))?;
         let canonical_url = self.rendered_route_url(&endpoint, &base_path).await?;
         Ok((
-            crate::db::DeliveryRouteSpec {
+            crate::db::RouteSpec {
                 consumer_scope_key: owner_scope_key.to_string(),
                 endpoint_id: endpoint.id.clone(),
                 endpoint_generation: spec.endpoint_generation,
@@ -8497,9 +8399,9 @@ impl RpcService {
                 external_provider_kind,
                 external_provider_resource_id,
                 external_provider_revision,
-                storage_gateway_id,
+                gateway_id,
                 gateway_generation,
-                target_storage_binding_id,
+                target_binding_id,
                 gateway_client_base_path,
                 target_placement_prefix,
                 placement_id,
@@ -8514,13 +8416,10 @@ impl RpcService {
         ))
     }
 
-    async fn delivery_route_message(
-        &self,
-        route: crate::db::DeliveryRouteRecord,
-    ) -> Result<pb::DeliveryRoute, RpcError> {
+    async fn route_message(&self, route: crate::db::RouteRecord) -> Result<pb::Route, RpcError> {
         let snapshot = self
             .db
-            .delivery_route_snapshot(&route.id)
+            .route_snapshot(&route.id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route snapshot is missing")))?;
@@ -8532,15 +8431,13 @@ impl RpcService {
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route placement is missing")))?;
             if snapshot.spec.mode == "direct" {
-                pb::delivery_route_target::Target::DirectGatewayPlacement(
-                    pb::DirectGatewayPlacementTarget {
-                        placement_name: placement.name,
-                        gateway_id: snapshot.spec.storage_gateway_id.clone().unwrap_or_default(),
-                        gateway_generation: snapshot.spec.gateway_generation.unwrap_or_default(),
-                    },
-                )
+                pb::route_target::Target::DirectGatewayPlacement(pb::DirectGatewayPlacementTarget {
+                    placement_name: placement.name,
+                    gateway_id: snapshot.spec.gateway_id.clone().unwrap_or_default(),
+                    gateway_generation: snapshot.spec.gateway_generation.unwrap_or_default(),
+                })
             } else {
-                pb::delivery_route_target::Target::HubPlacement(pb::HubPlacementTarget {
+                pb::route_target::Target::HubPlacement(pb::HubPlacementTarget {
                     placement_name: placement.name,
                     delivery_kind: if snapshot.spec.mode == "hub_redirect" {
                         pb::HubDeliveryKind::Redirect as i32
@@ -8569,7 +8466,7 @@ impl RpcService {
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route policy is missing")))?;
-            pb::delivery_route_target::Target::HubPolicyRevision(pb::HubPolicyRevisionTarget {
+            pb::route_target::Target::HubPolicyRevision(pb::HubPolicyRevisionTarget {
                 policy_name: identity.name,
                 revision: revision.revision,
                 delivery_kind: if snapshot.spec.mode == "hub_redirect" {
@@ -8583,14 +8480,14 @@ impl RpcService {
             serde_json::from_str(&snapshot.spec.access_policy_json).map_err(RpcError::internal)?;
         let configuration_generation = route.configuration_generation.unwrap_or_default();
         let configuration_digest = route.configuration_digest.unwrap_or_default();
-        Ok(pb::DeliveryRoute {
+        Ok(pb::Route {
             stable_id: route.id,
-            spec: Some(pb::DeliveryRouteSpec {
+            spec: Some(pb::RouteSpec {
                 surface: Some(self.route_surface_message(route.surface).await?),
                 endpoint_id: snapshot.spec.endpoint_id,
                 endpoint_generation: snapshot.spec.endpoint_generation,
                 base_path: snapshot.spec.base_path,
-                target: Some(pb::DeliveryRouteTarget {
+                target: Some(pb::RouteTarget {
                     target: Some(target),
                 }),
                 access_policy: Some(access_policy),
@@ -8604,7 +8501,7 @@ impl RpcService {
             configuration_generation,
             configuration_digest: configuration_digest.clone(),
             canonical_rendered_url: snapshot.canonical_url,
-            observation: Some(pb::DeliveryRouteObservation {
+            observation: Some(pb::RouteObservation {
                 configuration_generation,
                 configuration_digest,
                 state: snapshot.observation_state,
@@ -8617,7 +8514,7 @@ impl RpcService {
         })
     }
 
-    /// Lists authorized delivery routes for one exact surface.
+    /// Lists authorized routes for one exact surface.
     pub async fn list_routes(
         &self,
         auth: Option<&str>,
@@ -8629,12 +8526,12 @@ impl RpcService {
             .await?;
         let records = self
             .db
-            .list_delivery_routes(surface)
+            .list_routes(surface)
             .await
             .map_err(RpcError::internal)?;
         let mut routes = Vec::with_capacity(records.len());
         for record in records {
-            routes.push(self.delivery_route_message(record).await?);
+            routes.push(self.route_message(record).await?);
         }
         let (routes, next_page_token) = paginate(routes, req.page_size, &req.page_token)?;
         Ok(pb::ListRoutesResponse {
@@ -8643,17 +8540,17 @@ impl RpcService {
         })
     }
 
-    /// Returns one authorized delivery route by stable identity.
+    /// Returns one authorized route by stable identity.
     pub async fn get_route(
         &self,
         auth: Option<&str>,
         req: pb::GetTopologyResourceRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         let route = self
-            .authorized_delivery_route(auth, &req.stable_id, Permission::RouteRead)
+            .authorized_route(auth, &req.stable_id, Permission::RouteRead)
             .await?;
-        Ok(pb::DeliveryRouteResponse {
-            route: Some(self.delivery_route_message(route).await?),
+        Ok(pb::RouteResponse {
+            route: Some(self.route_message(route).await?),
         })
     }
 
@@ -8667,7 +8564,7 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         let (surface, owner_scope_key, expected_resource_version) = if update {
             let current = self
-                .authorized_delivery_route(auth, &req.stable_id, Permission::RouteManage)
+                .authorized_route(auth, &req.stable_id, Permission::RouteManage)
                 .await?;
             let expected = parse_resource_version(&req.expected_resource_version, 0)?;
             if expected <= 0 || expected != current.resource_version {
@@ -8675,7 +8572,7 @@ impl RpcService {
                     "route resource version is required and must be current".to_string(),
                 ));
             }
-            let current_message = self.delivery_route_message(current.clone()).await?;
+            let current_message = self.route_message(current.clone()).await?;
             let current_spec = current_message
                 .spec
                 .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route spec is missing")))?;
@@ -8740,14 +8637,12 @@ impl RpcService {
             }
             if self
                 .db
-                .delivery_route(&req.stable_id)
+                .route(&req.stable_id)
                 .await
                 .map_err(RpcError::internal)?
                 .is_some()
             {
-                return Err(RpcError::AlreadyExists(
-                    "delivery route already exists".to_string(),
-                ));
+                return Err(RpcError::AlreadyExists("route already exists".to_string()));
             }
             let surface_ref = req.spec.as_ref().and_then(|spec| spec.surface.clone());
             let (surface, owner_scope_key) = self.managed_route_surface(auth, surface_ref).await?;
@@ -8756,7 +8651,7 @@ impl RpcService {
         self.require_delivery_scope(auth, &owner_scope_key, Permission::RouteManage)
             .await?;
         let (spec, canonical_url, endpoint) = self
-            .delivery_route_spec(
+            .route_spec(
                 surface,
                 &owner_scope_key,
                 req.spec
@@ -8767,10 +8662,10 @@ impl RpcService {
         if update {
             let current = self
                 .db
-                .delivery_route_snapshot(&req.stable_id)
+                .route_snapshot(&req.stable_id)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("delivery route"))?;
+                .ok_or_else(|| RpcError::not_found("route"))?;
             if current.canonical_url != canonical_url {
                 return Err(RpcError::FailedPrecondition(
                     "a route URL identity change requires ReplaceRoute".to_string(),
@@ -8788,7 +8683,7 @@ impl RpcService {
         let predecessor_resource_version =
             if let Some(predecessor_id) = predecessor_route_id.as_deref() {
                 let predecessor = self
-                    .authorized_delivery_route(auth, predecessor_id, Permission::RouteManage)
+                    .authorized_route(auth, predecessor_id, Permission::RouteManage)
                     .await?;
                 if predecessor.surface != surface {
                     return Err(RpcError::invalid(
@@ -8832,7 +8727,7 @@ impl RpcService {
         .await
     }
 
-    /// Plans creation of a disabled or enabled delivery route.
+    /// Plans creation of a disabled or enabled route.
     pub async fn plan_create_route(
         &self,
         auth: Option<&str>,
@@ -8857,7 +8752,7 @@ impl RpcService {
         req: pb::PlanReplaceRouteRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let predecessor = self
-            .authorized_delivery_route(auth, &req.predecessor_route_id, Permission::RouteManage)
+            .authorized_route(auth, &req.predecessor_route_id, Permission::RouteManage)
             .await?;
         if parse_resource_version(&req.expected_resource_version, 0)?
             != predecessor.resource_version
@@ -8887,7 +8782,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ApplyRouteMutationRequest,
         plan_kind: &str,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -8917,7 +8812,7 @@ impl RpcService {
         self.require_delivery_scope(auth, &owner_scope_key, Permission::RouteManage)
             .await?;
         let (spec, canonical_url, endpoint) = self
-            .delivery_route_spec(
+            .route_spec(
                 surface,
                 &owner_scope_key,
                 input
@@ -8935,7 +8830,7 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         let record = if plan_kind == "update_route" {
             self.db
-                .update_delivery_route(
+                .update_route(
                     &input.request.stable_id,
                     &spec,
                     &canonical_url,
@@ -8985,7 +8880,7 @@ impl RpcService {
                 }
             };
             self.db
-                .create_delivery_route(
+                .create_route(
                     &input.request.stable_id,
                     surface,
                     &spec,
@@ -8999,8 +8894,8 @@ impl RpcService {
                 .await
         }
         .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::DeliveryRouteResponse {
-            route: Some(self.delivery_route_message(record).await?),
+        let response = pb::RouteResponse {
+            route: Some(self.route_message(record).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
@@ -9025,7 +8920,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         req: pb::ApplyRouteMutationRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         self.apply_route_mutation(auth, req, "create_route").await
     }
 
@@ -9034,7 +8929,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         req: pb::ApplyRouteMutationRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         self.apply_route_mutation(auth, req, "update_route").await
     }
 
@@ -9043,7 +8938,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         req: pb::ApplyRouteMutationRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         self.apply_route_mutation(auth, req, "replace_route").await
     }
 
@@ -9055,7 +8950,7 @@ impl RpcService {
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let route = self
-            .authorized_delivery_route(auth, &req.stable_id, Permission::RouteManage)
+            .authorized_route(auth, &req.stable_id, Permission::RouteManage)
             .await?;
         let expected = req
             .expected_resource_version
@@ -9101,7 +8996,7 @@ impl RpcService {
         .await
     }
 
-    /// Plans enabling a delivery route.
+    /// Plans enabling a route.
     pub async fn plan_enable_route(
         &self,
         auth: Option<&str>,
@@ -9110,7 +9005,7 @@ impl RpcService {
         self.plan_route_lifecycle(auth, req, "enable").await
     }
 
-    /// Plans disabling a delivery route.
+    /// Plans disabling a route.
     pub async fn plan_disable_route(
         &self,
         auth: Option<&str>,
@@ -9133,8 +9028,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
         operation: &str,
-    ) -> Result<Result<pb::DeliveryRouteResponse, pb::DeleteTopologyResourceResponse>, RpcError>
-    {
+    ) -> Result<Result<pb::RouteResponse, pb::DeleteTopologyResourceResponse>, RpcError> {
         let plan_kind = format!("{operation}_route");
         self.begin_control_plan_apply(
             auth,
@@ -9148,13 +9042,13 @@ impl RpcService {
             .load_control_plan(auth, &req.plan_id, &plan_kind, Some(&req.confirmation_hash))
             .await?;
         let route = self
-            .authorized_delivery_route(auth, &input.request.stable_id, Permission::RouteManage)
+            .authorized_route(auth, &input.request.stable_id, Permission::RouteManage)
             .await?;
         if operation == "delete" {
             let claims = self.require_claims(auth)?;
             let deleted = self
                 .db
-                .delete_delivery_route(
+                .delete_route(
                     &route.id,
                     input.expected_resource_version,
                     &claims.owner_kind,
@@ -9175,7 +9069,7 @@ impl RpcService {
         } else {
             let mut snapshot = self
                 .db
-                .delivery_route_snapshot(&route.id)
+                .route_snapshot(&route.id)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::not_found("route configuration"))?;
@@ -9183,7 +9077,7 @@ impl RpcService {
             let claims = self.require_claims(auth)?;
             let updated = self
                 .db
-                .update_delivery_route(
+                .update_route(
                     &route.id,
                     &snapshot.spec,
                     &snapshot.canonical_url,
@@ -9192,8 +9086,8 @@ impl RpcService {
                 )
                 .await
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-            let response = pb::DeliveryRouteResponse {
-                route: Some(self.delivery_route_message(updated).await?),
+            let response = pb::RouteResponse {
+                route: Some(self.route_message(updated).await?),
             };
             self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
                 .await?;
@@ -9207,7 +9101,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -9231,7 +9125,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::DeliveryRouteResponse, RpcError> {
+    ) -> Result<pb::RouteResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
@@ -9273,11 +9167,11 @@ impl RpcService {
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("delete returned route response")))
     }
 
-    /// Plans a surface/audience canonical route selection under exact CAS.
-    pub async fn plan_set_canonical_route(
+    /// Plans a surface/audience route advertisement selection under exact CAS.
+    pub async fn plan_set_route_advertisement(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanCanonicalRouteRequest,
+        mut req: pb::PlanRouteAdvertisementRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let (surface, owner_scope_key) = self
@@ -9287,16 +9181,16 @@ impl RpcService {
             return Err(RpcError::invalid("audience must be git, nix_cache, or web"));
         }
         let route = self
-            .authorized_delivery_route(auth, &req.route_id, Permission::RouteManage)
+            .authorized_route(auth, &req.route_id, Permission::RouteManage)
             .await?;
         if route.surface != surface || !route.enabled {
             return Err(RpcError::FailedPrecondition(
-                "canonical route must be enabled on the same surface".to_string(),
+                "route advertisement must be enabled on the same surface".to_string(),
             ));
         }
         let current = self
             .db
-            .canonical_route(surface, &req.audience)
+            .route_advertisement(surface, &req.audience)
             .await
             .map_err(RpcError::internal)?;
         let baseline_resource_version = current.as_ref().map(|record| record.resource_version);
@@ -9312,12 +9206,13 @@ impl RpcService {
                     == record.resource_version => {}
             (Some(_), _) => {
                 return Err(RpcError::FailedPrecondition(
-                    "canonical route resource version is required and must be current".to_string(),
+                    "route advertisement resource version is required and must be current"
+                        .to_string(),
                 ));
             }
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = CanonicalRoutePlanInput {
+        let input = RouteAdvertisementPlanInput {
             request: req,
             surface: Self::route_surface_plan_seal(surface),
             baseline_resource_version,
@@ -9327,7 +9222,7 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "set_canonical_route",
+            "set_route_advertisement",
             &owner_scope_key,
             &input,
             &idempotency_key,
@@ -9341,17 +9236,17 @@ impl RpcService {
         .await
     }
 
-    /// Applies a canonical route selection exactly once.
-    pub async fn set_canonical_route(
+    /// Applies a route advertisement selection exactly once.
+    pub async fn set_route_advertisement(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyCanonicalRouteRequest,
-    ) -> Result<pb::CanonicalRouteResponse, RpcError> {
+        req: pb::ApplyRouteAdvertisementRequest,
+    ) -> Result<pb::RouteAdvertisementResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "set_canonical_route",
+                "set_route_advertisement",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -9362,16 +9257,16 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "set_canonical_route",
+            "set_route_advertisement",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, CanonicalRoutePlanInput) = self
+        let (plan, input): (_, RouteAdvertisementPlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "set_canonical_route",
+                "set_route_advertisement",
                 Some(&req.confirmation_hash),
             )
             .await?;
@@ -9381,7 +9276,7 @@ impl RpcService {
             .await?;
         let record = self
             .db
-            .set_canonical_route(
+            .set_route_advertisement(
                 surface,
                 &input.request.audience,
                 &input.request.route_id,
@@ -9389,11 +9284,11 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::CanonicalRouteResponse {
-            canonical_route: Some(pb::CanonicalRoute {
+        let response = pb::RouteAdvertisementResponse {
+            route_advertisement: Some(pb::RouteAdvertisement {
                 surface: Some(self.route_surface_message(record.surface).await?),
                 audience: record.audience,
-                route_id: record.delivery_route_id,
+                route_id: record.route_id,
                 resource_version: record.resource_version.to_string(),
             }),
         };
@@ -9409,11 +9304,11 @@ impl RpcService {
         req: pb::ExplainRouteRequest,
     ) -> Result<pb::ExplainRouteResponse, RpcError> {
         let route = self
-            .authorized_delivery_route(auth, &req.route_id, Permission::RouteRead)
+            .authorized_route(auth, &req.route_id, Permission::RouteRead)
             .await?;
         let snapshot = self
             .db
-            .delivery_route_snapshot(&route.id)
+            .route_snapshot(&route.id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("route configuration"))?;
@@ -9485,25 +9380,24 @@ impl RpcService {
         )?;
         let route = self
             .db
-            .delivery_route(&req.stable_id)
+            .route(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery route"))?;
+            .ok_or_else(|| RpcError::not_found("route"))?;
         let owner_scope_key = self
             .db
-            .topology_operation_target_scope("delivery_route", &route.id)
+            .topology_operation_target_scope("route", &route.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("delivery route"))?;
-        let scope = Scope::try_parse(&owner_scope_key).ok_or_else(|| {
-            RpcError::internal(anyhow::anyhow!("delivery route has invalid owner scope"))
-        })?;
+            .ok_or_else(|| RpcError::not_found("route"))?;
+        let scope = Scope::try_parse(&owner_scope_key)
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route has invalid owner scope")))?;
         if self
             .require_permission(&claims, Permission::RouteManage, &scope)
             .await
             .is_err()
         {
-            return Err(RpcError::not_found("delivery route"));
+            return Err(RpcError::not_found("route"));
         }
         if req.expected_observation_version.is_empty()
             || parse_resource_version(&req.expected_observation_version, route.resource_version)?
@@ -9535,7 +9429,7 @@ impl RpcService {
             .topology_probes
             .schedule(
                 &operation_id,
-                crate::topology_probe::TopologyProbe::DeliveryRoute {
+                crate::topology_probe::TopologyProbe::Route {
                     stable_id: route.id,
                     generation,
                     configuration_digest,
@@ -10336,7 +10230,7 @@ impl RpcService {
     /// of private-origin cache reads, returning the modified service.
     ///
     /// Without it, a private-origin cache serves a presigned `302`; with it, a
-    /// an eligible Hub-proxy delivery route may stream origin bytes through Hub.
+    /// an eligible Hub-proxy route may stream origin bytes through Hub.
     #[must_use]
     pub fn with_origin_fetch(mut self, origin_fetch: Arc<dyn crate::fetch::OriginFetch>) -> Self {
         self.origin_fetch = Some(origin_fetch);
@@ -12084,7 +11978,7 @@ impl RpcService {
         auth: Option<&str>,
         owner_scope_key: &str,
     ) -> Result<Option<i64>, RpcError> {
-        self.storage_owner(auth, owner_scope_key, Permission::StorageBindingRead)
+        self.storage_owner(auth, owner_scope_key, Permission::BindingRead)
             .await
     }
 
@@ -12094,28 +11988,28 @@ impl RpcService {
         auth: Option<&str>,
         owner_scope_key: &str,
     ) -> Result<Option<i64>, RpcError> {
-        self.storage_owner(auth, owner_scope_key, Permission::StorageBindingManage)
+        self.storage_owner(auth, owner_scope_key, Permission::BindingManage)
             .await
     }
 
     /// Resolves and authorizes one typed storage-binding reference.
-    async fn resolve_storage_binding_reference(
+    async fn resolve_binding_reference(
         &self,
         auth: Option<&str>,
-        reference: Option<pb::StorageBindingRef>,
-    ) -> Result<crate::db::StorageBindingRecord, RpcError> {
+        reference: Option<pb::BindingRef>,
+    ) -> Result<crate::db::BindingRecord, RpcError> {
         let target = reference
             .and_then(|binding| binding.target)
             .ok_or_else(|| RpcError::invalid("storageBinding reference is required"))?;
         match target {
-            pb::storage_binding_ref::Target::InstanceDefault(true) => {
+            pb::binding_ref::Target::InstanceDefault(true) => {
                 self.readable_storage_owner(auth, "instance").await?;
                 self.db.instance_default_binding().await
             }
-            pb::storage_binding_ref::Target::InstanceDefault(false) => {
+            pb::binding_ref::Target::InstanceDefault(false) => {
                 return Err(RpcError::invalid("instanceDefault must be true"));
             }
-            pb::storage_binding_ref::Target::Organization(reference) => {
+            pb::binding_ref::Target::Organization(reference) => {
                 let org = self.org_or_not_found(&reference.org_slug).await?;
                 let scope = org.stable_id;
                 let org_id = self
@@ -12124,25 +12018,21 @@ impl RpcService {
                     .ok_or_else(|| {
                         RpcError::internal(anyhow::anyhow!("org scope resolved as instance"))
                     })?;
-                self.db
-                    .storage_binding_by_name(org_id, &reference.name)
-                    .await
+                self.db.binding_by_name(org_id, &reference.name).await
             }
         }
         .map_err(RpcError::internal)?
-        .ok_or_else(|| RpcError::not_found("storage binding"))
+        .ok_or_else(|| RpcError::not_found("binding"))
     }
 
     /// Validates and canonicalizes a storage-binding desired spec.
-    fn canonicalize_storage_binding_spec(
-        spec: &mut pb::StorageBindingSpec,
-    ) -> Result<(), RpcError> {
+    fn canonicalize_binding_spec(spec: &mut pb::BindingSpec) -> Result<(), RpcError> {
         spec.name = spec.name.trim().to_string();
         if spec.name.is_empty() {
-            return Err(RpcError::invalid("storage binding name is required"));
+            return Err(RpcError::invalid("binding name is required"));
         }
         match spec.provider.as_mut() {
-            Some(pb::storage_binding_spec::Provider::LocalFilesystem(provider)) => {
+            Some(pb::binding_spec::Provider::LocalFilesystem(provider)) => {
                 provider.root_path = provider.root_path.trim().to_string();
                 if !provider.root_path.starts_with('/') {
                     return Err(RpcError::invalid(
@@ -12150,7 +12040,7 @@ impl RpcService {
                     ));
                 }
             }
-            Some(pb::storage_binding_spec::Provider::S3(provider)) => {
+            Some(pb::binding_spec::Provider::S3(provider)) => {
                 Self::canonicalize_object_storage_provider(
                     &mut provider.bucket,
                     &mut provider.prefix,
@@ -12159,7 +12049,7 @@ impl RpcService {
                     &mut provider.access_mode,
                 )?;
             }
-            Some(pb::storage_binding_spec::Provider::R2(provider)) => {
+            Some(pb::binding_spec::Provider::R2(provider)) => {
                 Self::canonicalize_object_storage_provider(
                     &mut provider.bucket,
                     &mut provider.prefix,
@@ -12168,12 +12058,12 @@ impl RpcService {
                     &mut provider.access_mode,
                 )?;
             }
-            Some(pb::storage_binding_spec::Provider::DeploymentR2(_)) => {
+            Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
                 return Err(RpcError::invalid(
                     "deployment R2 bindings are provisioned only by the serving runtime",
                 ));
             }
-            None => return Err(RpcError::invalid("storage binding provider is required")),
+            None => return Err(RpcError::invalid("binding provider is required")),
         }
         Ok(())
     }
@@ -12246,9 +12136,9 @@ impl RpcService {
     }
 
     /// Reconstructs the final desired spec from one binding record.
-    fn storage_binding_spec_from_record(
-        record: &crate::db::StorageBindingRecord,
-    ) -> Result<pb::StorageBindingSpec, RpcError> {
+    fn binding_spec_from_record(
+        record: &crate::db::BindingRecord,
+    ) -> Result<pb::BindingSpec, RpcError> {
         let endpoint = match (
             record.endpoint_scheme.clone(),
             record.endpoint_host_kind.as_deref(),
@@ -12283,19 +12173,19 @@ impl RpcService {
             }
         };
         let provider = match record.kind.as_str() {
-            "local_fs" => pb::storage_binding_spec::Provider::LocalFilesystem(
-                pb::LocalFilesystemStorageProvider {
+            "local_fs" => {
+                pb::binding_spec::Provider::LocalFilesystem(pb::LocalFilesystemStorageProvider {
                     root_path: record.local_root_path.clone().unwrap_or_default(),
-                },
-            ),
-            "s3" => pb::storage_binding_spec::Provider::S3(pb::S3StorageProvider {
+                })
+            }
+            "s3" => pb::binding_spec::Provider::S3(pb::S3StorageProvider {
                 bucket: record.object_bucket.clone().unwrap_or_default(),
                 prefix: record.object_prefix.clone().unwrap_or_default(),
                 endpoint,
                 signing_region: record.signing_region.clone().unwrap_or_default(),
                 access_mode: record.access_mode.clone().unwrap_or_default(),
             }),
-            "r2" => pb::storage_binding_spec::Provider::R2(pb::R2StorageProvider {
+            "r2" => pb::binding_spec::Provider::R2(pb::R2StorageProvider {
                 bucket: record.object_bucket.clone().unwrap_or_default(),
                 prefix: record.object_prefix.clone().unwrap_or_default(),
                 endpoint,
@@ -12303,7 +12193,7 @@ impl RpcService {
                 access_mode: record.access_mode.clone().unwrap_or_default(),
             }),
             "deployment_r2" => {
-                pb::storage_binding_spec::Provider::DeploymentR2(pb::DeploymentR2StorageProvider {
+                pb::binding_spec::Provider::DeploymentR2(pb::DeploymentR2StorageProvider {
                     bucket_binding: record.object_bucket.clone().unwrap_or_default(),
                 })
             }
@@ -12313,21 +12203,21 @@ impl RpcService {
                 )));
             }
         };
-        Ok(pb::StorageBindingSpec {
+        Ok(pb::BindingSpec {
             name: record.name.clone(),
             provider: Some(provider),
         })
     }
 
     /// Projects a storage-binding record without exposing credential material.
-    async fn storage_binding_message(
+    async fn binding_message(
         &self,
-        record: crate::db::StorageBindingRecord,
-    ) -> Result<pb::StorageBinding, RpcError> {
-        let spec = Self::storage_binding_spec_from_record(&record)?;
+        record: crate::db::BindingRecord,
+    ) -> Result<pb::Binding, RpcError> {
+        let spec = Self::binding_spec_from_record(&record)?;
         let credentials = self
             .db
-            .list_current_storage_binding_credentials(record.id)
+            .list_current_binding_credentials(record.id)
             .await
             .map_err(RpcError::internal)?;
         let has_valid_credential = |purpose: &str| {
@@ -12337,7 +12227,7 @@ impl RpcService {
         };
         let local_filesystem = record.kind == "local_fs";
         let public_object_store = record.access_mode.as_deref() == Some("public");
-        let mut capabilities = pb::StorageBindingCapabilities {
+        let mut capabilities = pb::BindingCapabilities {
             reads_supported: local_filesystem
                 || public_object_store
                 || has_valid_credential("read"),
@@ -12351,19 +12241,19 @@ impl RpcService {
         };
         let health = if let Some(state) = self
             .db
-            .storage_binding_write_state(record.id)
+            .binding_write_state(record.id)
             .await
             .map_err(RpcError::internal)?
         {
             if let Some(revision_number) = state.current_write_revision {
                 let revision = self
                     .db
-                    .storage_binding_write_revision(record.id, revision_number)
+                    .binding_write_revision(record.id, revision_number)
                     .await
                     .map_err(RpcError::internal)?;
                 let observation = self
                     .db
-                    .storage_binding_write_observation(record.id, revision_number)
+                    .binding_write_observation(record.id, revision_number)
                     .await
                     .map_err(RpcError::internal)?;
                 if let Some(revision) = revision {
@@ -12371,7 +12261,7 @@ impl RpcService {
                     capabilities.conditional_writes_supported =
                         revision.conditional_writes_supported;
                 }
-                observation.map(|observation| pb::StorageBindingHealth {
+                observation.map(|observation| pb::BindingHealth {
                     state: observation.state,
                     observed_at: observation.validated_at.unwrap_or_default(),
                     error: observation.error.unwrap_or_default(),
@@ -12384,7 +12274,7 @@ impl RpcService {
         };
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::StorageBinding {
+            .list_consumer_scope_grants(crate::db::GrantResource::Binding {
                 id: record.id,
                 stable_id: &record.stable_id,
             })
@@ -12395,7 +12285,7 @@ impl RpcService {
             let pins = self
                 .db
                 .consumer_scope_grant_pin_records(
-                    crate::db::GrantResource::StorageBinding {
+                    crate::db::GrantResource::Binding {
                         id: record.id,
                         stable_id: &record.stable_id,
                     },
@@ -12403,13 +12293,9 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
-            grants.push(Self::storage_binding_grant_message(
-                &record.stable_id,
-                grant,
-                pins,
-            ));
+            grants.push(Self::binding_grant_message(&record.stable_id, grant, pins));
         }
-        Ok(pb::StorageBinding {
+        Ok(pb::Binding {
             stable_id: record.stable_id,
             owner_scope_key: record.owner_scope_key,
             spec: Some(spec),
@@ -12424,7 +12310,7 @@ impl RpcService {
 
     /// Returns normalized endpoint columns for persistence.
     fn storage_endpoint_parts(
-        spec: &pb::StorageBindingSpec,
+        spec: &pb::BindingSpec,
     ) -> (
         Option<&str>,
         Option<&'static str>,
@@ -12432,8 +12318,8 @@ impl RpcService {
         Option<i64>,
     ) {
         let endpoint = match spec.provider.as_ref() {
-            Some(pb::storage_binding_spec::Provider::S3(provider)) => provider.endpoint.as_ref(),
-            Some(pb::storage_binding_spec::Provider::R2(provider)) => provider.endpoint.as_ref(),
+            Some(pb::binding_spec::Provider::S3(provider)) => provider.endpoint.as_ref(),
+            Some(pb::binding_spec::Provider::R2(provider)) => provider.endpoint.as_ref(),
             _ => None,
         };
         let Some(endpoint) = endpoint else {
@@ -12453,62 +12339,59 @@ impl RpcService {
         )
     }
 
-    /// `StorageBindingService.ListStorageBindings` lists one authorized owner scope.
+    /// `BindingService.ListBindings` lists one authorized owner scope.
     ///
     /// # Errors
     ///
     /// Returns an authorization, pagination, or persistence error.
-    pub async fn list_storage_bindings_v1(
+    pub async fn list_bindings_v1(
         &self,
         auth: Option<&str>,
-        req: pb::ListStorageBindingsRequest,
-    ) -> Result<pb::ListStorageBindingsResponse, RpcError> {
+        req: pb::ListBindingsRequest,
+    ) -> Result<pb::ListBindingsResponse, RpcError> {
         self.readable_storage_owner(auth, &req.owner_scope_key)
             .await?;
         let records = self
             .db
-            .list_storage_bindings_by_scope(&req.owner_scope_key)
+            .list_bindings_by_scope(&req.owner_scope_key)
             .await
             .map_err(RpcError::internal)?;
         let mut bindings = Vec::with_capacity(records.len());
         for record in records {
-            bindings.push(self.storage_binding_message(record).await?);
+            bindings.push(self.binding_message(record).await?);
         }
-        let (storage_bindings, next_page_token) =
-            paginate(bindings, req.page_size, &req.page_token)?;
-        Ok(pb::ListStorageBindingsResponse {
-            storage_bindings,
+        let (bindings, next_page_token) = paginate(bindings, req.page_size, &req.page_token)?;
+        Ok(pb::ListBindingsResponse {
+            bindings,
             next_page_token,
         })
     }
 
-    /// `StorageBindingService.GetStorageBinding` reads one typed binding reference.
+    /// `BindingService.GetBinding` reads one typed binding reference.
     ///
     /// # Errors
     ///
     /// Returns an authorization, malformed-reference, not-found, or persistence error.
-    pub async fn get_storage_binding_v1(
+    pub async fn get_binding_v1(
         &self,
         auth: Option<&str>,
-        req: pb::GetStorageBindingRequest,
-    ) -> Result<pb::GetStorageBindingResponse, RpcError> {
-        let record = self
-            .resolve_storage_binding_reference(auth, req.storage_binding)
-            .await?;
-        Ok(pb::GetStorageBindingResponse {
-            storage_binding: Some(self.storage_binding_message(record).await?),
+        req: pb::GetBindingRequest,
+    ) -> Result<pb::GetBindingResponse, RpcError> {
+        let record = self.resolve_binding_reference(auth, req.binding).await?;
+        Ok(pb::GetBindingResponse {
+            binding: Some(self.binding_message(record).await?),
         })
     }
 
-    /// `StorageBindingService.PlanCreateStorageBinding` persists an immutable create plan.
+    /// `BindingService.PlanCreateBinding` persists an immutable create plan.
     ///
     /// # Errors
     ///
     /// Returns an authorization, validation, conflict, or persistence error.
-    pub async fn plan_create_storage_binding(
+    pub async fn plan_create_binding(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanStorageBindingMutationRequest,
+        mut req: pb::PlanBindingMutationRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         if req.stable_id.trim().is_empty() || !req.expected_resource_version.is_empty() {
@@ -12527,43 +12410,43 @@ impl RpcService {
             .spec
             .as_mut()
             .ok_or_else(|| RpcError::invalid("spec is required"))?;
-        Self::canonicalize_storage_binding_spec(spec)?;
+        Self::canonicalize_binding_spec(spec)?;
         if org_id.is_some()
             && matches!(
                 spec.provider.as_ref(),
-                Some(pb::storage_binding_spec::Provider::LocalFilesystem(_))
-                    | Some(pb::storage_binding_spec::Provider::DeploymentR2(_))
+                Some(pb::binding_spec::Provider::LocalFilesystem(_))
+                    | Some(pb::binding_spec::Provider::DeploymentR2(_))
             )
         {
             return Err(RpcError::invalid(
-                "organization storage bindings must use an external s3 or r2 provider",
+                "organization bindings must use an external s3 or r2 provider",
             ));
         }
         if self
             .db
-            .storage_binding_by_stable_id(&req.stable_id)
+            .binding_by_stable_id(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
             .is_some()
         {
             return Err(RpcError::AlreadyExists(
-                "storage binding stable id already exists".to_string(),
+                "binding stable id already exists".to_string(),
             ));
         }
         if self
             .db
-            .list_storage_bindings_by_scope(&req.owner_scope_key)
+            .list_bindings_by_scope(&req.owner_scope_key)
             .await
             .map_err(RpcError::internal)?
             .iter()
             .any(|binding| binding.name == spec.name)
         {
             return Err(RpcError::AlreadyExists(
-                "storage binding name already exists in owner scope".to_string(),
+                "binding name already exists in owner scope".to_string(),
             ));
         }
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = StorageBindingMutationPlanInput {
+        let input = BindingMutationPlanInput {
             request: req,
             org_id,
             binding_db_id: None,
@@ -12574,35 +12457,32 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "create_storage_binding",
+            "create_binding",
             &input.request.owner_scope_key,
             &input,
             &idempotency_key,
-            vec![format!(
-                "create storage binding '{}'",
-                input.request.stable_id
-            )],
+            vec![format!("create binding '{}'", input.request.stable_id)],
             Vec::new(),
             Some(confirmation_hash),
         )
         .await
     }
 
-    /// `StorageBindingService.CreateStorageBinding` applies a create plan exactly once.
+    /// `BindingService.CreateBinding` applies a create plan exactly once.
     ///
     /// # Errors
     ///
     /// Returns an authorization, confirmation, conflict, or persistence error.
-    pub async fn apply_create_storage_binding(
+    pub async fn apply_create_binding(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageBindingMutationRequest,
-    ) -> Result<pb::StorageBindingResponse, RpcError> {
+        req: pb::ApplyBindingMutationRequest,
+    ) -> Result<pb::BindingResponse, RpcError> {
         if let Some(response) = self
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "create_storage_binding",
+                "create_binding",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -12613,16 +12493,16 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "create_storage_binding",
+            "create_binding",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageBindingMutationPlanInput) = self
+        let (plan, input): (_, BindingMutationPlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "create_storage_binding",
+                "create_binding",
                 Some(&req.confirmation_hash),
             )
             .await?;
@@ -12632,12 +12512,12 @@ impl RpcService {
             != input.org_id
         {
             return Err(RpcError::FailedPrecondition(
-                "storage binding owner changed after planning".to_string(),
+                "binding owner changed after planning".to_string(),
             ));
         }
         if let Some(existing) = self
             .db
-            .storage_binding_by_stable_id(&input.request.stable_id)
+            .binding_by_stable_id(&input.request.stable_id)
             .await
             .map_err(RpcError::internal)?
         {
@@ -12646,17 +12526,17 @@ impl RpcService {
                     RpcError::internal(anyhow::anyhow!("binding plan has no spec"))
                 })?;
             if existing.owner_scope_key == input.request.owner_scope_key
-                && Self::storage_binding_spec_from_record(&existing)? == *expected
+                && Self::binding_spec_from_record(&existing)? == *expected
             {
-                let response = pb::StorageBindingResponse {
-                    storage_binding: Some(self.storage_binding_message(existing).await?),
+                let response = pb::BindingResponse {
+                    binding: Some(self.binding_message(existing).await?),
                 };
                 self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
                     .await?;
                 return Ok(response);
             }
             return Err(RpcError::AlreadyExists(
-                "storage binding stable id has different state".to_string(),
+                "binding stable id has different state".to_string(),
             ));
         }
         let spec = input
@@ -12667,7 +12547,7 @@ impl RpcService {
         let (scheme, host_kind, host_bytes, port) = Self::storage_endpoint_parts(spec);
         let (kind, local_root_path, object_bucket, object_prefix, signing_region, access_mode) =
             match spec.provider.as_ref() {
-                Some(pb::storage_binding_spec::Provider::LocalFilesystem(provider)) => (
+                Some(pb::binding_spec::Provider::LocalFilesystem(provider)) => (
                     "local_fs",
                     Some(provider.root_path.as_str()),
                     None,
@@ -12675,7 +12555,7 @@ impl RpcService {
                     None,
                     None,
                 ),
-                Some(pb::storage_binding_spec::Provider::S3(provider)) => (
+                Some(pb::binding_spec::Provider::S3(provider)) => (
                     "s3",
                     None,
                     Some(provider.bucket.as_str()),
@@ -12683,7 +12563,7 @@ impl RpcService {
                     Some(provider.signing_region.as_str()),
                     Some(provider.access_mode.as_str()),
                 ),
-                Some(pb::storage_binding_spec::Provider::R2(provider)) => (
+                Some(pb::binding_spec::Provider::R2(provider)) => (
                     "r2",
                     None,
                     Some(provider.bucket.as_str()),
@@ -12691,7 +12571,7 @@ impl RpcService {
                     Some(provider.signing_region.as_str()),
                     Some(provider.access_mode.as_str()),
                 ),
-                Some(pb::storage_binding_spec::Provider::DeploymentR2(_)) => {
+                Some(pb::binding_spec::Provider::DeploymentR2(_)) => {
                     return Err(RpcError::internal(anyhow::anyhow!(
                         "deployment R2 provider escaped plan validation"
                     )));
@@ -12703,7 +12583,7 @@ impl RpcService {
                 }
             };
         self.db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 input.org_id,
                 &input.request.stable_id,
                 &input.request.owner_scope_key,
@@ -12723,23 +12603,23 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let record = self
             .db
-            .storage_binding_by_stable_id(&input.request.stable_id)
+            .binding_by_stable_id(&input.request.stable_id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("created binding disappeared")))?;
-        let response = pb::StorageBindingResponse {
-            storage_binding: Some(self.storage_binding_message(record).await?),
+        let response = pb::BindingResponse {
+            binding: Some(self.binding_message(record).await?),
         };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
     }
-    /// `StorageBindingService.PlanDeleteStorageBinding` persists reviewed blockers and CAS.
+    /// `BindingService.PlanDeleteBinding` persists reviewed blockers and CAS.
     ///
     /// # Errors
     ///
     /// Returns an authorization, stale-version, blocker, or persistence error.
-    pub async fn plan_delete_storage_binding(
+    pub async fn plan_delete_binding(
         &self,
         auth: Option<&str>,
         req: pb::PlanDeleteTopologyResourceRequest,
@@ -12747,15 +12627,15 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(&req.stable_id)
+            .binding_by_stable_id(&req.stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         let org_id = self.writable_storage_owner(auth, &owner_scope_key).await?;
         if binding.is_instance_default {
             return Err(RpcError::FailedPrecondition(
-                "the instance-default storage binding cannot be deleted".to_string(),
+                "the instance-default binding cannot be deleted".to_string(),
             ));
         }
         let expected = parse_resource_version(
@@ -12766,21 +12646,21 @@ impl RpcService {
         )?;
         if expected != binding.resource_version {
             return Err(RpcError::FailedPrecondition(
-                "storage binding resource version is stale".to_string(),
+                "binding resource version is stale".to_string(),
             ));
         }
         let blockers = self
             .db
-            .storage_binding_delete_blockers(binding.id)
+            .binding_delete_blockers(binding.id)
             .await
             .map_err(RpcError::internal)?;
         if !blockers.is_empty() {
             return Err(RpcError::FailedPrecondition(format!(
-                "storage binding is still referenced by {}",
+                "binding is still referenced by {}",
                 blockers.join(", ")
             )));
         }
-        let input = StorageBindingDeletePlanInput {
+        let input = BindingDeletePlanInput {
             stable_id: req.stable_id,
             owner_scope_key: owner_scope_key.clone(),
             org_id,
@@ -12792,23 +12672,23 @@ impl RpcService {
         ));
         self.create_control_plan(
             &claims,
-            "delete_storage_binding",
+            "delete_binding",
             &owner_scope_key,
             &input,
             &req.idempotency_key,
-            vec![format!("delete storage binding '{}'", input.stable_id)],
+            vec![format!("delete binding '{}'", input.stable_id)],
             vec!["credential revisions are deleted with the binding".to_string()],
             Some(confirmation_hash),
         )
         .await
     }
 
-    /// `StorageBindingService.DeleteStorageBinding` applies a deletion plan exactly once.
+    /// `BindingService.DeleteBinding` applies a deletion plan exactly once.
     ///
     /// # Errors
     ///
     /// Returns an authorization, confirmation, stale-version, blocker, or persistence error.
-    pub async fn apply_delete_storage_binding(
+    pub async fn apply_delete_binding(
         &self,
         auth: Option<&str>,
         req: pb::ApplyDeleteTopologyResourceRequest,
@@ -12817,7 +12697,7 @@ impl RpcService {
             .replayed_control_result(
                 auth,
                 &req.plan_id,
-                "delete_storage_binding",
+                "delete_binding",
                 Some(&req.confirmation_hash),
                 &req.idempotency_key,
             )
@@ -12828,16 +12708,16 @@ impl RpcService {
         self.begin_control_plan_apply(
             auth,
             &req.plan_id,
-            "delete_storage_binding",
+            "delete_binding",
             &req.idempotency_key,
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageBindingDeletePlanInput) = self
+        let (plan, input): (_, BindingDeletePlanInput) = self
             .load_control_plan(
                 auth,
                 &req.plan_id,
-                "delete_storage_binding",
+                "delete_binding",
                 Some(&req.confirmation_hash),
             )
             .await?;
@@ -12847,12 +12727,12 @@ impl RpcService {
             != input.org_id
         {
             return Err(RpcError::FailedPrecondition(
-                "storage binding deletion plan target changed".to_string(),
+                "binding deletion plan target changed".to_string(),
             ));
         }
         let Some(binding) = self
             .db
-            .storage_binding_by_stable_id(&input.stable_id)
+            .binding_by_stable_id(&input.stable_id)
             .await
             .map_err(RpcError::internal)?
         else {
@@ -12865,28 +12745,28 @@ impl RpcService {
             || binding.resource_version != input.baseline_resource_version
         {
             return Err(RpcError::FailedPrecondition(
-                "storage binding changed after deletion was planned".to_string(),
+                "binding changed after deletion was planned".to_string(),
             ));
         }
         let blockers = self
             .db
-            .storage_binding_delete_blockers(binding.id)
+            .binding_delete_blockers(binding.id)
             .await
             .map_err(RpcError::internal)?;
         if !blockers.is_empty() {
             return Err(RpcError::FailedPrecondition(format!(
-                "storage binding acquired live references: {}",
+                "binding acquired live references: {}",
                 blockers.join(", ")
             )));
         }
         if !self
             .db
-            .delete_topology_storage_binding(binding.id, input.baseline_resource_version)
+            .delete_topology_binding(binding.id, input.baseline_resource_version)
             .await
             .map_err(RpcError::internal)?
         {
             return Err(RpcError::FailedPrecondition(
-                "storage binding changed while deletion was applied".to_string(),
+                "binding changed while deletion was applied".to_string(),
             ));
         }
         let response = pb::DeleteTopologyResourceResponse { deleted: true };
@@ -12896,12 +12776,12 @@ impl RpcService {
     }
 
     /// Projects a credential revision without resolving or exposing secret material.
-    fn storage_binding_credential_message(
+    fn binding_credential_message(
         stable_id: &str,
-        record: crate::db::StorageBindingCredentialRevisionRecord,
-    ) -> pb::StorageBindingCredential {
-        pb::StorageBindingCredential {
-            storage_binding_id: stable_id.to_string(),
+        record: crate::db::BindingCredentialRevisionRecord,
+    ) -> pb::BindingCredential {
+        pb::BindingCredential {
+            binding_id: stable_id.to_string(),
             purpose: record.purpose,
             generation: record.generation,
             secret_version_ref: record.secret_version_ref,
@@ -12915,10 +12795,10 @@ impl RpcService {
     }
 
     /// Persists a credential set/rotation plan after resolving exact head state.
-    async fn plan_storage_binding_credential(
+    async fn plan_binding_credential(
         &self,
         auth: Option<&str>,
-        mut req: pb::PlanStorageBindingCredentialRequest,
+        mut req: pb::PlanBindingCredentialRequest,
         rotate: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
@@ -12933,10 +12813,10 @@ impl RpcService {
         }
         let binding = self
             .db
-            .storage_binding_by_stable_id(&req.storage_binding_id)
+            .binding_by_stable_id(&req.binding_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         self.writable_storage_owner(auth, &owner_scope_key).await?;
         if !matches!(binding.kind.as_str(), "s3" | "r2")
@@ -12950,12 +12830,12 @@ impl RpcService {
             parse_resource_version(&req.expected_resource_version, binding.resource_version)?;
         if expected_binding_version != binding.resource_version {
             return Err(RpcError::FailedPrecondition(
-                "storage binding changed before credential planning".to_string(),
+                "binding changed before credential planning".to_string(),
             ));
         }
         let current = self
             .db
-            .current_storage_binding_credential(binding.id, &req.purpose)
+            .current_binding_credential(binding.id, &req.purpose)
             .await
             .map_err(RpcError::internal)?;
         let current_generation = current.as_ref().map_or(0, |record| record.generation);
@@ -12996,16 +12876,16 @@ impl RpcService {
         drop(resolved);
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let credential_fingerprint = req.credential_fingerprint.clone();
-        let input = StorageBindingCredentialPlanInput {
+        let input = BindingCredentialPlanInput {
             request: req,
             binding_db_id: binding.id,
             owner_scope_key: owner_scope_key.clone(),
             credential_fingerprint,
         };
         let plan_kind = if rotate {
-            "rotate_storage_binding_credential"
+            "rotate_binding_credential"
         } else {
-            "set_storage_binding_credential"
+            "set_binding_credential"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -13033,12 +12913,12 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authorization, validation, stale-version, or persistence error.
-    pub async fn plan_set_storage_binding_credential(
+    pub async fn plan_set_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::PlanStorageBindingCredentialRequest,
+        req: pb::PlanBindingCredentialRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_binding_credential(auth, req, false).await
+        self.plan_binding_credential(auth, req, false).await
     }
 
     /// Plans credential rotation.
@@ -13046,25 +12926,25 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authorization, validation, stale-version, or persistence error.
-    pub async fn plan_rotate_storage_binding_credential(
+    pub async fn plan_rotate_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::PlanStorageBindingCredentialRequest,
+        req: pb::PlanBindingCredentialRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_binding_credential(auth, req, true).await
+        self.plan_binding_credential(auth, req, true).await
     }
 
     /// Applies a credential set/rotation plan with exact-result recovery.
-    async fn apply_storage_binding_credential(
+    async fn apply_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageBindingCredentialRequest,
+        req: pb::ApplyBindingCredentialRequest,
         rotate: bool,
-    ) -> Result<pb::StorageBindingCredentialResponse, RpcError> {
+    ) -> Result<pb::BindingCredentialResponse, RpcError> {
         let plan_kind = if rotate {
-            "rotate_storage_binding_credential"
+            "rotate_binding_credential"
         } else {
-            "set_storage_binding_credential"
+            "set_binding_credential"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -13086,26 +12966,26 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageBindingCredentialPlanInput) = self
+        let (plan, input): (_, BindingCredentialPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         self.writable_storage_owner(auth, &input.owner_scope_key)
             .await?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(&input.request.storage_binding_id)
+            .binding_by_stable_id(&input.request.binding_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         if binding.id != input.binding_db_id {
             return Err(RpcError::FailedPrecondition(
-                "storage binding identity changed after credential planning".to_string(),
+                "binding identity changed after credential planning".to_string(),
             ));
         }
         let claims = self.require_claims(auth)?;
         let record = self
             .db
-            .set_storage_binding_credential_revision(
+            .set_binding_credential_revision(
                 binding.id,
                 &input.request.purpose,
                 &input.request.secret_version_ref,
@@ -13115,9 +12995,9 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        let response = pb::StorageBindingCredentialResponse {
-            credential: Some(Self::storage_binding_credential_message(
-                &input.request.storage_binding_id,
+        let response = pb::BindingCredentialResponse {
+            credential: Some(Self::binding_credential_message(
+                &input.request.binding_id,
                 record,
             )),
         };
@@ -13131,13 +13011,12 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authorization, confirmation, stale-plan, or persistence error.
-    pub async fn apply_set_storage_binding_credential(
+    pub async fn apply_set_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageBindingCredentialRequest,
-    ) -> Result<pb::StorageBindingCredentialResponse, RpcError> {
-        self.apply_storage_binding_credential(auth, req, false)
-            .await
+        req: pb::ApplyBindingCredentialRequest,
+    ) -> Result<pb::BindingCredentialResponse, RpcError> {
+        self.apply_binding_credential(auth, req, false).await
     }
 
     /// Applies credential rotation.
@@ -13145,12 +13024,12 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authorization, confirmation, stale-plan, or persistence error.
-    pub async fn apply_rotate_storage_binding_credential(
+    pub async fn apply_rotate_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::ApplyStorageBindingCredentialRequest,
-    ) -> Result<pb::StorageBindingCredentialResponse, RpcError> {
-        self.apply_storage_binding_credential(auth, req, true).await
+        req: pb::ApplyBindingCredentialRequest,
+    ) -> Result<pb::BindingCredentialResponse, RpcError> {
+        self.apply_binding_credential(auth, req, true).await
     }
 
     /// Queues controller validation of the current credential generation.
@@ -13158,28 +13037,28 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authorization, validation, stale-version, or scheduling error.
-    async fn execute_validate_storage_binding_credential(
+    async fn execute_validate_binding_credential(
         &self,
         auth: Option<&str>,
-        req: pb::PlanValidateStorageBindingCredentialRequest,
+        req: pb::PlanValidateBindingCredentialRequest,
     ) -> Result<pb::OperationResponse, RpcError> {
         if req.idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotencyKey is required"));
         }
         let binding = self
             .db
-            .storage_binding_by_stable_id(&req.storage_binding_id)
+            .binding_by_stable_id(&req.binding_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
         let current = self
             .db
-            .storage_binding_credential_revision(binding.id, &req.purpose, req.generation)
+            .binding_credential_revision(binding.id, &req.purpose, req.generation)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding credential"))?;
+            .ok_or_else(|| RpcError::not_found("binding credential"))?;
         let expected = parse_resource_version(
             &req.expected_resource_version,
             current.head_resource_version,
@@ -13229,7 +13108,7 @@ impl RpcService {
     }
 
     /// Projects one binding consumer-scope grant and its live pin impacts.
-    fn storage_binding_grant_message(
+    fn binding_grant_message(
         stable_id: &str,
         record: crate::db::ConsumerScopeGrantRecord,
         pins: Vec<crate::db::ConsumerScopeGrantPinRecord>,
@@ -13239,7 +13118,7 @@ impl RpcService {
             .map(Self::topology_pin_impact_message)
             .collect::<Vec<_>>();
         pb::ConsumerScopeGrant {
-            resource_kind: "storage_binding".to_string(),
+            resource_kind: "binding".to_string(),
             resource_stable_id: stable_id.to_string(),
             resource_generation: 0,
             consumer_scope_key: record.consumer_scope_key,
@@ -13257,34 +13136,34 @@ impl RpcService {
     }
 
     /// Persists a binding grant/revoke plan with exact live-pin preconditions.
-    async fn plan_storage_binding_grant(
+    async fn plan_binding_grant(
         &self,
         auth: Option<&str>,
         mut req: pb::PlanConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        if req.resource_kind != "storage_binding" || req.consumer_scope_key.is_empty() {
+        if req.resource_kind != "binding" || req.consumer_scope_key.is_empty() {
             return Err(RpcError::invalid(
-                "resourceKind must be storage_binding and consumerScopeKey is required",
+                "resourceKind must be binding and consumerScopeKey is required",
             ));
         }
         let binding = self
             .db
-            .storage_binding_by_stable_id(&req.resource_stable_id)
+            .binding_by_stable_id(&req.resource_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         let owner_scope_key = binding.owner_scope_key.clone();
         self.writable_storage_owner(auth, &owner_scope_key).await?;
         if req.resource_generation != binding.resource_version {
             return Err(RpcError::FailedPrecondition(
-                "storage binding generation is stale".to_string(),
+                "binding generation is stale".to_string(),
             ));
         }
         let grants = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::StorageBinding {
+            .list_consumer_scope_grants(crate::db::GrantResource::Binding {
                 id: binding.id,
                 stable_id: &req.resource_stable_id,
             })
@@ -13299,7 +13178,7 @@ impl RpcService {
             let pins = self
                 .db
                 .consumer_scope_grant_pin_records(
-                    crate::db::GrantResource::StorageBinding {
+                    crate::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &req.resource_stable_id,
                     },
@@ -13345,7 +13224,7 @@ impl RpcService {
             Vec::new()
         };
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = StorageBindingGrantPlanInput {
+        let input = BindingGrantPlanInput {
             request: req,
             binding_db_id: binding.id,
             owner_scope_key: owner_scope_key.clone(),
@@ -13353,9 +13232,9 @@ impl RpcService {
             pin_resolutions,
         };
         let plan_kind = if revoke {
-            "revoke_storage_binding_scope"
+            "revoke_binding_scope"
         } else {
-            "grant_storage_binding_scope"
+            "grant_binding_scope"
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -13367,7 +13246,7 @@ impl RpcService {
             &input,
             &idempotency_key,
             vec![format!(
-                "{} storage binding access for '{}'",
+                "{} binding access for '{}'",
                 if revoke { "revoke" } else { "grant" },
                 input.request.consumer_scope_key
             )],
@@ -13378,34 +13257,34 @@ impl RpcService {
     }
 
     /// Plans a consumer-scope grant.
-    pub async fn plan_grant_storage_binding_scope(
+    pub async fn plan_grant_binding_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_binding_grant(auth, req, false).await
+        self.plan_binding_grant(auth, req, false).await
     }
 
     /// Plans a consumer-scope revocation.
-    pub async fn plan_revoke_storage_binding_scope(
+    pub async fn plan_revoke_binding_scope(
         &self,
         auth: Option<&str>,
         req: pb::PlanConsumerScopeGrantRequest,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        self.plan_storage_binding_grant(auth, req, true).await
+        self.plan_binding_grant(auth, req, true).await
     }
 
     /// Applies a binding scope grant/revocation plan exactly once.
-    async fn apply_storage_binding_grant(
+    async fn apply_binding_grant(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
         revoke: bool,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
         let plan_kind = if revoke {
-            "revoke_storage_binding_scope"
+            "revoke_binding_scope"
         } else {
-            "grant_storage_binding_scope"
+            "grant_binding_scope"
         };
         if let Some(response) = self
             .replayed_control_result(
@@ -13427,25 +13306,25 @@ impl RpcService {
             Some(&req.confirmation_hash),
         )
         .await?;
-        let (plan, input): (_, StorageBindingGrantPlanInput) = self
+        let (plan, input): (_, BindingGrantPlanInput) = self
             .load_control_plan(auth, &req.plan_id, plan_kind, Some(&req.confirmation_hash))
             .await?;
         self.writable_storage_owner(auth, &input.owner_scope_key)
             .await?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(&input.request.resource_stable_id)
+            .binding_by_stable_id(&input.request.resource_stable_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         if binding.id != input.binding_db_id {
             return Err(RpcError::FailedPrecondition(
-                "storage binding identity changed after grant planning".to_string(),
+                "binding identity changed after grant planning".to_string(),
             ));
         }
         let claims = self.require_claims(auth)?;
         if revoke && !input.pin_resolutions.is_empty() {
-            let resource = crate::db::GrantResource::StorageBinding {
+            let resource = crate::db::GrantResource::Binding {
                 id: binding.id,
                 stable_id: &input.request.resource_stable_id,
             };
@@ -13454,11 +13333,11 @@ impl RpcService {
                 .load_consumer_scope_grant(resource, &input.request.consumer_scope_key)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("storage binding consumer grant"))?;
+                .ok_or_else(|| RpcError::not_found("binding consumer grant"))?;
             let coordination_operation = self
                 .schedule_grant_revocation(
                     &plan.plan_id,
-                    "storage_binding",
+                    "binding",
                     &input.request.resource_stable_id,
                     input.request.resource_generation,
                     &input.request.consumer_scope_key,
@@ -13468,11 +13347,11 @@ impl RpcService {
                     input.pin_resolutions,
                     &claims.sub,
                     &req.idempotency_key,
-                    Permission::StorageBindingGrant,
+                    Permission::BindingGrant,
                 )
                 .await?;
             let response = pb::ConsumerScopeGrantResponse {
-                grant: Some(Self::storage_binding_grant_message(
+                grant: Some(Self::binding_grant_message(
                     &input.request.resource_stable_id,
                     record,
                     self.db
@@ -13492,7 +13371,7 @@ impl RpcService {
         if revoke {
             if let Some((record, pins)) = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::StorageBinding {
+                .list_consumer_scope_grants(crate::db::GrantResource::Binding {
                     id: binding.id,
                     stable_id: &input.request.resource_stable_id,
                 })
@@ -13509,7 +13388,7 @@ impl RpcService {
                             .map(|version| version + 1)
                 {
                     let response = pb::ConsumerScopeGrantResponse {
-                        grant: Some(Self::storage_binding_grant_message(
+                        grant: Some(Self::binding_grant_message(
                             &input.request.resource_stable_id,
                             record,
                             pins,
@@ -13525,7 +13404,7 @@ impl RpcService {
         let record = if revoke {
             self.db
                 .revoke_consumer_scope(
-                    crate::db::GrantResource::StorageBinding {
+                    crate::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &input.request.resource_stable_id,
                     },
@@ -13540,7 +13419,7 @@ impl RpcService {
         } else {
             self.db
                 .grant_consumer_scope(
-                    crate::db::GrantResource::StorageBinding {
+                    crate::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &input.request.resource_stable_id,
                     },
@@ -13555,7 +13434,7 @@ impl RpcService {
         let pins = self
             .db
             .consumer_scope_grant_pin_records(
-                crate::db::GrantResource::StorageBinding {
+                crate::db::GrantResource::Binding {
                     id: binding.id,
                     stable_id: &input.request.resource_stable_id,
                 },
@@ -13564,7 +13443,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?;
         let response = pb::ConsumerScopeGrantResponse {
-            grant: Some(Self::storage_binding_grant_message(
+            grant: Some(Self::binding_grant_message(
                 &input.request.resource_stable_id,
                 record,
                 pins,
@@ -13577,36 +13456,36 @@ impl RpcService {
     }
 
     /// Applies a consumer-scope grant.
-    pub async fn apply_grant_storage_binding_scope(
+    pub async fn apply_grant_binding_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_storage_binding_grant(auth, req, false).await
+        self.apply_binding_grant(auth, req, false).await
     }
 
     /// Applies a consumer-scope revocation.
-    pub async fn apply_revoke_storage_binding_scope(
+    pub async fn apply_revoke_binding_scope(
         &self,
         auth: Option<&str>,
         req: pb::ApplyConsumerScopeGrantRequest,
     ) -> Result<pb::ConsumerScopeGrantResponse, RpcError> {
-        self.apply_storage_binding_grant(auth, req, true).await
+        self.apply_binding_grant(auth, req, true).await
     }
 
     /// Projects one immutable write revision with its mutable controller observation.
-    async fn storage_binding_write_revision_message(
+    async fn binding_write_revision_message(
         &self,
         stable_id: &str,
-        revision: crate::db::StorageBindingWriteRevisionRecord,
-    ) -> Result<pb::StorageBindingWriteRevision, RpcError> {
+        revision: crate::db::BindingWriteRevisionRecord,
+    ) -> Result<pb::BindingWriteRevision, RpcError> {
         let observation = self
             .db
-            .storage_binding_write_observation(revision.storage_binding_id, revision.revision)
+            .binding_write_observation(revision.binding_id, revision.revision)
             .await
             .map_err(RpcError::internal)?;
-        Ok(pb::StorageBindingWriteRevision {
-            storage_binding_id: stable_id.to_string(),
+        Ok(pb::BindingWriteRevision {
+            binding_id: stable_id.to_string(),
             revision: revision.revision,
             write_credential_purpose: revision.write_credential_purpose,
             write_credential_generation: revision.write_credential_generation,
@@ -13635,63 +13514,59 @@ impl RpcService {
     }
 
     /// Lists write revisions with bounded cursor pagination.
-    pub async fn list_storage_binding_write_revisions(
+    pub async fn list_binding_write_revisions(
         &self,
         auth: Option<&str>,
-        req: pb::ListStorageBindingWriteRevisionsRequest,
-    ) -> Result<pb::ListStorageBindingWriteRevisionsResponse, RpcError> {
-        let binding = self
-            .resolve_storage_binding_reference(auth, req.storage_binding)
-            .await?;
+        req: pb::ListBindingWriteRevisionsRequest,
+    ) -> Result<pb::ListBindingWriteRevisionsResponse, RpcError> {
+        let binding = self.resolve_binding_reference(auth, req.binding).await?;
         let stable_id = binding.stable_id.clone();
         let records = self
             .db
-            .list_storage_binding_write_revisions(binding.id)
+            .list_binding_write_revisions(binding.id)
             .await
             .map_err(RpcError::internal)?;
         let mut revisions = Vec::with_capacity(records.len());
         for revision in records {
             revisions.push(
-                self.storage_binding_write_revision_message(&stable_id, revision)
+                self.binding_write_revision_message(&stable_id, revision)
                     .await?,
             );
         }
         let (revisions, next_page_token) = paginate(revisions, req.page_size, &req.page_token)?;
-        Ok(pb::ListStorageBindingWriteRevisionsResponse {
+        Ok(pb::ListBindingWriteRevisionsResponse {
             revisions,
             next_page_token,
         })
     }
 
     /// Gets one immutable write revision.
-    pub async fn get_storage_binding_write_revision(
+    pub async fn get_binding_write_revision(
         &self,
         auth: Option<&str>,
-        req: pb::GetStorageBindingWriteRevisionRequest,
-    ) -> Result<pb::StorageBindingWriteRevisionResponse, RpcError> {
-        let binding = self
-            .resolve_storage_binding_reference(auth, req.storage_binding)
-            .await?;
+        req: pb::GetBindingWriteRevisionRequest,
+    ) -> Result<pb::BindingWriteRevisionResponse, RpcError> {
+        let binding = self.resolve_binding_reference(auth, req.binding).await?;
         let revision = self
             .db
-            .storage_binding_write_revision(binding.id, req.revision)
+            .binding_write_revision(binding.id, req.revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding write revision"))?;
-        Ok(pb::StorageBindingWriteRevisionResponse {
+            .ok_or_else(|| RpcError::not_found("binding write revision"))?;
+        Ok(pb::BindingWriteRevisionResponse {
             revision: Some(
-                self.storage_binding_write_revision_message(&binding.stable_id, revision)
+                self.binding_write_revision_message(&binding.stable_id, revision)
                     .await?,
             ),
         })
     }
 
     /// Reconciles a write revision's validation observation under a CAS.
-    pub async fn report_storage_binding_write_revision(
+    pub async fn report_binding_write_revision(
         &self,
         auth: Option<&str>,
-        req: pb::ReportStorageBindingWriteRevisionRequest,
-    ) -> Result<pb::StorageBindingWriteRevisionResponse, RpcError> {
+        req: pb::ReportBindingWriteRevisionRequest,
+    ) -> Result<pb::BindingWriteRevisionResponse, RpcError> {
         self.require_controller_fence(
             auth,
             &req.controller_lease_id,
@@ -13700,15 +13575,15 @@ impl RpcService {
         )?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(&req.storage_binding_id)
+            .binding_by_stable_id(&req.binding_id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?;
+            .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
         let observation = self
             .db
-            .storage_binding_write_observation(binding.id, req.revision)
+            .binding_write_observation(binding.id, req.revision)
             .await
             .map_err(RpcError::internal)?;
         let current_version = observation
@@ -13721,13 +13596,13 @@ impl RpcService {
         }) {
             let revision = self
                 .db
-                .storage_binding_write_revision(binding.id, req.revision)
+                .binding_write_revision(binding.id, req.revision)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("storage binding write revision"))?;
-            return Ok(pb::StorageBindingWriteRevisionResponse {
+                .ok_or_else(|| RpcError::not_found("binding write revision"))?;
+            return Ok(pb::BindingWriteRevisionResponse {
                 revision: Some(
-                    self.storage_binding_write_revision_message(&req.storage_binding_id, revision)
+                    self.binding_write_revision_message(&req.binding_id, revision)
                         .await?,
                 ),
             });
@@ -13735,7 +13610,7 @@ impl RpcService {
         let expected = parse_resource_version(&req.expected_observation_version, current_version)?;
         let expected = (current_version > 0).then_some(expected);
         self.db
-            .observe_storage_binding_write_revision(
+            .observe_binding_write_revision(
                 binding.id,
                 req.revision,
                 &req.state,
@@ -13746,13 +13621,13 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let revision = self
             .db
-            .storage_binding_write_revision(binding.id, req.revision)
+            .binding_write_revision(binding.id, req.revision)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding write revision"))?;
-        Ok(pb::StorageBindingWriteRevisionResponse {
+            .ok_or_else(|| RpcError::not_found("binding write revision"))?;
+        Ok(pb::BindingWriteRevisionResponse {
             revision: Some(
-                self.storage_binding_write_revision_message(&req.storage_binding_id, revision)
+                self.binding_write_revision_message(&req.binding_id, revision)
                     .await?,
             ),
         })
@@ -13764,12 +13639,12 @@ impl RpcService {
     ) -> pb::TopologyDefaults {
         pb::TopologyDefaults {
             scope_key: record.scope_key,
-            storage_binding_id: record.storage_binding_id.unwrap_or_default(),
+            binding_id: record.binding_id.unwrap_or_default(),
             domain_id: record.domain_id.unwrap_or_default(),
-            delivery_endpoint_id: record.delivery_endpoint_id.unwrap_or_default(),
-            delivery_endpoint_generation: record.delivery_endpoint_generation.unwrap_or_default(),
-            storage_gateway_id: record.storage_gateway_id.unwrap_or_default(),
-            storage_gateway_generation: record.storage_gateway_generation.unwrap_or_default(),
+            endpoint_id: record.endpoint_id.unwrap_or_default(),
+            endpoint_generation: record.endpoint_generation.unwrap_or_default(),
+            gateway_id: record.gateway_id.unwrap_or_default(),
+            gateway_generation: record.gateway_generation.unwrap_or_default(),
             resource_version: record.resource_version.to_string(),
         }
     }
@@ -13842,8 +13717,8 @@ impl RpcService {
                 "defaults scope does not match the selected instance/organization method",
             ));
         }
-        if defaults.delivery_endpoint_id.is_empty() != (defaults.delivery_endpoint_generation == 0)
-            || defaults.storage_gateway_id.is_empty() != (defaults.storage_gateway_generation == 0)
+        if defaults.endpoint_id.is_empty() != (defaults.endpoint_generation == 0)
+            || defaults.gateway_id.is_empty() != (defaults.gateway_generation == 0)
         {
             return Err(RpcError::invalid(
                 "endpoint and gateway ids require positive paired generations",
@@ -13974,14 +13849,12 @@ impl RpcService {
             let current_message = Self::stable_topology_defaults_message(current.clone());
             let exact_recovery = current.resource_version
                 == input.baseline_resource_version.unwrap_or_default() + 1
-                && current_message.storage_binding_id == input.defaults.storage_binding_id
+                && current_message.binding_id == input.defaults.binding_id
                 && current_message.domain_id == input.defaults.domain_id
-                && current_message.delivery_endpoint_id == input.defaults.delivery_endpoint_id
-                && current_message.delivery_endpoint_generation
-                    == input.defaults.delivery_endpoint_generation
-                && current_message.storage_gateway_id == input.defaults.storage_gateway_id
-                && current_message.storage_gateway_generation
-                    == input.defaults.storage_gateway_generation;
+                && current_message.endpoint_id == input.defaults.endpoint_id
+                && current_message.endpoint_generation == input.defaults.endpoint_generation
+                && current_message.gateway_id == input.defaults.gateway_id
+                && current_message.gateway_generation == input.defaults.gateway_generation;
             if exact_recovery {
                 let response = pb::TopologyDefaultsResponse {
                     defaults: Some(current_message),
@@ -14011,12 +13884,12 @@ impl RpcService {
                 if instance { "instance" } else { "organization" },
                 input.org_id,
                 &input.defaults.scope_key,
-                optional(&input.defaults.storage_binding_id),
+                optional(&input.defaults.binding_id),
                 optional(&input.defaults.domain_id),
-                optional(&input.defaults.delivery_endpoint_id),
-                optional_generation(input.defaults.delivery_endpoint_generation),
-                optional(&input.defaults.storage_gateway_id),
-                optional_generation(input.defaults.storage_gateway_generation),
+                optional(&input.defaults.endpoint_id),
+                optional_generation(input.defaults.endpoint_generation),
+                optional(&input.defaults.gateway_id),
+                optional_generation(input.defaults.gateway_generation),
                 input.baseline_resource_version,
             )
             .await
@@ -14158,7 +14031,7 @@ impl RpcService {
         Ok((target, org_id))
     }
 
-    /// Resolves a storage binding by stable id in a surface's owning scope.
+    /// Resolves a binding by stable id in a surface's owning scope.
     async fn topology_binding_id(
         &self,
         org_id: Option<i64>,
@@ -14170,7 +14043,7 @@ impl RpcService {
         let binding = match org_id {
             Some(id) => self
                 .db
-                .list_storage_bindings(id)
+                .list_bindings(id)
                 .await
                 .map_err(RpcError::internal)?
                 .into_iter()
@@ -14186,7 +14059,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .filter(|binding| binding.stable_id == stable_id)
             .map(|binding| binding.id)
-            .ok_or_else(|| RpcError::not_found("storage binding"))
+            .ok_or_else(|| RpcError::not_found("binding"))
     }
 
     /// Returns the canonical authorization and plan scope for one typed surface.
@@ -14246,7 +14119,7 @@ impl RpcService {
             .hash_range
             .as_ref()
             .map(|range| (i64::from(range.start), i64::from(range.end)));
-        placement.storage_binding_id == input.storage_binding_db_id
+        placement.binding_id == input.binding_db_id
             && placement.prefix == input.request.prefix
             && placement.kind == input.request.kind
             && placement.desired_state == input.request.desired_state
@@ -14296,7 +14169,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::FailedPrecondition("writer has no binding revision".into()))?;
         let revision = self
             .db
-            .storage_binding_write_revision(placement.storage_binding_id, binding_revision)
+            .binding_write_revision(placement.binding_id, binding_revision)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::FailedPrecondition("writer revision disappeared".into()))?;
@@ -14378,7 +14251,7 @@ impl RpcService {
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
-                "placement is pinned by a direct delivery route".to_string(),
+                "placement is pinned by a direct route".to_string(),
             ))
         } else if blockers.routed_policy {
             Some(RpcError::FailedPrecondition(
@@ -14395,7 +14268,7 @@ impl RpcService {
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
-                "placement is referenced by a direct delivery route".to_string(),
+                "placement is referenced by a direct route".to_string(),
             ))
         } else if blockers.policy_member {
             Some(RpcError::FailedPrecondition(
@@ -14430,14 +14303,14 @@ impl RpcService {
     ) -> Result<pb::Placement, RpcError> {
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!(
-                    "placement '{}' references missing storage binding {}",
+                    "placement '{}' references missing binding {}",
                     placement.name,
-                    placement.storage_binding_id
+                    placement.binding_id
                 ))
             })?;
         let hash_range = match (placement.hash_range_start, placement.hash_range_end) {
@@ -14457,7 +14330,7 @@ impl RpcService {
         let observed_writer = placement.authority_observed_placement_id == Some(placement.id);
         Ok(pb::Placement {
             name: placement.name,
-            storage_binding_name: binding.name,
+            binding_name: binding.name,
             prefix: placement.prefix,
             spec: Some(pb::PlacementSpec {
                 kind: placement.kind,
@@ -14681,7 +14554,7 @@ impl RpcService {
             "local_then_remote" => pb::placement_policy_revision_spec::Selector::LocalThenRemote(
                 pb::LocalThenRemotePlacementPolicy {
                     replica_groups: projected,
-                    local_boundary: Some(pb::NetworkBoundaryRevisionRef {
+                    local_boundary: Some(pb::NetworkPolicyRevisionRef {
                         boundary_id: revision.spec.local_boundary_id.clone().unwrap_or_default(),
                         revision: revision.spec.local_boundary_revision.unwrap_or_default(),
                     }),
@@ -14917,10 +14790,10 @@ impl RpcService {
             if let Some(boundary) = boundary {
                 let record = self
                     .db
-                    .network_boundary_revision(&boundary.boundary_id, boundary.revision)
+                    .network_policy_revision(&boundary.boundary_id, boundary.revision)
                     .await
                     .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::not_found("network boundary revision"))?;
+                    .ok_or_else(|| RpcError::not_found("network policy revision"))?;
                 if record.lifecycle_state != "active" || record.observation_state != "verified" {
                     return Err(RpcError::FailedPrecondition(
                         "local boundary revision must be active and verified".to_string(),
@@ -14974,31 +14847,31 @@ impl RpcService {
         }
         let route_records = self
             .db
-            .list_delivery_routes(surface)
+            .list_routes(surface)
             .await
             .map_err(RpcError::internal)?;
         let mut routes = Vec::with_capacity(route_records.len());
         for record in &route_records {
-            routes.push(self.delivery_route_message(record.clone()).await?);
+            routes.push(self.route_message(record.clone()).await?);
         }
-        let mut canonical_routes = Vec::new();
+        let mut route_advertisements = Vec::new();
         let mut canonical_endpoint_ids = BTreeSet::new();
         for audience in ["git", "nix_cache", "web"] {
             if let Some(record) = self
                 .db
-                .canonical_route(surface, audience)
+                .route_advertisement(surface, audience)
                 .await
                 .map_err(RpcError::internal)?
             {
-                canonical_routes.push(pb::CanonicalRoute {
+                route_advertisements.push(pb::RouteAdvertisement {
                     surface: Some(self.route_surface_message(surface).await?),
                     audience: record.audience,
-                    route_id: record.delivery_route_id.clone(),
+                    route_id: record.route_id.clone(),
                     resource_version: record.resource_version.to_string(),
                 });
                 if let Some(route) = route_records
                     .iter()
-                    .find(|route| route.id == record.delivery_route_id)
+                    .find(|route| route.id == record.route_id)
                 {
                     canonical_endpoint_ids.insert(route.endpoint_id.clone());
                 }
@@ -15031,13 +14904,13 @@ impl RpcService {
         for endpoint_id in canonical_endpoint_ids {
             let endpoint = self
                 .db
-                .delivery_endpoint(&endpoint_id)
+                .endpoint(&endpoint_id)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| {
-                    RpcError::internal(anyhow::anyhow!("canonical route endpoint is missing"))
+                    RpcError::internal(anyhow::anyhow!("route advertisement endpoint is missing"))
                 })?;
-            canonical_endpoints.push(self.delivery_endpoint_message(endpoint).await?);
+            canonical_endpoints.push(self.endpoint_message(endpoint).await?);
         }
         let active_operations = self
             .db
@@ -15056,7 +14929,7 @@ impl RpcService {
             surface: Some(self.route_surface_message(surface).await?),
             placements,
             routes,
-            canonical_routes,
+            route_advertisements,
             write_authority: match write_authority {
                 Some(authority) => Some(self.write_authority_message(authority).await?),
                 None => None,
@@ -15110,13 +14983,13 @@ impl RpcService {
         let mut rejection_reasons = Vec::new();
         for route in self
             .db
-            .list_delivery_routes(surface)
+            .list_routes(surface)
             .await
             .map_err(RpcError::internal)?
         {
             let snapshot = self
                 .db
-                .delivery_route_snapshot(&route.id)
+                .route_snapshot(&route.id)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::internal(anyhow::anyhow!("route snapshot is missing")))?;
@@ -15519,7 +15392,7 @@ impl RpcService {
         ) {
             let boundary = self
                 .db
-                .network_boundary_revision(id, revision)
+                .network_policy_revision(id, revision)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| {
@@ -15883,7 +15756,7 @@ impl RpcService {
     ) -> Result<String, RpcError> {
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("placement binding is missing")))?;
@@ -16387,9 +16260,7 @@ impl RpcService {
             req.read_order,
             req.hash_range.as_ref(),
         )?;
-        let binding_id = self
-            .topology_binding_id(org_id, &req.storage_binding_id)
-            .await?;
+        let binding_id = self.topology_binding_id(org_id, &req.binding_id).await?;
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let (registry_id, cache_id) = Self::topology_surface_ids(surface);
         let input = PlacementCreatePlanInput {
@@ -16397,7 +16268,7 @@ impl RpcService {
             registry_id,
             cache_id,
             org_id,
-            storage_binding_db_id: binding_id,
+            binding_db_id: binding_id,
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -16462,9 +16333,9 @@ impl RpcService {
         if Self::topology_surface_ids(surface) != (input.registry_id, input.cache_id)
             || org_id != input.org_id
             || self
-                .topology_binding_id(org_id, &input.request.storage_binding_id)
+                .topology_binding_id(org_id, &input.request.binding_id)
                 .await?
-                != input.storage_binding_db_id
+                != input.binding_db_id
         {
             return Err(RpcError::FailedPrecondition(
                 "placement plan inputs changed after review".to_string(),
@@ -16504,7 +16375,7 @@ impl RpcService {
             .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
                 surface,
                 name: input.request.name.clone(),
-                storage_binding_id: input.storage_binding_db_id,
+                binding_id: input.binding_db_id,
                 prefix: input.request.prefix.clone(),
                 kind: input.request.kind.clone(),
                 desired_state: input.request.desired_state.clone(),
@@ -16772,7 +16643,7 @@ impl RpcService {
         }
         let write_state = self
             .db
-            .storage_binding_write_state(candidate.storage_binding_id)
+            .binding_write_state(candidate.binding_id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| {
@@ -16787,7 +16658,7 @@ impl RpcService {
         })?;
         let observation = self
             .db
-            .storage_binding_write_observation(candidate.storage_binding_id, binding_revision)
+            .binding_write_observation(candidate.binding_id, binding_revision)
             .await
             .map_err(RpcError::internal)?;
         if !observation.is_some_and(|observation| observation.state == "valid") {
@@ -16797,7 +16668,7 @@ impl RpcService {
         }
         let revision = self
             .db
-            .storage_binding_write_revision(candidate.storage_binding_id, binding_revision)
+            .binding_write_revision(candidate.binding_id, binding_revision)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| {
@@ -22359,7 +22230,7 @@ impl RpcService {
     /// The consumer-facing base URL for a registry's git surface.
     ///
     /// This is the URL rendered by the registry's explicit canonical Git
-    /// delivery route. Direct, CDN, and Hub-proxied delivery are all modeled as
+    /// route. Direct, CDN, and Hub-proxied delivery are all modeled as
     /// routes; implicit URL inheritance is not consulted.
     ///
     /// # Errors
@@ -22374,9 +22245,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| {
-                RpcError::FailedPrecondition(
-                    "registry canonical Git delivery route is not ready".to_owned(),
-                )
+                RpcError::FailedPrecondition("registry canonical Git route is not ready".to_owned())
             })
     }
 
@@ -22400,7 +22269,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| {
                 RpcError::FailedPrecondition(
-                    "cache canonical Nix-cache delivery route is not ready".to_owned(),
+                    "cache canonical Nix-cache route is not ready".to_owned(),
                 )
             })
     }
@@ -22460,7 +22329,7 @@ impl RpcService {
     ///
     /// Requires cache-write authority. A presign-capable placement returns a
     /// direct-origin URL; every other placement returns a typed Hub-proxy URL.
-    /// Neither case derives a write path from a consumer delivery route.
+    /// Neither case derives a write path from a consumer route.
     ///
     /// # Errors
     ///
@@ -22478,7 +22347,7 @@ impl RpcService {
                 .binary_cache_by_ready_delivery_url(&req.delivery_url)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("cache delivery route"))?,
+                .ok_or_else(|| RpcError::not_found("cache route"))?,
             _ => {
                 return Err(RpcError::invalid(
                     "exactly one of cache_id or delivery_url is required",
@@ -22777,7 +22646,7 @@ impl RpcService {
                 .binary_cache_by_ready_delivery_url(delivery_url)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("cache delivery route")),
+                .ok_or_else(|| RpcError::not_found("cache route")),
             _ => Err(RpcError::invalid(
                 "exactly one of cache_id or delivery_url is required",
             )),
@@ -26094,7 +25963,7 @@ impl RpcService {
     /// Mint a presigned `GET` URL for a cache object on a private external
     /// origin, or `Ok(None)` when the cache is not presign-configured.
     ///
-    /// A cache is presign-configured when its storage binding has private
+    /// A cache is presign-configured when its binding has private
     /// access, a typed S3/R2 origin, and a validated current `presign`
     /// credential generation. The resolved plaintext is
     /// `access_key:secret_key:region` (the secret may itself contain `:`; only
@@ -26274,9 +26143,9 @@ impl RpcService {
         }
         let binding = self
             .db
-            .storage_binding(placement.storage_binding_id)
+            .binding(placement.binding_id)
             .await?
-            .context("placement references a missing storage binding")?;
+            .context("placement references a missing binding")?;
         if binding.access_mode.as_deref() != Some("private") {
             return Ok(None);
         }
@@ -26419,9 +26288,10 @@ impl RpcService {
         let base = self.external_url.trim_end_matches('/');
         let brand = self
             .db
-            .instance_config_get("brand")
+            .instance_settings()
             .await
             .map_err(RpcError::internal)?
+            .site_title
             .unwrap_or_default();
         let registries = self
             .db
@@ -29178,7 +29048,7 @@ impl RpcService {
                 self.require_cache_read(auth, &cache).await?;
                 let identity = self
                     .db
-                    .ready_cache_canonical_route_identity(cache.id)
+                    .ready_cache_route_advertisement_identity(cache.id)
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| {
@@ -29321,7 +29191,7 @@ impl RpcService {
             let cache = self.binary_cache_or_not_found(&cache_id).await?;
             let current = self
                 .db
-                .ready_cache_canonical_route_identity(cache.id)
+                .ready_cache_route_advertisement_identity(cache.id)
                 .await
                 .map_err(RpcError::internal)?;
             if current.as_ref() != Some(planned_identity) {
@@ -29388,7 +29258,10 @@ impl RpcService {
         registry: &RegistryRecord,
         change_id: &str,
         change: &pb::ConsumerCacheChange,
-        ready_routes: &std::collections::BTreeMap<String, crate::db::ReadyCanonicalRouteIdentity>,
+        ready_routes: &std::collections::BTreeMap<
+            String,
+            crate::db::ReadyRouteAdvertisementIdentity,
+        >,
     ) -> Result<(), RpcError> {
         let Some(source) = change
             .desired
@@ -29537,7 +29410,10 @@ impl RpcService {
         registry: &RegistryRecord,
         stack: &pb::ConsumerCacheStack,
         change: &pb::ConsumerCacheChange,
-        ready_routes: &std::collections::BTreeMap<String, crate::db::ReadyCanonicalRouteIdentity>,
+        ready_routes: &std::collections::BTreeMap<
+            String,
+            crate::db::ReadyRouteAdvertisementIdentity,
+        >,
     ) -> Result<String, RpcError> {
         let entries = Self::mutated_consumer_cache_entries(stack, change)?;
         let head = self.head_commit(registry).await?;
@@ -29600,7 +29476,10 @@ impl RpcService {
         auth: Option<&str>,
         registry: &RegistryRecord,
         entry: &pb::ConsumerCacheStackEntry,
-        ready_routes: &std::collections::BTreeMap<String, crate::db::ReadyCanonicalRouteIdentity>,
+        ready_routes: &std::collections::BTreeMap<
+            String,
+            crate::db::ReadyRouteAdvertisementIdentity,
+        >,
     ) -> Result<toml::Value, RpcError> {
         let mut endpoint = toml::map::Map::new();
         let url = match entry.source.as_ref() {
@@ -29672,7 +29551,7 @@ impl RpcService {
                 errors.push(format!("duplicate stack entry id '{}'", row.stack_path));
             }
             if let Some(cache_id) = row.cache_id {
-                if row.delivery_route_id.is_none()
+                if row.route_id.is_none()
                     || row.route_configuration_generation.is_none()
                     || row.route_configuration_digest.is_none()
                 {
@@ -31520,18 +31399,12 @@ impl RpcService {
                     pb::operation_resource_ref::Target::BinaryCacheId(id) => ("binary_cache", id),
                     pb::operation_resource_ref::Target::PlacementId(id) => ("placement", id),
                     pb::operation_resource_ref::Target::DomainId(id) => ("domain", id),
-                    pb::operation_resource_ref::Target::NetworkBoundaryId(id) => {
-                        ("network_boundary", id)
+                    pb::operation_resource_ref::Target::NetworkPolicyId(id) => {
+                        ("network_policy", id)
                     }
-                    pb::operation_resource_ref::Target::DeliveryEndpointId(id) => {
-                        ("delivery_endpoint", id)
-                    }
-                    pb::operation_resource_ref::Target::StorageGatewayId(id) => {
-                        ("storage_gateway", id)
-                    }
-                    pb::operation_resource_ref::Target::DeliveryRouteId(id) => {
-                        ("delivery_route", id)
-                    }
+                    pb::operation_resource_ref::Target::EndpointId(id) => ("endpoint", id),
+                    pb::operation_resource_ref::Target::GatewayId(id) => ("gateway", id),
+                    pb::operation_resource_ref::Target::RouteId(id) => ("route", id),
                     pb::operation_resource_ref::Target::PlacementPolicyId(id) => {
                         ("placement_policy", id)
                     }
@@ -31544,9 +31417,7 @@ impl RpcService {
                     pb::operation_resource_ref::Target::CacheGcGenerationId(id) => {
                         ("cache_gc_generation", id)
                     }
-                    pb::operation_resource_ref::Target::StorageBindingId(id) => {
-                        ("storage_binding", id)
-                    }
+                    pb::operation_resource_ref::Target::BindingId(id) => ("binding", id),
                 };
                 let authorization_scope_key = self
                     .db
@@ -31908,18 +31779,12 @@ impl RpcService {
                     "binary_cache" => pb::operation_target::Target::BinaryCacheId(target.stable_id),
                     "placement" => pb::operation_target::Target::PlacementId(target.stable_id),
                     "domain" => pb::operation_target::Target::DomainId(target.stable_id),
-                    "network_boundary" => {
-                        pb::operation_target::Target::NetworkBoundaryId(target.stable_id)
+                    "network_policy" => {
+                        pb::operation_target::Target::NetworkPolicyId(target.stable_id)
                     }
-                    "delivery_endpoint" => {
-                        pb::operation_target::Target::DeliveryEndpointId(target.stable_id)
-                    }
-                    "storage_gateway" => {
-                        pb::operation_target::Target::StorageGatewayId(target.stable_id)
-                    }
-                    "delivery_route" => {
-                        pb::operation_target::Target::DeliveryRouteId(target.stable_id)
-                    }
+                    "endpoint" => pb::operation_target::Target::EndpointId(target.stable_id),
+                    "gateway" => pb::operation_target::Target::GatewayId(target.stable_id),
+                    "route" => pb::operation_target::Target::RouteId(target.stable_id),
                     "placement_policy" => {
                         pb::operation_target::Target::PlacementPolicyId(target.stable_id)
                     }
@@ -31932,9 +31797,7 @@ impl RpcService {
                     "cache_gc_generation" => {
                         pb::operation_target::Target::CacheGcGenerationId(target.stable_id)
                     }
-                    "storage_binding" => {
-                        pb::operation_target::Target::StorageBindingId(target.stable_id)
-                    }
+                    "binding" => pb::operation_target::Target::BindingId(target.stable_id),
                     kind => {
                         return Err(RpcError::internal(anyhow::anyhow!(
                             "operation has unknown target kind '{kind}'"
@@ -35039,11 +34902,11 @@ fn topology_target_read_permission(target_kind: &str) -> Permission {
         "placement" => Permission::PlacementRead,
         "placement_policy" => Permission::PlacementPolicyRead,
         "domain" => Permission::DomainRead,
-        "network_boundary" => Permission::NetworkBoundaryRead,
-        "delivery_endpoint" => Permission::DeliveryEndpointRead,
-        "storage_gateway" => Permission::StorageGatewayRead,
-        "storage_binding" => Permission::StorageBindingRead,
-        "delivery_route" => Permission::RouteRead,
+        "network_policy" => Permission::NetworkPolicyRead,
+        "endpoint" => Permission::EndpointRead,
+        "gateway" => Permission::GatewayRead,
+        "binding" => Permission::BindingRead,
+        "route" => Permission::RouteRead,
         _ => Permission::Read,
     }
 }
@@ -35809,7 +35672,7 @@ mod cache_upload_tests {
             .unwrap();
         let org = db.org_by_id(org_id).await.unwrap().unwrap();
         let binding_id = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org_id),
                 "binding-reuse-only",
                 &org.stable_id,
@@ -35831,7 +35694,7 @@ mod cache_upload_tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                storage_binding_id: binding_id,
+                binding_id: binding_id,
                 prefix: "main".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
@@ -36148,10 +36011,10 @@ mod cache_upload_tests {
 
         assert_eq!(instance.scope_key, "instance");
         assert!(instance.resource_version.is_empty());
-        assert!(instance.storage_binding_id.is_empty());
+        assert!(instance.binding_id.is_empty());
         assert_eq!(organization.scope_key, "org:defaults");
         assert!(organization.resource_version.is_empty());
-        assert!(organization.storage_binding_id.is_empty());
+        assert!(organization.binding_id.is_empty());
     }
 
     #[tokio::test]
@@ -37012,7 +36875,7 @@ mod cache_upload_tests {
             .unwrap();
         let org = db.org_by_id(org_id).await.unwrap().unwrap();
         let binding_id = db
-            .create_topology_storage_binding(
+            .create_topology_binding(
                 Some(org_id),
                 "binding-image-http",
                 &org.stable_id,
@@ -37034,7 +36897,7 @@ mod cache_upload_tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                storage_binding_id: binding_id,
+                binding_id: binding_id,
                 prefix: "system".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),
@@ -37398,10 +37261,7 @@ mod cache_upload_tests {
         .unwrap();
         assert_eq!(direct.code(), "failed_precondition");
         assert_eq!(direct.http_status(), 400);
-        assert_eq!(
-            direct.message(),
-            "placement is pinned by a direct delivery route"
-        );
+        assert_eq!(direct.message(), "placement is pinned by a direct route");
 
         let routed = RpcService::placement_route_pin_error(SurfacePlacementBlockers {
             routed_policy: true,
@@ -37419,7 +37279,7 @@ mod cache_upload_tests {
                     direct_route: true,
                     ..Default::default()
                 },
-                "placement is referenced by a direct delivery route",
+                "placement is referenced by a direct route",
             ),
             (
                 SurfacePlacementBlockers {

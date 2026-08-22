@@ -17,9 +17,8 @@
 //! reserved namespace that can never collide with machine paths.
 //!
 //! These builders are **transport- and task-local-free**: the signed-in identity
-//! rides in an explicit [`SessionIndicator`] argument (the masthead brand rides
-//! in the process-wide `set_brand` seam, exactly as
-//! [`crate::web::console_render`]), so the module compiles to
+//! rides in an explicit [`SessionIndicator`] argument (the masthead brand comes
+//! from the shared editable site chrome), so the module compiles to
 //! `wasm32-unknown-unknown` (no `axum`, no `tokio`, no `std::fs`). The pure
 //! primitives — [`escape`], [`table`], `human_size`, `key_fingerprint`, and the
 //! console chrome (`page_with_session`, [`Pager`], [`StateLine`]) — are reused
@@ -41,7 +40,7 @@ use crate::web::console_render::{
     ago, live_table, meter, page_with_session, table_raw_headers, urlencode, Pager,
     SessionIndicator, StateLine,
 };
-use crate::web::render::{escape, human_size, key_fingerprint, table};
+use crate::web::render::{escape, hash_value, hash_value_link, human_size, key_fingerprint, table};
 use aos_registry_surface::manifest::{ImageTarget, ImageVerificationState};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -132,12 +131,7 @@ fn parse_bucket(text: &str) -> Option<u8> {
 
 /// A narinfo permalink for one store hash on this registry's facade.
 fn narinfo_link(slug: &str, hash: &str) -> String {
-    format!(
-        "<a href=\"/{}/{}.narinfo\"><code>{}</code></a>",
-        escape(slug),
-        escape(hash),
-        escape(hash),
-    )
+    hash_value_link(hash, &format!("/{slug}/{hash}.narinfo"))
 }
 
 fn store_path_link(slug: &str, path: &str) -> String {
@@ -391,7 +385,7 @@ pub fn registry_home(
                 let (name, blob) = key_name_and_blob(key);
                 vec![
                     format!("pinned {}", escape(name)),
-                    format!("<code>{}</code>", escape(&key_fingerprint(blob))),
+                    hash_value(&key_fingerprint(blob)),
                     format!("<code>{}</code>", escape(key)),
                 ]
             })
@@ -401,7 +395,7 @@ pub fn registry_home(
                 } else {
                     let (_, blob) = key_name_and_blob(key);
                     (
-                        format!("<code>{}</code>", escape(&key_fingerprint(blob))),
+                        hash_value(&key_fingerprint(blob)),
                         format!("<code>{}</code>", escape(key)),
                     )
                 };
@@ -499,7 +493,7 @@ pub fn registry_home(
     body.push_str("<h2>Setup</h2>\n");
     let Some(external_url) = external_url else {
         body.push_str(
-            "<p class=\"dim\">No canonical Git delivery route is ready. Configure delivery before adding this registry to a client.</p>\n",
+            "<p class=\"dim\">No canonical Git route is ready. Configure delivery before adding this registry to a client.</p>\n",
         );
         return page_with_session(
             display_name,
@@ -530,7 +524,7 @@ pub fn registry_home(
     // `substituters` are the registry's advertised *binary caches*, not the
     // registry URL: the registry serves the index/git surface, while nar/narinfo
     // — the heavy traffic — come from the caches, which front their own
-    // exact delivery routes materialize those committed URLs, keeping
+    // exact routes materialize those committed URLs, keeping
     // substitution off the registry's critical path. Highest priority (lowest
     // number) first. A registry that
     // advertises no cache falls back to serving as its own cache.
@@ -1204,8 +1198,8 @@ pub fn package_page(
             );
             let _ = writeln!(
                 body,
-                "<tr class=\"artifact-detail\"><th scope=\"row\">NAR hash</th><td colspan=\"3\"><code>{}</code></td></tr>",
-                escape(&platform.nar_hash),
+                "<tr class=\"artifact-detail\"><th scope=\"row\">NAR hash</th><td colspan=\"3\">{}</td></tr>",
+                hash_value(&platform.nar_hash),
             );
             if !platform.refs.is_empty() {
                 body.push_str(
@@ -1473,24 +1467,15 @@ pub fn cache_object(
     let mut body = String::new();
     let _ = write!(body, "<h1>{}</h1>\n", escape(&object.store_name));
     let mut fields = vec![
-        vec![
-            "StoreHash".to_string(),
-            format!("<code>{}</code>", escape(&object.store_hash)),
-        ],
+        vec!["StoreHash".to_string(), hash_value(&object.store_hash)],
         vec!["URL".to_string(), escape(&object.nar_url)],
         vec!["Compression".to_string(), escape(&object.compression)],
-        vec![
-            "NarHash".to_string(),
-            format!("<code>{}</code>", escape(&object.nar_hash)),
-        ],
+        vec!["NarHash".to_string(), hash_value(&object.nar_hash)],
         vec![
             "NarSize".to_string(),
             human_size(object.nar_size.max(0) as u64),
         ],
-        vec![
-            "FileHash".to_string(),
-            format!("<code>{}</code>", escape(&object.file_hash)),
-        ],
+        vec!["FileHash".to_string(), hash_value(&object.file_hash)],
         vec![
             "FileSize".to_string(),
             human_size(object.file_size.max(0) as u64),
@@ -1569,11 +1554,7 @@ pub fn cache_closure(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(
-        body,
-        "<h1>Closure of <code>{}</code></h1>\n",
-        escape(root_hash)
-    );
+    let _ = write!(body, "<h1>Closure of {}</h1>\n", hash_value(root_hash));
     let _ = write!(
         body,
         "<p>{} paths · {} total</p>\n",
@@ -1584,14 +1565,12 @@ pub fn cache_closure(
         .iter()
         .map(|n| {
             let hash_cell = if n.present {
-                format!(
-                    "<a href=\"/{}/-/objects/{}\"><code>{}</code></a>",
-                    escape(slug),
-                    escape(&n.store_hash),
-                    escape(&n.store_hash),
+                hash_value_link(
+                    &n.store_hash,
+                    &format!("/{slug}/-/objects/{}", n.store_hash),
                 )
             } else {
-                format!("<code>{}</code>", escape(&n.store_hash))
+                hash_value(&n.store_hash)
             };
             let size_cell = if n.present {
                 human_size(n.file_size.max(0) as u64)
@@ -2028,7 +2007,6 @@ pub fn images_page(
         }
         let (boot_verification, boot_class) =
             image_verification_label(image.delivery.uki.verification);
-        let checksum_id = format!("image-sha-{}", rows.len());
         let channel_cell = if channel_names.is_empty() {
             "—".to_string()
         } else {
@@ -2054,11 +2032,10 @@ pub fn images_page(
         } else {
             format!(
                 "<span class=\"image-detail-item\"><span class=\"dim\">store</span> <code title=\"{}\">{}</code></span>\
-                 <span class=\"image-detail-item\"><span class=\"dim\">NAR</span> <code title=\"{}\">{}</code> ({})</span>",
+                 <span class=\"image-detail-item\"><span class=\"dim\">NAR</span> {} ({})</span>",
                 escape(&image.store_path),
                 escape(image.store_path.rsplit('/').next().unwrap_or(&image.store_path)),
-                escape(&image.nar_hash),
-                escape(image.nar_hash.get(..20).unwrap_or(&image.nar_hash)),
+                hash_value(&image.nar_hash),
                 human_size(image.nar_size),
             )
         };
@@ -2073,9 +2050,7 @@ pub fn images_page(
              <span class=\"image-detail-item\"><span class=\"dim\">file</span> {filename}</span>\
              {store_identity}\
              <span class=\"image-detail-item checksum-item\"><span class=\"dim\">SHA-256</span> \
-             <code id=\"{checksum_id}\" class=\"image-checksum\" title=\"{checksum}\">{checksum}</code>\
-             <button type=\"button\" class=\"image-copy\" data-copy-target=\"{checksum_id}\" \
-             aria-label=\"Copy full SHA-256 checksum\" hidden>copy</button></span></td></tr></tbody>\n",
+             {checksum}</span></td></tr></tbody>\n",
             release = escape(&image.release),
             package = escape(&image.package),
             channel = channel_cell,
@@ -2083,7 +2058,7 @@ pub fn images_page(
             format = escape(&image.format),
             size = human_size(image.delivery.byte_size),
             targets = escape(&targets),
-            checksum = escape(&image.delivery.sha256),
+            checksum = hash_value(&image.delivery.sha256),
             filename = escape(&image.delivery.filename),
         ));
     }
@@ -2188,10 +2163,7 @@ pub fn releases_page(
         .map(|release| {
             vec![
                 escape(&release.semver),
-                format!(
-                    "<code>{}</code>",
-                    escape(&release.commit_oid[..release.commit_oid.len().min(12)])
-                ),
+                hash_value(&release.commit_oid),
                 match &release.signer {
                     Some(signer) => format!(
                         "<span class=\"ok\">✓ signed</span> <span class=\"dim\">{}…</span>",
@@ -2277,7 +2249,7 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
 /// members are not individually complete is flagged as a replication
 /// shortfall above the matrix.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeliveryRouteHealthRow {
+pub struct RouteHealthRow {
     /// Stable route identity.
     pub id: String,
     /// Exact endpoint identity.
@@ -2300,7 +2272,7 @@ pub fn health_page(
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
     repair_jobs: &[RepairJobRow],
-    routes: &[DeliveryRouteHealthRow],
+    routes: &[RouteHealthRow],
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -2438,7 +2410,7 @@ pub fn health_page(
                     _ => "bad",
                 };
                 vec![
-                    format!("<code>{}</code>", escape(&job.store_hash)),
+                    hash_value(&job.store_hash),
                     format!("<code>{}</code>", escape(&job.cache_url)),
                     format!("<code>{}</code>", escape(&job.source_cache_url)),
                     format!("<span class=\"{class}\">{}</span>", escape(&job.status)),
@@ -2475,7 +2447,7 @@ pub fn health_page(
     }
 
     if !routes.is_empty() {
-        body.push_str("<h2>Delivery routes</h2>\n");
+        body.push_str("<h2>Routes</h2>\n");
         let rows: Vec<Vec<String>> = routes
             .iter()
             .map(|route| {

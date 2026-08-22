@@ -56,49 +56,49 @@
       },
       {
         "node_id": "legacy/endpoint/cache-example/1",
-        "resource_kind": "delivery_endpoint",
+        "resource_kind": "endpoint",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000020",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/cache-canonical",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000005",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/cache-canonical/configuration/1",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5200000000000000000000000000000000000000000000000000000000000001",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/registry-git",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000001",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/registry-git/configuration/1",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000003",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/registry-web",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000005",
         "expected_mapping_edge_count": 1
       },
       {
         "node_id": "legacy/route/registry-web/configuration/1",
-        "resource_kind": "delivery_route",
+        "resource_kind": "route",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5300000000000000000000000000000000000000000000000000000000000007",
         "expected_mapping_edge_count": 1
@@ -133,7 +133,7 @@
       },
       {
         "node_id": "legacy/boundary/public/1",
-        "resource_kind": "network_boundary",
+        "resource_kind": "network_policy",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000021",
         "expected_mapping_edge_count": 1
@@ -210,7 +210,7 @@
       },
       {
         "node_id": "legacy/binding/example-local",
-        "resource_kind": "storage_binding",
+        "resource_kind": "binding",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000003",
         "expected_mapping_edge_count": 1
@@ -224,7 +224,7 @@
       },
       {
         "node_id": "legacy/gateway/hub/1",
-        "resource_kind": "storage_gateway",
+        "resource_kind": "gateway",
         "owner_scope_stable_id": "org/example",
         "source_locator_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000022",
         "expected_mapping_edge_count": 1
@@ -265,19 +265,19 @@
         "stable_id": "org/example/binding/local/write-revision/1"
       },
       {
-        "kind": "delivery_endpoint",
+        "kind": "endpoint",
         "stable_id": "endpoint/cache-example/1"
       },
       {
-        "kind": "delivery_route",
+        "kind": "route",
         "stable_id": "org/example/cache/main/route/canonical"
       },
       {
-        "kind": "delivery_route",
+        "kind": "route",
         "stable_id": "org/example/registry/main/route/git"
       },
       {
-        "kind": "delivery_route",
+        "kind": "route",
         "stable_id": "org/example/registry/main/route/web"
       },
       {
@@ -297,7 +297,7 @@
         "stable_id": "org/example/cache/main/inventory/1"
       },
       {
-        "kind": "network_boundary",
+        "kind": "network_policy",
         "stable_id": "boundary/public/1"
       },
       {
@@ -357,7 +357,7 @@
         "stable_id": "org/example/registry/main/route/web/configuration/1"
       },
       {
-        "kind": "storage_binding",
+        "kind": "binding",
         "stable_id": "org/example/binding/local"
       },
       {
@@ -365,7 +365,7 @@
         "stable_id": "instance/production/storage-default"
       },
       {
-        "kind": "storage_gateway",
+        "kind": "gateway",
         "stable_id": "gateway/hub/1"
       },
       {
@@ -564,7 +564,7 @@
         "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000019"
       }
     ],
-    "delivery_endpoints": [
+    "endpoints": [
       {
         "stable_id": "endpoint/cache-example/1",
         "owner_stable_id": "endpoint/cache-example",
@@ -573,7 +573,7 @@
         "configuration_digest": "derive:sha256:5000000000000000000000000000000000000000000000000000000000000020"
       }
     ],
-    "network_boundaries": [
+    "network_policies": [
       {
         "stable_id": "boundary/public/1",
         "owner_stable_id": "boundary/public",
@@ -825,7 +825,7 @@
       {
         "edge_id": "mapping/endpoint/cache-example/1",
         "source_node_id": "legacy/endpoint/cache-example/1",
-        "target_resource_kind": "delivery_endpoint",
+        "target_resource_kind": "endpoint",
         "target_stable_id": "endpoint/cache-example/1",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -835,7 +835,7 @@
       {
         "edge_id": "mapping/org/example/cache/main/route/canonical",
         "source_node_id": "legacy/route/cache-canonical",
-        "target_resource_kind": "delivery_route",
+        "target_resource_kind": "route",
         "target_stable_id": "org/example/cache/main/route/canonical",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -845,7 +845,7 @@
       {
         "edge_id": "mapping/org/example/registry/main/route/git",
         "source_node_id": "legacy/route/registry-git",
-        "target_resource_kind": "delivery_route",
+        "target_resource_kind": "route",
         "target_stable_id": "org/example/registry/main/route/git",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -855,7 +855,7 @@
       {
         "edge_id": "mapping/org/example/registry/main/route/web",
         "source_node_id": "legacy/route/registry-web",
-        "target_resource_kind": "delivery_route",
+        "target_resource_kind": "route",
         "target_stable_id": "org/example/registry/main/route/web",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -905,7 +905,7 @@
       {
         "edge_id": "mapping/boundary/public/1",
         "source_node_id": "legacy/boundary/public/1",
-        "target_resource_kind": "network_boundary",
+        "target_resource_kind": "network_policy",
         "target_stable_id": "boundary/public/1",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -1055,7 +1055,7 @@
       {
         "edge_id": "mapping/org/example/binding/local",
         "source_node_id": "legacy/binding/example-local",
-        "target_resource_kind": "storage_binding",
+        "target_resource_kind": "binding",
         "target_stable_id": "org/example/binding/local",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
@@ -1075,7 +1075,7 @@
       {
         "edge_id": "mapping/gateway/hub/1",
         "source_node_id": "legacy/gateway/hub/1",
-        "target_resource_kind": "storage_gateway",
+        "target_resource_kind": "gateway",
         "target_stable_id": "gateway/hub/1",
         "owner_scope_stable_id": "org/example",
         "ordinal": 1,
