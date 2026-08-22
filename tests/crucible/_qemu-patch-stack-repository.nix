@@ -152,9 +152,12 @@ in
             cat "$TMPDIR/source-supplement.paths0"
             find . -path './.git' -prune -o -type d -print0
           } | sort -zu > "$TMPDIR/source-supplement.entries0"
+          cp "$TMPDIR/source-supplement.entries0" \
+            "$out/source-supplement.entries0"
           supplement_entry_count=$(tr '\0' '\n' < "$TMPDIR/source-supplement.entries0" \
             | wc -l | tr -d ' ')
-          tar --no-recursion --null --files-from="$TMPDIR/source-supplement.entries0" \
+          tar --no-recursion --null --format=gnu --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner --files-from="$TMPDIR/source-supplement.entries0" \
             -cf "$out/source-supplement.tar"
           supplement_hash=$(sha256sum "$out/source-supplement.tar" | gawk '{ print $1 }')
           printf '%s\n' "$supplement_hash" > "$out/source-supplement.sha256"
