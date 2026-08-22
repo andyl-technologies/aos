@@ -19,12 +19,14 @@ Platform-specific adapters provide:
 `HubDb` applies the shared schema on first use, and administrative mutations
 use the typed Hub API.
 
-Webhook work is anchored in `HubDb`, not in Queue messages. Each message carries
-only a stable delivery ID; the consumer conditionally leases that row with a
-fencing token before resolving its secret version and sending. Cron both
-materializes topology outbox events and drains a bounded due batch, so it is a
-durable backstop for failed Queue publication. Delivery is at least once and
-receivers should deduplicate retries by `X-AOS-Delivery-ID`.
+Queue messages use a versioned envelope with a stable operation ID. The
+consumer leases that identity in `HubDb`, performs provider and network I/O in
+the queue isolate, and sends only short SQL operations through a seal-gated
+remote backend; checked batches remain atomic in colocated SQLite. Cron is a
+database-only dispatcher for bounded registry, cache, GC, probe, directory,
+and webhook jobs. Webhook delivery also retains its domain-specific fencing
+token and stable `X-AOS-Delivery-ID`; receivers should deduplicate retries by
+that header.
 
 ## Outbound security boundary
 
