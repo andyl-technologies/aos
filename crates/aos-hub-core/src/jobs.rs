@@ -21,8 +21,9 @@
 
 use std::sync::Mutex;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::backend::BackendBounds;
 
@@ -69,6 +70,165 @@ pub enum Job {
         /// Stable delivery identity; queue retries resolve and claim this row.
         delivery_id: String,
     },
+}
+
+/// Current durable queue-envelope format.
+pub const JOB_ENVELOPE_VERSION: u8 = 2;
+
+/// Resume position carried by a bounded follow-up job.
+///
+/// The cursor is opaque to the queue. Its job handler defines the cursor's
+/// meaning and must reject a cursor that does not belong to the enclosed job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobContinuation {
+    /// Zero-based bounded-pass sequence, incremented for each follow-up.
+    pub sequence: u32,
+    /// Handler-owned opaque resume cursor.
+    pub cursor: String,
+}
+
+/// Versioned durable queue message with a stable execution identity.
+///
+/// Cloudflare may deliver a message more than once. `operation_id` remains
+/// unchanged across those deliveries and lets the database suppress a replay
+/// after the first successful execution. Follow-up chunks receive a
+/// deterministic child identity through [`JobEnvelope::continued`], so a
+/// crash between enqueue and acknowledgement cannot create duplicate work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobEnvelope {
+    /// Queue wire-format version.
+    pub version: u8,
+    /// Stable identity for this exact bounded unit of work.
+    pub operation_id: String,
+    /// Deferred operation to execute.
+    pub job: Job,
+    /// Resume position for a bounded continuation, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<JobContinuation>,
+}
+
+impl JobEnvelope {
+    /// Creates a root envelope with a fresh stable operation identity.
+    #[must_use]
+    pub fn new(job: Job) -> Self {
+        Self {
+            version: JOB_ENVELOPE_VERSION,
+            operation_id: uuid::Uuid::new_v4().simple().to_string(),
+            job,
+            continuation: None,
+        }
+    }
+
+    /// Wraps a legacy message using a deterministic transport identity.
+    #[must_use]
+    pub fn from_legacy(job: Job, transport_id: &str) -> Self {
+        let operation_id = hex::encode(Sha256::digest(
+            format!("aos-worker-job-legacy-v2\0{transport_id}").as_bytes(),
+        ));
+        Self {
+            version: JOB_ENVELOPE_VERSION,
+            operation_id,
+            job,
+            continuation: None,
+        }
+    }
+
+    /// Builds the deterministic next bounded continuation.
+    ///
+    /// Repeating this call with the same parent, job, and cursor yields the
+    /// same identity, which makes enqueue-after-commit retry safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parent envelope is invalid, the sequence
+    /// overflows, the cursor is empty or oversized, or the job cannot be
+    /// serialized for identity derivation.
+    pub fn continued(&self, job: Job, cursor: String) -> Result<Self> {
+        self.validate()?;
+        if cursor.is_empty() || cursor.len() > 2_048 {
+            bail!("job continuation cursor must contain 1 through 2048 bytes");
+        }
+        let sequence = self.continuation.as_ref().map_or(Ok(1), |continuation| {
+            continuation
+                .sequence
+                .checked_add(1)
+                .context("job continuation sequence overflowed")
+        })?;
+        let encoded_job = serde_json::to_vec(&job).context("serializing continuation job")?;
+        let mut identity = Sha256::new();
+        identity.update(b"aos-worker-job-continuation-v2\0");
+        identity.update(self.operation_id.as_bytes());
+        identity.update(b"\0");
+        identity.update(sequence.to_be_bytes());
+        identity.update(b"\0");
+        identity.update(cursor.as_bytes());
+        identity.update(b"\0");
+        identity.update(encoded_job);
+
+        Ok(Self {
+            version: JOB_ENVELOPE_VERSION,
+            operation_id: hex::encode(identity.finalize()),
+            job,
+            continuation: Some(JobContinuation { sequence, cursor }),
+        })
+    }
+
+    /// Validates the bounded wire contract before execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported version, malformed operation
+    /// identity, or invalid continuation cursor.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != JOB_ENVELOPE_VERSION {
+            bail!("unsupported job envelope version {}", self.version);
+        }
+        if self.operation_id.len() != 32 && self.operation_id.len() != 64 {
+            bail!("job operation identity must contain 32 or 64 hexadecimal bytes");
+        }
+        if !self
+            .operation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("job operation identity must be lowercase hexadecimal");
+        }
+        if let Some(continuation) = &self.continuation {
+            if continuation.sequence == 0
+                || continuation.cursor.is_empty()
+                || continuation.cursor.len() > 2_048
+            {
+                bail!("job continuation is invalid");
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns a stable digest of the operation payload and continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope is invalid or cannot be serialized.
+    pub fn payload_digest(&self) -> Result<String> {
+        self.validate()?;
+        let payload = serde_json::to_vec(&(&self.job, &self.continuation))
+            .context("serializing job payload")?;
+        Ok(hex::encode(Sha256::digest(payload)))
+    }
+
+    /// Returns the stable discriminator stored with deduplication state.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match &self.job {
+            Job::RunTopologyProbes => "run_topology_probes",
+            Job::RegenerateSurface { .. } => "regenerate_surface",
+            Job::RebuildDirectory => "rebuild_directory",
+            Job::Reindex { .. } => "reindex",
+            Job::ResetIndex { .. } => "reset_index",
+            Job::RefreshPublicationObject { .. } => "refresh_publication_object",
+            Job::DeliverWebhook { .. } => "deliver_webhook",
+        }
+    }
 }
 
 /// An async producer of deferred [`Job`]s.
@@ -140,7 +300,7 @@ impl Queue for InMemoryQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemoryQueue, Job, Queue};
+    use super::{InMemoryQueue, Job, JobEnvelope, Queue};
 
     #[tokio::test]
     async fn records_jobs_in_order() {
@@ -190,5 +350,43 @@ mod tests {
         let json = serde_json::to_string(&delivery).unwrap();
         assert!(!json.contains("webhook_id") && !json.contains("event\""));
         assert_eq!(serde_json::from_str::<Job>(&json).unwrap(), delivery);
+    }
+
+    #[test]
+    fn versioned_envelopes_keep_stable_retry_and_continuation_identities() {
+        let root = JobEnvelope::new(Job::Reindex { registry_id: 7 });
+        root.validate().unwrap();
+        let json = serde_json::to_string(&root).unwrap();
+        let retried: JobEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(retried.operation_id, root.operation_id);
+        assert_eq!(
+            retried.payload_digest().unwrap(),
+            root.payload_digest().unwrap()
+        );
+
+        let first = root
+            .continued(Job::Reindex { registry_id: 7 }, "page-2".into())
+            .unwrap();
+        let duplicate = root
+            .continued(Job::Reindex { registry_id: 7 }, "page-2".into())
+            .unwrap();
+        assert_eq!(first.operation_id, duplicate.operation_id);
+        assert_eq!(first.continuation.as_ref().unwrap().sequence, 1);
+
+        let second = first
+            .continued(Job::Reindex { registry_id: 7 }, "page-3".into())
+            .unwrap();
+        assert_ne!(second.operation_id, first.operation_id);
+        assert_eq!(second.continuation.as_ref().unwrap().sequence, 2);
+    }
+
+    #[test]
+    fn legacy_envelopes_are_stable_per_transport_message() {
+        let first = JobEnvelope::from_legacy(Job::RebuildDirectory, "transport-message-one");
+        let retry = JobEnvelope::from_legacy(Job::RebuildDirectory, "transport-message-one");
+        let other = JobEnvelope::from_legacy(Job::RebuildDirectory, "transport-message-two");
+        assert_eq!(first.operation_id, retry.operation_id);
+        assert_ne!(first.operation_id, other.operation_id);
+        first.validate().unwrap();
     }
 }

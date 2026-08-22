@@ -335,9 +335,11 @@ mod placement_policy;
 mod registry_delete;
 mod signing_keys;
 mod topology;
+mod worker_jobs;
 pub use placement_policy::*;
 pub use signing_keys::*;
 pub use topology::*;
+pub use worker_jobs::*;
 
 /// Grace period, in seconds, during which a rotated token's old secret
 /// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
@@ -385,6 +387,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("org_usage_backfill.sql"),
     include_str!("cache_multipart_creation.sql"),
     include_str!("publication_object_evidence.sql"),
+    include_str!("worker_jobs.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover
