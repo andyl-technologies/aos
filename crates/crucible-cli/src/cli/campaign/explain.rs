@@ -7,11 +7,16 @@ use super::object::{
 use super::*;
 
 use crucible_campaign::{
-    CampaignChoiceObject, CampaignChoiceObjectKind, ChoiceOpportunity,
-    GetCampaignChoiceObjectRequest, GetCampaignFrontierObjectRequest, SelectableDeclaration,
+    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
+    CampaignFindingObjectKind, ChoiceOpportunity, Finding, FindingId, FindingTarget,
+    GetCampaignChoiceObjectRequest, GetCampaignFindingObjectRequest,
+    GetCampaignFrontierObjectRequest, Observation, ReproductionArtifact, SelectableDeclaration,
+    StopOutcome,
 };
 
 const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanation.v1";
+const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
+    "crucible.cli.campaign-finding-explanation.v1";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -71,6 +76,63 @@ struct CampaignFrontierCause {
     required_visits: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct CampaignFindingExplanationReport {
+    schema: &'static str,
+    operation: &'static str,
+    campaign: String,
+    snapshot: String,
+    finding: CampaignExplainedFinding,
+    observation: CampaignExplainedObservation,
+    reproduction: CampaignExplainedReproduction,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedFinding {
+    id: String,
+    cluster: String,
+    kind: &'static str,
+    fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    property: Option<String>,
+    failure_class: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    causal_evidence: Vec<String>,
+    first_seen_snapshot: String,
+    occurrence_count: u32,
+    latest_occurrence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimized_reproduction: Option<String>,
+    exact_pins: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedObservation {
+    id: String,
+    attempt: String,
+    path: String,
+    child: String,
+    child_artifact: String,
+    stop: String,
+    measurements: String,
+    properties: String,
+    coverage: String,
+    discovered_choices: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedReproduction {
+    id: String,
+    scenario: String,
+    scenario_artifact: String,
+    configuration: String,
+    configuration_artifact: String,
+    finding_fingerprint: String,
+    payload_schema: u32,
+    payload_bytes: usize,
+}
+
 pub(super) fn validate_campaign_explain_command(command: &CampaignCommand) -> Result<(), CliError> {
     let CampaignCommand::Explain(args) = command else {
         return Err(backend_error(
@@ -85,6 +147,28 @@ pub(super) fn validate_campaign_explain_command(command: &CampaignCommand) -> Re
     })?;
     BranchRequestId::parse(&args.request)
         .map_err(|error| usage_error(format!("invalid campaign explanation request: {error}")))?;
+    Ok(())
+}
+
+pub(super) fn validate_campaign_finding_explain_command(
+    command: &CampaignCommand,
+) -> Result<(), CliError> {
+    let CampaignCommand::ExplainFinding(args) = command else {
+        return Err(backend_error(
+            "non-finding-explain command reached finding explanation validation",
+        ));
+    };
+    campaign_name(&args.name)?;
+    CampaignSnapshotId::parse(&args.snapshot).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding explanation snapshot: {error}"
+        ))
+    })?;
+    FindingId::parse(&args.finding).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding explanation identity: {error}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -208,6 +292,202 @@ where
     })
 }
 
+pub(super) fn query_campaign_finding_explanation<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    command: &CampaignCommand,
+) -> Result<CampaignFindingExplanationReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let CampaignCommand::ExplainFinding(args) = command else {
+        return Err(backend_error(
+            "non-finding-explain command reached finding explanation query",
+        ));
+    };
+    let campaign = campaign_name(&args.name)?;
+    let snapshot = CampaignSnapshotId::parse(&args.snapshot).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding explanation snapshot: {error}"
+        ))
+    })?;
+    let finding_id = FindingId::parse(&args.finding).map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding explanation identity: {error}"
+        ))
+    })?;
+
+    let observation_request = GetCampaignFindingObjectRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        finding_id,
+        CampaignFindingObjectKind::Observation,
+    )
+    .map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding observation query: {error}"
+        ))
+    })?;
+    let observation_response = client
+        .get_campaign_finding_object(&observation_request)
+        .map_err(|error| {
+            backend_error(format!(
+                "campaign finding observation query failed: {error}"
+            ))
+        })?;
+    let observation = match observation_response.object() {
+        CampaignFindingObject::Observation(value) => value,
+        CampaignFindingObject::LatestOccurrence(_)
+        | CampaignFindingObject::Reproduction(_)
+        | CampaignFindingObject::MinimizedReproduction(_) => {
+            return Err(backend_error(
+                "campaign finding observation response carried another dependency kind",
+            ));
+        }
+    };
+
+    let reproduction_request = GetCampaignFindingObjectRequest::new(
+        principal,
+        campaign.clone(),
+        snapshot,
+        finding_id,
+        CampaignFindingObjectKind::Reproduction,
+    )
+    .map_err(|error| {
+        usage_error(format!(
+            "invalid campaign finding reproduction query: {error}"
+        ))
+    })?;
+    let reproduction_response = client
+        .get_campaign_finding_object(&reproduction_request)
+        .map_err(|error| {
+            backend_error(format!(
+                "campaign finding reproduction query failed: {error}"
+            ))
+        })?;
+    let reproduction = match reproduction_response.object() {
+        CampaignFindingObject::Reproduction(value) => value,
+        CampaignFindingObject::Observation(_)
+        | CampaignFindingObject::LatestOccurrence(_)
+        | CampaignFindingObject::MinimizedReproduction(_) => {
+            return Err(backend_error(
+                "campaign finding reproduction response carried another dependency kind",
+            ));
+        }
+    };
+    if observation_response.finding() != reproduction_response.finding()
+        || reproduction.configuration_artifact() != observation.child_content()
+    {
+        return Err(backend_error(
+            "campaign finding explanation records do not share one finding and configuration",
+        ));
+    }
+
+    Ok(CampaignFindingExplanationReport {
+        schema: CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA,
+        operation: "finding",
+        campaign: campaign.as_str().to_owned(),
+        snapshot: snapshot.to_string(),
+        finding: explained_finding(observation_response.finding(), finding_id),
+        observation: explained_observation(observation)?,
+        reproduction: explained_reproduction(reproduction)?,
+    })
+}
+
+fn explained_finding(finding: &Finding, id: FindingId) -> CampaignExplainedFinding {
+    CampaignExplainedFinding {
+        id: id.to_string(),
+        cluster: finding.signature().cluster_key().to_hex(),
+        kind: finding_kind_label(finding.signature().kind()),
+        fingerprint: finding.signature().fingerprint().to_hex(),
+        property: finding.signature().property().map(str::to_owned),
+        failure_class: finding.signature().failure_class().to_owned(),
+        target: finding.signature().target().map(finding_target_label),
+        causal_evidence: finding
+            .signature()
+            .causal_evidence()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        first_seen_snapshot: finding.first_seen_snapshot().to_string(),
+        occurrence_count: finding.occurrence_count(),
+        latest_occurrence: finding.latest_occurrence().to_string(),
+        minimized_reproduction: finding.minimized().map(|value| value.to_string()),
+        exact_pins: finding
+            .exact_pins()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn explained_observation(
+    observation: &Observation,
+) -> Result<CampaignExplainedObservation, CliError> {
+    let id = observation.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated finding observation identity is invalid: {error}"
+        ))
+    })?;
+    Ok(CampaignExplainedObservation {
+        id: id.to_string(),
+        attempt: observation.attempt().to_string(),
+        path: observation.path().to_string(),
+        child: observation.child().to_string(),
+        child_artifact: observation.child_content().to_string(),
+        stop: stop_outcome_label(observation.stop()),
+        measurements: observation.measurements().to_string(),
+        properties: observation.properties().to_string(),
+        coverage: observation.coverage().to_string(),
+        discovered_choices: observation
+            .discovered_choices()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    })
+}
+
+fn explained_reproduction(
+    reproduction: &ReproductionArtifact,
+) -> Result<CampaignExplainedReproduction, CliError> {
+    let id = reproduction.id().map_err(|error| {
+        backend_error(format!(
+            "authenticated finding reproduction identity is invalid: {error}"
+        ))
+    })?;
+    Ok(CampaignExplainedReproduction {
+        id: id.to_string(),
+        scenario: reproduction.scenario().to_string(),
+        scenario_artifact: reproduction.scenario_artifact().to_string(),
+        configuration: reproduction.configuration().to_string(),
+        configuration_artifact: reproduction.configuration_artifact().to_string(),
+        finding_fingerprint: reproduction.finding_fingerprint().to_hex(),
+        payload_schema: reproduction.payload_schema(),
+        payload_bytes: reproduction.payload().len(),
+    })
+}
+
+fn finding_target_label(target: FindingTarget) -> String {
+    match target {
+        FindingTarget::Configuration(value) => format!("configuration:{value}"),
+        FindingTarget::ChoiceOpportunity(value) => format!("choice-opportunity:{value}"),
+    }
+}
+
+fn stop_outcome_label(outcome: &StopOutcome) -> String {
+    match outcome {
+        StopOutcome::Reached(stop) => {
+            format!("reached:{}", campaign_stop_condition_label(stop))
+        }
+        StopOutcome::TerminalSuccess => String::from("terminal-success"),
+        StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
+        StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),
+        StopOutcome::AssertionFailure(property) => format!("assertion-failure:{property}"),
+    }
+}
+
 fn explained_opportunity(
     opportunity: &ChoiceOpportunity,
     id: ChoiceOpportunityId,
@@ -275,6 +555,43 @@ pub(super) fn render_campaign_explanation(
             Ok(output.trim_end().to_owned())
         }
     }
+}
+
+pub(super) fn render_campaign_finding_explanation(
+    report: &CampaignFindingExplanationReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Json => serde_json::to_string_pretty(report)
+            .map_err(|error| backend_error(format!("campaign JSON encoding failed: {error}"))),
+        OutputFormat::Table => Ok(finding_explanation_fields(report)?
+            .into_iter()
+            .map(|(field, value)| format!("{field:<32} {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")),
+        OutputFormat::Markdown => {
+            let mut output = String::from("| Field | Value |\n| --- | --- |\n");
+            for (field, value) in finding_explanation_fields(report)? {
+                output.push_str(&format!("| {field} | {value} |\n"));
+            }
+            Ok(output.trim_end().to_owned())
+        }
+    }
+}
+
+fn finding_explanation_fields(
+    report: &CampaignFindingExplanationReport,
+) -> Result<Vec<(String, String)>, CliError> {
+    let value = serde_json::to_value(report).map_err(|error| {
+        backend_error(format!(
+            "campaign finding explanation encoding failed: {error}"
+        ))
+    })?;
+    let mut fields = Vec::new();
+    flatten_explanation_value(None, &value, &mut fields)?;
+    Ok(fields)
 }
 
 fn explanation_fields(

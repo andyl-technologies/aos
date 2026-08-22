@@ -4,8 +4,8 @@ use crucible_cas::content_store::ContentId;
 
 use super::*;
 use crate::{
-    BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, Finding,
-    SelectableDeclaration,
+    BranchRequestId, ChoiceDomain, ChoiceOpportunity, ContinuationProjection, Finding, FindingId,
+    Observation, ReproductionArtifact, SelectableDeclaration,
 };
 
 /// Maximum entries returned by one campaign graph page.
@@ -989,6 +989,378 @@ impl Canonical for QueryCampaignFindingsResponse {
         };
         ensure_message_size(&response, "query-campaign-findings-response-encoded-bytes")?;
         Ok(response)
+    }
+}
+
+/// Finding dependency selected for one authenticated body read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignFindingObjectKind {
+    /// The representative observation retained by the finding.
+    Observation,
+    /// The most recent observation in the authenticated occurrence set.
+    LatestOccurrence,
+    /// The original verified reproduction artifact.
+    Reproduction,
+    /// The optional verified minimized reproduction artifact.
+    MinimizedReproduction,
+}
+
+impl Canonical for CampaignFindingObjectKind {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Observation => 0,
+            Self::LatestOccurrence => 1,
+            Self::Reproduction => 2,
+            Self::MinimizedReproduction => 3,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Observation),
+            1 => Ok(Self::LatestOccurrence),
+            2 => Ok(Self::Reproduction),
+            3 => Ok(Self::MinimizedReproduction),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-finding-object-kind",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Typed immutable body named by an authenticated finding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignFindingObject {
+    /// The representative observation retained by the finding.
+    Observation(Observation),
+    /// The latest observation in the finding occurrence set.
+    LatestOccurrence(Observation),
+    /// The original verified reproduction artifact.
+    Reproduction(ReproductionArtifact),
+    /// The verified minimized reproduction artifact.
+    MinimizedReproduction(ReproductionArtifact),
+}
+
+impl CampaignFindingObject {
+    /// Returns the closed dependency kind carried by this value.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignFindingObjectKind {
+        match self {
+            Self::Observation(_) => CampaignFindingObjectKind::Observation,
+            Self::LatestOccurrence(_) => CampaignFindingObjectKind::LatestOccurrence,
+            Self::Reproduction(_) => CampaignFindingObjectKind::Reproduction,
+            Self::MinimizedReproduction(_) => CampaignFindingObjectKind::MinimizedReproduction,
+        }
+    }
+}
+
+impl Canonical for CampaignFindingObject {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.kind().encode(encoder);
+        match self {
+            Self::Observation(value) | Self::LatestOccurrence(value) => value.encode(encoder),
+            Self::Reproduction(value) | Self::MinimizedReproduction(value) => {
+                value.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match CampaignFindingObjectKind::decode(decoder)? {
+            CampaignFindingObjectKind::Observation => {
+                Observation::decode(decoder).map(Self::Observation)
+            }
+            CampaignFindingObjectKind::LatestOccurrence => {
+                Observation::decode(decoder).map(Self::LatestOccurrence)
+            }
+            CampaignFindingObjectKind::Reproduction => {
+                ReproductionArtifact::decode(decoder).map(Self::Reproduction)
+            }
+            CampaignFindingObjectKind::MinimizedReproduction => {
+                ReproductionArtifact::decode(decoder).map(Self::MinimizedReproduction)
+            }
+        }
+    }
+}
+
+/// Strict request for one dependency of an authenticated finding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFindingObjectRequest {
+    schema_version: u32,
+    principal: CampaignPrincipal,
+    campaign: CampaignName,
+    snapshot: CampaignSnapshotId,
+    finding: FindingId,
+    kind: CampaignFindingObjectKind,
+}
+
+impl GetCampaignFindingObjectRequest {
+    /// Builds one snapshot-bound finding-dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the encoded request exceeds the
+    /// service message bound.
+    pub fn new(
+        principal: CampaignPrincipal,
+        campaign: CampaignName,
+        snapshot: CampaignSnapshotId,
+        finding: FindingId,
+        kind: CampaignFindingObjectKind,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            principal,
+            campaign,
+            snapshot,
+            finding,
+            kind,
+        };
+        ensure_message_size(
+            &request,
+            "get-campaign-finding-object-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the authenticated operational principal.
+    #[must_use]
+    pub const fn principal(&self) -> &CampaignPrincipal {
+        &self.principal
+    }
+
+    /// Returns the canonical campaign name.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the exact current snapshot that anchors the request.
+    #[must_use]
+    pub const fn snapshot(&self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact finding whose dependency is requested.
+    #[must_use]
+    pub const fn finding(&self) -> FindingId {
+        self.finding
+    }
+
+    /// Returns the closed requested dependency kind.
+    #[must_use]
+    pub const fn kind(&self) -> CampaignFindingObjectKind {
+        self.kind
+    }
+
+    /// Returns the digest of every canonical request byte.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        service_request_digest("get-campaign-finding-object", self)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded finding-dependency request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-finding-object-request-encoded-bytes")
+    }
+}
+
+impl Canonical for GetCampaignFindingObjectRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.principal.encode(encoder);
+        self.campaign.encode(encoder);
+        self.snapshot.encode(encoder);
+        self.finding.encode(encoder);
+        self.kind.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        Self::new(
+            CampaignPrincipal::decode(decoder)?,
+            CampaignName::decode(decoder)?,
+            CampaignSnapshotId::decode(decoder)?,
+            FindingId::decode(decoder)?,
+            CampaignFindingObjectKind::decode(decoder)?,
+        )
+    }
+}
+
+/// Request-bound finding dependency and exact finding-index proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetCampaignFindingObjectResponse {
+    schema_version: u32,
+    request_digest: CampaignHash,
+    snapshot_body: CampaignSnapshot,
+    finding: Finding,
+    object: CampaignFindingObject,
+    proof: MerkleMapLookupProof,
+}
+
+impl GetCampaignFindingObjectResponse {
+    /// Builds one authenticated finding-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the snapshot, finding proof,
+    /// dependency identity, semantic basis, or encoded-size contract is invalid.
+    pub fn new(
+        request: &GetCampaignFindingObjectRequest,
+        snapshot_body: CampaignSnapshot,
+        finding: Finding,
+        object: CampaignFindingObject,
+        proof: MerkleMapLookupProof,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: request.request_digest(),
+            snapshot_body,
+            finding,
+            object,
+            proof,
+        };
+        response.validate_body_for(request)?;
+        ensure_message_size(
+            &response,
+            "get-campaign-finding-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the authenticated snapshot body, including every root ID.
+    #[must_use]
+    pub const fn snapshot_body(&self) -> &CampaignSnapshot {
+        &self.snapshot_body
+    }
+
+    /// Returns the complete authenticated finding body.
+    #[must_use]
+    pub const fn finding(&self) -> &Finding {
+        &self.finding
+    }
+
+    /// Returns the exact authenticated finding dependency.
+    #[must_use]
+    pub const fn object(&self) -> &CampaignFindingObject {
+        &self.object
+    }
+
+    /// Validates exact request, snapshot, finding membership, and dependency binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the response belongs to another
+    /// request or the proof, typed identity, or finding dependency disagrees.
+    pub fn validate_for(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        self.validate_body_for(request)
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes one strict bounded finding-dependency response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed, noncanonical,
+    /// unsupported, or oversized input. Use [`Self::validate_for`] before use.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_message(bytes, "get-campaign-finding-object-response-encoded-bytes")
+    }
+
+    fn validate_body_for(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.snapshot_body.id()? != request.snapshot()
+            || self.finding.id()? != request.finding()
+            || self.object.kind() != request.kind()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign finding object response basis mismatch",
+            });
+        }
+        let indexed = MerkleMap::verify_lookup_proof(
+            self.snapshot_body.roots().findings,
+            crate::repository::finding_signature_key(self.finding.signature().cluster_key()),
+            &self.proof,
+        )
+        .map_err(|_| CampaignCodecError::InvalidValue {
+            reason: "campaign finding object membership proof is invalid",
+        })?;
+        if indexed != Some(request.finding().content_id())
+            || !finding_object_matches(&self.finding, &self.object)?
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign finding dependency is not authenticated",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Canonical for GetCampaignFindingObjectResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.snapshot_body.encode(encoder);
+        self.finding.encode(encoder);
+        self.object.encode(encoder);
+        self.proof.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_service_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            request_digest: CampaignHash::decode(decoder)?,
+            snapshot_body: CampaignSnapshot::decode(decoder)?,
+            finding: Finding::decode(decoder)?,
+            object: CampaignFindingObject::decode(decoder)?,
+            proof: MerkleMapLookupProof::decode(decoder)?,
+        };
+        ensure_message_size(
+            &response,
+            "get-campaign-finding-object-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
+fn finding_object_matches(
+    finding: &Finding,
+    object: &CampaignFindingObject,
+) -> Result<bool, CampaignCodecError> {
+    match object {
+        CampaignFindingObject::Observation(value) => Ok(value.id()? == finding.observation()),
+        CampaignFindingObject::LatestOccurrence(value) => {
+            Ok(value.id()? == finding.latest_occurrence())
+        }
+        CampaignFindingObject::Reproduction(value) => Ok(value.id()? == finding.reproduction()
+            && value.finding_fingerprint() == finding.signature().fingerprint()),
+        CampaignFindingObject::MinimizedReproduction(value) => Ok(finding.minimized()
+            == Some(value.id()?)
+            && value.finding_fingerprint() == finding.signature().fingerprint()),
     }
 }
 
@@ -2185,13 +2557,18 @@ mod tests {
 
     use super::*;
     use crate::{
-        BooleanDomain, BranchBudget, BranchPointId, BranchRequestCause, CampaignCommandId,
-        CampaignRoots, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
-        ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
-        ConfigurationArtifactId, ConfigurationId, ContinuationState, FindingKind,
-        FindingOccurrenceSet, FindingSignature, ObservationId, ReproductionArtifactId,
-        ScenarioArtifactId, ScenarioDefId, StopCondition,
+        AttemptId, BooleanDomain, BranchBudget, BranchPathId, BranchPointId, BranchRequestCause,
+        CampaignCommandId, CampaignRoots, CandidateSource, ChoiceClassContext, ChoiceCoordinate,
+        ChoiceDomainId, ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact,
+        ConfigurationArtifactId, ConfigurationId, ContinuationState, CoverageProjectionId,
+        FindingKind, FindingOccurrenceSet, FindingSignature, MeasurementSetId, ObservationId,
+        PropertyVerdictSetId, ReproductionArtifactId, ScenarioArtifactId, ScenarioDefId,
+        StopCondition, StopOutcome,
     };
+
+    fn hash(label: &str) -> CampaignHash {
+        CampaignHash::derive("campaign-query-test-hash", label.as_bytes())
+    }
 
     fn snapshot(label: &str) -> CampaignSnapshotId {
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
@@ -2676,6 +3053,180 @@ mod tests {
         )
         .expect("next finding query");
         assert!(response.validate_for(&next).is_err());
+    }
+
+    #[test]
+    fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
+        let backend = Arc::new(MemoryBlobBackend::new("finding-object-proof", u64::MAX));
+        let map = MerkleMap::new(backend);
+        let empty = map.empty().expect("empty finding index");
+        let scenario = ScenarioDefId::from_hash(hash("finding-object-scenario"));
+        let scenario_artifact = ScenarioArtifactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Scenario,
+            1,
+            b"finding-object-scenario-artifact",
+        ))
+        .expect("scenario artifact ID");
+        let configuration = ConfigurationId::from_hash(hash("finding-object-configuration"));
+        let configuration_artifact =
+            ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Configuration,
+                1,
+                b"finding-object-configuration-artifact",
+            ))
+            .expect("configuration artifact ID");
+        let observation = Observation::new(
+            AttemptId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"finding-object-attempt",
+            ))
+            .expect("attempt ID"),
+            configuration,
+            configuration_artifact,
+            BranchPathId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                2,
+                b"finding-object-path",
+            ))
+            .expect("path ID"),
+            StopOutcome::ModeledTimeout("execution".to_owned()),
+            MeasurementSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"finding-object-measurements",
+            ))
+            .expect("measurement ID"),
+            PropertyVerdictSetId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Observation,
+                1,
+                b"finding-object-properties",
+            ))
+            .expect("property ID"),
+            CoverageProjectionId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Projection,
+                1,
+                b"finding-object-coverage",
+            ))
+            .expect("coverage ID"),
+            BTreeSet::new(),
+        )
+        .expect("observation");
+        let observation_id = observation.id().expect("observation ID");
+        let reproduction = ReproductionArtifact::new(
+            scenario,
+            scenario_artifact,
+            configuration,
+            configuration_artifact,
+            hash("finding-object-fingerprint"),
+            1,
+            b"reproduce".to_vec(),
+        )
+        .expect("reproduction");
+        let finding = Finding::new(
+            FindingSignature::new(
+                FindingKind::Timeout,
+                hash("finding-object-fingerprint"),
+                None,
+                "timeout.execution".to_owned(),
+                None,
+                BTreeSet::new(),
+            )
+            .expect("finding signature"),
+            observation_id,
+            reproduction.id().expect("reproduction ID"),
+            snapshot("finding-object-first-seen"),
+            FindingOccurrenceSet::new(empty.content_id(), 1, observation_id)
+                .expect("finding occurrences"),
+            None,
+            BTreeSet::new(),
+        )
+        .expect("finding");
+        let finding_id = finding.id().expect("finding ID");
+        let root = map
+            .insert(
+                empty.content_id(),
+                crate::repository::finding_signature_key(finding.signature().cluster_key()),
+                finding_id.content_id(),
+            )
+            .expect("finding index");
+        let roots = CampaignRoots {
+            graph: empty.content_id(),
+            exploration: empty.content_id(),
+            observations: empty.content_id(),
+            corpus: empty.content_id(),
+            coverage: empty.content_id(),
+            findings: root.content_id(),
+            pins: empty.content_id(),
+            accounting: empty.content_id(),
+            coordination: empty.content_id(),
+        };
+        let snapshot_body = CampaignSnapshot::genesis(
+            CampaignLineageId::from_content_id(ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                1,
+                b"finding-object-lineage",
+            ))
+            .expect("lineage"),
+            CampaignPolicyId::from_content_id(ContentId::for_bytes(
+                ObjectKind::Policy,
+                1,
+                b"finding-object-policy",
+            ))
+            .expect("policy"),
+            roots,
+        )
+        .expect("finding object snapshot");
+        let request = GetCampaignFindingObjectRequest::new(
+            CampaignPrincipal::new("operator:alice").expect("principal"),
+            CampaignName::new("network-recovery").expect("campaign"),
+            snapshot_body.id().expect("snapshot ID"),
+            finding_id,
+            CampaignFindingObjectKind::Observation,
+        )
+        .expect("finding object request");
+        let (_, proof) = map
+            .get_with_proof(
+                root.content_id(),
+                crate::repository::finding_signature_key(finding.signature().cluster_key()),
+            )
+            .expect("finding lookup proof");
+        let response = GetCampaignFindingObjectResponse::new(
+            &request,
+            snapshot_body,
+            finding,
+            CampaignFindingObject::Observation(observation),
+            proof,
+        )
+        .expect("finding object response");
+        response.validate_for(&request).expect("response binding");
+        assert_eq!(
+            GetCampaignFindingObjectRequest::from_canonical_bytes(&request.canonical_bytes())
+                .expect("request decode"),
+            request
+        );
+        assert_eq!(
+            GetCampaignFindingObjectResponse::from_canonical_bytes(&response.canonical_bytes())
+                .expect("response decode"),
+            response
+        );
+
+        let mut wrong_kind = response.clone();
+        let CampaignFindingObject::Observation(value) = wrong_kind.object else {
+            unreachable!("fixture object kind")
+        };
+        wrong_kind.object = CampaignFindingObject::LatestOccurrence(value);
+        assert!(wrong_kind.validate_for(&request).is_err());
+
+        let reproduction_request = GetCampaignFindingObjectRequest::new(
+            request.principal().clone(),
+            request.campaign().clone(),
+            request.snapshot(),
+            request.finding(),
+            CampaignFindingObjectKind::Reproduction,
+        )
+        .expect("reproduction request");
+        assert!(response.validate_for(&reproduction_request).is_err());
     }
 
     #[test]

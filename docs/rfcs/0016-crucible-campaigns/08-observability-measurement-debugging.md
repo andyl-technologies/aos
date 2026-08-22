@@ -265,6 +265,16 @@ page. Authorization grants those finding bodies and the complete anchoring
 snapshot metadata, but not the observation, reproduction, evidence, or exact
 checkpoint bodies they name.
 
+The separate checked `GetCampaignFindingObject` capability authenticates one
+exact finding membership and returns only its requested representative/latest
+observation or original/minimized reproduction artifact. The
+`explain-finding` porcelain composes the representative-observation and
+original-reproduction reads, then requires both responses to carry the same
+finding and the reproduction's exact configuration artifact to equal the
+observation child. It renders the identities needed to locate evidence and
+perform independent replay without granting arbitrary evidence or checkpoint
+body reads.
+
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
   schedule)` reproduction artifact and verify it before publication.
 - **[CMEAS-12]** Retaining an exact closure improves debug startup but MUST NOT be

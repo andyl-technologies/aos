@@ -218,6 +218,7 @@ crucible campaign snapshot NAME --snapshot SNAPSHOT
 crucible campaign compare NAME --left SNAPSHOT --right SNAPSHOT
 crucible campaign explain NAME --snapshot SNAPSHOT --opportunity ID --request ID
 crucible campaign findings NAME --snapshot SNAPSHOT [--after HASH] [--limit N]
+crucible campaign explain-finding NAME --snapshot SNAPSHOT --finding ID
 ```
 
 The read-only porcelain implements `status`, a one-shot resumable `watch`, and
@@ -241,8 +242,13 @@ joins one authenticated choice declaration with one authenticated frontier
 request, rejects a mismatched opportunity or domain, and reports exact legality,
 producer, cause, budget, stop, and continuation fields. The lifecycle mutations
 described in §07.3 and exact-precondition `pin`/`unpin` commands use that same
-transport; proposal/attempt/finding explanations and rich
-filtered/aggregated inspection remain open.
+transport. `explain-finding` joins two separately authorized proof-bearing reads
+of one exact indexed finding: its representative observation and original
+reproduction artifact. It rejects a mismatched finding, dependency kind,
+configuration artifact, or reproduction fingerprint before reporting the
+stable signature, causal identities, occurrence projection, modeled stop,
+evidence-set IDs, replay configuration, and payload profile. Proposal and
+attempt explanations plus rich filtered/aggregated inspection remain open.
 
 A concise status view includes:
 

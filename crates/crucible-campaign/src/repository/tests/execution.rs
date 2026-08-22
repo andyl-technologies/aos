@@ -847,14 +847,48 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
         MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
     )
     .expect("finding query request");
-    let finding_page = crate::CampaignClient::new(RepositoryCampaignService::new(
+    let client = crate::CampaignClient::new(RepositoryCampaignService::new(
         &repository,
         AllowCampaignQueries,
-    ))
-    .query_campaign_findings(&finding_request)
-    .expect("authenticated finding page");
+    ));
+    let finding_page = client
+        .query_campaign_findings(&finding_request)
+        .expect("authenticated finding page");
     assert_eq!(finding_page.entries(), std::slice::from_ref(&stored));
     assert_eq!(finding_page.next_after(), None);
+    for (kind, expected) in [
+        (
+            CampaignFindingObjectKind::Observation,
+            observed.observation.content_id(),
+        ),
+        (
+            CampaignFindingObjectKind::Reproduction,
+            reproduction.content_id(),
+        ),
+    ] {
+        let request = GetCampaignFindingObjectRequest::new(
+            finding_request.principal().clone(),
+            finding_request.campaign().clone(),
+            published.new_snapshot,
+            published.finding,
+            kind,
+        )
+        .expect("finding object request");
+        let response = client
+            .get_campaign_finding_object(&request)
+            .expect("authenticated finding dependency");
+        let actual = match response.object() {
+            CampaignFindingObject::Observation(value)
+            | CampaignFindingObject::LatestOccurrence(value) => {
+                value.id().expect("observation ID").content_id()
+            }
+            CampaignFindingObject::Reproduction(value)
+            | CampaignFindingObject::MinimizedReproduction(value) => {
+                value.id().expect("reproduction ID").content_id()
+            }
+        };
+        assert_eq!(actual, expected);
+    }
     repository.evict_local_checkpoint(published.new_snapshot.content_id());
     assert_eq!(
         repository

@@ -1063,7 +1063,7 @@ impl CampaignRepository {
         Ok(artifact)
     }
 
-    pub(super) fn read_reproduction_artifact(
+    pub(crate) fn read_reproduction_artifact(
         &self,
         id: ContentId,
     ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
@@ -1701,7 +1701,7 @@ impl CampaignRepository {
         Ok(value)
     }
 
-    pub(super) fn read_observation(
+    pub(crate) fn read_observation(
         &self,
         id: ContentId,
     ) -> Result<Observation, CampaignRepositoryError> {

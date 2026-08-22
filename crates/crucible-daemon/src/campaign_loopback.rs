@@ -3,7 +3,7 @@
 //! The protocol contains only bounded canonical component messages:
 //!
 //! ```text
-//! CampaignLoopbackFrameV14 = magic[8] | kind:u8 | reserved[3] |
+//! CampaignLoopbackFrameV15 = magic[8] | kind:u8 | reserved[3] |
 //!                           body_length:u32be | canonical_body[body_length]
 //! kind = 1 (GetCampaignRequestV1) |
 //!        2 (GetCampaignResponseV1) |
@@ -35,8 +35,10 @@
 //!       28 (PinCampaignRequestV1) |
 //!       29 (PinCampaignResponseV1) |
 //!       30 (QueryCampaignFindingsRequestV1) |
-//!       31 (QueryCampaignFindingsResponseV1)
-//! magic = "CRUCCS14"
+//!       31 (QueryCampaignFindingsResponseV1) |
+//!       32 (GetCampaignFindingObjectRequestV1) |
+//!       33 (GetCampaignFindingObjectResponseV1)
+//! magic = "CRUCCS15"
 //! ```
 //!
 //! One mutex serializes complete request/response exchanges so concurrent
@@ -65,6 +67,7 @@ use crucible_campaign::{
     CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
     CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
     GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
+    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
     GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
     GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse, GetCampaignRequest,
     GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
@@ -76,7 +79,7 @@ use crucible_campaign::{
     WatchCampaignResponse,
 };
 
-const FRAME_MAGIC: &[u8; 8] = b"CRUCCS14";
+const FRAME_MAGIC: &[u8; 8] = b"CRUCCS15";
 const FRAME_HEADER_BYTES: usize = 16;
 const GET_CAMPAIGN_REQUEST_KIND: u8 = 1;
 const GET_CAMPAIGN_RESPONSE_KIND: u8 = 2;
@@ -109,6 +112,8 @@ const PIN_CAMPAIGN_REQUEST_KIND: u8 = 28;
 const PIN_CAMPAIGN_RESPONSE_KIND: u8 = 29;
 const QUERY_CAMPAIGN_FINDINGS_REQUEST_KIND: u8 = 30;
 const QUERY_CAMPAIGN_FINDINGS_RESPONSE_KIND: u8 = 31;
+const GET_CAMPAIGN_FINDING_OBJECT_REQUEST_KIND: u8 = 32;
+const GET_CAMPAIGN_FINDING_OBJECT_RESPONSE_KIND: u8 = 33;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION: usize = 4_096;
@@ -385,6 +390,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_query_campaign_findings(request.snapshot()),
+        )
+    }
+
+    fn get_campaign_finding_object(
+        &self,
+        request: &GetCampaignFindingObjectRequest,
+    ) -> Result<GetCampaignFindingObjectResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_FINDING_OBJECT_REQUEST_KIND,
+            GET_CAMPAIGN_FINDING_OBJECT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = GetCampaignFindingObjectResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_get_campaign_finding_object(request.snapshot()),
         )
     }
 
@@ -1073,6 +1096,39 @@ where
                     let failure = error.campaign_service_failure();
                     if let Err(error) =
                         failure.validate_for_query_campaign_findings(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
+        GET_CAMPAIGN_FINDING_OBJECT_REQUEST_KIND => {
+            let request = GetCampaignFindingObjectRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_finding_object(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_FINDING_OBJECT_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_get_campaign_finding_object(request.snapshot())
                     {
                         return reject_invalid_service_response(
                             stream,

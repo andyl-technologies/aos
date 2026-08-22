@@ -320,6 +320,8 @@ enum CampaignCommand {
     Compare(CampaignCompareArgs),
     /// Explain one exact choice and frontier-request basis.
     Explain(CampaignExplainArgs),
+    /// Explain one exact finding and its reproduction basis.
+    ExplainFinding(CampaignFindingExplainArgs),
     /// Read one authenticated page from the temporal graph.
     Graph(CampaignPageArgs),
     /// Inspect one exact object named by the authenticated graph.
@@ -477,6 +479,19 @@ struct CampaignExplainArgs {
     /// Exact frontier request whose cause is explained.
     #[arg(long, value_name = "REQUEST", required = true)]
     request: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing the finding.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding whose evidence and reproduction basis are explained.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
