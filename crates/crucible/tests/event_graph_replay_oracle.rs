@@ -626,6 +626,25 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
     }
 
     let trigger_firings = trigger_firing_records(&trigger_log);
+    assert!(
+        !trigger_log
+            .iter()
+            .any(|entry| entry.event_payload().kind() == "condition_evaluated"),
+        "condition truth must be rederived rather than logged as condition_evaluated",
+    );
+    for entry in trigger_log
+        .iter()
+        .filter(|entry| entry.event_payload().kind() == "trigger_fired")
+    {
+        assert!(
+            matches!(entry.payload(), SchedulerEventLogPayload::TriggerFired(_)),
+            "trigger firing must not be recorded as a Decision",
+        );
+        assert!(
+            entry.event_payload().string("condition").is_some(),
+            "trigger firing must retain its canonical condition summary",
+        );
+    }
     assert_eq!(
         fired_event_names_from_records(&trigger_firings),
         vec![

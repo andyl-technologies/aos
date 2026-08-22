@@ -15,7 +15,11 @@ use crucible::model::{
 use crucible_shmem::{
     DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_FLAG_NONE,
     FAULT_COMMAND_FLAG_PREPARE_ONLY, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
-    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, MEMORY_MUTATION_NO_VCPU,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus,
+    MEMORY_MUTATION_BATCH_EVIDENCE_BODY_OFFSET, MEMORY_MUTATION_BATCH_EVIDENCE_PRECONDITION_OFFSET,
+    MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_ACTION_HASH_OFFSET,
+    MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_BODY_OFFSET,
+    MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_LENGTH_OFFSET, MEMORY_MUTATION_NO_VCPU,
     MemoryMutationAddressSpace, MemoryMutationAtomicity, MemoryMutationBatchActionV1,
     MemoryMutationBatchEvidenceV1, MemoryMutationBatchV1, MemoryMutationEvidenceV1,
     MemoryMutationPayloadV1, MemoryMutationTransformKind, NodeFaultEvidenceV1, NodeFaultPayloadV1,
@@ -30,6 +34,13 @@ mod node_payload;
 
 #[derive(Clone)]
 struct PreparedMemoryAction {
+    action: ResolvedBindingAction,
+    node: NodeId,
+    coordinate: u64,
+    payload: MemoryMutationPayloadV1,
+}
+
+struct MemoryActionPayload {
     action: ResolvedBindingAction,
     node: NodeId,
     payload: MemoryMutationPayloadV1,
@@ -54,6 +65,7 @@ struct PreparedQemuNodeBatch {
 struct PreparedTypedNodeAction {
     action: ResolvedBindingAction,
     node: NodeId,
+    coordinate: u64,
     command_kind: FaultCommandKind,
     payload: Vec<u8>,
 }
@@ -126,7 +138,7 @@ impl<'a> QemuFaultActionSink<'a> {
     }
 
     fn prepare_memory_action(
-        &self,
+        &mut self,
         action: &ResolvedBindingAction,
     ) -> Result<PreparedMemoryAction, FaultRuntimeError> {
         let prepared = prepare_memory_action_payload(action)?;
@@ -149,11 +161,23 @@ impl<'a> QemuFaultActionSink<'a> {
         if !admitted {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         }
-        Ok(prepared)
+        let current = self
+            .nodes
+            .fault_command_coordinate(&prepared.node)
+            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
+            .retired;
+        let coordinate =
+            qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
+        Ok(PreparedMemoryAction {
+            action: prepared.action,
+            node: prepared.node,
+            coordinate,
+            payload: prepared.payload,
+        })
     }
 
     fn prepare_typed_action(
-        &self,
+        &mut self,
         action: &ResolvedBindingAction,
     ) -> Result<PreparedTypedNodeAction, FaultRuntimeError> {
         let provisional = node_payload::encode_node_action(action, [1; 32])
@@ -161,31 +185,40 @@ impl<'a> QemuFaultActionSink<'a> {
         let node = NodeId {
             name: provisional.node,
         };
-        let capability = self
-            .nodes
-            .fault_capabilities(&node)
-            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
-            .iter()
-            .find(|row| {
-                row.command_kind == provisional.command_kind
-                    && row.semantic_version == FAULT_COMMAND_SEMANTIC_VERSION
-                    && row.supports_phase(FaultBoundaryPhase::NodeBoundary)
-            })
-            .ok_or(FaultRuntimeError::AdapterActionMismatch)?;
-        let encoded = node_payload::encode_node_action(action, capability.capability_hash)
+        let (capability_hash, maximum_payload_bytes) = {
+            let capability = self
+                .nodes
+                .fault_capabilities(&node)
+                .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
+                .iter()
+                .find(|row| {
+                    row.command_kind == provisional.command_kind
+                        && row.semantic_version == FAULT_COMMAND_SEMANTIC_VERSION
+                        && row.supports_phase(FaultBoundaryPhase::NodeBoundary)
+                })
+                .ok_or(FaultRuntimeError::AdapterActionMismatch)?;
+            (capability.capability_hash, capability.maximum_payload_bytes)
+        };
+        let encoded = node_payload::encode_node_action(action, capability_hash)
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
         let payload = encoded
             .payload
             .encode()
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
-        if !usize::try_from(capability.maximum_payload_bytes)
-            .is_ok_and(|maximum| payload.len() <= maximum)
-        {
+        if !usize::try_from(maximum_payload_bytes).is_ok_and(|maximum| payload.len() <= maximum) {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         }
+        let current = self
+            .nodes
+            .fault_command_coordinate(&node)
+            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
+            .retired;
+        let coordinate =
+            qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
         Ok(PreparedTypedNodeAction {
             action: action.clone(),
             node,
+            coordinate,
             command_kind: encoded.command_kind,
             payload,
         })
@@ -194,7 +227,7 @@ impl<'a> QemuFaultActionSink<'a> {
 
 fn prepare_memory_action_payload(
     action: &ResolvedBindingAction,
-) -> Result<PreparedMemoryAction, FaultRuntimeError> {
+) -> Result<MemoryActionPayload, FaultRuntimeError> {
     if action.kind != BindingActionKind::Apply || action.phase != FaultPhase::Boundary {
         return Err(FaultRuntimeError::AdapterActionMismatch);
     }
@@ -266,11 +299,22 @@ fn prepare_memory_action_payload(
     let node = NodeId {
         name: node.as_str().to_owned(),
     };
-    Ok(PreparedMemoryAction {
+    Ok(MemoryActionPayload {
         action: action.clone(),
         node,
         payload,
     })
+}
+
+fn qemu_execution_coordinate(
+    recorded: Option<u64>,
+    current: u64,
+) -> Result<u64, FaultRuntimeError> {
+    match recorded {
+        Some(recorded) if recorded != current => Err(FaultRuntimeError::AdapterActionMismatch),
+        Some(recorded) => Ok(recorded),
+        None => Ok(current),
+    }
 }
 
 impl FaultActionSink for QemuFaultActionSink<'_> {
@@ -311,31 +355,24 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                         ContentHash::from_bytes(b"qemu-typed-prepare-rejection"),
                     )
                 })?;
-                if prepared.action.coordinate.retired_instructions.is_none() {
-                    return Err(Self::reject(
-                        Some(action),
-                        FaultRuntimeError::AdapterActionMismatch,
-                        ContentHash::from_bytes(b"qemu-missing-node-coordinate"),
-                    ));
-                }
                 typed_actions.push(prepared);
             }
         }
         let mut node_batches = Vec::with_capacity(by_node.len());
         for (node, prepared) in by_node {
-            let Some(coordinate) = prepared
+            let coordinate = prepared
                 .first()
-                .and_then(|action| action.action.coordinate.retired_instructions)
-            else {
-                return Err(Self::reject(
-                    prepared.first().map(|action| &action.action),
-                    FaultRuntimeError::AdapterActionMismatch,
-                    ContentHash::from_bytes(b"qemu-missing-node-coordinate"),
-                ));
-            };
+                .map(|action| action.coordinate)
+                .ok_or_else(|| {
+                    Self::reject(
+                        None,
+                        FaultRuntimeError::AdapterActionMismatch,
+                        ContentHash::from_bytes(b"qemu-empty-memory-batch"),
+                    )
+                })?;
             if prepared
                 .iter()
-                .any(|action| action.action.coordinate.retired_instructions != Some(coordinate))
+                .any(|action| action.coordinate != coordinate)
             {
                 return Err(Self::reject(
                     prepared.first().map(|action| &action.action),
@@ -551,9 +588,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
 
         let mut authorized_typed = Vec::with_capacity(typed_actions.len());
         for prepared in typed_actions {
-            let coordinate = prepared.action.coordinate.retired_instructions.ok_or(
-                FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch),
-            )?;
+            let coordinate = prepared.coordinate;
             let sequence = self
                 .nodes
                 .reserve_fault_command_sequence(&prepared.node)
@@ -643,7 +678,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 })?;
             let DequeuedFaultResult::Valid {
                 header: result_header,
-                payload: result_payload,
+                payload: mut result_payload,
             } = result
             else {
                 return Err(FaultActionCommitError::Fatal(
@@ -651,14 +686,12 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 ));
             };
             verify_qemu_evidence_hash(&result_header, &result_payload)?;
-            let mut evidence = result_header.encode().to_vec();
-            evidence.extend_from_slice(&result_payload);
-            let evidence = ContentHash::from_bytes(&evidence);
+            let rejection_evidence = result_evidence_hash(&result_header, &result_payload);
             if result_header.status != FaultResultStatus::Applied {
                 let rejection = Self::reject(
                     prepared.actions.first().map(|action| &action.action),
                     FaultRuntimeError::AdapterActionMismatch,
-                    evidence,
+                    rejection_evidence,
                 );
                 if applied {
                     return Err(FaultActionCommitError::Fatal(
@@ -686,6 +719,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     FaultRuntimeError::IncompleteAdapterState,
                 ));
             }
+            let evidence =
+                memory_application_evidence_hash(&mut result_payload, committed.actions.len())?;
             let precondition = ContentHash::from_bytes(&result_header.before_hash);
             let committed_evidence = CommittedQemuActionEvidence {
                 command_sequence: mutation_sequence,
@@ -717,9 +752,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             );
         }
         for (prepared, preparation) in authorized_typed {
-            let coordinate = prepared.action.coordinate.retired_instructions.ok_or(
-                FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch),
-            )?;
+            let coordinate = prepared.coordinate;
             let sequence = self
                 .nodes
                 .reserve_fault_command_sequence(&prepared.node)
@@ -743,9 +776,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 })?;
             let evidence =
                 validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Applied)?;
-            let evidence_hash = ContentHash::from_bytes(&evidence.encode().map_err(|_source| {
-                FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-            })?);
+            let evidence_hash = typed_node_application_evidence_hash(&evidence);
             if self
                 .committed
                 .insert(
@@ -964,6 +995,98 @@ fn memory_evidence_matches(
         && evidence.target_node_hash == target_node_hash
 }
 
+/// Hashes committed memory state without locked-replay authorization fields.
+fn memory_application_evidence_hash(
+    payload: &mut [u8],
+    action_count: usize,
+) -> Result<ContentHash, FaultActionCommitError> {
+    let precondition_end = MEMORY_MUTATION_BATCH_EVIDENCE_PRECONDITION_OFFSET
+        .checked_add(32)
+        .ok_or(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ))?;
+    let precondition = payload
+        .get_mut(MEMORY_MUTATION_BATCH_EVIDENCE_PRECONDITION_OFFSET..precondition_end)
+        .ok_or(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ))?;
+    precondition.fill(0);
+
+    let mut offset = MEMORY_MUTATION_BATCH_EVIDENCE_BODY_OFFSET;
+    for _ in 0..action_count {
+        let action_hash_start = offset
+            .checked_add(MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_ACTION_HASH_OFFSET)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+        let action_hash_end =
+            action_hash_start
+                .checked_add(32)
+                .ok_or(FaultActionCommitError::Fatal(
+                    FaultRuntimeError::IncompleteAdapterState,
+                ))?;
+        payload
+            .get_mut(action_hash_start..action_hash_end)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?
+            .fill(0);
+
+        let length_start = offset
+            .checked_add(MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_LENGTH_OFFSET)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+        let length_end = length_start
+            .checked_add(4)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+        let evidence_length = u32::from_le_bytes(
+            payload
+                .get(length_start..length_end)
+                .ok_or(FaultActionCommitError::Fatal(
+                    FaultRuntimeError::IncompleteAdapterState,
+                ))?
+                .try_into()
+                .map_err(|_source| {
+                    FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
+                })?,
+        ) as usize;
+        offset = offset
+            .checked_add(MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_BODY_OFFSET)
+            .and_then(|value| value.checked_add(evidence_length))
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+    }
+    if offset != payload.len() {
+        return Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ));
+    }
+    Ok(ContentHash::from_canonical_hex_bytes(
+        "crucible.qemu-memory-application-evidence.v1",
+        payload,
+    ))
+}
+
+/// Hashes QEMU application state without command-authorization identities.
+fn typed_node_application_evidence_hash(evidence: &NodeFaultEvidenceV1) -> ContentHash {
+    let mut material = [0_u8; 152];
+    material[0..2].copy_from_slice(&(evidence.command_kind as u16).to_le_bytes());
+    material[2..4].copy_from_slice(&(evidence.operation as u16).to_le_bytes());
+    material[4..6].copy_from_slice(&(evidence.target_kind as u16).to_le_bytes());
+    material[6..8].copy_from_slice(&evidence.model_phase.to_le_bytes());
+    material[8..16].copy_from_slice(&evidence.generation.to_le_bytes());
+    material[16..24].copy_from_slice(&evidence.prior_generation.to_le_bytes());
+    material[24..56].copy_from_slice(&evidence.target_hash);
+    material[56..88].copy_from_slice(&evidence.schema_hash);
+    material[88..120].copy_from_slice(&evidence.before_sha256);
+    material[120..152].copy_from_slice(&evidence.after_sha256);
+    ContentHash::from_canonical_hex_bytes("crucible.qemu-node-application-evidence.v1", &material)
+}
+
 fn result_evidence_hash(
     header: &crucible_shmem::FaultResultHeaderV1,
     payload: &[u8],
@@ -1005,3 +1128,7 @@ fn transaction_observation(
         evidence,
     }
 }
+
+#[cfg(test)]
+#[path = "fault_action_sink_tests.rs"]
+mod tests;

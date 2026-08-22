@@ -534,6 +534,9 @@
       }
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
+    cargoBuildOnlyReferences =
+      [args.cargoDeps self.rust]
+      ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
     artifactsCompatible =
       inheritedArtifacts
       == null
@@ -569,6 +572,14 @@
               ++ (args.buildDeps or []);
             phases = phases.cargoPhases cargoArgs;
             passthru = (args.passthru or {}) // {inherit cargoArtifactContract;};
+            # Cargo's JSON messages and restored target metadata contain
+            # source paths by design. None of those build-only roots may
+            # survive in an ordinary package output. Keep artifact-producing
+            # derivations exempt: their entire purpose is to retain reusable
+            # compiler state outside runtime closures.
+            disallowedReferences =
+              (args.disallowedReferences or [])
+              ++ lib.optionals (!(args.installCargoArtifacts or false)) cargoBuildOnlyReferences;
           }
         )
       );

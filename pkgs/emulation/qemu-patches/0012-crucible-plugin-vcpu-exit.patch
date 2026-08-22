@@ -20,7 +20,7 @@ index bf426bfd1..a63c6d1a4 100644
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
   * @data: Ethernet frame bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index dda655433..f8a57a500 100644
+index d38d27cb5..343f0ed4f 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -238,6 +238,13 @@ uint64_t qemu_plugin_icount_raw(void)

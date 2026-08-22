@@ -504,6 +504,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0109-crucible-control-boundary-node-faults.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

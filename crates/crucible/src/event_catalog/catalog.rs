@@ -149,6 +149,12 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
+        kind: "effect_committed",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "effect_rejected",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
@@ -389,6 +395,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "effect_applied",
             "effect_choice",
             "effect_combined",
+            "effect_committed",
             "effect_rejected",
             "fault_opportunity",
             "network_profile",
@@ -434,6 +441,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "effect_applied",
             "effect_choice",
             "effect_combined",
+            "effect_committed",
             "effect_rejected",
             "evaluation_boundary",
             "event_activated",

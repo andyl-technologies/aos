@@ -77,6 +77,13 @@ pub const MEMORY_MUTATION_BATCH_EVIDENCE_RESERVED_OFFSET: usize = 52;
 /// Evidence first-record offset.
 pub const MEMORY_MUTATION_BATCH_EVIDENCE_BODY_OFFSET: usize =
     MEMORY_MUTATION_BATCH_EVIDENCE_HEADER_V1_BYTES;
+/// Action identity offset within one batch-evidence record.
+pub const MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_ACTION_HASH_OFFSET: usize = 0;
+/// Nested evidence length offset within one batch-evidence record.
+pub const MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_LENGTH_OFFSET: usize = 32;
+/// Nested evidence offset within one batch-evidence record.
+pub const MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_BODY_OFFSET: usize =
+    MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_V1_BYTES;
 
 /// One content-addressed action inside an atomic memory batch.
 #[derive(Clone, Debug, PartialEq, Eq)]

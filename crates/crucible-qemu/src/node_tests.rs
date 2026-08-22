@@ -234,6 +234,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
             self.teardown_coverage.lock().unwrap().extend(events);
         }
         Ok(QemuAsyncQuantumCompletion {
+            ceiling: Icount { retired: horizon },
             outcome: AdvanceOutcome::ReachedHorizon,
             final_state: QemuNodeIdleState {
                 current_icount: Icount { retired: horizon },
@@ -817,6 +818,36 @@ fn publication_exact_capture_resumes_only_after_explicit_release() -> Result<(),
 
     node.resume_after_exact_snapshot()?;
     assert_eq!(recorded(&log).last(), Some(&ChannelCall::QmpContinue));
+    Ok(())
+}
+
+#[test]
+fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let mut checkpoint = checkpoint("terminal-exact");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    let snapshot = node.capture_terminal_lifecycle_snapshot(&node_identity, checkpoint.clone())?;
+
+    assert_eq!(snapshot.checkpoint(), &checkpoint);
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpStop,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpExactSave(snapshot.checkpoint().id),
+        ]
+    );
     Ok(())
 }
 

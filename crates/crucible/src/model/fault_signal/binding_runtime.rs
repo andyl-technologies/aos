@@ -93,6 +93,24 @@ impl ResolvedBindingAction {
     /// Returns the canonical identity used to match an adapter result.
     #[must_use]
     pub fn id(&self) -> ContentHash {
+        self.identity_with_precondition(self.expected_precondition)
+    }
+
+    /// Returns the canonical identity of the applied adapter state.
+    ///
+    /// The locked-replay precondition authorizes an application but is not
+    /// part of the state installed by that application. Host adapters use this
+    /// identity for their visible-state digest so an otherwise identical
+    /// locked replay produces the same evidence as the recorded execution.
+    #[must_use]
+    pub fn committed_state_id(&self) -> ContentHash {
+        self.identity_with_precondition(None)
+    }
+
+    fn identity_with_precondition(
+        &self,
+        expected_precondition: Option<ContentHash>,
+    ) -> ContentHash {
         let kind = match self.kind {
             BindingActionKind::UpsertPersistent => "upsert_persistent",
             BindingActionKind::RemovePersistent => "remove_persistent",
@@ -127,8 +145,7 @@ impl ResolvedBindingAction {
             self.opportunity
                 .map_or_else(|| String::from("none"), |value| value.to_hex()),
             self.coordinate.virtual_nanos,
-            self.expected_precondition
-                .map_or_else(|| String::from("none"), |value| value.to_hex()),
+            expected_precondition.map_or_else(|| String::from("none"), |value| value.to_hex()),
         );
         self.target.append_canonical(&mut material);
         ContentHash::from_canonical_material("crucible.resolved-binding-action.v1", &material)

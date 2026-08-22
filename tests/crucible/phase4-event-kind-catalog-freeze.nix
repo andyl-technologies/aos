@@ -9,7 +9,10 @@
 
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  catalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
   triggerTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
@@ -31,6 +34,7 @@
     "effect_choice"
     "effect_combined"
     "effect_applied"
+    "effect_committed"
     "effect_rejected"
     "network_profile"
     "association_transition"
@@ -112,7 +116,7 @@
     ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
       {
         label = "catalog version";
-        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 4;";
+        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 5;";
       }
       {
         label = "catalog entry type";
@@ -198,8 +202,8 @@
         needle = "event_kind_catalog_canonical_serialization_matches_golden_vector";
       }
       {
-        label = "golden serialization literal";
-        needle = "EXPECTED_CATALOG_SERIALIZATION";
+        label = "golden catalog hash literal";
+        needle = "EXPECTED_CATALOG_HASH";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" triggerTest [

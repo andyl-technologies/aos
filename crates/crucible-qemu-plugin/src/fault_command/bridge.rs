@@ -1057,116 +1057,121 @@ impl FaultCommandBridge {
             let instruction_terminal = event.command_kind
                 == FaultCommandKind::CpuInstructionTransform as u16
                 && FaultTerminalEvidenceV1::has_magic(payload);
-            let published_payload =
-                if event.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
-                    let identity = self
-                        .register_evidence_identity
+            let published_payload = if matches!(
+                event_command_kind,
+                FaultCommandKind::NodeLifecycle | FaultCommandKind::NodeHang
+            ) && payload.get(..8) == Some(b"CRUCLIF1")
+            {
+                translate_lifecycle_evidence(payload, &event, logical_icount_offset)?
+            } else if event.command_kind == FaultCommandKind::CpuRegisterTransform as u16 {
+                let identity = self
+                    .register_evidence_identity
+                    .as_ref()
+                    .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
+                translate_register_evidence(
+                    payload,
+                    RegisterEvidenceObservation {
+                        identity,
+                        logical_icount_offset,
+                        expected_raw_icount: event.observed_icount,
+                        expected_model_phase: Some(event.model_phase),
+                        expected_before: event.before_hash,
+                        expected_after: event.after_hash,
+                    },
+                    register_command
                         .as_ref()
-                        .ok_or(FaultCommandBridgeError::RegisterEvidence)?;
-                    translate_register_evidence(
+                        .and_then(|command| command.mutation.as_ref())
+                        .ok_or(FaultCommandBridgeError::RegisterEvidence)?,
+                )?
+            } else if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
+                let command = instruction_command
+                    .as_ref()
+                    .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
+                if instruction_terminal {
+                    translate_terminal_instruction_evidence(payload, &event, command)?
+                } else {
+                    translate_instruction_evidence(
                         payload,
-                        RegisterEvidenceObservation {
-                            identity,
-                            logical_icount_offset,
-                            expected_raw_icount: event.observed_icount,
-                            expected_model_phase: Some(event.model_phase),
-                            expected_before: event.before_hash,
-                            expected_after: event.after_hash,
-                        },
-                        register_command
+                        self.instruction_evidence_identity
                             .as_ref()
-                            .and_then(|command| command.mutation.as_ref())
-                            .ok_or(FaultCommandBridgeError::RegisterEvidence)?,
+                            .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
+                        self.register_evidence_identity
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
+                        logical_icount_offset,
+                        &event,
+                        command,
                     )?
-                } else if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
-                    let command = instruction_command
-                        .as_ref()
-                        .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
-                    if instruction_terminal {
-                        translate_terminal_instruction_evidence(payload, &event, command)?
-                    } else {
-                        translate_instruction_evidence(
-                            payload,
-                            self.instruction_evidence_identity
-                                .as_ref()
-                                .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
-                            self.register_evidence_identity
-                                .as_ref()
-                                .ok_or(FaultCommandBridgeError::InstructionEvidence)?,
-                            logical_icount_offset,
-                            &event,
-                            command,
-                        )?
-                    }
-                } else if event.command_kind == FaultCommandKind::CpuException as u16 {
-                    let command = exception_command
-                        .as_ref()
-                        .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
-                    if payload.len() == 648 {
-                        translate_hardware_exception_evidence(
-                            payload,
-                            self.hardware_error_manifest_payload
-                                .as_deref()
-                                .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
-                            &event,
-                            command,
-                        )?
-                    } else {
-                        translate_exception_evidence(
-                            payload,
-                            self.instruction_evidence_identity
-                                .as_ref()
-                                .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
-                            logical_icount_offset,
-                            &event,
-                            command,
-                        )?
-                    }
-                } else if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
-                    translate_hardware_ecc_evidence(
+                }
+            } else if event.command_kind == FaultCommandKind::CpuException as u16 {
+                let command = exception_command
+                    .as_ref()
+                    .ok_or(FaultCommandBridgeError::ExceptionEvidence)?;
+                if payload.len() == 648 {
+                    translate_hardware_exception_evidence(
                         payload,
                         self.hardware_error_manifest_payload
                             .as_deref()
                             .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
                         &event,
-                        memory_ecc_command
-                            .as_ref()
-                            .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
-                    )?
-                } else if event.command_kind == FaultCommandKind::ClockTransform as u16
-                    || event.command_kind == FaultCommandKind::ClockSourceState as u16
-                {
-                    translate_clock_evidence(
-                        payload,
-                        self.clock_manifest_payload
-                            .as_deref()
-                            .ok_or(FaultCommandBridgeError::ClockEvidence)?,
-                        &event,
-                        observed_icount,
-                        clock_command
-                            .as_ref()
-                            .ok_or(FaultCommandBridgeError::ClockEvidence)?,
-                    )?
-                } else if matches!(
-                    event.command_kind,
-                    value if value == FaultCommandKind::AcceleratorLifecycle as u16
-                        || value == FaultCommandKind::AcceleratorResultTransform as u16
-                        || value == FaultCommandKind::AcceleratorMemoryEvent as u16
-                        || value == FaultCommandKind::AcceleratorService as u16
-                ) {
-                    translate_accelerator_evidence(
-                        payload,
-                        &event,
-                        self.accelerator_manifest_payload
-                            .as_deref()
-                            .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
-                        accelerator_command
-                            .as_ref()
-                            .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
+                        command,
                     )?
                 } else {
-                    payload.to_vec()
-                };
+                    translate_exception_evidence(
+                        payload,
+                        self.instruction_evidence_identity
+                            .as_ref()
+                            .ok_or(FaultCommandBridgeError::ExceptionEvidence)?,
+                        logical_icount_offset,
+                        &event,
+                        command,
+                    )?
+                }
+            } else if event.command_kind == FaultCommandKind::MemoryEccEvent as u16 {
+                translate_hardware_ecc_evidence(
+                    payload,
+                    self.hardware_error_manifest_payload
+                        .as_deref()
+                        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                    &event,
+                    memory_ecc_command
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::HardwareErrorEvidence)?,
+                )?
+            } else if event.command_kind == FaultCommandKind::ClockTransform as u16
+                || event.command_kind == FaultCommandKind::ClockSourceState as u16
+            {
+                translate_clock_evidence(
+                    payload,
+                    self.clock_manifest_payload
+                        .as_deref()
+                        .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                    &event,
+                    observed_icount,
+                    clock_command
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::ClockEvidence)?,
+                )?
+            } else if matches!(
+                event.command_kind,
+                value if value == FaultCommandKind::AcceleratorLifecycle as u16
+                    || value == FaultCommandKind::AcceleratorResultTransform as u16
+                    || value == FaultCommandKind::AcceleratorMemoryEvent as u16
+                    || value == FaultCommandKind::AcceleratorService as u16
+            ) {
+                translate_accelerator_evidence(
+                    payload,
+                    &event,
+                    self.accelerator_manifest_payload
+                        .as_deref()
+                        .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
+                    accelerator_command
+                        .as_ref()
+                        .ok_or(FaultCommandBridgeError::AcceleratorEvidence)?,
+                )?
+            } else {
+                payload.to_vec()
+            };
             if event.command_kind == FaultCommandKind::CpuInstructionTransform as u16 {
                 if instruction_terminal {
                     track_terminal_instruction_event(

@@ -13,6 +13,14 @@
       && lib.hasInfix "+        node_encode_evidence(staging, result_payload);" typedResultPatch
     then true
     else throw "patch 0072 no longer replaces command-specific results with canonical typed evidence";
+  controlBoundaryPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0109-crucible-control-boundary-node-faults.patch;
+  controlBoundaryDispatchIsMandatory =
+    if
+      lib.hasInfix "qemu_crucible_fault_has_pending_at_or_before(" controlBoundaryPatch
+      && lib.hasInfix "CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, observed_icount" controlBoundaryPatch
+      && lib.hasInfix "qemu_crucible_fault_dispatch_boundary(" controlBoundaryPatch
+    then true
+    else throw "patch 0109 no longer dispatches due node faults at the exact drained control boundary";
   qemuWithoutTypedResult = pkgs.qemuCrucibleNonDistributableTestPrefix {
     pname = "qemu-crucible-without-typed-node-result";
     series = fullSeries;
@@ -21,6 +29,7 @@
   pluginWithoutTypedResult = pkgs.crucibleQemuPluginFor qemuWithoutTypedResult;
 in
   assert typedResultPatchIsMandatory;
+  assert controlBoundaryDispatchIsMandatory;
     pkgs.mkDerivation {
       pname = "crucible-phase2-qemu-live-node-lifecycle-fault";
       version = "0";
@@ -134,7 +143,7 @@ in
             cp "$report" "$out/result"
             cp "$without_result_stderr" "$out/without-typed-node-result.stderr"
             printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-            printf 'proven=typed-event,binding-evaluation,cross-domain-atomic-commit,exact-capability-replay,shared-command-ring,safe-boundary,changed-state-precondition-rejection,typed-occurrence,authorized-process-exit,patch-0072-required\n' >> "$out/result"
+            printf 'proven=typed-event,binding-evaluation,cross-domain-atomic-commit,exact-capability-replay,shared-command-ring,safe-boundary,changed-state-precondition-rejection,typed-occurrence,authorized-process-exit,patch-0072-required,patch-0109-exact-control-dispatch\n' >> "$out/result"
           '';
         }
       ];

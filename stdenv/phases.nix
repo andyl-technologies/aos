@@ -611,8 +611,19 @@ in rec {
             if !installCargoArtifacts
             then ''
               mkdir -p "$out/nix-support"
-              cp "$NIX_BUILD_TOP/cargo-build-messages.jsonl" \
-                "$out/nix-support/cargo-build-messages.jsonl"
+              # Keep the useful compiler-artifact/freshness evidence without
+              # turning diagnostic source paths into runtime Nix references.
+              # `walk` also covers future Cargo message fields instead of
+              # relying on a brittle list of currently path-bearing keys.
+              jq -c '
+                walk(
+                  if type == "string"
+                  then gsub("/nix/store/[0-9a-z]{32}-[^/[:space:]]+"; "/nix/store/00000000000000000000000000000000-redacted")
+                  else .
+                  end
+                )
+              ' "$NIX_BUILD_TOP/cargo-build-messages.jsonl" \
+                > "$out/nix-support/cargo-build-messages.jsonl"
             ''
             else ""
           )

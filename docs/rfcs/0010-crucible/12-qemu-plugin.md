@@ -256,8 +256,11 @@ window.
   5. block on the canonical `wake_signal` futex until the scheduler raises the
      ceiling to or past the wake icount (§12.3.3) — *not* a busy spin; the
      required registered eventfd separately nudges QEMU's main loop;
-  6. once released, advance virtual time to the authorized wake icount
-     (firing due timers and draining bottom-halves as a side effect, §12.3.5);
+  6. once released, enqueue an advance to the authorized wake icount (firing
+     due timers and draining bottom-halves as a side effect, §12.3.5); if QEMU
+     reports `-EBUSY` because the preceding advance still owns its barrier, the
+     plugin MUST re-arm the all-halted edge and recompute after QEMU's
+     completion kick rather than accepting the pre-input idle publication;
   7. inject every inbound frame whose `delivery_icount <= current_icount` in the
      deterministic total order (§12.4.2);
   8. republish `current_icount`/`current_ns`, set status running, and return.
@@ -557,7 +560,10 @@ applies the link model.
   ready. QEMU reports backpressure without taking ownership; the plugin leaves
   the frame in the bounded shared-memory ring until complete guest acceptance.
   QEMU-private packet queues MUST NOT own a retained frame because they are not
-  part of the canonical exact-checkpoint transport state.
+  part of the canonical exact-checkpoint transport state. Each later plugin
+  retry invokes a fresh guest-device probe; QEMU MUST NOT let the
+  `receive_disabled` hint associated with its unused private queue suppress that
+  canonical retry.
   Injection MUST occur from the idle callback context (where QEMU's big lock is
   held) and MUST be gated by the delivery-icount rule of [PLUG-18]. *Gate:*
   `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.5.2; routes

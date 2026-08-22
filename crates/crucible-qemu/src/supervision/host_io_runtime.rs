@@ -42,8 +42,8 @@ use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
-    QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoCheckpoint,
-    QemuHostIoRuntime,
+    QemuAdvanceCompletionFence, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
+    QemuHostIoCheckpoint, QemuHostIoRuntime,
 };
 use deadline::AdvanceWaitDeadline;
 
@@ -73,6 +73,8 @@ pub struct QemuLiveHostIoRuntime {
     vm_slot: u32,
     poll_interval: Duration,
     advance_wait_deadline: AdvanceWaitDeadline,
+    /// Pre-wake generation for scheduler input that invalidated an idle report.
+    scheduler_input_publish_generation: Option<u32>,
     /// Plugin generation observed before host-serviced device work wakes QEMU.
     device_wake_publish_generation: Option<u32>,
     /// Zero-length idle coordinate left by an exact checkpoint pause.
@@ -211,6 +213,7 @@ impl QemuLiveHostIoRuntime {
             vm_slot,
             poll_interval,
             advance_wait_deadline: AdvanceWaitDeadline::default(),
+            scheduler_input_publish_generation: None,
             device_wake_publish_generation: None,
             checkpoint_idle_coordinate: None,
             block: None,
@@ -383,12 +386,12 @@ impl QemuLiveHostIoRuntime {
                 "timeout deadline overflow",
             ));
         }
-        self.device_wake_publish_generation = None;
         let initial = self
             .region
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
+        self.device_wake_publish_generation = None;
         self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&initial);
         if self.checkpoint_idle_coordinate.is_some() {
             // A QMP-resumed checkpoint retains the plugin's completed
@@ -431,6 +434,12 @@ impl QemuLiveHostIoRuntime {
                 .map_err(map_slot_error)?
                 .snapshot();
             if self
+                .scheduler_input_publish_generation
+                .is_some_and(|generation| snapshot.publish_gen != generation)
+            {
+                self.scheduler_input_publish_generation = None;
+            }
+            if self
                 .device_wake_publish_generation
                 .is_some_and(|generation| snapshot.publish_gen != generation)
             {
@@ -461,13 +470,23 @@ impl QemuLiveHostIoRuntime {
                 self.device_wake_publish_generation,
                 &snapshot,
             );
+            let scheduler_input_unobserved = device_wake_publication_is_unobserved(
+                self.scheduler_input_publish_generation,
+                &snapshot,
+            );
             let boundary = if checkpoint_idle_unreleased {
                 QuantumBoundary::Pending
             } else {
-                classify_after_host_wake(&idle, snapshot.max_advance_icount, wake_unacknowledged)
+                classify_after_scheduler_and_host_wake(
+                    &idle,
+                    snapshot.max_advance_icount,
+                    scheduler_input_unobserved,
+                    wake_unacknowledged,
+                )
             };
             match boundary {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
+                    self.scheduler_input_publish_generation = None;
                     self.checkpoint_idle_coordinate = None;
                     self.clamp_completed_quantum(&snapshot, timeout)?;
                     self.service_console_output()?;
@@ -801,6 +820,15 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn arm_advance_completion_fence(
+        &mut self,
+        fence: Option<QemuAdvanceCompletionFence>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.scheduler_input_publish_generation =
+            fence.map(|fence| fence.initial_publish_generation);
+        Ok(())
+    }
+
     fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
         Ok(self
             .region

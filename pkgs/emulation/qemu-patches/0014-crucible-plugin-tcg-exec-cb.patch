@@ -165,7 +165,7 @@ index 6b7aaa201..ed2d445e0 100644
  int64_t icount_get(void);
  /*
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 115558b28..6d76bfef1 100644
+index 1dcd4d60e..96141b30e 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -116,6 +116,8 @@ static int64_t qemu_plugin_time_advance_target;

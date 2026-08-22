@@ -29,6 +29,9 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-delete-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
         r#"{"return":{"running":false,"status":"paused"}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
@@ -115,11 +118,23 @@ fn factory_restores_vmstate_before_exposing_exact_snapshot_control() -> Result<(
     );
     assert_eq!(
         execute_name(json_line(&lines, 7)),
-        Some(QMP_QUERY_STATUS_COMMAND)
+        Some(QMP_SNAPSHOT_DELETE_COMMAND)
     );
-    assert_eq!(execute_name(json_line(&lines, 8)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 8)),
+        Some(QMP_QUERY_JOBS_COMMAND)
+    );
     assert_eq!(
         execute_name(json_line(&lines, 9)),
+        Some(QMP_JOB_DISMISS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 10)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(execute_name(json_line(&lines, 11)), Some(QMP_CONT_COMMAND));
+    assert_eq!(
+        execute_name(json_line(&lines, 12)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
 

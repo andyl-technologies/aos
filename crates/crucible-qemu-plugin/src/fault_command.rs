@@ -2024,10 +2024,12 @@ mod bridge;
 mod clock_evidence;
 mod event_envelope;
 mod instruction_evidence;
+mod lifecycle_evidence;
 use accelerator_evidence::*;
 use clock_evidence::*;
 use event_envelope::*;
 use instruction_evidence::*;
+use lifecycle_evidence::*;
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {

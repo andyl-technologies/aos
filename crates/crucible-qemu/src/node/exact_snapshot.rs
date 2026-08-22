@@ -20,7 +20,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, true, true)
+        self.capture_exact_snapshot_inner(node, checkpoint, true, true, false)
     }
 
     /// Captures an exact snapshot while preserving an intentional QEMU pause.
@@ -38,7 +38,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, false)
+        self.capture_exact_snapshot_inner(node, checkpoint, false, false, false)
     }
 
     /// Captures a running node while keeping successful artifacts immutable.
@@ -57,7 +57,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, true)
+        self.capture_exact_snapshot_inner(node, checkpoint, false, true, false)
     }
 
     /// Resumes a running node after its paused exact artifacts are durable.
@@ -91,7 +91,7 @@ impl QemuNode {
         node: &NodeId,
         checkpoint: Checkpoint,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
-        self.capture_exact_snapshot_inner(node, checkpoint, false, false)
+        self.capture_exact_snapshot_inner(node, checkpoint, false, false, true)
     }
 
     /// Prevalidates terminal snapshot identity and boundary prerequisites.
@@ -159,33 +159,56 @@ impl QemuNode {
         checkpoint: Checkpoint,
         resume_after_capture: bool,
         resume_after_pre_save_failure: bool,
+        terminal_lifecycle_stop: bool,
     ) -> Result<crate::QemuVmSnapshot, QemuNodeError> {
         self.validate_exact_snapshot_boundary(node, &checkpoint)?;
-        self.host_io_runtime
-            .quiesce_for_checkpoint(self.async_policy.qmp_command_timeout)
-            .map_err(|source| {
-                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
-            })?;
-        if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
+        if terminal_lifecycle_stop {
+            // A terminal QEMU mutation installs its RR stop fence before its
+            // typed result becomes visible to the host. Requesting a second
+            // plugin pause can therefore strand behind the already-stopped
+            // main loop. Confirm that native stopped state first, then require
+            // the exact boundary's device marker to be quiescent.
+            if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
+                return self.handle_qmp_channel_error(source);
+            }
+            if !self
+                .host_io_runtime
+                .checkpoint_device_io_is_quiescent()
+                .map_err(|source| {
+                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+                })?
+            {
+                return Err(QemuNodeError::checkpoint(
+                    "terminal lifecycle stopped with active QEMU device I/O",
+                ));
+            }
+        } else {
             self.host_io_runtime
-                .abort_checkpoint_pause()
-                .map_err(|cleanup| {
-                    QemuNodeError::checkpoint(format!(
-                        "QMP stop failed ({source}); aborting the plugin pause also failed ({cleanup})"
-                    ))
+                .quiesce_for_checkpoint(self.async_policy.qmp_command_timeout)
+                .map_err(|source| {
+                    QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
                 })?;
-            return self.handle_qmp_channel_error(source);
-        }
-        if let Err(source) = self.host_io_runtime.clear_checkpoint_pause_while_stopped() {
-            let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
-            return match resume {
-                Ok(()) => Err(QemuNodeError::from_async_driver(
-                    crate::QemuAsyncDriverError::Runtime(source),
-                )),
-                Err(qmp) => Err(QemuNodeError::checkpoint(format!(
-                    "clearing the stopped plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
-                ))),
-            };
+            if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
+                self.host_io_runtime
+                    .abort_checkpoint_pause()
+                    .map_err(|cleanup| {
+                        QemuNodeError::checkpoint(format!(
+                            "QMP stop failed ({source}); aborting the plugin pause also failed ({cleanup})"
+                        ))
+                    })?;
+                return self.handle_qmp_channel_error(source);
+            }
+            if let Err(source) = self.host_io_runtime.clear_checkpoint_pause_while_stopped() {
+                let resume = self.channels.qmp_machine_control.resume_after_checkpoint();
+                return match resume {
+                    Ok(()) => Err(QemuNodeError::from_async_driver(
+                        crate::QemuAsyncDriverError::Runtime(source),
+                    )),
+                    Err(qmp) => Err(QemuNodeError::checkpoint(format!(
+                        "clearing the stopped plugin checkpoint pause failed ({source}); resuming QEMU also failed ({qmp})"
+                    ))),
+                };
+            }
         }
         let capture_result = (|| {
             let paused_icount = self.current_icount()?;

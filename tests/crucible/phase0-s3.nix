@@ -306,6 +306,7 @@ in
       pkgs.diffutils
       pkgs.gawk
       pkgs.glib
+      pkgs.glib.dev
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config

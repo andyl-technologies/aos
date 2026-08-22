@@ -93,12 +93,13 @@ mod supervision;
 mod unix_socket_path;
 
 pub use async_driver::{
-    QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverOperation,
-    QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError,
-    QemuAsyncLifecycleAwaitOutcome, QemuAsyncLifecycleAwaitReport, QemuAsyncNodeStepOutcome,
-    QemuAsyncNodeStepReport, QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion, QemuAsyncWait,
-    QemuAsyncWaitOutcome, QemuHostIoRuntime, assert_async_driver_quantum_hot_path_is_shmem_only,
-    await_bounded_lifecycle_event, run_bounded_qemu_node_step,
+    QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverError,
+    QemuAsyncDriverOperation, QemuAsyncDriverPolicy, QemuAsyncDriverRuntimeError,
+    QemuAsyncDriverTargetError, QemuAsyncLifecycleAwaitOutcome, QemuAsyncLifecycleAwaitReport,
+    QemuAsyncNodeStepOutcome, QemuAsyncNodeStepReport, QemuAsyncNodeStepTarget,
+    QemuAsyncQuantumCompletion, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime,
+    assert_async_driver_quantum_hot_path_is_shmem_only, await_bounded_lifecycle_event,
+    run_bounded_qemu_node_step,
 };
 #[cfg(target_os = "linux")]
 pub use block_realization_gate::{

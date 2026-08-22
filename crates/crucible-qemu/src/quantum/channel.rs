@@ -108,9 +108,12 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         &mut self,
         horizon: ExecutionHorizon,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
-        QemuQuantumShmemHotPath::start_quantum(self, horizon)
-            .map(QemuNodePendingQuantum::new)
-            .map_err(QemuNodeChannelError::from)
+        let pending = QemuQuantumShmemHotPath::start_quantum(self, horizon)
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(match pending.completion_fence {
+            Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(pending, fence),
+            None => QemuNodePendingQuantum::new(pending),
+        })
     }
 
     fn poll_quantum(

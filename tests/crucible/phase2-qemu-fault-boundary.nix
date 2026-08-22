@@ -123,6 +123,7 @@ in
         pkgs.binutils
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.grep
         pkgs.pkg-config
         qemuPackage

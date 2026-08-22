@@ -102,7 +102,7 @@ in {
 
       rootSlotSizeMiB = lib.mkOption {
         type = lib.types.addCheck lib.types.int (value: value > 0);
-        default = config.aos.image.budgets.maxRootMiB;
+        default = config.aos.image.rootPartitionMiB;
         description = "Fixed capacity of each immutable root zvol in MiB.";
       };
 
