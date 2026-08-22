@@ -139,7 +139,12 @@ The current `create` command accepts strict canonical `CampaignLineage` and
 `CampaignPolicy` bodies. Their verifier-backed scenario/configuration artifacts
 and transitive generator closure must already be imported by the daemon's
 narrow immutable importer; large artifacts never travel through the control
-message. It creates the first snapshot and named ref or exactly replays the
+message. A read-write local daemon accepts one or more
+`--campaign-import-manifest PATH` options at startup. Each strict version-1
+manifest names dependency-ordered exact-owner scenario/schedule pairs and
+canonical generator bodies; the daemon verifies and imports them under the
+exclusive repository lock before it binds the CampaignService socket. It
+creates the first snapshot and named ref or exactly replays the
 authenticated genesis basis. `derive` similarly names one exact authenticated
 source snapshot and may activate an already imported compatible canonical
 policy. `start` attaches local execution resources and changes desired state
@@ -160,8 +165,8 @@ reuse or a stale
 precondition remains visible. Every successful format includes campaign,
 operation, command ID, prior snapshot, new snapshot, and replay status. Create
 and derive report their exact lineage/policy or source basis, accepted snapshot,
-and replay status. Start's local resource attachment, verifier-backed import and
-validation porcelain, and richer manifest authoring remain open.
+and replay status. Start's local resource attachment, standalone validation
+porcelain, and richer manifest authoring remain open.
 
 Semantic alternatives use a separate command:
 

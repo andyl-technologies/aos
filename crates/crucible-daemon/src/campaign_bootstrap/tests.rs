@@ -11,7 +11,7 @@ use std::thread;
 
 use crucible_campaign::{
     CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal, CampaignServiceFailure,
-    GetCampaignRequest,
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, GetCampaignRequest,
 };
 use tempfile::tempdir;
 
@@ -170,6 +170,57 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     ));
     assert!(!second.endpoint().path().exists());
     drop(first);
+}
+
+#[test]
+fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
+    let (_directory, config) = fixture();
+    let prepared = config.prepare().expect("prepare local service");
+    assert!(!config.endpoint().path().exists());
+    assert!(matches!(
+        config.open(),
+        Err(CampaignLocalServiceError::StateInUse)
+    ));
+
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let configuration = prepared
+        .import_configuration(&scenario, &crucible::Schedule::empty())
+        .expect("import verified configuration");
+    let generator =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let generator_id = prepared
+        .import_generator(&generator)
+        .expect("import verified generator");
+    assert_ne!(configuration.content_id(), generator_id.content_id());
+    assert!(!config.endpoint().path().exists());
+
+    let service = prepared.bind().expect("bind prepared service");
+    assert!(config.endpoint().path().exists());
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve pre-stopped service");
+}
+
+#[test]
+fn prepared_read_only_owner_rejects_artifact_import() {
+    let (_directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only config");
+    let prepared = read_only.prepare().expect("prepare read-only service");
+    let generator =
+        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    assert!(matches!(
+        prepared.import_generator(&generator),
+        Err(CampaignLocalServiceError::ArtifactImportReadOnly)
+    ));
+    assert!(!read_only.endpoint().path().exists());
 }
 
 #[test]

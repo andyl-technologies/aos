@@ -6,6 +6,10 @@ use super::*;
 mod artifact_capture;
 pub(super) use artifact_capture::*;
 
+#[path = "verify_serve/campaign_import.rs"]
+mod campaign_import;
+use campaign_import::apply_campaign_import_manifests;
+
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
     verify_plan: &VerifyInvocationPlan,
@@ -1043,7 +1047,7 @@ where
     .await
 }
 
-struct PreparedLocalCampaignService {
+pub(super) struct PreparedLocalCampaignService {
     service: crucible_daemon::CampaignLocalService,
     socket_path: PathBuf,
 }
@@ -1054,7 +1058,7 @@ impl PreparedLocalCampaignService {
     }
 }
 
-fn open_local_campaign_service(
+pub(super) fn open_local_campaign_service(
     args: &ServeArgs,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     let (Some(socket), Some(state), Some(policy)) = (
@@ -1083,9 +1087,13 @@ fn open_local_campaign_service(
         crucible_daemon::CampaignLoopbackServerConfig::default(),
     )
     .map_err(|error| serve_error(format!("campaign service configuration error: {error}")))?;
-    let service = config
-        .open()
+    let prepared = config
+        .prepare()
         .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
+    apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
+    let service = prepared
+        .bind()
+        .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
     Ok(Some(PreparedLocalCampaignService {
         service,
         socket_path: socket.clone(),

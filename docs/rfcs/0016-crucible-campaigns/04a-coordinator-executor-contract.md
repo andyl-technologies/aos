@@ -493,12 +493,46 @@ importer implements this precondition without exposing campaign refs or
 accepting caller-asserted semantic IDs. Generator traversal is bounded to 4,096
 unique records and 128 MiB of aggregate canonical generator bodies. Validation
 streams one authenticated record at a time and does not republish imported
-generators. The campaign name is the creation idempotency boundary, and the
-complete canonical request binds the individual response digest. An idempotent
+generators. The local daemon exposes that narrow capability only in a pre-bind
+startup phase: repeatable `--campaign-import-manifest PATH` inputs use the
+strict `crucible.campaign-import` version-1 TOML schema, carry at most 4,096
+scenario/schedule or generator entries in aggregate across the complete
+startup, and name only absolute, canonical, exact-owner regular files with no
+group/other write bits. The manifest is at
+most 1 MiB and each referenced compact/canonical body is read within the 32-MiB
+artifact ceiling. Imports execute one body at a time under the repository's
+exclusive state lock; every manifest must succeed before the managed service
+socket is bound. The option is unavailable in read-only mode. Successfully
+published immutable bodies remain safe, idempotent content-addressed input if a
+later manifest entry fails; no campaign ref or service endpoint is created by
+the import phase. The campaign name is the creation idempotency boundary, and
+the complete canonical request binds the individual response digest. An idempotent
 retry is recognized when the authenticated named campaign's retained genesis
 has the same lineage and policy, even after later mutations, and returns the
 original genesis snapshot. A different lineage or policy under an existing name
 returns `AlreadyExists`.
+
+```toml
+schema = "crucible.campaign-import"
+version = 1
+
+[[configuration]]
+scenario = "/absolute/path/scenario.bin"
+schedule = "/absolute/path/schedule.bin"
+
+[[generator]]
+specification = "/absolute/path/generator.bin"
+```
+
+Unknown fields, zero entries, duplicate configuration pairs, duplicate
+generator paths, relative paths, dot components, symlinks, non-regular files,
+owner mismatch, and group/other-writable files are rejected. Configuration
+entries decode ScenarioDefForm compact binary V5 and Schedule compact binary
+V1/V2, then publish the current campaign scenario payload V1 and configuration
+payload V2 after semantic identity re-derivation. Generator entries decode the
+current strict canonical `CandidateGeneratorSpec` and must appear after any
+child generator records on which they depend. A manifest path and every named
+path are at most 4,095 bytes.
 
 Derivation authenticates and authorizes both source and target names before any
 repository access. The requested source snapshot must occur in the authenticated
@@ -909,6 +943,10 @@ SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both
 services and joins the campaign workers before releasing either lock.
 `--read-only` also wraps the campaign authorizer and denies Create, Derive,
 ApplyCommand, Pin, and SubmitBranch even if the policy file grants them.
+Repeatable pre-bind import manifests require the complete local campaign
+profile and conflict with `--read-only`; the prepared repository owner is
+consumed by endpoint binding, so this bootstrap API cannot retain import
+authority after serving begins.
 
 Structured operational diagnostic routing remains open. The pre-bound
 constructor remains useful for embedded/test deployments, but constructing it
