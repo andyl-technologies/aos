@@ -1,14 +1,17 @@
 //! Nondroppable cleanup ownership for one failed QEMU process generation.
 //!
-//! This module composes the three authorities that must survive a failed live
-//! realization: the nonduplicable direct-child wait handle, the persistent
-//! cgroup cancellation watcher, and the pinned configured cgroup. Cleanup runs
-//! on a dedicated detached worker. Dropping the observation handle cannot stop
-//! that worker or release any authority. Ordinary host errors retry at a fixed
-//! cadence; an invariant panic is caught once and parks the worker forever with
-//! every remaining authority still owned.
+//! This module composes the authorities that must survive a failed live
+//! realization: every retained direct-child wait handle, the persistent cgroup
+//! cancellation watcher when it has not already joined, and the pinned
+//! configured cgroup. Cleanup runs on a dedicated detached worker. Dropping the
+//! observation handle cannot stop that worker or release any authority.
+//! Ordinary host errors retry at a fixed cadence; an invariant panic is caught
+//! once and parks the worker forever with every remaining authority still
+//! owned.
 
+use std::collections::VecDeque;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
@@ -18,7 +21,7 @@ use thiserror::Error;
 
 use super::{
     CGROUP_KILL_INTERVAL, LinuxQemuCgroup, LinuxQemuCgroupError, LinuxQemuCgroupWatcher,
-    LinuxQemuDirectChild,
+    LinuxQemuDirectChild, QemuNodeChild, WATCHER_TERMINAL,
 };
 
 const QUARANTINE_RUNNING: u8 = 0;
@@ -51,7 +54,17 @@ pub(crate) struct LinuxQemuAttemptProcessQuarantine {
 struct LinuxQemuAttemptProcessQuarantineState {
     group: Option<LinuxQemuCgroup>,
     watcher: Option<LinuxQemuCgroupWatcher>,
-    child: Option<LinuxQemuDirectChild>,
+    children: VecDeque<LinuxQemuQuarantineChild>,
+}
+
+#[derive(Debug)]
+enum LinuxQemuQuarantineChild {
+    Authenticated(LinuxQemuDirectChild),
+    Retained {
+        child: QemuNodeChild,
+        cgroup_path: PathBuf,
+        attempt_lifecycle: Arc<AtomicU8>,
+    },
 }
 
 /// Failed process-quarantine startup with every untransferred authority retained.
@@ -82,8 +95,38 @@ impl LinuxQemuAttemptProcessQuarantineStartError {
         LinuxQemuCgroupWatcher,
         LinuxQemuDirectChild,
     )> {
-        let state = *self.authority.take()?;
-        Some((state.group?, state.watcher?, state.child?))
+        let mut state = *self.authority.take()?;
+        let group = state.group.take()?;
+        let watcher = state.watcher.take()?;
+        let child = match state.children.pop_front()? {
+            LinuxQemuQuarantineChild::Authenticated(child) if state.children.is_empty() => child,
+            child => {
+                state.group = Some(group);
+                state.watcher = Some(watcher);
+                state.children.push_front(child);
+                let _leaked = Box::leak(Box::new(state));
+                return None;
+            }
+        };
+        Some((group, watcher, child))
+    }
+
+    pub(super) fn into_owner_parts(
+        mut self,
+    ) -> Option<(
+        LinuxQemuCgroup,
+        Option<LinuxQemuCgroupWatcher>,
+        VecDeque<QemuNodeChild>,
+    )> {
+        let mut state = *self.authority.take()?;
+        let group = state.group.take()?;
+        let watcher = state.watcher.take();
+        let children = state
+            .children
+            .drain(..)
+            .map(LinuxQemuQuarantineChild::into_child)
+            .collect();
+        Some((group, watcher, children))
     }
 }
 
@@ -123,8 +166,38 @@ impl LinuxQemuAttemptProcessQuarantine {
         let state = LinuxQemuAttemptProcessQuarantineState {
             group: Some(group),
             watcher: Some(watcher),
-            child: Some(child),
+            children: VecDeque::from([LinuxQemuQuarantineChild::Authenticated(child)]),
         };
+        Self::start_state(path, state)
+    }
+
+    pub(super) fn start_retained(
+        group: LinuxQemuCgroup,
+        watcher: Option<LinuxQemuCgroupWatcher>,
+        children: VecDeque<QemuNodeChild>,
+    ) -> Result<Self, LinuxQemuAttemptProcessQuarantineStartError> {
+        let path = group.path.clone();
+        let attempt_lifecycle = Arc::clone(&group.control.watcher_state);
+        let children = children
+            .into_iter()
+            .map(|child| LinuxQemuQuarantineChild::Retained {
+                child,
+                cgroup_path: path.clone(),
+                attempt_lifecycle: Arc::clone(&attempt_lifecycle),
+            })
+            .collect();
+        let state = LinuxQemuAttemptProcessQuarantineState {
+            group: Some(group),
+            watcher,
+            children,
+        };
+        Self::start_state(path, state)
+    }
+
+    fn start_state(
+        path: PathBuf,
+        state: LinuxQemuAttemptProcessQuarantineState,
+    ) -> Result<Self, LinuxQemuAttemptProcessQuarantineStartError> {
         if !state.authority_matches() {
             return Err(LinuxQemuAttemptProcessQuarantineStartError {
                 source: LinuxQemuCgroupError::ProcessMembership { path },
@@ -179,13 +252,59 @@ impl LinuxQemuAttemptProcessQuarantine {
 
 impl LinuxQemuAttemptProcessQuarantineState {
     fn authority_matches(&self) -> bool {
-        let (Some(group), Some(watcher), Some(child)) = (&self.group, &self.watcher, &self.child)
-        else {
+        let Some(group) = &self.group else {
             return false;
         };
-        group.owns_child_authority(child)
-            && group.path == watcher.path
-            && Arc::ptr_eq(&group.control.watcher_state, &watcher.watcher_state)
+        let watcher_matches = self.watcher.as_ref().map_or_else(
+            || group.control.watcher_state.load(Ordering::Acquire) == WATCHER_TERMINAL,
+            |watcher| {
+                group.path == watcher.path
+                    && Arc::ptr_eq(&group.control.watcher_state, &watcher.watcher_state)
+            },
+        );
+        watcher_matches
+            && self
+                .children
+                .iter()
+                .all(|child| child.authority_matches(group))
+    }
+}
+
+impl LinuxQemuQuarantineChild {
+    fn authority_matches(&self, group: &LinuxQemuCgroup) -> bool {
+        match self {
+            Self::Authenticated(child) => group.owns_child_authority(child),
+            Self::Retained {
+                cgroup_path,
+                attempt_lifecycle,
+                ..
+            } => {
+                group.path == *cgroup_path
+                    && Arc::ptr_eq(&group.control.watcher_state, attempt_lifecycle)
+            }
+        }
+    }
+
+    fn kill_and_reap_blocking(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        match self {
+            Self::Authenticated(child) => child.kill_and_reap_blocking(),
+            Self::Retained {
+                child, cgroup_path, ..
+            } => child
+                .force_kill_and_reap_failed_realization()
+                .map_err(|source| LinuxQemuCgroupError::Io {
+                    operation: "kill and reap retained unverified QEMU direct child",
+                    path: cgroup_path.clone(),
+                    source: io::Error::other(source),
+                }),
+        }
+    }
+
+    fn into_child(self) -> QemuNodeChild {
+        match self {
+            Self::Authenticated(child) => child.child,
+            Self::Retained { child, .. } => child,
+        }
     }
 }
 
@@ -204,10 +323,10 @@ impl QuarantineWork for LinuxQemuAttemptProcessQuarantineState {
         group.control.signal_cancellation()?;
         group.control.kill_members()?;
 
-        if let Some(child) = self.child.as_mut() {
+        while let Some(child) = self.children.front_mut() {
             child.kill_and_reap_blocking()?;
+            self.children.pop_front();
         }
-        self.child = None;
 
         if group.is_populated()? {
             return Err(LinuxQemuCgroupError::InvalidEvents {

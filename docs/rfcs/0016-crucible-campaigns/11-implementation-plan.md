@@ -323,17 +323,22 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   credential drop and `exec`; replacement of the diagnostic path therefore
   cannot redirect launch. The production owner must still exclude concurrent
   namespace mutation until QEMU has opened every relative artifact.
-  A crate-internal nondroppable process-quarantine worker now accepts only a
-  lifecycle-matched child, watcher, and cgroup; it retries ordinary cleanup
-  failures, parks with authority after an invariant panic, and remains live
-  after its observation handle is dropped. Concrete launchers now retain an
-  unreaped pre-install child and reject relaunch; the guarded replay session
-  transfers that authority into its abstract attempt guard before returning the
-  realization error. Concrete guard composition of that transfer and active-
-  node handoff into the cgroup owner, aggregate filesystem quota, execution-
-  quantum counter composition, exclusive run-directory namespace ownership
-  through artifact open, the modeled attempt driver, and concrete session
-  wiring remain open. Real-node exact-checkpoint
+  A crate-internal nondroppable process-quarantine worker now accepts only
+  lifecycle-matched retained children, an optional not-yet-joined watcher, and
+  a cgroup; it retries ordinary cleanup failures, parks with authority after an
+  invariant panic, and remains live
+  after its observation handle is dropped. A crate-internal attempt-process
+  owner now starts the watcher before contract minting, joins and removes the
+  group on normal finish, retains bounded raw child handles even when process-
+  identity authentication failed, and transfers unfinished state to that
+  worker from `Drop`. Concrete launchers retain an unreaped pre-install child
+  and reject relaunch; the guarded replay session transfers that authority into
+  its abstract attempt guard before returning the realization error. Concrete
+  guard composition of that transfer and active-node handoff into the cgroup
+  owner, aggregate filesystem quota, execution-quantum counter composition,
+  exclusive run-directory namespace ownership through artifact open, the
+  modeled attempt driver, and concrete session wiring remain open. Real-node
+  exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
   paused VMState/host-I/O capture. The daemon now prepares and durably publishes

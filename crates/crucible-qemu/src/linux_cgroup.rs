@@ -7,10 +7,11 @@
 //! mutable path after creation. Every production child contract also requires
 //! a non-root user and group distinct from every supervisor credential; the
 //! pre-exec path clears supplementary groups and installs those IDs after
-//! cgroup attachment. This staged authority remains crate-internal until its
-//! direct-child reap/quarantine, aggregate quota, quantum charger, and session
-//! composition land. It does not own campaign semantics, VMState, or
-//! QEMU/plugin code.
+//! cgroup attachment. One attempt owner now composes normal watcher completion,
+//! direct-child retention, and nondroppable quarantine transfer. The authority
+//! remains crate-internal until aggregate quota, quantum charging, and daemon
+//! guard/session composition land. It does not own campaign semantics,
+//! VMState, or QEMU/plugin code.
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -30,6 +31,7 @@ use thiserror::Error;
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNode, QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
+mod attempt_owner;
 mod quarantine;
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
