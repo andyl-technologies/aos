@@ -10,9 +10,11 @@ use std::io::{self, Write};
 
 use crucible::Configuration;
 use crucible_qemu::{
-    QemuGuardedNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuPreparedRunDirectory,
-    QemuSpawnError, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationKind,
-    QemuVmRealizationOperation, QemuVmSnapshot, QemuVmStateBinding,
+    QemuBakedGenesisRestoreAdmission, QemuGuardedNodeRealizationLauncher,
+    QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuPreparedRunDirectory,
+    QemuSpawnError, QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
+    QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
 };
 use thiserror::Error;
 
@@ -33,6 +35,179 @@ pub struct MaterializedExactCheckpoint {
     pin_fact: CampaignFactId,
     vmstate_binding: QemuVmStateBinding,
     snapshot: QemuVmSnapshot,
+}
+
+/// Attempt-owned guarded executor for one exact fat/thin replay comparison.
+///
+/// The session routes the selected fat probe through the exact-root launcher
+/// and every cached-ancestor or baked-genesis restore through a disjoint thin-
+/// path launcher. It owns the attempt resource guard until the last live QEMU
+/// generation is reaped. Any realization failure is conservatively transferred
+/// to guard quarantine because a pre-install child cannot yet be recovered by
+/// this incremental composition.
+pub struct QemuGuardedReplayOracleSession<'a, L, G>
+where
+    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    executor: &'a mut QemuNodeRealizationExecutor<L>,
+    guard: G,
+    realization_failed: bool,
+    backend_reaped: bool,
+    guard_terminal: bool,
+}
+
+impl<'a, L, G> QemuGuardedReplayOracleSession<'a, L, G>
+where
+    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    /// Takes ownership of one installed attempt guard for replay validation.
+    #[must_use]
+    pub const fn new(executor: &'a mut QemuNodeRealizationExecutor<L>, guard: G) -> Self {
+        Self {
+            executor,
+            guard,
+            realization_failed: false,
+            backend_reaped: false,
+            guard_terminal: false,
+        }
+    }
+
+    /// Reaps the final thin-path generation and releases its resource guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError::ReapQuarantined`] when realization or
+    /// reap failed and resource ownership was transferred to quarantine. Other
+    /// cleanup diagnostics are returned only after reap attestation.
+    pub fn finish(mut self) -> Result<(), QemuVmRealizationError> {
+        self.cleanup()
+    }
+
+    fn observe_realization<T>(
+        &mut self,
+        result: Result<T, QemuVmRealizationError>,
+    ) -> Result<T, QemuVmRealizationError> {
+        if result.is_err() {
+            self.realization_failed = true;
+        }
+        self.guard.check_operational_boundary()?;
+        result
+    }
+
+    fn cleanup(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.realization_failed && !self.guard_terminal {
+            self.guard.quarantine();
+            self.guard_terminal = true;
+            return Err(QemuVmRealizationError::ReapQuarantined {
+                operation: "finish guarded replay-oracle comparison",
+                message: String::from(
+                    "a failed realization may own a pre-install child; attempt resources were quarantined",
+                ),
+            });
+        }
+        if !self.backend_reaped {
+            match QemuVmLiveRealizationExecutor::shutdown_live_backend(self.executor) {
+                Ok(_outcome) => self.backend_reaped = true,
+                Err(error) => {
+                    if !self.guard_terminal {
+                        self.guard.quarantine();
+                        self.guard_terminal = true;
+                    }
+                    return Err(QemuVmRealizationError::ReapQuarantined {
+                        operation: "finish guarded replay-oracle comparison",
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+        if !self.guard_terminal {
+            let result = self.guard.finish();
+            self.guard_terminal = true;
+            result?;
+        }
+        Ok(())
+    }
+}
+
+impl<L, G> QemuVmRealizationExecutor for QemuGuardedReplayOracleSession<'_, L, G>
+where
+    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn load_exact_snapshot(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: crucible_qemu::QemuLoadvmCommandAuthorization,
+        admission: crucible_qemu::QemuLoadvmRealizationAdmission,
+    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self.executor.load_prepared_thin_snapshot_guarded(
+            self.guard.child_process_contract(),
+            config,
+            snapshot,
+            authorization,
+            admission,
+        );
+        self.observe_realization(result)
+    }
+
+    fn load_exact_snapshot_for_replay_oracle_probe(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: crucible_qemu::QemuLoadvmCommandAuthorization,
+    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .load_materialized_exact_snapshot_probe_guarded(
+                self.guard.child_process_contract(),
+                config,
+                snapshot,
+                authorization,
+            );
+        self.observe_realization(result)
+    }
+
+    fn load_baked_genesis(
+        &mut self,
+        config: &Configuration,
+        admission: QemuBakedGenesisRestoreAdmission<'_>,
+    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self.executor.load_prepared_baked_genesis_guarded(
+            self.guard.child_process_contract(),
+            config,
+            admission,
+        );
+        self.observe_realization(result)
+    }
+
+    fn replay_one_quantum(
+        &mut self,
+        runtime: crucible::RuntimeState,
+        request: QemuVmReplayRequest,
+    ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        self.guard.charge_execution_quantum()?;
+        let result = self
+            .executor
+            .replay_materialized_one_quantum(runtime, request);
+        self.observe_realization(result)
+    }
+}
+
+impl<L, G> Drop for QemuGuardedReplayOracleSession<'_, L, G>
+where
+    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
 }
 
 impl MaterializedExactCheckpoint {

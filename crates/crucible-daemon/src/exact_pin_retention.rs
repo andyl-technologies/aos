@@ -27,13 +27,18 @@ use crucible_campaign::{
     CampaignRepositoryError, ConfigurationId, ExactCheckpointId, PinRetention,
 };
 use crucible_qemu::{
-    QemuExactSnapshotPolicy, QemuReplayOracleCheck, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmRealizationStore, check_qemu_snapshot_replay_oracle_bound,
+    QemuExactSnapshotPolicy, QemuGuardedNodeRealizationLauncher,
+    QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuReplayOracleCheck,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationStore,
+    check_qemu_snapshot_replay_oracle_bound,
 };
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
-use crate::{ExactCheckpointStore, ExactCheckpointStoreError, LoadedExactCheckpoint};
+use crate::{
+    ExactCheckpointStore, ExactCheckpointStoreError, LoadedExactCheckpoint,
+    QemuAttemptProcessResourceGuard, QemuGuardedReplayOracleSession,
+};
 
 /// Registered schema for one durable exact-pin materialization selection.
 pub const EXACT_PIN_MATERIALIZATION_SELECTION_SCHEMA: &str =
@@ -469,6 +474,69 @@ impl DirectoryExactPinMaterializationStore {
             .checked_add(1)
             .ok_or(ExactPinRetentionError::SelectionLimit)?;
         Ok(ExactPinSelectionDisposition::Stored)
+    }
+
+    /// Runs guarded fat/thin validation, reaps QEMU, and promotes the selection.
+    ///
+    /// The exact target launcher and independent thin-path launcher share one
+    /// attempt-owned resource guard but cannot substitute for one another. The
+    /// session is explicitly finished before the first immutable promotion
+    /// write. A realization or cleanup failure therefore leaves the raw
+    /// selection unchanged and either attests reap or transfers the guard to
+    /// quarantine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExactPinRetentionError`] when selection authentication,
+    /// fat/thin realization, cleanup, replay comparison, immutable publication,
+    /// or durable selection replacement fails.
+    pub fn validate_and_promote_replay_guarded<S, L, G>(
+        &mut self,
+        repository: &CampaignRepository,
+        checkpoints: &ExactCheckpointStore,
+        target: ExactPinReplayTarget<'_>,
+        realization_store: &mut S,
+        executor: &mut QemuNodeRealizationExecutor<L>,
+        guard: G,
+    ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError>
+    where
+        S: QemuVmRealizationStore,
+        L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+        G: QemuAttemptProcessResourceGuard,
+    {
+        let selected = {
+            let mut fence = self.acquire_exact_pin_retention_fence()?;
+            fence
+                .selection(target.campaign, target.configuration_id)?
+                .ok_or_else(|| ExactPinRetentionError::MissingSelection {
+                    campaign: target.campaign.clone(),
+                    configuration: target.configuration_id,
+                })?
+        };
+        let loaded = selected.authenticate_current(repository, checkpoints)?;
+        let mut session = QemuGuardedReplayOracleSession::new(executor, guard);
+        let comparison = check_qemu_snapshot_replay_oracle_bound(
+            target.world,
+            target.configuration,
+            loaded.snapshot(),
+            realization_store,
+            &mut session,
+            QemuExactSnapshotPolicy::production(),
+        );
+        let cleanup = session.finish();
+        let check = match (comparison, cleanup) {
+            (_, Err(cleanup)) => return Err(cleanup.into()),
+            (Err(comparison), Ok(())) => return Err(comparison.into()),
+            (Ok(check), Ok(())) => check,
+        };
+
+        self.promote_replay_oracle_match(
+            repository,
+            checkpoints,
+            target.campaign,
+            target.configuration_id,
+            check,
+        )
     }
 
     /// Publishes a replay-validated replacement for the current exact selection.

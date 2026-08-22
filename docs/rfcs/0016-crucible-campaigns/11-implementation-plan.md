@@ -354,8 +354,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   owner now validates the exact selected raw root through independent fat/thin
   realization, retains a source-bound comparison result, publishes a matching
   metadata/root promotion without rewriting VMState, and durably replaces the
-  exact-pin selection. Concrete resource-guard ownership around validation and
-  warm restore, plus lifecycle resume, remain open.
+  exact-pin selection. A guarded replay-validation session now owns the process
+  contract and resource guard, routes target and thin-base VMState through
+  disjoint launch capabilities, serializes their process generations, and
+  reaps the final generation before promotion; failure quarantines the guard
+  without writes. The nondroppable direct-child/cgroup/watcher quarantine
+  owner, concrete warm-restore lifecycle composition, and lifecycle resume
+  remain open.
   The authority remains crate-internal until those security boundaries are
   composed. Validated launch commands now
   expose and exact-check their fixed vCPU, guest-memory, exact-VMState writable

@@ -593,7 +593,7 @@ where
 pub(crate) struct QemuPreparedWarmRestoreLaunch<'a> {
     command: &'a QemuLaunchCommand,
     run_directory: &'a QemuPreparedRunDirectory,
-    vmstate_binding: QemuVmStateBinding,
+    vmstate_binding: Option<QemuVmStateBinding>,
     process_contract: &'a QemuChildProcessContract,
     region_config: RegionConfig,
     slot_index: u32,
@@ -612,7 +612,25 @@ impl<'a> QemuPreparedWarmRestoreLaunch<'a> {
         Self {
             command,
             run_directory,
-            vmstate_binding,
+            vmstate_binding: Some(vmstate_binding),
+            process_contract,
+            region_config,
+            slot_index,
+        }
+    }
+
+    /// Binds one trusted pre-provisioned VMState file to guarded launch.
+    pub(crate) const fn provisioned(
+        command: &'a QemuLaunchCommand,
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+        region_config: RegionConfig,
+        slot_index: u32,
+    ) -> Self {
+        Self {
+            command,
+            run_directory,
+            vmstate_binding: None,
             process_contract,
             region_config,
             slot_index,
@@ -620,19 +638,21 @@ impl<'a> QemuPreparedWarmRestoreLaunch<'a> {
     }
 }
 
-/// Spawns and restores QEMU from one exact-root-bound prepared run directory.
+/// Spawns and restores QEMU from one guarded prepared run directory.
 ///
-/// This is the production warm-restore spawn boundary. It rejects a missing or
-/// different VMState binding before shared-memory allocation or child spawn,
-/// then uses the child process contract to install cgroup membership, sticky
-/// cancellation, file-size defense, and unprivileged credentials in
-/// `pre_exec`. The prepared directory remains descriptor-pinned throughout the
-/// launch and QMP socket resolution uses only its diagnostic path after guarded
-/// spawn has reauthenticated the retained directory and VMState inode.
+/// Exact-root launch rejects a missing or different VMState binding before
+/// shared-memory allocation or child spawn. A trusted baked-genesis or cached-
+/// ancestor launcher instead supplies a separately pinned, pre-provisioned
+/// VMState file and binds the restore plan's checkpoint identity itself. Both
+/// paths use the child process contract to install cgroup membership, sticky
+/// cancellation, file-size defense, and unprivileged credentials in `pre_exec`.
+/// The prepared directory remains descriptor-pinned throughout launch and QMP
+/// socket resolution uses only its diagnostic path after guarded spawn has
+/// reauthenticated the retained directory and VMState inode.
 ///
 /// # Errors
 ///
-/// Returns [`QemuWarmRestoreLaunchError`] when the selected checkpoint-root
+/// Returns [`QemuWarmRestoreLaunchError`] when a required checkpoint-root
 /// binding is absent or changed, the guarded spawn contract rejects launch,
 /// plugin setup or priming fails, QMP cannot connect, or restored-node assembly
 /// fails.
@@ -646,10 +666,12 @@ where
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
-    launch
-        .run_directory
-        .require_exact_vmstate(launch.vmstate_binding)
-        .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    if let Some(binding) = launch.vmstate_binding {
+        launch
+            .run_directory
+            .require_exact_vmstate(binding)
+            .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    }
     runtime.shmem_config.coverage = match launch.command.plugin_coverage() {
         QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
         QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),

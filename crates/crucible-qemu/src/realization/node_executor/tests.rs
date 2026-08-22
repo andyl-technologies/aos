@@ -34,6 +34,11 @@ enum NodeExecutorCall {
         snapshot: ContentHash,
         checkpoint: ContentHash,
     },
+    GuardedThinLaunch {
+        config: ContentHash,
+        checkpoint: ContentHash,
+        admission: QemuNodeRestoreAdmission,
+    },
     PrepareObservationStream,
     Advance(u64),
     Fingerprint,
@@ -61,6 +66,13 @@ struct ScriptedNode {
 struct ScriptedGuardedLauncher {
     log: SharedLog,
     snapshot: ContentHash,
+    runtime_id: ContentHash,
+    current_icount: Icount,
+}
+
+struct ScriptedThinLauncher {
+    log: SharedLog,
+    checkpoint: ContentHash,
     runtime_id: ContentHash,
     current_icount: Icount,
 }
@@ -113,6 +125,39 @@ impl QemuGuardedNodeRealizationLauncher for ScriptedGuardedLauncher {
             snapshot: snapshot.id(),
             checkpoint: restore.checkpoint().id,
         });
+        Ok(ScriptedNode {
+            log: Rc::clone(&self.log),
+            runtime_id: self.runtime_id,
+            current_icount: self.current_icount,
+            shutdown_event: None,
+        })
+    }
+}
+
+impl QemuNodeLauncher for ScriptedThinLauncher {
+    type Node = ScriptedNode;
+}
+
+impl QemuGuardedThinNodeRealizationLauncher for ScriptedThinLauncher {
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        _process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "scripted guarded thin launch",
+                message: String::from("checkpoint differs from prepared thin-path VMState"),
+            });
+        }
+        self.log
+            .borrow_mut()
+            .push(NodeExecutorCall::GuardedThinLaunch {
+                config: config.id(),
+                checkpoint: restore.checkpoint().id,
+                admission: restore.admission(),
+            });
         Ok(ScriptedNode {
             log: Rc::clone(&self.log),
             runtime_id: self.runtime_id,
@@ -304,6 +349,89 @@ fn guarded_exact_root_launcher_binds_snapshot_before_runtime_admission()
                 config: config.id(),
                 snapshot: snapshot.id(),
                 checkpoint: snapshot.checkpoint().id,
+            },
+            NodeExecutorCall::PrepareObservationStream,
+            NodeExecutorCall::Fingerprint,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_replay_validation_reaps_fat_probe_before_thin_launch()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let world = World::from_content_hash(hash("world", "guarded-replay-validation"));
+    let config = Configuration::genesis(scenario("guarded-replay-validation"));
+    let runtime_id = hash("runtime", "guarded-replay-validation");
+    let exact = QemuVmSnapshot::diskless(
+        checkpoint_for_config(
+            "guarded-replay-validation-exact",
+            &config,
+            &node,
+            0,
+            CheckpointKind::Fat,
+        )?,
+        QemuReplayOracleValidation::NotRun,
+    )?;
+    let baked = QemuBakedGenesisSnapshot {
+        world_id: world.id,
+        checkpoint: checkpoint_for_config(
+            "guarded-replay-validation-thin",
+            &config,
+            &node,
+            0,
+            CheckpointKind::Fat,
+        )?,
+    };
+    let exact_launcher = ScriptedGuardedLauncher {
+        log: Rc::clone(&log),
+        snapshot: exact.id(),
+        runtime_id,
+        current_icount: Icount { retired: 0 },
+    };
+    let thin_launcher = ScriptedThinLauncher {
+        log: Rc::clone(&log),
+        checkpoint: baked.checkpoint.id,
+        runtime_id,
+        current_icount: Icount { retired: 0 },
+    };
+    let launcher = QemuReplayValidationNodeLauncher::new(exact_launcher, thin_launcher);
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    let process_contract = test_process_contract();
+
+    let fat_runtime = executor.load_materialized_exact_snapshot_probe_guarded(
+        &process_contract,
+        &config,
+        &exact,
+        QemuExactSnapshotPolicy::production().authorize_loadvm_probe(),
+    )?;
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &baked,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+    let thin_runtime =
+        executor.load_prepared_baked_genesis_guarded(&process_contract, &config, admission)?;
+
+    assert_eq!(fat_runtime.id, runtime_id);
+    assert_eq!(thin_runtime.id, runtime_id);
+    assert_eq!(
+        logged(&log),
+        vec![
+            NodeExecutorCall::GuardedLaunch {
+                config: config.id(),
+                snapshot: exact.id(),
+                checkpoint: exact.checkpoint().id,
+            },
+            NodeExecutorCall::PrepareObservationStream,
+            NodeExecutorCall::Fingerprint,
+            NodeExecutorCall::Shutdown,
+            NodeExecutorCall::GuardedThinLaunch {
+                config: config.id(),
+                checkpoint: baked.checkpoint.id,
+                admission: QemuNodeRestoreAdmission::BakedGenesis { world_id: world.id },
             },
             NodeExecutorCall::PrepareObservationStream,
             NodeExecutorCall::Fingerprint,

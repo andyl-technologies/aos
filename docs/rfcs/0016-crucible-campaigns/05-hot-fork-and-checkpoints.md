@@ -342,7 +342,11 @@ foreign, stale, or unavailable comparison publishes nothing through this
 promotion path and leaves the raw root non-resumable. Selection replacement
 failure may leave only the newly published immutable root unreachable and
 available for GC; it may not retarget the selection without a durable journal
-commit.
+commit. Real-QEMU comparison uses disjoint exact-target and thin-base launch
+capabilities under one attempt-owned process/resource guard. The fat generation
+is reaped before the thin generation launches, and the final thin generation is
+reaped before promotion writes begin. A realization or reap failure transfers
+the guard to quarantine and leaves the raw selection unchanged.
 
 The public cross-process snapshot protocol may describe RAM blocks, page or
 extent indexes, opaque artifact streams, and digests. It may not expose QEMU

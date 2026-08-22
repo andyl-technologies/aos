@@ -321,6 +321,28 @@ pub trait QemuGuardedNodeRealizationLauncher: QemuNodeLauncher {
     ) -> Result<Self::Node, QemuVmRealizationError>;
 }
 
+/// Launches a trusted thin-path VMState under one child-process contract.
+///
+/// This capability is distinct from [`QemuGuardedNodeRealizationLauncher`]: a
+/// replay-oracle probe must consume the selected exact-root binding, while its
+/// independently prepared baked-genesis or cached-ancestor path must not reuse
+/// that target VMState authority.
+pub trait QemuGuardedThinNodeRealizationLauncher: QemuNodeLauncher {
+    /// Launches one prepared proper-ancestor or baked-genesis restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the restore checkpoint differs
+    /// from the prepared VMState, guarded process launch fails, or restored
+    /// node assembly fails.
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError>;
+}
+
 /// Concrete launcher that composes QEMU spawn, plugin setup, QMP load, and node assembly.
 pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
@@ -347,6 +369,32 @@ pub struct QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     slot_index: u32,
     runtime_factory: F,
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
+}
+
+/// One-shot guarded launcher for a trusted thin-path VMState file.
+///
+/// The owner prepares a baked-genesis or proper-ancestor VMState in a pinned
+/// run directory and binds this launcher to that checkpoint identity. Unlike an
+/// exact-root launcher, this type cannot consume the selected target snapshot.
+pub(crate) struct QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
+    command: QemuLaunchCommand,
+    run_directory: QemuPreparedRunDirectory,
+    checkpoint: ContentHash,
+    region_config: RegionConfig,
+    slot_index: u32,
+    runtime_factory: F,
+    _runtime: std::marker::PhantomData<fn() -> (A, R)>,
+}
+
+/// Paired launch authorities used by one guarded replay-oracle executor.
+///
+/// `exact` owns the selected target's exact-root materialization; `thin` owns
+/// an independently prepared baked-genesis or proper-ancestor VMState. The
+/// wrapper routes each operation without exposing either launcher through the
+/// other's capability trait.
+pub struct QemuReplayValidationNodeLauncher<X, T> {
+    exact: X,
+    thin: T,
 }
 
 impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
@@ -387,6 +435,51 @@ impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
     }
 }
 
+impl<A, R, F> QemuPreparedThinWarmRestoreNodeLauncher<A, R, F> {
+    /// Creates a launcher for one independently prepared thin-path checkpoint.
+    #[must_use]
+    // crucible-lint: allow rust-allow -- the authenticated thin VMState materializer is the next composition slice.
+    #[allow(dead_code)]
+    pub(crate) const fn new(
+        command: QemuLaunchCommand,
+        run_directory: QemuPreparedRunDirectory,
+        checkpoint: ContentHash,
+        region_config: RegionConfig,
+        slot_index: u32,
+        runtime_factory: F,
+    ) -> Self {
+        Self {
+            command,
+            run_directory,
+            checkpoint,
+            region_config,
+            slot_index,
+            runtime_factory,
+            _runtime: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<X, T> QemuReplayValidationNodeLauncher<X, T> {
+    /// Pairs disjoint exact-probe and thin-path launch authorities.
+    #[must_use]
+    pub const fn new(exact: X, thin: T) -> Self {
+        Self { exact, thin }
+    }
+
+    /// Returns the selected exact-root launcher.
+    #[must_use]
+    pub const fn exact(&self) -> &X {
+        &self.exact
+    }
+
+    /// Returns the independently prepared thin-path launcher.
+    #[must_use]
+    pub const fn thin(&self) -> &T {
+        &self.thin
+    }
+}
+
 impl<A, R, F> QemuWarmRestoreNodeLauncher<A, R, F> {
     /// Creates a warm-restore node launcher.
     #[must_use]
@@ -424,6 +517,23 @@ where
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
     type Node = QemuNode;
+}
+
+impl<A, R, F> QemuNodeLauncher for QemuPreparedThinWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    type Node = QemuNode;
+}
+
+impl<X, T> QemuNodeLauncher for QemuReplayValidationNodeLauncher<X, T>
+where
+    X: QemuNodeLauncher,
+    T: QemuNodeLauncher<Node = X::Node>,
+{
+    type Node = X::Node;
 }
 
 impl<A, R, F> QemuNodeRealizationLauncher for QemuWarmRestoreNodeLauncher<A, R, F>
@@ -492,6 +602,81 @@ where
     }
 }
 
+impl<A, R, F> QemuGuardedThinNodeRealizationLauncher
+    for QemuPreparedThinWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded thin-path warm restore",
+                message: String::from(
+                    "restore checkpoint does not match the prepared thin-path VMState",
+                ),
+            });
+        }
+        let runtime = (self.runtime_factory)(config);
+        spawn_setup_and_restore_prepared_qemu_node_guarded(
+            QemuPreparedWarmRestoreLaunch::provisioned(
+                &self.command,
+                &self.run_directory,
+                process_contract,
+                self.region_config,
+                self.slot_index,
+            ),
+            restore,
+            runtime,
+            |_current_icount| {},
+        )
+        .map_err(warm_restore_error)
+    }
+}
+
+impl<X, T> QemuGuardedNodeRealizationLauncher for QemuReplayValidationNodeLauncher<X, T>
+where
+    X: QemuGuardedNodeRealizationLauncher,
+    T: QemuNodeLauncher<Node = X::Node>,
+{
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        self.exact.launch_materialized_exact_node_guarded(
+            config,
+            snapshot,
+            restore,
+            process_contract,
+        )
+    }
+}
+
+impl<X, T> QemuGuardedThinNodeRealizationLauncher for QemuReplayValidationNodeLauncher<X, T>
+where
+    X: QemuNodeLauncher,
+    T: QemuGuardedThinNodeRealizationLauncher<Node = X::Node>,
+{
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        self.thin
+            .launch_thin_path_node_guarded(config, restore, process_contract)
+    }
+}
+
 /// Realization executor backed by one active QEMU node at a time.
 pub struct QemuNodeRealizationExecutor<L>
 where
@@ -554,13 +739,13 @@ where
     where
         L: QemuNodeRealizationLauncher,
     {
+        self.shutdown_active_node_for("replace active realized QEMU node")?;
         let mut node = self.launcher.launch_restored_node(config, restore)?;
         QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node)
             .map_err(|source| node_backend_error(operation, source))?;
         let runtime_id = Backend::fingerprint(&mut node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| node_backend_error(operation, source))?;
-        self.shutdown_active_node_for("replace active realized QEMU node")?;
         self.active_node = Some(node);
         Ok(runtime_id)
     }
@@ -715,6 +900,7 @@ where
         let restore = QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission)
             .with_host_io_checkpoint(&snapshot.host_io)
             .with_node_continuation(&snapshot.node);
+        self.shutdown_active_node_for("replace active realized QEMU node")?;
         let mut node = self.launcher.launch_materialized_exact_node_guarded(
             config,
             snapshot,
@@ -729,7 +915,6 @@ where
             .map_err(|source| {
                 node_backend_error("fingerprint guarded exact-root QEMU snapshot", source)
             })?;
-        self.shutdown_active_node_for("replace active realized QEMU node")?;
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         validate_runtime_matches_admission(&runtime, admission)?;
@@ -763,6 +948,7 @@ where
             QemuNodeRestorePlan::snapshot_completeness_probe(&snapshot.checkpoint, authorization)
                 .with_host_io_checkpoint(&snapshot.host_io)
                 .with_node_continuation(&snapshot.node);
+        self.shutdown_active_node_for("replace active realized QEMU node")?;
         let mut node = self.launcher.launch_materialized_exact_node_guarded(
             config,
             snapshot,
@@ -777,7 +963,6 @@ where
             .map_err(|source| {
                 node_backend_error("fingerprint guarded exact-root QEMU snapshot probe", source)
             })?;
-        self.shutdown_active_node_for("replace active realized QEMU node")?;
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         self.retain_runtime_basis(&runtime);
@@ -799,6 +984,95 @@ where
         request: QemuVmReplayRequest,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
         self.replay_one_quantum_inner(runtime, request)
+    }
+}
+
+impl<L> QemuNodeRealizationExecutor<L>
+where
+    L: QemuGuardedThinNodeRealizationLauncher,
+{
+    /// Loads one independently prepared proper-ancestor snapshot under a guard.
+    ///
+    /// The thin launcher binds the restore checkpoint to a VMState authority
+    /// distinct from the selected replay-oracle target. The resulting runtime
+    /// must still satisfy production replay admission before it can seed suffix
+    /// replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the snapshot is incomplete, the
+    /// prepared checkpoint basis differs, guarded launch fails, or runtime
+    /// admission differs.
+    pub fn load_prepared_thin_snapshot_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: QemuLoadvmCommandAuthorization,
+        admission: QemuLoadvmRealizationAdmission,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        validate_checkpoint_matches_config(&snapshot.checkpoint, config, "thin snapshot")?;
+        validate_snapshot_pair(snapshot)?;
+        require_fat_materialized_snapshot(snapshot, "thin snapshot")?;
+        validate_checkpoint_loadvm_state(&snapshot.checkpoint, "thin snapshot")?;
+        let restore = QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission)
+            .with_host_io_checkpoint(&snapshot.host_io)
+            .with_node_continuation(&snapshot.node);
+        let runtime_id = self.launch_thin_and_install(
+            process_contract,
+            config,
+            restore,
+            "load guarded thin-path QEMU snapshot",
+        )?;
+        let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
+        validate_runtime_matches_admission(&runtime, admission)?;
+        self.retain_runtime_basis(&runtime);
+        Ok(runtime)
+    }
+
+    /// Loads one independently prepared baked-genesis snapshot under a guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the prepared checkpoint basis,
+    /// guarded launch, baked-genesis admission, or runtime state differs.
+    pub fn load_prepared_baked_genesis_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        admission: QemuBakedGenesisRestoreAdmission<'_>,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        let checkpoint = admission.checkpoint();
+        let restore = QemuNodeRestorePlan::baked_genesis(admission);
+        let runtime_id = self.launch_thin_and_install(
+            process_contract,
+            config,
+            restore,
+            "load guarded baked QEMU genesis",
+        )?;
+        let runtime = runtime_from_scheduled_checkpoint_material(config, checkpoint, runtime_id);
+        self.retain_runtime_basis(&runtime);
+        Ok(runtime)
+    }
+
+    fn launch_thin_and_install(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        operation: &'static str,
+    ) -> Result<ContentHash, QemuVmRealizationError> {
+        self.shutdown_active_node_for("replace active guarded replay-oracle QEMU node")?;
+        let mut node =
+            self.launcher
+                .launch_thin_path_node_guarded(config, restore, process_contract)?;
+        QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node)
+            .map_err(|source| node_backend_error(operation, source))?;
+        let runtime_id = Backend::fingerprint(&mut node)
+            .map(|fingerprint| fingerprint.hash)
+            .map_err(|source| node_backend_error(operation, source))?;
+        self.active_node = Some(node);
+        Ok(runtime_id)
     }
 }
 

@@ -31,13 +31,15 @@ use crucible_cas::content_store::{
 use crucible_qemu::{
     DeterministicLaunchProfile, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
     QemuCachedAncestor, QemuChildProcessContract, QemuFaultCapabilityRequirement,
-    QemuGuardedNodeRealizationLauncher, QemuLaunchArtifact, QemuLaunchCommand,
-    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuRealizedNodeBackend, QemuReplayOracleCheck,
-    QemuReplayOracleValidation, QemuVmLaunchConfig, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
-    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
+    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher, QemuLaunchArtifact,
+    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeLauncher,
+    QemuNodeRealizationExecutor, QemuNodeRestorePlan, QemuPreparedRunDirectory,
+    QemuRealizedNodeBackend, QemuReplayOracleCheck, QemuReplayOracleValidation,
+    QemuReplayValidationNodeLauncher, QemuVmLaunchConfig, QemuVmLiveRealizationExecutor,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuVmStateBinding,
 };
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
@@ -194,6 +196,14 @@ struct GuardedResumeNode {
     icount: Icount,
 }
 
+struct GuardedThinLauncher {
+    checkpoint: ContentHash,
+    runtime: ContentHash,
+    icount: Icount,
+    launches: Arc<AtomicUsize>,
+    fail_after_launch: bool,
+}
+
 impl QemuNodeLauncher for GuardedResumeLauncher {
     type Node = GuardedResumeNode;
 }
@@ -213,6 +223,37 @@ impl QemuGuardedNodeRealizationLauncher for GuardedResumeLauncher {
             });
         }
         self.launches.fetch_add(1, Ordering::SeqCst);
+        Ok(GuardedResumeNode {
+            runtime: self.runtime,
+            icount: self.icount,
+        })
+    }
+}
+
+impl QemuNodeLauncher for GuardedThinLauncher {
+    type Node = GuardedResumeNode;
+}
+
+impl QemuGuardedThinNodeRealizationLauncher for GuardedThinLauncher {
+    fn launch_thin_path_node_guarded(
+        &mut self,
+        _config: &Configuration,
+        restore: QemuNodeRestorePlan<'_>,
+        _process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded thin replay test",
+                message: String::from("checkpoint does not match prepared thin path"),
+            });
+        }
+        self.launches.fetch_add(1, Ordering::SeqCst);
+        if self.fail_after_launch {
+            return Err(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "guarded thin replay test",
+                message: String::from("injected post-spawn thin-path failure"),
+            });
+        }
         Ok(GuardedResumeNode {
             runtime: self.runtime,
             icount: self.icount,
@@ -300,6 +341,8 @@ struct GuardedResumeGuard {
     resources: AttemptResourceLimits,
     cancellation: crate::ExecutionCancellation,
     process_contract: QemuChildProcessContract,
+    finishes: Arc<AtomicUsize>,
+    quarantines: Arc<AtomicUsize>,
 }
 
 struct ReplayValidationStore {
@@ -435,10 +478,13 @@ impl crate::QemuAttemptOperationalBoundary for GuardedResumeGuard {
 
 impl crate::QemuAttemptResourceGuard for GuardedResumeGuard {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.finishes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn quarantine(&mut self) {}
+    fn quarantine(&mut self) {
+        self.quarantines.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
@@ -461,6 +507,8 @@ fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard 
             resources.maximum_resident_bytes(),
             resources.maximum_disk_bytes(),
         ),
+        finishes: Arc::new(AtomicUsize::new(0)),
+        quarantines: Arc::new(AtomicUsize::new(0)),
     }
 }
 
@@ -815,6 +863,185 @@ fn selected_checkpoint_fat_thin_validation_promotes_exact_root() {
             .expect("promoted selection")
             .checkpoint(),
         promotion.promoted()
+    );
+}
+
+#[test]
+fn guarded_fat_thin_session_reaps_before_promoting_selected_root() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("guarded-oracle-session", backend);
+    let temp = tempfile::tempdir().expect("guarded oracle workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    select_fixture(&mut selections, &fixture).expect("select raw checkpoint");
+    let source = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load selected raw checkpoint");
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "guarded-oracle-session",
+    ));
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.world.v1",
+        "guarded-oracle-session",
+    ));
+    let runtime_hash = ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.runtime.v1",
+        "guarded-oracle-session",
+    );
+    let exact_launches = Arc::new(AtomicUsize::new(0));
+    let thin_launches = Arc::new(AtomicUsize::new(0));
+    let launcher = QemuReplayValidationNodeLauncher::new(
+        GuardedResumeLauncher {
+            snapshot: source.snapshot().id(),
+            runtime: runtime_hash,
+            icount: Icount { retired: 0 },
+            launches: exact_launches.clone(),
+        },
+        GuardedThinLauncher {
+            checkpoint: source.snapshot().checkpoint().id,
+            runtime: runtime_hash,
+            icount: Icount { retired: 0 },
+            launches: thin_launches.clone(),
+            fail_after_launch: false,
+        },
+    );
+    let mut executor = QemuNodeRealizationExecutor::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        launcher,
+    );
+    let resources = AttemptResourceLimits::new(1, 512 * 1024 * 1024, 16 * 1024 * 1024, 16)
+        .expect("resource limits");
+    let guard = guarded_resume_guard(resources);
+    let finishes = guard.finishes.clone();
+    let quarantines = guard.quarantines.clone();
+    let mut store = ReplayValidationStore {
+        baked: QemuBakedGenesisSnapshot {
+            world_id: world.id,
+            checkpoint: source.snapshot().checkpoint().clone(),
+        },
+    };
+    let promotion = selections
+        .validate_and_promote_replay_guarded(
+            &fixture.repository,
+            &fixture.checkpoints,
+            ExactPinReplayTarget::new(
+                &world,
+                &configuration,
+                &fixture.campaign,
+                fixture.configuration,
+            ),
+            &mut store,
+            &mut executor,
+            guard,
+        )
+        .expect("guarded compare, reap, and promotion");
+
+    assert_eq!(exact_launches.load(Ordering::SeqCst), 1);
+    assert_eq!(thin_launches.load(Ordering::SeqCst), 1);
+    assert_eq!(finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(quarantines.load(Ordering::SeqCst), 0);
+    assert!(!executor.live_backend_is_active());
+    assert_ne!(promotion.promoted(), fixture.checkpoint);
+}
+
+#[test]
+fn failed_guarded_thin_launch_quarantines_resources_without_promotion() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("guarded-oracle-failure", backend.clone());
+    let temp = tempfile::tempdir().expect("guarded oracle failure workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    select_fixture(&mut selections, &fixture).expect("select raw checkpoint");
+    let source = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load selected raw checkpoint");
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "guarded-oracle-failure",
+    ));
+    let world = World::from_content_hash(ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.world.v1",
+        "guarded-oracle-failure",
+    ));
+    let runtime_hash = ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.runtime.v1",
+        "guarded-oracle-failure",
+    );
+    let launcher = QemuReplayValidationNodeLauncher::new(
+        GuardedResumeLauncher {
+            snapshot: source.snapshot().id(),
+            runtime: runtime_hash,
+            icount: Icount { retired: 0 },
+            launches: Arc::new(AtomicUsize::new(0)),
+        },
+        GuardedThinLauncher {
+            checkpoint: source.snapshot().checkpoint().id,
+            runtime: runtime_hash,
+            icount: Icount { retired: 0 },
+            launches: Arc::new(AtomicUsize::new(0)),
+            fail_after_launch: true,
+        },
+    );
+    let mut executor = QemuNodeRealizationExecutor::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        launcher,
+    );
+    let guard = guarded_resume_guard(
+        AttemptResourceLimits::new(1, 512 * 1024 * 1024, 16 * 1024 * 1024, 16)
+            .expect("resource limits"),
+    );
+    let finishes = guard.finishes.clone();
+    let quarantines = guard.quarantines.clone();
+    let mut store = ReplayValidationStore {
+        baked: QemuBakedGenesisSnapshot {
+            world_id: world.id,
+            checkpoint: source.snapshot().checkpoint().clone(),
+        },
+    };
+    let count_before = backend.object_count();
+
+    assert!(matches!(
+        selections.validate_and_promote_replay_guarded(
+            &fixture.repository,
+            &fixture.checkpoints,
+            ExactPinReplayTarget::new(
+                &world,
+                &configuration,
+                &fixture.campaign,
+                fixture.configuration,
+            ),
+            &mut store,
+            &mut executor,
+            guard,
+        ),
+        Err(ExactPinRetentionError::ReplayOracle(
+            QemuVmRealizationError::ReapQuarantined {
+                operation: "finish guarded replay-oracle comparison",
+                ..
+            }
+        ))
+    ));
+
+    assert_eq!(finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(quarantines.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.object_count(), count_before);
+    let mut fence = selections
+        .acquire_exact_pin_retention_fence()
+        .expect("selection fence");
+    assert_eq!(
+        fence
+            .selection(&fixture.campaign, fixture.configuration)
+            .expect("load unchanged selection")
+            .expect("raw selection")
+            .checkpoint(),
+        fixture.checkpoint
     );
 }
 
