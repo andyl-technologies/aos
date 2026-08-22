@@ -349,7 +349,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   a registered exact-checkpoint root over canonical snapshot metadata and a
   bounded, streamed opaque VMState child, with no writes during preparation and
   children-before-root durable receipts. The executor now persists
-  checkpoint-requested, checkpoint-publishing, and paused ledger states, stages
+  checkpoint-requested, checkpoint-publishing, paused, and raw-root
+  checkpoint-promoting ledger states, stages
   the exact root before writes, preserves it as a restart/GC root, recovers the
   expected root across daemon epochs, and releases capacity only after durable
   pause. The live driver now returns its same-boundary scheduler checkpoint,
@@ -411,10 +412,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   guarded live session, requires the returned immutable root ID to match, and
   rejects a non-resume, foreign-configuration, or non-exact realization before
   modeled guest execution. The complete-root attempt materializer and session
-  trait handoff are implemented. Concrete
-  composition of raw-root replay-oracle validation/promotion, run-directory
-  ownership, the real-node guarded launcher, and the production process guard
-  remains open; `NotRun` is still fail-closed. The fixed worker pool and its
+  trait handoff are implemented. Guarded raw-root replay-oracle validation,
+  source-bound no-write preparation, linear source/replacement root staging
+  and publication, version-5 ledger persistence, restart reauthentication,
+  explicit incomplete-promotion revert, and the final paused-root CAS are
+  implemented without holding the supervisor actor across QEMU or store work.
+  Concrete run-directory ownership, invocation by the full executor flight,
+  the real-node guarded launcher, and the production process guard remain open;
+  `NotRun` is still fail-closed. The fixed worker pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:

@@ -131,6 +131,50 @@ impl QemuReplayOracleCheck {
     }
 }
 
+/// Authenticates one durable replay-oracle promotion relationship.
+///
+/// This restart-safe validator checks the relationship that the process-local
+/// [`QemuReplayOracleCheck`] established before publication. The source must be
+/// a raw `NotRun` live capture, the replacement must carry a matching runtime
+/// hash, and every scheduler, host-I/O, node-continuation, and capture-mode
+/// field must otherwise be identical.
+///
+/// # Errors
+///
+/// Returns [`QemuVmRealizationError::InvalidCheckpoint`] when either snapshot
+/// has an invalid identity or the pair is not an exact raw-to-matched promotion.
+pub fn validate_qemu_replay_oracle_promotion(
+    source: &QemuVmSnapshot,
+    promoted: &QemuVmSnapshot,
+) -> Result<(), QemuVmRealizationError> {
+    if !source.has_valid_identity() || !promoted.has_valid_identity() {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "durable replay-oracle promotion",
+            message: String::from("source or promoted snapshot identity is invalid"),
+        });
+    }
+    let source_is_raw = source.replay_oracle_validation == QemuReplayOracleValidation::NotRun;
+    let promoted_is_match = matches!(
+        promoted.replay_oracle_validation,
+        QemuReplayOracleValidation::Match { .. }
+    );
+    if !source_is_raw
+        || !promoted_is_match
+        || source.checkpoint != promoted.checkpoint
+        || source.host_io != promoted.host_io
+        || source.node != promoted.node
+        || source.live_capture != promoted.live_capture
+    {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "durable replay-oracle promotion",
+            message: String::from(
+                "snapshots are not an exact raw-to-matched replay-oracle promotion",
+            ),
+        });
+    }
+    Ok(())
+}
+
 impl QemuVmSnapshot {
     /// Builds a snapshot whose QEMU and host-I/O halves share one identity.
     ///
@@ -2084,6 +2128,14 @@ mod tests {
                 runtime_hash: target.id(),
             }
         );
+        validate_qemu_replay_oracle_promotion(&source, &promoted)?;
+        assert!(matches!(
+            validate_qemu_replay_oracle_promotion(&foreign, &promoted),
+            Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "durable replay-oracle promotion",
+                ..
+            })
+        ));
 
         Ok(())
     }

@@ -242,7 +242,7 @@ pub use realization::{
     QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,
     bake_qemu_genesis_vm, check_qemu_replay_oracle, check_qemu_replay_oracle_bound,
     check_qemu_snapshot_replay_oracle_bound, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm,
-    start_qemu_vm,
+    start_qemu_vm, validate_qemu_replay_oracle_promotion,
 };
 #[cfg(target_os = "linux")]
 pub use realization::{

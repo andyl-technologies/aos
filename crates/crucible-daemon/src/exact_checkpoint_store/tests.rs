@@ -11,7 +11,9 @@ use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId,
     CheckpointAttemptExecutionRequest, DaemonEpoch, ExecutionRetentionIntent,
-    ExecutorControlService, ExecutorService, SubmitAttemptDisposition, SubmitAttemptRequest,
+    ExecutorControlService, ExecutorResumeService, ExecutorService,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest, SubmitAttemptDisposition,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobSource, ByteRange, DirectoryBlobBackend, MemoryBlobBackend,
@@ -21,11 +23,14 @@ use crucible_qemu::{QemuReplayOracleCheck, QemuReplayOracleValidation};
 
 use super::*;
 use crate::{
-    AllowAllAttemptAdmission, AssignmentLedger, CancellationOutcome, CheckpointCompletionOutcome,
-    CheckpointResultAbortToken, CheckpointResultStageOutcome, ExecutorCapacity,
-    LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedCheckpointResult,
-    abort_checkpoint_result, publish_staged_checkpoint_result,
-    reconcile_published_checkpoint_result, stage_prepared_checkpoint_result,
+    AllowAllAttemptAdmission, AssignmentLedger, AttemptRuntimeState, CancellationOutcome,
+    CheckpointCompletionOutcome, CheckpointPromotionCompletionOutcome, CheckpointResultAbortToken,
+    CheckpointResultStageOutcome, ExecutorCapacity, LocalExecutorSupervisor,
+    MemoryAssignmentLedger, PausedCheckpointPromotionStageOutcome, PreparedCheckpointResult,
+    PreparedPausedCheckpointPromotion, abort_checkpoint_result, publish_staged_checkpoint_result,
+    publish_staged_paused_checkpoint_promotion, reconcile_published_checkpoint_result,
+    reconcile_published_paused_checkpoint_promotion, recover_published_paused_checkpoint_promotion,
+    stage_prepared_checkpoint_result, stage_prepared_paused_checkpoint_promotion,
 };
 
 const STORE_LIMIT: u64 = 1024 * 1024;
@@ -190,15 +195,19 @@ fn replay_oracle_promotion_reuses_vmstate_and_publishes_a_new_exact_root() {
         QemuReplayOracleValidation::Match { runtime_hash },
     );
 
-    let capture = loaded
-        .promote_replay_oracle_match(check)
-        .expect("promote exact source");
-    let promoted = store.prepare_capture(capture).expect("prepare promotion");
+    let promoted = store
+        .prepare_replay_oracle_promotion(source.root(), check)
+        .expect("prepare source-bound promotion");
 
     assert_eq!(backend.object_count(), source_count);
-    assert_ne!(promoted.root(), source.root());
-    assert_eq!(promoted.vmstate_id(), source_vmstate);
-    let published = store.publish(&promoted).expect("publish promotion");
+    assert_ne!(promoted.promoted(), source.root());
+    assert_eq!(promoted.replacement().vmstate_id(), source_vmstate);
+    let published = store
+        .publish(promoted.replacement())
+        .expect("publish promotion");
+    store
+        .authenticate_replay_oracle_promotion(source.root(), published.root())
+        .expect("authenticate durable promotion pair");
     let reloaded = store.load(published.root()).expect("load promotion");
     assert_eq!(reloaded.vmstate_id(), source_vmstate);
     let mut reloaded_vmstate = Vec::new();
@@ -359,6 +368,175 @@ fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
         .expect("visit roots after abort");
     assert_eq!(retained, vec![root]);
     assert_ne!(abort_root, root);
+}
+
+#[test]
+fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let paused_epoch = DaemonEpoch::from_bytes([0x51; 16]).expect("paused daemon epoch");
+    let resumed_epoch = DaemonEpoch::from_bytes([0x52; 16]).expect("resumed daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x53; 16]).expect("paused assignment"),
+        paused_epoch,
+        CampaignLineageId::parse(&typed_id(
+            "crucible.campaign.lineage",
+            "campaign-fact",
+            1,
+            0x54,
+        ))
+        .expect("lineage"),
+        AttemptId::parse(&typed_id(
+            "crucible.campaign.attempt",
+            "campaign-fact",
+            1,
+            0x55,
+        ))
+        .expect("attempt"),
+        AttemptResourceLimits::new(1, 2048, 4096, 32).expect("resources"),
+        ExecutionRetentionIntent::RetainAlways,
+    )
+    .expect("paused request");
+    let key = crate::AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let execution = crucible_campaign::ExecutionId::from_bytes([0x56; 16]).expect("execution");
+    let raw = store
+        .prepare(
+            &snapshot("paused-promotion"),
+            BlobHandle::from_bytes(vec![0x57; 4096]),
+        )
+        .and_then(|prepared| store.publish(&prepared))
+        .expect("publish raw paused root")
+        .root();
+    let loaded = store.load(raw).expect("load raw paused root");
+    let runtime_hash = loaded.snapshot().checkpoint().configuration;
+    let check = || {
+        QemuReplayOracleCheck::from_unvalidated_test_result(
+            loaded.snapshot().id(),
+            QemuReplayOracleValidation::Match { runtime_hash },
+        )
+    };
+
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch: paused_epoch,
+        execution,
+        checkpoint: raw,
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    ledger
+        .compare_exchange_attempt(key, None, Some(paused))
+        .expect("seed paused state");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        paused_epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity"),
+    );
+    let stale_promotion = store
+        .prepare_replay_oracle_promotion(raw, check())
+        .expect("prepare stale replay-oracle promotion");
+    let source_object_count = backend.object_count();
+    let stale = stage_prepared_paused_checkpoint_promotion(
+        &mut supervisor,
+        PreparedPausedCheckpointPromotion::new(
+            key,
+            crucible_campaign::ExecutionId::from_bytes([0x59; 16]).expect("stale execution"),
+            stale_promotion,
+        ),
+    )
+    .expect("classify stale promotion");
+    assert!(matches!(
+        stale,
+        PausedCheckpointPromotionStageOutcome::Finished {
+            outcome: crate::CheckpointPromotionStageOutcome::NotCurrent,
+            ..
+        }
+    ));
+    assert_eq!(backend.object_count(), source_object_count);
+
+    let promotion = store
+        .prepare_replay_oracle_promotion(raw, check())
+        .expect("prepare replay-oracle promotion");
+    let promoted = promotion.promoted();
+    let staged = match stage_prepared_paused_checkpoint_promotion(
+        &mut supervisor,
+        PreparedPausedCheckpointPromotion::new(key, execution, promotion),
+    )
+    .expect("stage promotion roots")
+    {
+        PausedCheckpointPromotionStageOutcome::Publish(staged) => *staged,
+        other => panic!("expected promotion publish token, got {other:?}"),
+    };
+    let mut roots = Vec::new();
+    supervisor
+        .ledger()
+        .visit_checkpoint_roots(&mut |checkpoint| roots.push(checkpoint))
+        .expect("visit staged promotion roots");
+    assert_eq!(roots, vec![promoted, raw]);
+    let incomplete = supervisor
+        .checkpoint_promotion_recovery(key)
+        .expect("load incomplete staged promotion")
+        .expect("incomplete staged promotion");
+    assert!(matches!(
+        recover_published_paused_checkpoint_promotion(&store, incomplete),
+        Err(PrepareReplayOraclePromotionError::Checkpoint(
+            ExactCheckpointStoreError::Store(StoreError::NotFound { .. })
+        ))
+    ));
+    let _published =
+        publish_staged_paused_checkpoint_promotion(&store, staged).expect("publish promoted root");
+
+    let ledger = supervisor.into_ledger();
+    let mut restarted = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        resumed_epoch,
+        ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("restart capacity"),
+    );
+    let recovery = restarted
+        .checkpoint_promotion_recovery(key)
+        .expect("load staged promotion")
+        .expect("staged promotion");
+    let published = recover_published_paused_checkpoint_promotion(&store, recovery)
+        .expect("authenticate complete promoted root after restart");
+    assert_eq!(
+        reconcile_published_paused_checkpoint_promotion(&mut restarted, published)
+            .expect("promote paused root"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+    assert_eq!(
+        restarted
+            .ledger()
+            .load_attempt(key)
+            .expect("load promoted pause"),
+        Some(AttemptRuntimeState::Paused {
+            execution_basis: request.execution_basis_digest(),
+            origin: crate::AttemptExecutionOrigin::Initial,
+            daemon_epoch: paused_epoch,
+            execution,
+            checkpoint: promoted,
+        })
+    );
+
+    let resumed_assignment = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x58; 16]).expect("resume assignment"),
+        resumed_epoch,
+        request.lineage(),
+        request.attempt(),
+        request.resources(),
+        request.retention(),
+    )
+    .expect("resume assignment request");
+    let resume = ResumeAttemptExecutionRequest::new(&resumed_assignment, execution, promoted)
+        .expect("resume request");
+    let response = restarted
+        .resume_attempt_execution(&resume)
+        .expect("resume promoted exact root");
+    assert!(matches!(
+        response.disposition(),
+        ResumeAttemptExecutionDisposition::Accepted { .. }
+    ));
 }
 
 #[test]

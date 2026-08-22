@@ -31,12 +31,14 @@ use crucible_campaign::{
 use rustix::fs::{FlockOperation, flock};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
+const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
 const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
 const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
 const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v4";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v5";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str = "crucible.executor.attempt-state-record.v4";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
@@ -193,6 +195,21 @@ pub enum AttemptRuntimeState {
         /// Complete durable exact-checkpoint root.
         checkpoint: ExactCheckpointId,
     },
+    /// One paused raw root has durably reserved its replay-validated replacement.
+    CheckpointPromoting {
+        /// Digest of lineage, attempt, resources, and retention.
+        execution_basis: CampaignHash,
+        /// Initial-start or exact-checkpoint execution origin.
+        origin: AttemptExecutionOrigin,
+        /// Daemon incarnation that produced the paused execution.
+        daemon_epoch: DaemonEpoch,
+        /// Process-local execution identity that produced the paused root.
+        execution: ExecutionId,
+        /// Raw exact root compared by the replay oracle.
+        source_checkpoint: ExactCheckpointId,
+        /// Expected replacement root containing matching oracle evidence.
+        promoted_checkpoint: ExactCheckpointId,
+    },
     /// One execution has durably reserved an observation publication root.
     Publishing {
         /// Digest of lineage, attempt, resources, and retention.
@@ -249,6 +266,9 @@ impl AttemptRuntimeState {
             | Self::Paused {
                 execution_basis, ..
             }
+            | Self::CheckpointPromoting {
+                execution_basis, ..
+            }
             | Self::Publishing {
                 execution_basis, ..
             }
@@ -269,6 +289,7 @@ impl AttemptRuntimeState {
             | Self::CheckpointRequested { origin, .. }
             | Self::CheckpointPublishing { origin, .. }
             | Self::Paused { origin, .. }
+            | Self::CheckpointPromoting { origin, .. }
             | Self::Publishing { origin, .. }
             | Self::Completed { origin, .. }
             | Self::Canceled { origin, .. } => origin,
@@ -283,6 +304,7 @@ impl AttemptRuntimeState {
             | Self::CheckpointRequested { daemon_epoch, .. }
             | Self::CheckpointPublishing { daemon_epoch, .. }
             | Self::Paused { daemon_epoch, .. }
+            | Self::CheckpointPromoting { daemon_epoch, .. }
             | Self::Publishing { daemon_epoch, .. }
             | Self::Completed { daemon_epoch, .. }
             | Self::Canceled { daemon_epoch, .. } => daemon_epoch,
@@ -297,6 +319,7 @@ impl AttemptRuntimeState {
             | Self::CheckpointRequested { execution, .. }
             | Self::CheckpointPublishing { execution, .. }
             | Self::Paused { execution, .. }
+            | Self::CheckpointPromoting { execution, .. }
             | Self::Publishing { execution, .. }
             | Self::Completed { execution, .. }
             | Self::Canceled { execution, .. } => execution,
@@ -314,6 +337,7 @@ impl AttemptRuntimeState {
             | Self::CheckpointRequested { .. }
             | Self::CheckpointPublishing { .. }
             | Self::Paused { .. }
+            | Self::CheckpointPromoting { .. }
             | Self::Canceled { .. } => None,
         }
     }
@@ -325,6 +349,10 @@ impl AttemptRuntimeState {
             Self::CheckpointPublishing { checkpoint, .. } | Self::Paused { checkpoint, .. } => {
                 Some(checkpoint)
             }
+            Self::CheckpointPromoting {
+                promoted_checkpoint,
+                ..
+            } => Some(promoted_checkpoint),
             Self::Running { .. }
             | Self::CheckpointRequested { .. }
             | Self::Publishing { .. }
@@ -337,6 +365,34 @@ impl AttemptRuntimeState {
     #[must_use]
     pub const fn origin_checkpoint(self) -> Option<ExactCheckpointId> {
         self.origin().checkpoint()
+    }
+
+    /// Returns the retained raw source while replay-oracle promotion is staged.
+    #[must_use]
+    pub const fn promotion_source_checkpoint(self) -> Option<ExactCheckpointId> {
+        match self {
+            Self::CheckpointPromoting {
+                source_checkpoint, ..
+            } => Some(source_checkpoint),
+            Self::Running { .. }
+            | Self::CheckpointRequested { .. }
+            | Self::CheckpointPublishing { .. }
+            | Self::Paused { .. }
+            | Self::Publishing { .. }
+            | Self::Completed { .. }
+            | Self::Canceled { .. } => None,
+        }
+    }
+
+    fn retained_checkpoint_roots(self) -> [Option<ExactCheckpointId>; 3] {
+        let current = self.checkpoint();
+        let promotion_source = self
+            .promotion_source_checkpoint()
+            .filter(|checkpoint| Some(*checkpoint) != current);
+        let origin = self.origin_checkpoint().filter(|checkpoint| {
+            Some(*checkpoint) != current && Some(*checkpoint) != promotion_source
+        });
+        [current, promotion_source, origin]
     }
 }
 
@@ -469,16 +525,7 @@ impl AssignmentRetentionSummary {
                 .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
             visitor(AssignmentRetentionRoot::Observation(observation))?;
         }
-        if let Some(checkpoint) = state.checkpoint() {
-            self.checkpoint_roots = self
-                .checkpoint_roots
-                .checked_add(1)
-                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
-            visitor(AssignmentRetentionRoot::ExactCheckpoint(checkpoint))?;
-        }
-        if let Some(checkpoint) = state.origin_checkpoint()
-            && state.checkpoint() != Some(checkpoint)
-        {
+        for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
             self.checkpoint_roots = self
                 .checkpoint_roots
                 .checked_add(1)
@@ -764,12 +811,7 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         visitor: &mut dyn FnMut(ExactCheckpointId),
     ) -> Result<(), Self::Error> {
         for state in self.attempts.values().copied() {
-            if let Some(checkpoint) = state.checkpoint() {
-                visitor(checkpoint);
-            }
-            if let Some(checkpoint) = state.origin_checkpoint()
-                && state.checkpoint() != Some(checkpoint)
-            {
+            for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
                 visitor(checkpoint);
             }
         }
@@ -1106,12 +1148,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         visitor: &mut dyn FnMut(ExactCheckpointId),
     ) -> Result<(), Self::Error> {
         self.visit_attempt_states(&mut |state| {
-            if let Some(checkpoint) = state.checkpoint() {
-                visitor(checkpoint);
-            }
-            if let Some(checkpoint) = state.origin_checkpoint()
-                && state.checkpoint() != Some(checkpoint)
-            {
+            for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
                 visitor(checkpoint);
             }
         })
@@ -1232,6 +1269,19 @@ fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) ->
             payload.extend_from_slice(&execution.as_bytes());
             push_bytes(&mut payload, checkpoint.to_text().as_bytes());
         }
+        AttemptRuntimeState::CheckpointPromoting {
+            daemon_epoch,
+            execution,
+            source_checkpoint,
+            promoted_checkpoint,
+            ..
+        } => {
+            payload.push(7);
+            payload.extend_from_slice(&daemon_epoch.as_bytes());
+            payload.extend_from_slice(&execution.as_bytes());
+            push_bytes(&mut payload, source_checkpoint.to_text().as_bytes());
+            push_bytes(&mut payload, promoted_checkpoint.to_text().as_bytes());
+        }
         AttemptRuntimeState::Completed {
             daemon_epoch,
             execution,
@@ -1272,6 +1322,8 @@ fn decode_attempt_state(
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
     let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
         (payload, ATTEMPT_STATE_MAGIC)
+    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
+        (payload, ATTEMPT_STATE_MAGIC_V4)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
         (payload, ATTEMPT_STATE_MAGIC_V3)
     } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
@@ -1287,7 +1339,7 @@ fn decode_attempt_state(
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if magic == ATTEMPT_STATE_MAGIC {
+    let origin = if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V4 {
         decode_attempt_origin(&mut cursor)?
     } else {
         AttemptExecutionOrigin::Initial
@@ -1316,6 +1368,7 @@ fn decode_attempt_state(
             execution,
         },
         3 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V4
             || magic == ATTEMPT_STATE_MAGIC_V3
             || magic == ATTEMPT_STATE_MAGIC_V2 =>
         {
@@ -1327,7 +1380,10 @@ fn decode_attempt_state(
                 observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
             }
         }
-        4 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+        4 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V4
+            || magic == ATTEMPT_STATE_MAGIC_V3 =>
+        {
             AttemptRuntimeState::CheckpointRequested {
                 execution_basis,
                 origin,
@@ -1335,7 +1391,10 @@ fn decode_attempt_state(
                 execution,
             }
         }
-        5 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+        5 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V4
+            || magic == ATTEMPT_STATE_MAGIC_V3 =>
+        {
             AttemptRuntimeState::CheckpointPublishing {
                 execution_basis,
                 origin,
@@ -1344,7 +1403,10 @@ fn decode_attempt_state(
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             }
         }
-        6 if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V3 => {
+        6 if magic == ATTEMPT_STATE_MAGIC
+            || magic == ATTEMPT_STATE_MAGIC_V4
+            || magic == ATTEMPT_STATE_MAGIC_V3 =>
+        {
             AttemptRuntimeState::Paused {
                 execution_basis,
                 origin,
@@ -1353,6 +1415,14 @@ fn decode_attempt_state(
                 checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             }
         }
+        7 if magic == ATTEMPT_STATE_MAGIC => AttemptRuntimeState::CheckpointPromoting {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+        },
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
     cursor.finish()?;

@@ -293,14 +293,27 @@ than two independently reusable objects. Preparation validates and hashes both
 children without writes. Publication places metadata and VMState first,
 requires durable receipts for both, and places the root last. The caller MUST
 durably stage the expected root in its bounded assignment ledger before the
-first put. The executor's `checkpoint-publishing` and `paused` records are the
-retention roots across publication and restart. A failed put may leave
-unreachable immutable children for GC, but may not make an incomplete root
-visible. The live session returns metadata plus its reopenable VMState source
+first put. The executor's `checkpoint-publishing`, `paused`, and
+replay-validation `checkpoint-promoting(source,promoted)` records are the
+retention roots across publication and restart. The promoting phase is
+persisted before the first replacement write and retains both the raw source
+and expected promoted root; only a fully authenticated exact raw-to-matching
+pair may become `paused(promoted)`. A failed put may leave unreachable
+immutable children for GC, but may not make an incomplete root visible. The
+live session returns metadata plus its reopenable VMState source
 as one linear capture result, reaps QEMU, and hands that value to the fixed
 worker pool. Preparation, root staging, publication, and paused-state
 reconciliation each consume a distinct retryable phase token, so storage or
 ledger failure never repeats guest execution or capture.
+
+Raw paused-root replay validation uses the same guarded fat/thin comparison as
+exact-pin validation, but its owner is the lineage-qualified attempt ledger.
+The replacement reuses the source VMState content identity and rewrites only
+the metadata/root carrying the matching oracle result. Restart can finish a
+complete staged pair after authenticating both roots, shared VMState, and exact
+metadata transition without rerunning QEMU. Missing/incomplete promoted bytes
+leave the raw root retained for bounded validation/publication retry; stable
+failure can explicitly restore `paused(raw)`.
 
 The store admits only durable, conditional-create, streaming-read and
 streaming-put backends. The VMState source is finite and reopenable and is

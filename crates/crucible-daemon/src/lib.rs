@@ -69,6 +69,8 @@ pub mod executor_loopback;
 pub mod executor_pool;
 pub mod executor_supervisor;
 pub mod executor_worker;
+#[cfg(target_os = "linux")]
+pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
 pub mod repository_admission;
 
@@ -160,7 +162,8 @@ pub use exact_checkpoint_restore::{
 pub use exact_checkpoint_store::{
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     ExactCheckpointId, ExactCheckpointPublication, ExactCheckpointStore, ExactCheckpointStoreError,
-    LoadedExactCheckpoint, PreparedExactCheckpoint, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
+    LoadedExactCheckpoint, PrepareReplayOraclePromotionError, PreparedExactCheckpoint,
+    PreparedReplayOraclePromotion, QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION,
     QEMU_VMSTATE_SCHEMA_VERSION,
 };
 pub use exact_pin_retention::{
@@ -183,7 +186,8 @@ pub use executor_pool::{
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,
-    CheckpointCompletionOutcome, CheckpointPublicationOutcome, CheckpointRequestOutcome,
+    CheckpointCompletionOutcome, CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
+    CheckpointPromotionStageOutcome, CheckpointPublicationOutcome, CheckpointRequestOutcome,
     CompletionOutcome, CompletionValidationFailure, ExecutionCancellation,
     ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError,
     LocalExecutorError, LocalExecutorSupervisor, ObservationPublicationOutcome, QueuedAttempt,
@@ -205,6 +209,18 @@ pub use executor_worker::{
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
+};
+#[cfg(target_os = "linux")]
+pub use paused_checkpoint_promotion::{
+    PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionPublicationError,
+    PausedCheckpointPromotionReconcileError, PausedCheckpointPromotionStageOutcome,
+    PausedCheckpointPromotionStagingError, PausedCheckpointPromotionTarget,
+    PreparedPausedCheckpointPromotion, PublishedPausedCheckpointPromotion,
+    StagedPausedCheckpointPromotion, publish_staged_paused_checkpoint_promotion,
+    reconcile_published_paused_checkpoint_promotion, recover_published_paused_checkpoint_promotion,
+    revert_recovered_paused_checkpoint_promotion, revert_staged_paused_checkpoint_promotion,
+    stage_prepared_paused_checkpoint_promotion,
+    validate_and_prepare_paused_checkpoint_promotion_guarded,
 };
 pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,

@@ -180,7 +180,8 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let basis = request.execution_basis_digest();
     let execution = execution(0x58);
-    let checkpoint = checkpoint(0x78);
+    let raw_checkpoint = checkpoint(0x78);
+    let promoted_checkpoint = checkpoint(0x79);
     let running = AttemptRuntimeState::Running {
         execution_basis: basis,
         origin: AttemptExecutionOrigin::Initial,
@@ -198,14 +199,22 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
         origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
-        checkpoint,
+        checkpoint: raw_checkpoint,
     };
     let paused = AttemptRuntimeState::Paused {
         execution_basis: basis,
         origin: AttemptExecutionOrigin::Initial,
         daemon_epoch: request.daemon_epoch(),
         execution,
-        checkpoint,
+        checkpoint: raw_checkpoint,
+    };
+    let promoting = AttemptRuntimeState::CheckpointPromoting {
+        execution_basis: basis,
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        source_checkpoint: raw_checkpoint,
+        promoted_checkpoint,
     };
 
     {
@@ -235,15 +244,24 @@ fn checkpoint_states_round_trip_and_remain_gc_roots_after_restart() {
                 .expect("pause checkpoint"),
             AttemptStateCas::Advanced
         );
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, Some(paused), Some(promoting))
+                .expect("stage replay-oracle promotion"),
+            AttemptStateCas::Advanced
+        );
     }
 
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
-    assert_eq!(ledger.load_attempt(key).expect("load paused"), Some(paused));
+    assert_eq!(
+        ledger.load_attempt(key).expect("load promoting"),
+        Some(promoting)
+    );
     let mut checkpoints = Vec::new();
     ledger
         .visit_checkpoint_roots(&mut |root| checkpoints.push(root))
         .expect("stream checkpoint roots");
-    assert_eq!(checkpoints, vec![checkpoint]);
+    assert_eq!(checkpoints, vec![promoted_checkpoint, raw_checkpoint]);
     let mut observations = Vec::new();
     ledger
         .visit_observation_roots(&mut |root| observations.push(root))
@@ -711,6 +729,48 @@ fn directory_ledger_reads_legacy_v3_paused_state_as_initial_origin() {
     fs::create_dir_all(path.parent().expect("attempt-state parent"))
         .expect("create legacy attempt-state parent");
     fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3))
+        .expect("write legacy attempt state");
+
+    assert_eq!(
+        ledger.load_attempt(key).expect("load legacy attempt state"),
+        Some(state)
+    );
+}
+
+#[test]
+fn directory_ledger_reads_legacy_v4_paused_state_with_resume_origin() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let request = request(0x19, 0x39, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let origin = AttemptExecutionOrigin::ExactCheckpoint {
+        assignment: request.assignment(),
+        request_digest: CampaignHash::derive("crucible.test.legacy-v4-resume.v1", b"resume"),
+        prior_execution: execution(0x58),
+        checkpoint: checkpoint(0x78),
+    };
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: request.execution_basis_digest(),
+        origin,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x59),
+        checkpoint: checkpoint(0x79),
+    };
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V4);
+    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
+    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    encode_attempt_origin(&mut payload, origin);
+    payload.push(6);
+    payload.extend_from_slice(&request.daemon_epoch().as_bytes());
+    payload.extend_from_slice(&execution(0x59).as_bytes());
+    push_bytes(&mut payload, checkpoint(0x79).to_text().as_bytes());
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4))
         .expect("write legacy attempt state");
 
     assert_eq!(

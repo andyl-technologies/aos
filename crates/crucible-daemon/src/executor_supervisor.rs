@@ -30,6 +30,13 @@ use crate::{
     AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas,
 };
 
+mod checkpoint_promotion;
+
+pub use checkpoint_promotion::{
+    CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
+    CheckpointPromotionStageOutcome,
+};
+
 const MAX_CANCELLATION_WAIT_SLICE: Duration = Duration::from_secs(60 * 60);
 
 /// Read-only semantic and capability validation performed before guest work.
@@ -868,6 +875,13 @@ where
             } if current_execution == execution => {
                 Ok(CheckpointRequestOutcome::Publishing { checkpoint })
             }
+            AttemptRuntimeState::CheckpointPromoting {
+                execution: current_execution,
+                promoted_checkpoint,
+                ..
+            } if current_execution == execution => Ok(CheckpointRequestOutcome::Publishing {
+                checkpoint: promoted_checkpoint,
+            }),
             AttemptRuntimeState::Paused {
                 execution: current_execution,
                 checkpoint,
@@ -890,6 +904,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointRequestOutcome::NotCurrent),
@@ -972,6 +987,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointPublicationOutcome::NotCurrent),
@@ -1035,6 +1051,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CheckpointCompletionOutcome::NotCurrent),
@@ -1128,6 +1145,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(ObservationPublicationOutcome::NotCurrent),
@@ -1356,6 +1374,7 @@ where
                         && daemon_epoch == self.daemon_epoch
                         && state.origin() == queued.origin
                 }
+                AttemptRuntimeState::CheckpointPromoting { .. } => false,
             });
         if !durable_matches {
             return Err(LocalExecutorError::LedgerInvariant {
@@ -1476,6 +1495,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CompletionOutcome::NotCurrent),
@@ -1547,6 +1567,13 @@ where
                 execution: current_execution,
                 ..
             }
+            | AttemptRuntimeState::CheckpointPromoting {
+                execution_basis,
+                origin,
+                daemon_epoch,
+                execution: current_execution,
+                ..
+            }
             | AttemptRuntimeState::Publishing {
                 execution_basis,
                 origin,
@@ -1571,6 +1598,7 @@ where
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }
             | AttemptRuntimeState::Paused { .. }
+            | AttemptRuntimeState::CheckpointPromoting { .. }
             | AttemptRuntimeState::Publishing { .. }
             | AttemptRuntimeState::Completed { .. }
             | AttemptRuntimeState::Canceled { .. } => Ok(CancellationOutcome::NotCurrent),
@@ -1720,6 +1748,13 @@ where
                     .map_err(Into::into);
                 }
                 AttemptRuntimeState::Paused { .. } => {}
+                AttemptRuntimeState::CheckpointPromoting { .. } => {
+                    return ResumeAttemptExecutionResponse::new(
+                        request,
+                        ResumeAttemptExecutionDisposition::NotCurrent,
+                    )
+                    .map_err(Into::into);
+                }
                 AttemptRuntimeState::Running { .. }
                 | AttemptRuntimeState::CheckpointRequested { .. }
                 | AttemptRuntimeState::CheckpointPublishing { .. }
@@ -1774,6 +1809,7 @@ where
                             }
                         }
                         AttemptRuntimeState::Paused { .. }
+                        | AttemptRuntimeState::CheckpointPromoting { .. }
                         | AttemptRuntimeState::Completed { .. }
                         | AttemptRuntimeState::Canceled { .. } => {
                             return Err(LocalExecutorError::LedgerInvariant {
@@ -1792,6 +1828,7 @@ where
                             self.reserve(&assignment, execution, origin)?;
                         }
                         AttemptRuntimeState::Paused { .. }
+                        | AttemptRuntimeState::CheckpointPromoting { .. }
                         | AttemptRuntimeState::Completed { .. }
                         | AttemptRuntimeState::Canceled { .. } => {
                             return Err(LocalExecutorError::LedgerInvariant {
@@ -1967,6 +2004,17 @@ where
                     SubmitAttemptDisposition::AlreadyPaused {
                         execution,
                         checkpoint,
+                    },
+                );
+            }
+            Some(AttemptRuntimeState::CheckpointPromoting {
+                execution_basis: current_basis,
+                ..
+            }) if current_basis == execution_basis => {
+                return self.persist_response(
+                    request,
+                    SubmitAttemptDisposition::Rejected {
+                        reason: ExecutorRejection::UnavailableInput,
                     },
                 );
             }
@@ -2229,6 +2277,7 @@ where
             Some(AttemptRuntimeState::CheckpointRequested { .. })
             | Some(AttemptRuntimeState::CheckpointPublishing { .. })
             | Some(AttemptRuntimeState::Paused { .. })
+            | Some(AttemptRuntimeState::CheckpointPromoting { .. })
             | Some(AttemptRuntimeState::Completed { .. }) => {
                 return self.persist_response(
                     request,
@@ -2563,6 +2612,12 @@ where
                     AttemptRuntimeState::CheckpointPublishing { checkpoint, .. } => {
                         GetAttemptExecutionDisposition::CheckpointPublishing { checkpoint }
                     }
+                    AttemptRuntimeState::CheckpointPromoting {
+                        promoted_checkpoint,
+                        ..
+                    } => GetAttemptExecutionDisposition::CheckpointPublishing {
+                        checkpoint: promoted_checkpoint,
+                    },
                     AttemptRuntimeState::Paused { checkpoint, .. } => {
                         GetAttemptExecutionDisposition::Paused { checkpoint }
                     }

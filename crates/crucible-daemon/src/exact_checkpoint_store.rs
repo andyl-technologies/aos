@@ -27,8 +27,9 @@ use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, ObjectKind, PutReceipt, StoreError,
 };
 use crucible_qemu::{
-    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuReplayOracleCheck, QemuVmRealizationError,
-    QemuVmSnapshot, QemuVmSnapshotCodecError,
+    MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuReplayOracleCheck, QemuReplayOracleValidation,
+    QemuVmRealizationError, QemuVmSnapshot, QemuVmSnapshotCodecError,
+    validate_qemu_replay_oracle_promotion,
 };
 use thiserror::Error;
 
@@ -60,6 +61,46 @@ pub struct PreparedExactCheckpoint {
     vmstate_source: BlobHandle,
     snapshot_identity: ContentHash,
     configuration: ContentHash,
+}
+
+/// Replay-validated replacement prepared from one exact raw checkpoint.
+///
+/// The source identity is retained separately from the replacement so an
+/// operational owner can durably root both before publishing any replacement
+/// bytes. Construction is possible only through
+/// [`ExactCheckpointStore::prepare_replay_oracle_promotion`], which applies a
+/// source-bound replay-oracle result to the authenticated source metadata.
+pub struct PreparedReplayOraclePromotion {
+    source: ExactCheckpointId,
+    replacement: PreparedExactCheckpoint,
+}
+
+impl fmt::Debug for PreparedReplayOraclePromotion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedReplayOraclePromotion")
+            .field("source", &self.source)
+            .field("replacement", &self.replacement)
+            .finish()
+    }
+}
+
+impl PreparedReplayOraclePromotion {
+    /// Returns the raw exact root compared by the replay oracle.
+    #[must_use]
+    pub const fn source(&self) -> ExactCheckpointId {
+        self.source
+    }
+
+    /// Returns the replacement root containing matching oracle evidence.
+    #[must_use]
+    pub const fn promoted(&self) -> ExactCheckpointId {
+        self.replacement.root()
+    }
+
+    pub(crate) const fn replacement(&self) -> &PreparedExactCheckpoint {
+        &self.replacement
+    }
 }
 
 impl fmt::Debug for PreparedExactCheckpoint {
@@ -392,6 +433,71 @@ impl ExactCheckpointStore {
         self.prepare(&snapshot, vmstate)
     }
 
+    /// Prepares a source-bound replay-oracle promotion without store writes.
+    ///
+    /// The source root and metadata are authenticated first. The supplied
+    /// comparison capability must name that exact metadata identity and prove
+    /// a fat/thin runtime match. The returned replacement reuses the source's
+    /// authenticated VMState stream by content identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a checkpoint-store error when the source closure is unavailable
+    /// or invalid, and a realization error when `check` belongs to another
+    /// source or does not prove a match.
+    pub fn prepare_replay_oracle_promotion(
+        &self,
+        source: ExactCheckpointId,
+        check: QemuReplayOracleCheck,
+    ) -> Result<PreparedReplayOraclePromotion, PrepareReplayOraclePromotionError> {
+        let loaded = self.load(source)?;
+        if loaded.snapshot().replay_oracle_validation() != QemuReplayOracleValidation::NotRun {
+            return Err(ExactCheckpointStoreError::InvalidRoot {
+                reason: "replay-oracle promotion source is not raw",
+            }
+            .into());
+        }
+        let capture = loaded.promote_replay_oracle_match(check)?;
+        let replacement = self.prepare_capture(capture)?;
+        Ok(PreparedReplayOraclePromotion {
+            source,
+            replacement,
+        })
+    }
+
+    /// Authenticates a complete durable raw-to-matched promotion pair.
+    ///
+    /// Both roots and metadata are loaded by exact content identity. The pair
+    /// must share one opaque VMState child, and the promoted metadata may differ
+    /// from the raw source only by matching replay-oracle evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either closure is unavailable or invalid, the
+    /// roots alias, VMState differs, or metadata is not an exact promotion.
+    pub fn authenticate_replay_oracle_promotion(
+        &self,
+        source: ExactCheckpointId,
+        promoted: ExactCheckpointId,
+    ) -> Result<(), PrepareReplayOraclePromotionError> {
+        if source == promoted {
+            return Err(ExactCheckpointStoreError::InvalidRoot {
+                reason: "replay-oracle promotion aliases its source",
+            }
+            .into());
+        }
+        let source = self.load(source)?;
+        let promoted = self.load(promoted)?;
+        if source.vmstate_id() != promoted.vmstate_id() {
+            return Err(ExactCheckpointStoreError::InvalidRoot {
+                reason: "replay-oracle promotion changed VMState identity",
+            }
+            .into());
+        }
+        validate_qemu_replay_oracle_promotion(source.snapshot(), promoted.snapshot())?;
+        Ok(())
+    }
+
     /// Publishes prepared children and then their durable root.
     ///
     /// The caller must first stage [`PreparedExactCheckpoint::root`] in its
@@ -502,6 +608,17 @@ impl ExactCheckpointStore {
             vmstate,
         })
     }
+}
+
+/// Failure while preparing a source-bound replay-oracle replacement.
+#[derive(Debug, Error)]
+pub enum PrepareReplayOraclePromotionError {
+    /// The immutable source or replacement could not be authenticated/prepared.
+    #[error(transparent)]
+    Checkpoint(#[from] ExactCheckpointStoreError),
+    /// The comparison did not prove a match for the exact source metadata.
+    #[error(transparent)]
+    ReplayOracle(#[from] QemuVmRealizationError),
 }
 
 /// Failure while preparing, publishing, or loading an exact QEMU checkpoint.
