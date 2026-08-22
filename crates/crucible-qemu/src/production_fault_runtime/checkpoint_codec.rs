@@ -105,60 +105,6 @@ struct NetworkEncodeWire<'a> {
 }
 
 impl ProductionFaultRuntimeCheckpoint {
-    /// Fallibly clones the complete authenticated continuation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProductionFaultRuntimeCheckpointCodecError::ResourceLimit`]
-    /// when canonical ledger storage cannot be reserved.
-    pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeCheckpointCodecError> {
-        let allocation = |requested: usize| {
-            resource_limit(
-                "production fault checkpoint",
-                0,
-                u64::try_from(requested).unwrap_or(u64::MAX),
-                MAX_BYTES,
-                HARD_FAT_CHECKPOINT_BYTES,
-            )
-        };
-        Ok(Self {
-            runtime: self.runtime.clone(),
-            host: self.host.clone(),
-            qemu_fingerprints: self
-                .qemu_fingerprints
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_fingerprints.len()))?,
-            qemu_fault_sequences: self
-                .qemu_fault_sequences
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_fault_sequences.len()))?,
-            qemu_fault_event_sequences: self
-                .qemu_fault_event_sequences
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_fault_event_sequences.len()))?,
-            qemu_issued_actions: self
-                .qemu_issued_actions
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_issued_actions.len()))?,
-            qemu_action_commits: self
-                .qemu_action_commits
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_action_commits.len()))?,
-            qemu_active_rule_ids: self
-                .qemu_active_rule_ids
-                .try_clone()
-                .map_err(|_| allocation(self.qemu_active_rule_ids.len()))?,
-            network_state: self.network_state.clone(),
-            emitted_events: self.emitted_events.clone(),
-            pending_qemu_observations: self.pending_qemu_observations.clone(),
-            pending_qemu_events: self
-                .pending_qemu_events
-                .try_clone()
-                .map_err(|_| allocation(self.pending_qemu_events.len()))?,
-            identity: self.identity,
-        })
-    }
-
     /// Encodes every evaluator, host, QEMU, network, and event continuation.
     ///
     /// # Errors

@@ -55,24 +55,25 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
     }
 }
 
-impl<T: Clone, const MAX: u64> BoundedSet<T, MAX> {
-    /// Fallibly clones the ordered value vector.
+impl<T, const MAX: u64> BoundedSet<T, MAX> {
+    /// Fallibly duplicates the ordered set and each heap-owning value.
     ///
     /// # Errors
     ///
-    /// Returns [`BoundedCborError::ResourceLimit`] if the destination cannot be
-    /// reserved.
-    pub(crate) fn try_clone(&self) -> Result<Self, BoundedCborError> {
+    /// Returns the caller's allocation error if the destination value vector
+    /// or any value cannot be duplicated.
+    pub(crate) fn try_clone_with<E>(
+        &self,
+        mut clone_value: impl FnMut(&T) -> Result<T, E>,
+        allocation_error: impl FnOnce() -> E,
+    ) -> Result<Self, E> {
         let mut values = Vec::new();
-        values.try_reserve_exact(self.values.len()).map_err(|_| {
-            collection_resource(
-                "bounded CBOR set",
-                0,
-                u64::try_from(self.values.len()).unwrap_or(u64::MAX),
-                MAX,
-            )
-        })?;
-        values.extend(self.values.iter().cloned());
+        values
+            .try_reserve_exact(self.values.len())
+            .map_err(|_| allocation_error())?;
+        for value in &self.values {
+            values.push(clone_value(value)?);
+        }
         Ok(Self { values })
     }
 }

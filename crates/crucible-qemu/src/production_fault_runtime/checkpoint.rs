@@ -72,37 +72,79 @@ impl ProductionFaultRuntime {
             qemu_fingerprints,
             qemu_fault_sequences,
             qemu_fault_event_sequences,
-            qemu_issued_actions: self.qemu_issued_actions.try_clone().map_err(|_| {
-                checkpoint_collection_allocation(
-                    "event_records",
-                    self.qemu_issued_actions.len(),
-                    self.resource_limits,
-                )
-            })?,
-            qemu_action_commits: self.qemu_action_commits.try_clone().map_err(|_| {
-                checkpoint_collection_allocation(
-                    "event_records",
-                    self.qemu_action_commits.len(),
-                    self.resource_limits,
-                )
-            })?,
-            qemu_active_rule_ids: self.qemu_active_rule_ids.try_clone().map_err(|_| {
-                checkpoint_collection_allocation(
-                    "event_records",
-                    self.qemu_active_rule_ids.len(),
-                    self.resource_limits,
-                )
-            })?,
+            qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
+                |identity| Ok(*identity),
+                |action| {
+                    try_clone_action(action, || {
+                        checkpoint_collection_allocation(
+                            "event_records",
+                            self.qemu_issued_actions.len(),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_issued_actions.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
+            qemu_action_commits: self.qemu_action_commits.try_clone_with(
+                |identity| Ok(*identity),
+                |commit| Ok(*commit),
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_action_commits.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
+            qemu_active_rule_ids: self.qemu_active_rule_ids.try_clone_with(
+                |identity| Ok(*identity),
+                || {
+                    checkpoint_collection_allocation(
+                        "event_records",
+                        self.qemu_active_rule_ids.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
             network_state: self.restored_network_state.clone(),
             emitted_events: self.emitted_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
-            pending_qemu_events: self.pending_qemu_events.try_clone().map_err(|_| {
-                checkpoint_collection_allocation(
-                    "nodes",
-                    self.pending_qemu_events.len(),
-                    self.resource_limits,
-                )
-            })?,
+            pending_qemu_events: self.pending_qemu_events.try_clone_with(
+                |node| {
+                    try_clone_ledger_node_id(node, || {
+                        checkpoint_collection_allocation(
+                            "nodes",
+                            self.pending_qemu_events.len(),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                |events| {
+                    try_clone_fault_events(events, || {
+                        checkpoint_collection_allocation(
+                            "event_records",
+                            self.pending_qemu_events
+                                .values()
+                                .map(Vec::len)
+                                .fold(0_usize, usize::saturating_add),
+                            self.resource_limits,
+                        )
+                    })
+                },
+                || {
+                    checkpoint_collection_allocation(
+                        "nodes",
+                        self.pending_qemu_events.len(),
+                        self.resource_limits,
+                    )
+                },
+            )?,
             identity,
         })
     }

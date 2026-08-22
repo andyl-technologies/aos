@@ -92,24 +92,26 @@ impl<K: Ord, V, const MAX: u64> BoundedMap<K, V, MAX> {
     }
 }
 
-impl<K: Clone, V: Clone, const MAX: u64> BoundedMap<K, V, MAX> {
-    /// Fallibly clones the ordered entry vector.
+impl<K, V, const MAX: u64> BoundedMap<K, V, MAX> {
+    /// Fallibly duplicates the ordered map and each heap-owning entry.
     ///
     /// # Errors
     ///
-    /// Returns [`BoundedCborError::ResourceLimit`] if the destination cannot
-    /// be reserved.
-    pub(crate) fn try_clone(&self) -> Result<Self, BoundedCborError> {
+    /// Returns the caller's allocation error if the destination entry vector
+    /// or any key or value cannot be duplicated.
+    pub(crate) fn try_clone_with<E>(
+        &self,
+        mut clone_key: impl FnMut(&K) -> Result<K, E>,
+        mut clone_value: impl FnMut(&V) -> Result<V, E>,
+        allocation_error: impl FnOnce() -> E,
+    ) -> Result<Self, E> {
         let mut entries = Vec::new();
-        entries.try_reserve_exact(self.entries.len()).map_err(|_| {
-            collection_resource(
-                "bounded CBOR map",
-                0,
-                u64::try_from(self.entries.len()).unwrap_or(u64::MAX),
-                MAX,
-            )
-        })?;
-        entries.extend(self.entries.iter().cloned());
+        entries
+            .try_reserve_exact(self.entries.len())
+            .map_err(|_| allocation_error())?;
+        for (key, value) in &self.entries {
+            entries.push((clone_key(key)?, clone_value(value)?));
+        }
         Ok(Self { entries })
     }
 }
