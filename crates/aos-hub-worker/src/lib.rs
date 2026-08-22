@@ -796,20 +796,26 @@ mod entry {
         Ok(resp)
     }
 
-    /// The Cron-triggered indexer: re-walk every live registry placement into
-    /// the HubDb derived index, reusing the pure verifier.
+    /// Enqueues one short maintenance dispatcher for each Cron tick.
     ///
     /// Bound to a Cron schedule in `wrangler.toml`; mirrors the native hub's
-    /// scheduled re-index. Failures of an individual registry are logged and do
-    /// not abort the run (see [`crate::indexer::index_all`]).
+    /// scheduled maintenance. The dispatcher reads topology only long enough
+    /// to fan out bounded per-resource queue jobs; provider I/O never runs in
+    /// the scheduled event.
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
-        // RFC-0004 ch.14 Phase E: the maintenance pass runs **inside `HubDb`**
-        // over its colocated SQLite system of record. The
-        // worker forwards the Cron tick to the DO's seal-gated `/_internal/cron`.
-        if let Err(err) = forward_internal(&env, "/_internal/cron", None).await {
-            worker::console_error!("scheduled: forward to HubDb failed: {err:#}");
+        use aos_hub_core::jobs::Queue as _;
+        let result = match crate::workerqueue::WorkerQueue::from_env(&env) {
+            Ok(queue) => {
+                queue
+                    .enqueue(&aos_hub_core::jobs::Job::DispatchMaintenance)
+                    .await
+            }
+            Err(error) => Err(anyhow::anyhow!("maintenance queue binding: {error}")),
+        };
+        if let Err(error) = result {
+            worker::console_error!("scheduled: enqueue maintenance: {error:#}");
         }
     }
 
@@ -927,129 +933,107 @@ mod entry {
         Ok(())
     }
 
-    /// Runs the Cron maintenance pass inside `HubDb` over its colocated SQLite:
-    /// re-index every registry's surface, rescan caches, and rebuild the KV
-    /// directory projection. Indexing, scanning, GC, and directory failures are
-    /// logged independently; webhook materialization or delivery failure fails
-    /// the Cron request so the platform retries it.
-    async fn run_cron(state: &State, env: &Env) -> Result<()> {
-        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage()))
-        };
-        // Drain already-committed notifications before longer maintenance.
-        // A second pass below catches events raised by indexing in this tick.
-        run_webhook_batch(make(), env).await?;
-        let now = (worker::Date::now().as_millis() / 1000) as i64;
-        aos_hub_core::db::Database::attach(make())
-            .prune_expired_invitation_secrets(now, 1_000)
+    /// Fans a maintenance tick out into independent bounded queue jobs.
+    ///
+    /// This database-only pass intentionally performs no provider, webhook,
+    /// DNS, or KV I/O. A slow registry or cache therefore cannot hold the
+    /// global database object for the duration of every other maintenance job.
+    async fn run_cron(
+        state: &State,
+        env: &Env,
+        parent: &aos_hub_core::jobs::JobEnvelope,
+    ) -> Result<()> {
+        let now = now_for_worker();
+        let db = aos_hub_core::db::Database::attach(Box::new(
+            crate::sqldobackend::SqlDoBackend::new(state.storage()),
+        ));
+        db.prune_expired_invitation_secrets(now, 1_000)
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
             })?;
-        run_domain_probes(make(), env).await;
-        let secret_versions = match crate::secretversions::from_env(env) {
-            Ok(resolver) => resolver,
-            Err(err) => {
-                worker::console_error!("cron: secret-version resolver unavailable: {err}");
-                return Err(err);
-            }
-        };
-        let egress = match worker_egress(env) {
-            Ok(client) => client,
-            Err(error) => {
-                worker::console_error!("cron: invalid egress configuration: {error}");
-                return Err(error);
-            }
-        };
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            if let Err(err) = crate::indexer::index_all(
-                make(),
-                bucket,
-                Arc::clone(&secret_versions),
-                Arc::clone(&egress),
-            )
-            .await
-            {
-                worker::console_error!("cron index failed: {err:#}");
-            }
-        }
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            if let Err(err) = crate::indexer::rescan_all(
-                make(),
-                bucket,
-                Arc::clone(&secret_versions),
-                Arc::clone(&egress),
-            )
-            .await
-            {
-                worker::console_error!("cron rescan failed: {err:#}");
-            }
-        }
-        if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            let db = Arc::new(aos_hub_core::db::Database::attach(make()));
-            let writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
-                Arc::new(crate::surface::R2SurfaceWriteProvider::new(
-                    bucket,
-                    Arc::clone(&db),
-                    Arc::clone(&secret_versions),
-                    Arc::clone(&egress),
-                ));
-            let controller =
-                aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers);
-            if let Err(err) = controller.run_due(now, 100).await {
-                worker::console_error!("physical cache deletion controller failed: {err:#}");
-            }
-        }
-        if let Ok(kv_ns) = env.kv(crate::handlers::bindings::KV_SESSIONS) {
-            let db = aos_hub_core::db::Database::attach(make());
-            let kv = crate::workerkv::WorkerKv::new(kv_ns);
-            if let Err(err) = aos_hub_core::directory::rebuild(&db, &kv).await {
-                worker::console_error!("cron directory rebuild failed: {err:#}");
-            }
-        }
-        run_webhook_batch(make(), env).await?;
-        Ok(())
-    }
-
-    async fn run_webhook_batch(
-        backend: Box<dyn aos_hub_core::backend::Backend>,
-        env: &Env,
-    ) -> Result<()> {
-        let db = aos_hub_core::db::Database::attach(backend);
-        let (_, delivery_ids) = db
+        let (_, newly_materialized_delivery_ids) = db
             .materialize_topology_events_with_delivery_ids()
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!("materialize webhook deliveries: {error:#}"))
             })?;
-        let queue_error = if delivery_ids.is_empty() {
-            None
-        } else {
-            use aos_hub_core::jobs::Queue as _;
-            let jobs = delivery_ids
+        let due_delivery_ids = db.list_due_delivery_ids(now, 100).await.map_err(|error| {
+            worker::Error::RustError(format!("list due webhook deliveries: {error:#}"))
+        })?;
+        let registries = db
+            .list_registries()
+            .await
+            .map_err(|error| worker::Error::RustError(format!("list registries: {error:#}")))?;
+        let caches = db
+            .list_binary_caches()
+            .await
+            .map_err(|error| worker::Error::RustError(format!("list caches: {error:#}")))?;
+
+        let mut jobs = vec![
+            aos_hub_core::jobs::Job::RunTopologyProbes,
+            aos_hub_core::jobs::Job::RecoverCacheWrites,
+            aos_hub_core::jobs::Job::RunCacheGc,
+            aos_hub_core::jobs::Job::RebuildDirectory,
+        ];
+        jobs.extend(
+            registries
                 .into_iter()
-                .map(|delivery_id| aos_hub_core::jobs::Job::DeliverWebhook { delivery_id })
-                .collect::<Vec<_>>();
-            crate::workerqueue::WorkerQueue::from_env(env)?
-                .enqueue_all(&jobs)
-                .await
-                .err()
-        };
-        let now = aos_hub_core::clock::now_unix_secs();
-        for delivery in db
-            .claim_due_deliveries(now, 25, 60)
+                .map(|registry| aos_hub_core::jobs::Job::Reindex {
+                    registry_id: registry.id,
+                }),
+        );
+        jobs.extend(
+            caches
+                .into_iter()
+                .filter(|cache| cache.deleted_at.is_none())
+                .map(|cache| aos_hub_core::jobs::Job::RescanCache { cache_id: cache.id }),
+        );
+        let delivery_ids = newly_materialized_delivery_ids
+            .into_iter()
+            .chain(due_delivery_ids)
+            .collect::<std::collections::BTreeSet<_>>();
+        jobs.extend(
+            delivery_ids
+                .into_iter()
+                .map(|delivery_id| aos_hub_core::jobs::Job::DeliverWebhook { delivery_id }),
+        );
+
+        let envelopes = jobs
+            .into_iter()
+            .map(|job| {
+                let cursor = match &job {
+                    aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
+                    aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
+                    aos_hub_core::jobs::Job::RunCacheGc => "cache-gc".to_string(),
+                    aos_hub_core::jobs::Job::RebuildDirectory => "directory".to_string(),
+                    aos_hub_core::jobs::Job::Reindex { registry_id } => {
+                        format!("registry:{registry_id}")
+                    }
+                    aos_hub_core::jobs::Job::RescanCache { cache_id } => {
+                        format!("cache:{cache_id}")
+                    }
+                    aos_hub_core::jobs::Job::DeliverWebhook { delivery_id } => {
+                        format!("webhook:{delivery_id}")
+                    }
+                    _ => "maintenance".to_string(),
+                };
+                parent.continued(job, cursor)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(|error| {
+                worker::Error::RustError(format!("build maintenance jobs: {error:#}"))
+            })?;
+        crate::workerqueue::WorkerQueue::from_env(env)?
+            .enqueue_envelopes(&envelopes)
             .await
             .map_err(|error| {
-                worker::Error::RustError(format!("claim webhook deliveries: {error:#}"))
-            })?
-        {
-            deliver_webhook(&db, env, &delivery).await?;
-        }
-        if let Some(error) = queue_error {
-            return Err(worker::Error::RustError(format!(
-                "enqueue webhook deliveries: {error:#}"
-            )));
-        }
+                worker::Error::RustError(format!("enqueue maintenance jobs: {error:#}"))
+            })?;
+        worker::console_log!(
+            "maintenance dispatch enqueued {} bounded jobs",
+            envelopes.len()
+        );
         Ok(())
     }
 
@@ -1234,7 +1218,7 @@ mod entry {
             attempt
         );
 
-        match run_job(&envelope.job, state, env).await {
+        match run_job(envelope, state, env).await {
             Ok(()) => db
                 .complete_worker_job(&envelope.operation_id, &claim_token, now_for_worker())
                 .await
@@ -1273,13 +1257,84 @@ mod entry {
 
     /// Runs a single deferred [`Job`](aos_hub_core::jobs::Job) inside `HubDb` over
     /// its colocated SQLite (the queue consumer's per-job body, Phase E).
-    async fn run_job(job: &aos_hub_core::jobs::Job, state: &State, env: &Env) -> Result<()> {
+    async fn run_job(
+        envelope: &aos_hub_core::jobs::JobEnvelope,
+        state: &State,
+        env: &Env,
+    ) -> Result<()> {
         use aos_hub_core::jobs::Job;
         let make = || -> Box<dyn aos_hub_core::backend::Backend> {
             Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage()))
         };
-        match job {
+        match &envelope.job {
+            Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
             Job::RunTopologyProbes => run_domain_probes(make(), env).await,
+            Job::RecoverCacheWrites => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover cache writes R2 binding: {error}"
+                    ))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "job recover cache writes secret versions: {error}"
+                    ))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let provider = crate::surface::R2SurfaceProvider::new(
+                    bucket.clone(),
+                    Arc::clone(&db),
+                    Arc::clone(&secret_versions),
+                    Arc::clone(&egress),
+                );
+                let writers = crate::surface::R2SurfaceWriteProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                let now = now_for_worker();
+                aos_hub_core::cache_scan::reap_due_cache_tombstones(&db, now)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job recover cache tombstones: {error:#}"))
+                    })?;
+                aos_hub_core::cache_scan::recover_expired_cache_writes(
+                    &db,
+                    &provider,
+                    &writers,
+                    now,
+                    aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("job recover expired cache writes: {error:#}"))
+                })?;
+            }
+            Job::RunCacheGc => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job cache GC R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!("job cache GC secret versions: {error}"))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(crate::surface::R2SurfaceWriteProvider::new(
+                        bucket,
+                        Arc::clone(&db),
+                        secret_versions,
+                        egress,
+                    ));
+                aos_hub_core::gc_controller::CacheGcDeletionController::new(db, writers)
+                    .run_due(now_for_worker(), 25)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job cache GC: {error:#}"))
+                    })?;
+            }
             Job::RebuildDirectory => {
                 let kv_ns = env
                     .kv(crate::handlers::bindings::KV_SESSIONS)
@@ -1334,6 +1389,45 @@ mod entry {
                         )))
                     }
                 }
+            }
+            Job::RescanCache { cache_id } => {
+                let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache R2 binding: {error}"))
+                })?;
+                let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache secret versions: {error}"))
+                })?;
+                let egress = worker_egress(env)?;
+                let db = Arc::new(aos_hub_core::db::Database::attach(make()));
+                let Some(cache) = db.binary_cache_by_id(*cache_id).await.map_err(|error| {
+                    worker::Error::RustError(format!("job rescan cache load {cache_id}: {error:#}"))
+                })?
+                else {
+                    worker::console_log!("job rescan cache {cache_id}: cache gone");
+                    return Ok(());
+                };
+                if cache.deleted_at.is_some() {
+                    worker::console_log!("job rescan cache {cache_id}: cache deleted");
+                    return Ok(());
+                }
+                let provider = crate::surface::R2SurfaceProvider::new(
+                    bucket,
+                    Arc::clone(&db),
+                    secret_versions,
+                    egress,
+                );
+                let stats = aos_hub_core::cache_scan::rescan_cache(&db, &provider, &cache)
+                    .await
+                    .map_err(|error| {
+                        worker::Error::RustError(format!("job rescan cache {cache_id}: {error:#}"))
+                    })?;
+                worker::console_log!(
+                    "job rescan cache {}: +{} -{} ={}",
+                    cache_id,
+                    stats.added,
+                    stats.removed,
+                    stats.unchanged
+                );
             }
             Job::ResetIndex { registry_id } => {
                 let db = aos_hub_core::db::Database::attach(make());
@@ -1717,7 +1811,10 @@ mod entry {
                         return Response::error("forbidden", 403);
                     }
                     if path == "/_internal/cron" {
-                        return match run_cron(&self.state, &self.env).await {
+                        let envelope = aos_hub_core::jobs::JobEnvelope::new(
+                            aos_hub_core::jobs::Job::DispatchMaintenance,
+                        );
+                        return match run_cron(&self.state, &self.env, &envelope).await {
                             Ok(()) => Response::ok("ok"),
                             Err(error) => Response::error(format!("cron: {error}"), 500),
                         };

@@ -23683,6 +23683,38 @@ impl Database {
         Ok(claimed)
     }
 
+    /// Lists stable identities for due webhook deliveries without claiming them.
+    ///
+    /// This is the cron-dispatch boundary: it lets a short database-only pass
+    /// enqueue independent delivery jobs while each queue consumer performs
+    /// the network request under the ordinary durable delivery claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid limit or database failure.
+    pub async fn list_due_delivery_ids(&self, now: i64, limit: u32) -> Result<Vec<String>> {
+        anyhow::ensure!(
+            (1..=100).contains(&limit),
+            "delivery list limit must be 1..=100"
+        );
+        self.backend
+            .query(
+                "SELECT d.delivery_id
+                   FROM webhook_deliveries d
+                   JOIN webhooks w ON w.id = d.webhook_id
+                  WHERE d.status = 'pending' AND d.next_attempt_at <= ?1
+                    AND w.active = 1
+                    AND (d.claim_token IS NULL OR d.claim_expires_at <= ?1)
+                    AND length(d.payload) <= ?2
+                  ORDER BY d.id LIMIT ?3",
+                &vals![now, 1024 * 1024_i64, i64::from(limit)],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
     /// Claims one due delivery by its stable queue identity.
     ///
     /// # Errors
