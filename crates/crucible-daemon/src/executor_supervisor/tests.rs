@@ -3,6 +3,9 @@
 #![allow(clippy::expect_used)]
 
 use std::cell::Cell;
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
 
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ExecutionRetentionIntent,
@@ -11,6 +14,39 @@ use crucible_campaign::{
 
 use super::*;
 use crate::{DirectoryAssignmentLedger, MemoryAssignmentLedger};
+
+#[test]
+fn execution_cancellation_wakes_blocked_guards_and_times_out_cleanly() {
+    let cancellation = ExecutionCancellation::default();
+    assert!(!cancellation.wait_for_cancellation(Duration::ZERO));
+
+    let waiter_cancellation = cancellation.clone();
+    let started = Arc::new(Barrier::new(2));
+    let waiter_started = Arc::clone(&started);
+    let waiter = thread::spawn(move || {
+        waiter_started.wait();
+        waiter_cancellation.wait_for_cancellation(Duration::MAX)
+    });
+    started.wait();
+    cancellation.cancel_for_test();
+
+    assert!(waiter.join().expect("cancellation waiter"));
+    assert!(cancellation.wait_for_cancellation(Duration::ZERO));
+}
+
+#[test]
+fn execution_cancellation_wait_fails_closed_after_poison() {
+    let cancellation = ExecutionCancellation::default();
+    let state = Arc::clone(&cancellation.state);
+    let poison = thread::spawn(move || {
+        let _wait = state.wait_lock.lock().expect("cancellation wait lock");
+        panic!("poison cancellation wait lock");
+    });
+    assert!(poison.join().is_err());
+
+    assert!(cancellation.wait_for_cancellation(Duration::ZERO));
+    assert!(!cancellation.is_canceled());
+}
 
 #[test]
 fn exact_replay_running_dedup_and_capacity_are_bounded() {

@@ -519,6 +519,36 @@ pub struct LinuxQemuCgroupControl {
     watcher_state: Arc<AtomicU8>,
 }
 
+/// Narrow sticky-cancellation authority for one attempt process group.
+///
+/// This capability can close child minting and wake the persistent cgroup
+/// watcher, but cannot alter resource controls, inspect membership, or release
+/// namespace ownership.
+#[derive(Debug)]
+pub(crate) struct LinuxQemuCgroupCancellationSignal {
+    cancellation_event: OwnedFd,
+    watcher_state: Arc<AtomicU8>,
+    path: PathBuf,
+}
+
+impl LinuxQemuCgroupCancellationSignal {
+    /// Makes cancellation permanently visible to existing and future children.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupError::Io`] when the sticky event cannot be
+    /// published. Future child minting remains closed even on that error.
+    pub(crate) fn signal(&self) -> Result<(), LinuxQemuCgroupError> {
+        signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd()).map_err(
+            |source| LinuxQemuCgroupError::Io {
+                operation: "signal QEMU cancellation eventfd",
+                path: self.path.clone(),
+                source,
+            },
+        )
+    }
+}
+
 impl LinuxQemuCgroupControl {
     /// Duplicates this authority for a persistent cancellation watcher.
     ///
@@ -554,6 +584,20 @@ impl LinuxQemuCgroupControl {
             )?,
             path: self.path.clone(),
             watcher_state: Arc::clone(&self.watcher_state),
+        })
+    }
+
+    fn cancellation_signal(
+        &self,
+    ) -> Result<LinuxQemuCgroupCancellationSignal, LinuxQemuCgroupError> {
+        Ok(LinuxQemuCgroupCancellationSignal {
+            cancellation_event: duplicate_fd(
+                self.cancellation_event.as_raw_fd(),
+                "duplicate QEMU cancellation signal",
+                &self.path,
+            )?,
+            watcher_state: Arc::clone(&self.watcher_state),
+            path: self.path.clone(),
         })
     }
 
