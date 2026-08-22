@@ -1,7 +1,7 @@
-//! The single chokepoint for creating a storage binding.
+//! The single chokepoint for creating a binding.
 //!
 //! Both authoring surfaces — the console `POST .../bindings` handler and the
-//! final `PlanCreateStorageBinding`/`CreateStorageBinding` lifecycle (and the
+//! final `PlanCreateBinding`/`CreateBinding` lifecycle (and the
 //! `aos hub` CLI) — funnel
 //! into [`provision_binding`]. Centralizing it here means credential sealing,
 //! input validation, and the `s3`/`r2` origin contract live in exactly one place,
@@ -24,7 +24,7 @@ use crate::binding::BindingKind;
 use crate::db::Database;
 use thiserror::Error;
 
-/// A request to create a storage binding.
+/// A request to create a binding.
 pub struct NewBinding<'a> {
     /// Owning org id.
     pub org_id: i64,
@@ -60,14 +60,14 @@ pub enum ProvisionError {
     #[error("{0}")]
     Invalid(String),
     /// A binding named `{0}` already exists in the org.
-    #[error("storage binding '{0}' already exists")]
+    #[error("binding '{0}' already exists")]
     AlreadyExists(String),
     /// A database failure.
     #[error(transparent)]
     Backend(#[from] anyhow::Error),
 }
 
-/// Creates a storage binding and returns its row id.
+/// Creates a binding and returns its row id.
 ///
 /// See the [module docs](self) for the per-kind contract.
 ///
@@ -193,16 +193,12 @@ pub async fn provision_binding(db: &Database, req: NewBinding<'_>) -> Result<i64
 
     // Fail fast with a clean message on a name clash rather than surfacing the
     // raw UNIQUE-constraint error.
-    if db
-        .storage_binding_by_name(req.org_id, name)
-        .await?
-        .is_some()
-    {
+    if db.binding_by_name(req.org_id, name).await?.is_some() {
         return Err(ProvisionError::AlreadyExists(name.to_string()));
     }
 
     let id = db
-        .create_topology_storage_binding(
+        .create_topology_binding(
             Some(req.org_id),
             &stable_id,
             &owner.stable_id,
@@ -270,7 +266,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let b = db.storage_binding(id).await.unwrap().unwrap();
+        let b = db.binding(id).await.unwrap().unwrap();
         assert_eq!(b.kind, "r2");
         assert_eq!(b.access_mode.as_deref(), Some("private"));
         assert_eq!(b.endpoint_scheme.as_deref(), Some("https"));
@@ -321,7 +317,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let b = db.storage_binding(id).await.unwrap().unwrap();
+        let b = db.binding(id).await.unwrap().unwrap();
         assert_eq!(b.access_mode.as_deref(), Some("public"));
         assert_eq!(b.endpoint_scheme.as_deref(), Some("https"));
     }

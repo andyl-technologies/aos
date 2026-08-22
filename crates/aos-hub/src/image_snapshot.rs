@@ -677,7 +677,7 @@ mod tests {
         let placement = |name: &str, read_order: i64| NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
             name: name.into(),
-            storage_binding_id: binding.id,
+            binding_id: binding.id,
             prefix: name.into(),
             kind: "complete".into(),
             desired_state: "active".into(),

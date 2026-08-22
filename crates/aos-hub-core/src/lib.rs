@@ -29,7 +29,7 @@
 //!   and versioned partition selection shared by both serving runtimes.
 //! - [`delivery_http`] — transport-neutral HTTP preconditions, ranges,
 //!   validators, and response metadata shared by native and Worker delivery.
-//! - [`delivery_endpoint`] — typed inbound HTTP(S) endpoint identities,
+//! - [`endpoint`] — typed inbound HTTP(S) endpoint identities,
 //!   canonical authority validation, and stable network-realm-aware digests.
 //! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
 //!   URL check, HTTP surface-path validator, traversal-safe path join) shared
@@ -75,13 +75,13 @@ pub mod crawl;
 pub mod db;
 pub mod delivery;
 pub mod delivery_attestation;
-pub mod delivery_endpoint;
 pub mod delivery_http;
 pub mod dialect;
 pub mod directory;
 pub mod domain;
 pub mod egress_protocol;
 pub mod email;
+pub mod endpoint;
 pub mod ephemeral;
 pub mod fetch;
 pub mod filter;

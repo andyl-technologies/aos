@@ -43,7 +43,7 @@ pub trait StorageCredentialResolver: BackendBounds {
     /// resolution fails, or the database cannot be read.
     async fn resolve_exact(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         generation: i64,
     ) -> Result<ResolvedStorageCredential>;
@@ -56,7 +56,7 @@ pub trait StorageCredentialResolver: BackendBounds {
     /// secret resolution fails, or the database cannot be read.
     async fn resolve_current(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
     ) -> Result<ResolvedStorageCredential>;
 }
@@ -80,13 +80,13 @@ impl DatabaseStorageCredentialResolver {
 impl StorageCredentialResolver for DatabaseStorageCredentialResolver {
     async fn resolve_exact(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
         generation: i64,
     ) -> Result<ResolvedStorageCredential> {
         let revision = self
             .db
-            .storage_binding_credential_revision(storage_binding_id, purpose, generation)
+            .binding_credential_revision(binding_id, purpose, generation)
             .await?
             .context("storage credential revision does not exist")?;
         anyhow::ensure!(
@@ -104,15 +104,15 @@ impl StorageCredentialResolver for DatabaseStorageCredentialResolver {
 
     async fn resolve_current(
         &self,
-        storage_binding_id: i64,
+        binding_id: i64,
         purpose: &str,
     ) -> Result<ResolvedStorageCredential> {
         let revision = self
             .db
-            .current_storage_binding_credential(storage_binding_id, purpose)
+            .current_binding_credential(binding_id, purpose)
             .await?
             .context("storage credential purpose has no current generation")?;
-        self.resolve_exact(storage_binding_id, purpose, revision.generation)
+        self.resolve_exact(binding_id, purpose, revision.generation)
             .await
     }
 }

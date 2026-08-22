@@ -17,6 +17,7 @@ values:
 | Concern | Staging | Production |
 | --- | --- | --- |
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
+| Direct R2 CDN | `https://cdn.aos.staging.andyl.com` | Not configured |
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
@@ -129,6 +130,27 @@ Use `worker install` instead of `worker deploy` only when the staging Worker has
 never existed. `worker deploy` deliberately requires an existing Worker so an
 OAuth, account, or provider failure cannot be mistaken for initial provisioning.
 
+### Configure the direct staging CDN
+
+The direct CDN is not a hidden Worker deployment option. Connect
+`cdn.aos.staging.andyl.com` to the `aos-hub-staging-surfaces` bucket from the
+Cloudflare R2 custom-domain UI or its provider API. Then model every AOS-visible
+part through the Hub API and Web UI:
+
+1. In **Settings -> Domains**, add `cdn.aos.staging.andyl.com`.
+2. In **Settings -> Endpoints**, create an HTTPS external-ingress
+   endpoint for that domain.
+3. In **Settings -> Gateways**, connect the endpoint to the default
+   Worker R2 binding. Use `/` for the client base path and origin prefix.
+4. For each registry or cache that should use the CDN, create a direct-gateway
+   route from its **Settings -> Delivery** page and explicitly select it for the
+   appropriate canonical audiences.
+
+The provider attachment and the Hub topology are intentionally separate and
+both inspectable. Requests to this hostname bypass the Hub Worker and therefore
+cannot enforce Hub authentication; direct routes must expose only content that
+is safe for public object access.
+
 The first install provisions the R2 bucket, KV namespace, Durable Object
 migration, custom domain, and Worker secrets. After the first successful install,
 bootstrap the staging owner once:
@@ -167,7 +189,7 @@ not cover:
 
 - sign in and perform an authenticated administration operation;
 - browse public registries, caches, releases, and images;
-- exercise a private delivery route with its intended authentication mode;
+- exercise a private route with its intended authentication mode;
 - publish a disposable release, confirm indexing, and fetch its exact bytes;
 - verify full and ranged image downloads, integrity metadata, and cache headers;
 - inspect Workers logs and Cloudflare metrics for errors.

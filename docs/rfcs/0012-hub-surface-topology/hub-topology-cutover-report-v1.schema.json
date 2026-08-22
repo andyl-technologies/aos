@@ -588,7 +588,7 @@
     "topologyValidation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["instances", "organizations", "projects", "surfaces", "bindings", "binding_capability_observations", "credential_generations", "binding_write_revisions", "binding_grants", "storage_defaults", "placements", "write_authorities", "delivery_endpoints", "domains", "network_boundaries", "gateways", "routes", "route_configurations", "placement_policies", "equivalence_sets", "registry_publications", "publication_bindings", "population_targets", "retention_subscriptions", "placement_manifests"],
+      "required": ["instances", "organizations", "projects", "surfaces", "bindings", "binding_capability_observations", "credential_generations", "binding_write_revisions", "binding_grants", "storage_defaults", "placements", "write_authorities", "endpoints", "domains", "network_policies", "gateways", "routes", "route_configurations", "placement_policies", "equivalence_sets", "registry_publications", "publication_bindings", "population_targets", "retention_subscriptions", "placement_manifests"],
       "properties": {
         "instances": { "$ref": "#/$defs/resourceValidation" },
         "organizations": { "$ref": "#/$defs/resourceValidation" },
@@ -602,9 +602,9 @@
         "storage_defaults": { "$ref": "#/$defs/resourceValidation" },
         "placements": { "$ref": "#/$defs/resourceValidation" },
         "write_authorities": { "$ref": "#/$defs/resourceValidation" },
-        "delivery_endpoints": { "$ref": "#/$defs/resourceValidation" },
+        "endpoints": { "$ref": "#/$defs/resourceValidation" },
         "domains": { "$ref": "#/$defs/resourceValidation" },
-        "network_boundaries": { "$ref": "#/$defs/resourceValidation" },
+        "network_policies": { "$ref": "#/$defs/resourceValidation" },
         "gateways": { "$ref": "#/$defs/resourceValidation" },
         "routes": { "$ref": "#/$defs/resourceValidation" },
         "route_configurations": { "$ref": "#/$defs/resourceValidation" },

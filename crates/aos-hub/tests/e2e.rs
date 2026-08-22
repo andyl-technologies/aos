@@ -137,7 +137,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
             .await;
         } else {
             let revision = db
-                .storage_binding_write_state(binding)
+                .binding_write_state(binding)
                 .await
                 .unwrap()
                 .unwrap()
@@ -178,7 +178,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     }
 
     let owner_scope = common::org_scope(&db, "images").await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(public_id),
         public_placement_id.unwrap(),
@@ -189,7 +189,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         "git",
     )
     .await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(private_id),
         private_placement_id.unwrap(),
@@ -662,7 +662,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(public_id),
             name: "corrupt-first".into(),
-            storage_binding_id: binding,
+            binding_id: binding,
             prefix: "corrupt-first".into(),
             kind: "complete".into(),
             desired_state: "active".into(),
@@ -832,7 +832,7 @@ async fn fixture_surface_indexes_and_serves() {
     );
 
     // Serve the indexed control-plane views. Byte delivery is covered through
-    // explicit delivery routes in the image and routing fixtures below.
+    // explicit routes in the image and routing fixtures below.
     let app = router(Arc::new(
         AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
     ))

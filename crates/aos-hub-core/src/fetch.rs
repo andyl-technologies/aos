@@ -513,7 +513,7 @@ pub trait SurfaceFetch: BackendBounds {
 /// proxy-read port).
 ///
 /// When a cache is backed by a *private external* origin and its serving
-/// delivery route is configured to proxy reads rather than redirect them,
+/// route is configured to proxy reads rather than redirect them,
 /// the hub fetches the (presigned) origin URL itself and streams the body
 /// through the shared cache serve path, so the origin endpoint is never exposed
 /// to the client. This is the read sibling of the presign path: same signed URL,

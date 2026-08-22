@@ -1,7 +1,7 @@
 //! Domain and revisioned delivery-network workflows.
 //!
-//! A domain is naming and certificate intent. Network boundaries, delivery
-//! endpoints, and storage gateways are separate resources layered above it;
+//! A domain is naming and certificate intent. Network policies, delivery
+//! endpoints, and gateways are separate resources layered above it;
 //! this module never presents them as one overloaded frontend.
 
 use leptos::ev::SubmitEvent;
@@ -13,7 +13,7 @@ use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
-use super::network_boundaries::NetworkBoundaryWorkflow;
+use super::network_policies::NetworkPolicyWorkflow;
 use super::organization_scope::organization_authorization_scope;
 
 /// Renders networking workflows for instance and organization scopes.
@@ -33,7 +33,7 @@ pub(super) fn NetworkingWorkflow(route: ConsoleRoute, client: ApiClient) -> impl
         (ConsoleScope::Organization { slug }, "domains-new") => {
             view! { <OrganizationDomains client=client organization=slug.clone() creation_only=true/> }.into_any()
         }
-        _ => view! { <NetworkBoundaryWorkflow route=route client=client/> }.into_any(),
+        _ => view! { <NetworkPolicyWorkflow route=route client=client/> }.into_any(),
     }
 }
 
@@ -108,7 +108,7 @@ fn Domains(
     view! {
         <div class="workflow-stack">
             {(!creation_only).then(|| view! { <section class="panel resource-panel">
-                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><div class="section-title"><h2>"Domains"</h2><HelpTooltip term="Domains" summary="Domains capture DNS and certificate intent. Endpoints choose a domain and a network boundary independently."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Add domain"</a> })}</div>
+                <div class="section-heading"><div><p class="section-kicker">"Naming and certificates"</p><div class="section-title"><h2>"Domains"</h2><HelpTooltip term="Domains" summary="Domains capture DNS and certificate intent. Endpoints choose a domain and a network policy independently."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Add domain"</a> })}</div>
                 <Suspense fallback=move || view! { <p class="loading-row">"Loading domains…"</p> }>
                     {move || { let client = inventory_client.clone(); Suspend::new(async move {
                         match inventory.await.as_ref() {

@@ -452,8 +452,8 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "ListStorageBindings",
+    "service": "BindingService",
+    "method": "ListBindings",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -462,8 +462,8 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "GetStorageBinding",
+    "service": "BindingService",
+    "method": "GetBinding",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -472,123 +472,123 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanCreateStorageBinding",
+    "service": "BindingService",
+    "method": "PlanCreateBinding",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "create_storage_binding"
+      "pair": "create_binding"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "CreateStorageBinding",
+    "service": "BindingService",
+    "method": "CreateBinding",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "create_storage_binding",
+      "pair": "create_binding",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanSetStorageBindingCredential",
+    "service": "BindingService",
+    "method": "PlanSetBindingCredential",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "set_storage_binding_credential"
+      "pair": "set_binding_credential"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "SetStorageBindingCredential",
+    "service": "BindingService",
+    "method": "SetBindingCredential",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "set_storage_binding_credential",
+      "pair": "set_binding_credential",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanRotateStorageBindingCredential",
+    "service": "BindingService",
+    "method": "PlanRotateBindingCredential",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "rotate_storage_binding_credential"
+      "pair": "rotate_binding_credential"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "RotateStorageBindingCredential",
+    "service": "BindingService",
+    "method": "RotateBindingCredential",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "rotate_storage_binding_credential",
+      "pair": "rotate_binding_credential",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanGrantStorageBindingScope",
+    "service": "BindingService",
+    "method": "PlanGrantBindingScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "grant_storage_binding_scope"
+      "pair": "grant_binding_scope"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "GrantStorageBindingScope",
+    "service": "BindingService",
+    "method": "GrantBindingScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "grant_storage_binding_scope",
+      "pair": "grant_binding_scope",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanRevokeStorageBindingScope",
+    "service": "BindingService",
+    "method": "PlanRevokeBindingScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "revoke_storage_binding_scope"
+      "pair": "revoke_binding_scope"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "RevokeStorageBindingScope",
+    "service": "BindingService",
+    "method": "RevokeBindingScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "revoke_storage_binding_scope",
+      "pair": "revoke_binding_scope",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "ListStorageBindingWriteRevisions",
+    "service": "BindingService",
+    "method": "ListBindingWriteRevisions",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -597,8 +597,8 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "GetStorageBindingWriteRevision",
+    "service": "BindingService",
+    "method": "GetBindingWriteRevision",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -607,30 +607,30 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "PlanDeleteStorageBinding",
+    "service": "BindingService",
+    "method": "PlanDeleteBinding",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "delete_storage_binding"
+      "pair": "delete_binding"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
-    "method": "DeleteStorageBinding",
+    "service": "BindingService",
+    "method": "DeleteBinding",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "delete_storage_binding",
+      "pair": "delete_binding",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "GetInstanceTopologyDefaults",
     "exposure": "public",
     "durability": "read_only",
@@ -640,7 +640,7 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "PlanSetInstanceTopologyDefaults",
     "exposure": "public",
     "durability": "durable",
@@ -651,7 +651,7 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "SetInstanceTopologyDefaults",
     "exposure": "public",
     "durability": "durable",
@@ -663,7 +663,7 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "GetOrganizationTopologyDefaults",
     "exposure": "public",
     "durability": "read_only",
@@ -673,7 +673,7 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "PlanSetOrganizationTopologyDefaults",
     "exposure": "public",
     "durability": "durable",
@@ -684,7 +684,7 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService",
+    "service": "BindingService",
     "method": "SetOrganizationTopologyDefaults",
     "exposure": "public",
     "durability": "durable",
@@ -808,8 +808,8 @@
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "ListNetworkBoundaries",
+    "service": "NetworkPolicyService",
+    "method": "ListNetworkPolicies",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -818,8 +818,8 @@
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "GetNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "GetNetworkPolicy",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -828,31 +828,31 @@
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanCreateNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "PlanCreateNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "create_network_boundary"
+      "pair": "create_network_policy"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "CreateNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "CreateNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "create_network_boundary",
+      "pair": "create_network_policy",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "ListNetworkBoundaryRevisions",
+    "service": "NetworkPolicyService",
+    "method": "ListNetworkPolicyRevisions",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -861,8 +861,8 @@
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "GetNetworkBoundaryRevision",
+    "service": "NetworkPolicyService",
+    "method": "GetNetworkPolicyRevision",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -871,156 +871,146 @@
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanReviseNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "PlanReviseNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "revise_network_boundary"
+      "pair": "revise_network_policy"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "ReviseNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "ReviseNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "revise_network_boundary",
+      "pair": "revise_network_policy",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanActivateNetworkBoundaryRevision",
+    "service": "NetworkPolicyService",
+    "method": "PlanActivateNetworkPolicyRevision",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "activate_network_boundary_revision"
+      "pair": "activate_network_policy_revision"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "ActivateNetworkBoundaryRevision",
+    "service": "NetworkPolicyService",
+    "method": "ActivateNetworkPolicyRevision",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "activate_network_boundary_revision",
+      "pair": "activate_network_policy_revision",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanRetireNetworkBoundaryRevision",
+    "service": "NetworkPolicyService",
+    "method": "PlanRetireNetworkPolicyRevision",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "retire_network_boundary_revision"
+      "pair": "retire_network_policy_revision"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "RetireNetworkBoundaryRevision",
+    "service": "NetworkPolicyService",
+    "method": "RetireNetworkPolicyRevision",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "retire_network_boundary_revision",
+      "pair": "retire_network_policy_revision",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanGrantNetworkBoundaryScope",
+    "service": "NetworkPolicyService",
+    "method": "PlanGrantNetworkPolicyScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "grant_network_boundary_scope"
+      "pair": "grant_network_policy_scope"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "GrantNetworkBoundaryScope",
+    "service": "NetworkPolicyService",
+    "method": "GrantNetworkPolicyScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "grant_network_boundary_scope",
+      "pair": "grant_network_policy_scope",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanRevokeNetworkBoundaryScope",
+    "service": "NetworkPolicyService",
+    "method": "PlanRevokeNetworkPolicyScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "revoke_network_boundary_scope"
+      "pair": "revoke_network_policy_scope"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "RevokeNetworkBoundaryScope",
+    "service": "NetworkPolicyService",
+    "method": "RevokeNetworkPolicyScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "revoke_network_boundary_scope",
+      "pair": "revoke_network_policy_scope",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "PlanDeleteNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "PlanDeleteNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "delete_network_boundary"
+      "pair": "delete_network_policy"
     },
     "external_effects": false
   },
   {
-    "service": "NetworkBoundaryService",
-    "method": "DeleteNetworkBoundary",
+    "service": "NetworkPolicyService",
+    "method": "DeleteNetworkPolicy",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "delete_network_boundary",
+      "pair": "delete_network_policy",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "ListDeliveryEndpoints",
-    "exposure": "public",
-    "durability": "read_only",
-    "class": {
-      "class": "read"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "GetDeliveryEndpoint",
+    "method": "ListEndpoints",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -1030,30 +1020,7 @@
   },
   {
     "service": "DeliveryService",
-    "method": "PlanCreateDeliveryEndpoint",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "create_delivery_endpoint"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "CreateDeliveryEndpoint",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "create_delivery_endpoint",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "ListDeliveryEndpointGenerations",
+    "method": "GetEndpoint",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -1063,7 +1030,30 @@
   },
   {
     "service": "DeliveryService",
-    "method": "GetDeliveryEndpointGeneration",
+    "method": "PlanCreateEndpoint",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "create_endpoint"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "CreateEndpoint",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "create_endpoint",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ListEndpointGenerations",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -1073,122 +1063,7 @@
   },
   {
     "service": "DeliveryService",
-    "method": "PlanStageDeliveryEndpointGeneration",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "stage_delivery_endpoint_generation"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "StageDeliveryEndpointGeneration",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "stage_delivery_endpoint_generation",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "PlanActivateDeliveryEndpointGeneration",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "activate_delivery_endpoint_generation"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "ActivateDeliveryEndpointGeneration",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "activate_delivery_endpoint_generation",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "PlanGrantDeliveryEndpointScope",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "grant_delivery_endpoint_scope"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "GrantDeliveryEndpointScope",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "grant_delivery_endpoint_scope",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "PlanRevokeDeliveryEndpointScope",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "revoke_delivery_endpoint_scope"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "RevokeDeliveryEndpointScope",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "revoke_delivery_endpoint_scope",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "PlanDeleteDeliveryEndpoint",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "plan",
-      "pair": "delete_delivery_endpoint"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "DeleteDeliveryEndpoint",
-    "exposure": "public",
-    "durability": "durable",
-    "class": {
-      "class": "apply",
-      "pair": "delete_delivery_endpoint",
-      "outcome": "immediate"
-    },
-    "external_effects": false
-  },
-  {
-    "service": "DeliveryService",
-    "method": "ListStorageGateways",
+    "method": "GetEndpointGeneration",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -1198,7 +1073,122 @@
   },
   {
     "service": "DeliveryService",
-    "method": "GetStorageGateway",
+    "method": "PlanStageEndpointGeneration",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "stage_endpoint_generation"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "StageEndpointGeneration",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "stage_endpoint_generation",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "PlanActivateEndpointGeneration",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "activate_endpoint_generation"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ActivateEndpointGeneration",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "activate_endpoint_generation",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "PlanGrantEndpointScope",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "grant_endpoint_scope"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "GrantEndpointScope",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "grant_endpoint_scope",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "PlanRevokeEndpointScope",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "revoke_endpoint_scope"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "RevokeEndpointScope",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "revoke_endpoint_scope",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "PlanDeleteEndpoint",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "delete_endpoint"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "DeleteEndpoint",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "delete_endpoint",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "ListGateways",
     "exposure": "public",
     "durability": "read_only",
     "class": {
@@ -1208,92 +1198,102 @@
   },
   {
     "service": "DeliveryService",
-    "method": "PlanCreateStorageGateway",
+    "method": "GetGateway",
     "exposure": "public",
-    "durability": "durable",
+    "durability": "read_only",
     "class": {
-      "class": "plan",
-      "pair": "create_storage_gateway"
+      "class": "read"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "CreateStorageGateway",
+    "method": "PlanCreateGateway",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "create_gateway"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DeliveryService",
+    "method": "CreateGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "create_storage_gateway",
+      "pair": "create_gateway",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "PlanUpdateStorageGateway",
+    "method": "PlanUpdateGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "update_storage_gateway"
+      "pair": "update_gateway"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "UpdateStorageGateway",
+    "method": "UpdateGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "update_storage_gateway",
+      "pair": "update_gateway",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "PlanGrantStorageGatewayScope",
+    "method": "PlanGrantGatewayScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "grant_storage_gateway_scope"
+      "pair": "grant_gateway_scope"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "GrantStorageGatewayScope",
+    "method": "GrantGatewayScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "grant_storage_gateway_scope",
+      "pair": "grant_gateway_scope",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "PlanRevokeStorageGatewayScope",
+    "method": "PlanRevokeGatewayScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "revoke_storage_gateway_scope"
+      "pair": "revoke_gateway_scope"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "RevokeStorageGatewayScope",
+    "method": "RevokeGatewayScope",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "revoke_storage_gateway_scope",
+      "pair": "revoke_gateway_scope",
       "outcome": "immediate"
     },
     "external_effects": false
@@ -1310,69 +1310,69 @@
   },
   {
     "service": "DeliveryService",
-    "method": "PlanEnableStorageGateway",
+    "method": "PlanEnableGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "enable_storage_gateway"
+      "pair": "enable_gateway"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "EnableStorageGateway",
+    "method": "EnableGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "enable_storage_gateway",
+      "pair": "enable_gateway",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "PlanDisableStorageGateway",
+    "method": "PlanDisableGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "disable_storage_gateway"
+      "pair": "disable_gateway"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "DisableStorageGateway",
+    "method": "DisableGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "disable_storage_gateway",
+      "pair": "disable_gateway",
       "outcome": "immediate"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "PlanDeleteStorageGateway",
+    "method": "PlanDeleteGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "delete_storage_gateway"
+      "pair": "delete_gateway"
     },
     "external_effects": false
   },
   {
     "service": "DeliveryService",
-    "method": "DeleteStorageGateway",
+    "method": "DeleteGateway",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "delete_storage_gateway",
+      "pair": "delete_gateway",
       "outcome": "immediate"
     },
     "external_effects": false
@@ -1537,23 +1537,23 @@
   },
   {
     "service": "RouteService",
-    "method": "PlanSetCanonicalRoute",
+    "method": "PlanSetRouteAdvertisement",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "plan",
-      "pair": "set_canonical_route"
+      "pair": "set_route_advertisement"
     },
     "external_effects": false
   },
   {
     "service": "RouteService",
-    "method": "SetCanonicalRoute",
+    "method": "SetRouteAdvertisement",
     "exposure": "public",
     "durability": "durable",
     "class": {
       "class": "apply",
-      "pair": "set_canonical_route",
+      "pair": "set_route_advertisement",
       "outcome": "immediate"
     },
     "external_effects": false
@@ -3217,14 +3217,14 @@
     "external_effects": false
   },
   {
-    "service": "StorageBindingService", "method": "PlanValidateStorageBindingCredential",
+    "service": "BindingService", "method": "PlanValidateBindingCredential",
     "exposure": "public", "durability": "durable",
-    "class": { "class": "plan", "pair": "validate_storage_binding_credential" }, "external_effects": false
+    "class": { "class": "plan", "pair": "validate_binding_credential" }, "external_effects": false
   },
   {
-    "service": "StorageBindingService", "method": "ValidateStorageBindingCredential",
+    "service": "BindingService", "method": "ValidateBindingCredential",
     "exposure": "public", "durability": "durable",
-    "class": { "class": "apply", "pair": "validate_storage_binding_credential", "outcome": "operation" }, "external_effects": true
+    "class": { "class": "apply", "pair": "validate_binding_credential", "outcome": "operation" }, "external_effects": true
   },
   {
     "service": "DomainService", "method": "PlanVerifyDomain",
@@ -3337,32 +3337,32 @@
     "class": { "class": "apply", "pair": "run_coverage_repair", "outcome": "operation" }, "external_effects": true
   },
   {
-    "service": "StorageBindingControllerService", "method": "ReportStorageBindingWriteRevision",
+    "service": "BindingControllerService", "method": "ReportBindingWriteRevision",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
-    "service": "NetworkBoundaryControllerService", "method": "CompleteNetworkBoundaryRevisionProbe",
+    "service": "NetworkPolicyControllerService", "method": "CompleteNetworkPolicyRevisionProbe",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
-    "service": "NetworkBoundaryControllerService", "method": "ReportNetworkBoundaryRevision",
+    "service": "NetworkPolicyControllerService", "method": "ReportNetworkPolicyRevision",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
-    "service": "DeliveryControllerService", "method": "CompleteDeliveryEndpointProbe",
+    "service": "DeliveryControllerService", "method": "CompleteEndpointProbe",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
-    "service": "DeliveryControllerService", "method": "ReportDeliveryEndpoint",
+    "service": "DeliveryControllerService", "method": "ReportEndpoint",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },
   {
-    "service": "DeliveryControllerService", "method": "ReportStorageGateway",
+    "service": "DeliveryControllerService", "method": "ReportGateway",
     "exposure": "internal_controller", "durability": "durable",
     "class": { "class": "controller_observation" }, "external_effects": false
   },

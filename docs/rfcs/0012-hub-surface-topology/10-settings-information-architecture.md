@@ -14,7 +14,7 @@ but the content hierarchy is not actually uniform:
 - the organization default route renders Registries while Projects is the
   first navbar item;
 - “General” means different things for registries and caches;
-- registry “Serving & mirror” combines delivery routes with upstream registry
+- registry “Serving & mirror” combines routes with upstream registry
   mirroring;
 - cache “Linked registries” combines relationships whose publication,
   retention, and population effects differ;
@@ -170,18 +170,18 @@ respond with a generic forbidden page for the current principal.
 
 The topology cutover defines the two read-only roles exactly:
 
-- **Viewer** grants `read`, `storage_binding.read`, `placement.read`,
-  `placement_policy.read`, `domain.read`, `network_boundary.read`,
-  `delivery_endpoint.read`, `storage_gateway.read`, and `route.read`.
+- **Viewer** grants `read`, `binding.read`, `placement.read`,
+  `placement_policy.read`, `domain.read`, `network_policy.read`,
+  `endpoint.read`, `gateway.read`, and `route.read`.
 - **Developer** grants that exact Viewer set plus `tokens.self`.
 
 Neither role grants a topology mutation, audit, credential, configuration, or
-IAM verb. `storage_binding.read` exposes only binding identity, provider kind,
+IAM verb. `binding.read` exposes only binding identity, provider kind,
 stable owner scope, resource version, and redacted health/backlinks. Its SQL and
 API projections MUST NOT contain local root paths, object endpoints, buckets,
 prefixes, signing regions, access modes, secret-version references, credential
 fingerprints, or write-credential version references. Those values may be
-queried and rendered only after `storage_binding.manage` succeeds.
+queried and rendered only after `binding.manage` succeeds.
 
 ### Nav metadata
 
@@ -223,7 +223,7 @@ Creation and destructive workflows use dedicated pages:
 .../placements/new
 .../delivery/new
 .../domains/new
-.../storage-bindings/new
+.../bindings/new
 .../integrations/new
 .../danger
 ```
@@ -260,10 +260,10 @@ actions appear as explicit text links rather than an inaccessible menu.
 
 Default and canonical objects are always first:
 
-- canonical route before alternate routes;
+- route advertisement before alternate routes;
 - observed authority placement before a different desired pending candidate,
   then other complete placements, shards, and archives;
-- default storage binding before custom bindings;
+- default binding before custom bindings;
 - default gateway before alternates;
 - current/active policy before historical revisions;
 - pending or failed operations before completed history; and
@@ -310,11 +310,11 @@ Resources
   Binary caches
 
 Infrastructure
-  Storage bindings
+  Bindings
   Domains
-  Network boundaries
-  Delivery endpoints
-  Storage gateways
+  Network policies
+  Endpoints
+  Gateways
   Topology defaults
 
 Access & trust
@@ -341,7 +341,7 @@ landing page. It shows:
 
 - organization identity and member/owner status;
 - resource counts and health exceptions;
-- default storage binding and default domain/endpoint/gateway, if configured;
+- default binding and default domain/endpoint/gateway, if configured;
 - pending operations/change requests;
 - recent audit activity; and
 - direct links to create a project, registry, or binary cache.
@@ -361,10 +361,10 @@ Each resource list has the same shape:
 
 Creation uses dedicated `/new` pages with the same review/confirmation pattern.
 
-### Storage bindings
+### Bindings
 
 The list shows the instance/deployment default first, followed by organization
-bindings. It owns origin/API capability and credentials—not delivery routes.
+bindings. It owns origin/API capability and credentials—not routes.
 
 Binding detail contains:
 
@@ -375,7 +375,7 @@ Binding detail contains:
 - immutable binding-write revisions, credential-version references,
   validation, current default, and affected authority fan-out;
 - placements using the binding, grouped by registry/cache;
-- storage gateways using it; and
+- gateways using it; and
 - capacity/usage.
 
 Create, edit credentials, rotate credentials, and delete are separate
@@ -392,10 +392,10 @@ pin. Revoked tombstones and lifecycle events remain visible.
 The domain inventory shows DNS ownership, desired/observed DNS state,
 certificate issuance, endpoint count, and affected runtime. Domain detail owns
 verification, DNS, and certificate-provider reconciliation. It links to its
-delivery endpoints but does not own listeners, route access, or placement
+endpoints but does not own listeners, route access, or placement
 policy.
 
-### Network boundaries
+### Network policies
 
 The boundary inventory shows stable realm identity, kind, desired default
 revision, active/retiring revision count, authorized consumer scopes, endpoint
@@ -414,10 +414,10 @@ The `instance:public` row is system managed: the UI exposes its observation,
 fixed revision 1, and exact grants but no create, revise, transfer, rename, or
 delete action. Probe/reconcile is observation-only.
 
-### Delivery endpoints
+### Endpoints
 
 The endpoint inventory shows exact rendered origin, DNS/IPv4/IPv6 host type,
-effective port, ingress/network boundary, desired/observed listener and TLS
+effective port, ingress/network policy, desired/observed listener and TLS
 state, exact boundary revision, probe posture, active/revoked exact-generation
 consumer grants with live-pin counts, and route count. Endpoint detail owns listener reconciliation, cleartext
 acknowledgement, scope grants, and probes. Origin identity is immutable;
@@ -432,7 +432,7 @@ Moving to another revision of the same boundary is an explicit endpoint
 generation plan that also lists affected gateways and defaults; changing the
 boundary identity still requires endpoint replacement.
 
-### Storage gateways
+### Gateways
 
 The gateway list shows endpoint/client base path, binding, access posture,
 origin prefix, exact-generation active/revoked grants with live-pin counts, and number of materialized
@@ -443,8 +443,8 @@ applies to a later generation.
 
 ### Topology defaults
 
-Owns the organization's optional default storage binding, DNS domain, delivery
-endpoint, and storage gateway used by creation workflows. Changing a default
+Owns the organization's optional default binding, DNS domain, delivery
+endpoint, and gateway used by creation workflows. Changing a default
 has an impact plan but never retargets an existing placement or route. Overview
 and infrastructure inventories display these values and link here; they do not
 edit them inline.
@@ -487,7 +487,7 @@ folded into this live-work inventory.
 
 ## Registry settings
 
-The registry owns its signed catalog, placements, delivery routes, consumer
+The registry owns its signed catalog, placements, routes, consumer
 cache stack, trust/access policy, and publishing workflow.
 
 The public registry browse navbar is separate from settings navigation and is
@@ -541,7 +541,7 @@ It contains a compact topology summary:
 
 ```text
 signed registry
-  -> canonical delivery route
+  -> route advertisement
   -> placement policy
   -> observed write authority + complete replicas
 
@@ -601,7 +601,7 @@ configuration rows are deleted.
 ### Upstream mirror
 
 Owns the existing upstream registry source, synchronization posture, and source
-health. It does not own client delivery routes. Moving this shipped feature out
+health. It does not own client routes. Moving this shipped feature out
 of the combined page is a relocation, not a feature removal.
 
 ### Binary caches
@@ -764,7 +764,7 @@ mass-query behavior, and client-compatibility impact. Signing keys own narinfo
 signing trust, rotation, and setup-snippet consequences. Access tokens own Hub
 API credentials issued on the cache's immutable authorization scope. None of
 these pages duplicates client-facing HTTP authorization, which remains an
-independent property of every simultaneous delivery route.
+independent property of every simultaneous route.
 
 ## Instance settings
 
@@ -775,11 +775,11 @@ infrastructure reused by organizations and surfaces. Its navbar is:
 Overview
 
 Infrastructure
-  Storage bindings
+  Bindings
   Domains
-  Network boundaries
-  Delivery endpoints
-  Storage gateways
+  Network policies
+  Endpoints
+  Gateways
   Topology defaults
 
 Access & trust
@@ -808,7 +808,7 @@ The instance Storage
 bindings page represents the one deployment-provisioned default binding: it may
 support origin/credential maintenance, but it cannot create, delete, or swap
 the deployment binding. Instance Topology defaults selects optional domain and
-endpoint/gateway defaults; its storage binding is the deployment singleton.
+endpoint/gateway defaults; its binding is the deployment singleton.
 
 ## Topological context and cross-links
 
@@ -819,36 +819,36 @@ domain model has a reference:
 ```text
 Registry or binary cache
   owns -> Placement
-  owns -> Delivery route
+  owns -> Route
 
 Placement
-  uses -> Storage binding
+  uses -> Binding
   used by -> Placement policy
 
-Delivery route
-  uses -> Delivery endpoint
+Route
+  uses -> Endpoint
   uses -> Placement or placement policy
   direct mode uses -> Storage-gateway revision
 
 Domain
-  used by -> Delivery endpoint
+  used by -> Endpoint
 
-Network boundary
-  used by -> Delivery endpoint
+Network policy
+  used by -> Endpoint
 
-Delivery endpoint
-  used by -> Delivery route and storage-gateway revision
+Endpoint
+  used by -> Route and storage-gateway revision
 
-Storage gateway revision
-  uses -> Delivery endpoint and Storage binding
-  used by -> Direct delivery route
+Gateway revision
+  uses -> Endpoint and Binding
+  used by -> Direct route
 
-Storage binding
+Binding
   used by -> Placement and Storage-gateway revision
 
 Registry
   owns -> Consumer cache-stack entry
-  entry uses -> Binary-cache delivery route
+  entry uses -> Binary-cache route
 
 Binary cache
   owns -> Retention subscription
@@ -905,7 +905,7 @@ authorization authority; no management form POST fallback is mounted.
 Every page names the absent object and next action:
 
 ```text
-No delivery routes. Add a route to make this cache reachable.
+No routes. Add a route to make this cache reachable.
 No retention subscriptions. Only manual pins currently protect objects.
 No complete GC mark. Run a retention refresh and full placement scan before
 planning collection.

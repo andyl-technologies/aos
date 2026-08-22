@@ -11,7 +11,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{EmptyState, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{EmptyState, HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -190,7 +190,7 @@ fn WebhookCard(client: ApiClient, webhook: aos_proto_types::Webhook) -> impl Int
             </div>
             <div class="resource-identity">
                 <div><span>"Secret version"</span><code>{webhook.secret_version_ref}</code></div>
-                <div><span>"Credential fingerprint"</span><code>{webhook.credential_fingerprint}</code></div>
+                <div><span>"Credential fingerprint"</span><HashValue value=webhook.credential_fingerprint/></div>
                 <div><span>"Created"</span><strong>{webhook.created_at}</strong></div>
                 <div><span>"Version"</span><code>{webhook.resource_version}</code></div>
             </div>
@@ -446,7 +446,7 @@ fn AuditCard(entry: aos_proto_types::AuditEntry) -> impl IntoView {
             <div class="resource-identity">
                 <div><span>"Actor"</span><strong>{entry.actor_label}</strong></div>
                 <div><span>"Scope"</span><code>{entry.scope}</code></div>
-                <div><span>"Result commit"</span><code>{display_or(&entry.result_commit, "none")}</code></div>
+                <div><span>"Result commit"</span>{if entry.result_commit.is_empty() { view! { <span>"none"</span> }.into_any() } else { view! { <HashValue value=entry.result_commit/> }.into_any() }}</div>
                 <div><span>"Result tag"</span><code>{display_or(&entry.result_tag, "none")}</code></div>
             </div>
             {(!entry.detail.is_empty()).then(|| view! {

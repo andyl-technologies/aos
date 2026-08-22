@@ -162,7 +162,7 @@ top-level list (`login`, `activate`, `account`, `new`, `oauth2`,
 /new                                create organization
 /{org}/                             org home — projects, registries, members
 /{org}/-/audit                      org audit feed
-/{org}/-/settings                   IAM · SSO · domains · storage bindings · signing keys · quotas
+/{org}/-/settings                   IAM · SSO · domains · bindings · signing keys · quotas
 /{org}/{proj…}/                     project home (nested)
 /{org}/{proj…}/{registry}/          registry home  ⇄  machine surface root
 /{org}/{proj…}/{registry}/-/

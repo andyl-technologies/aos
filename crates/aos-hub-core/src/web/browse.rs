@@ -902,18 +902,12 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         .unwrap_or_default();
     let route_records = svc
         .db
-        .list_delivery_routes(crate::db::SurfaceTarget::Registry(registry.id))
+        .list_routes(crate::db::SurfaceTarget::Registry(registry.id))
         .await
         .unwrap_or_default();
     let mut routes = Vec::new();
     for route in route_records {
-        let Some(snapshot) = svc
-            .db
-            .delivery_route_snapshot(&route.id)
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(snapshot) = svc.db.route_snapshot(&route.id).await.ok().flatten() else {
             continue;
         };
         let mut capabilities = Vec::new();
@@ -926,7 +920,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         if snapshot.spec.serves_web {
             capabilities.push("web".to_string());
         }
-        routes.push(pages::DeliveryRouteHealthRow {
+        routes.push(pages::RouteHealthRow {
             id: route.id,
             endpoint_id: route.endpoint_id,
             base_path: route.base_path,

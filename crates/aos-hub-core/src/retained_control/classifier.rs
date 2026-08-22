@@ -1411,7 +1411,7 @@ mod tests {
         let methods = vec![
             MethodDescriptor {
                 service: "DeliveryService".into(),
-                method: "ReconcileStorageGateway".into(),
+                method: "ReconcileGateway".into(),
                 exposure: MethodExposure::Public,
                 durability: MethodDurability::Durable,
                 class: MethodClass::ControllerObservation,

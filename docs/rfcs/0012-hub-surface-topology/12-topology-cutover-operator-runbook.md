@@ -36,7 +36,7 @@ The operator aborts before the switch if any invariant cannot be proved:
 2. Every organization, project, surface, binding provider identity, binding
    capability observation, purpose credential generation, binding write
    revision, consumer grant/default, placement, write authority, placement
-   policy/equivalence generation, delivery endpoint, domain, network boundary,
+   policy/equivalence generation, endpoint, domain, network policy,
    gateway, route, registry-cache publication/population/retention relation,
    and inventory generation has an unambiguous final record.
 3. Target permissions are a subset of source permissions for every principal
@@ -126,7 +126,7 @@ Before canonicalization, arrays are sorted by these keys:
 | `scope.resource_stable_ids` | `(kind, stable_id)` |
 | mapping edges | `(target_resource_kind, target_stable_id)` |
 | `transform.stable_id_rules` | `resource_kind` |
-| `instances`, `organizations`, `projects`, `surfaces`, `bindings`, `binding_capability_observations`, `credential_generations`, `binding_write_revisions`, `binding_grants`, `storage_defaults`, `placements`, `write_authorities`, `delivery_endpoints`, `domains`, `network_boundaries`, `gateways`, `routes`, `route_configurations`, `placement_policies`, `equivalence_sets`, `registry_publications`, `publication_bindings`, `population_targets`, `placement_manifests` | `stable_id` |
+| `instances`, `organizations`, `projects`, `surfaces`, `bindings`, `binding_capability_observations`, `credential_generations`, `binding_write_revisions`, `binding_grants`, `storage_defaults`, `placements`, `write_authorities`, `endpoints`, `domains`, `network_policies`, `gateways`, `routes`, `route_configurations`, `placement_policies`, `equivalence_sets`, `registry_publications`, `publication_bindings`, `population_targets`, `placement_manifests` | `stable_id` |
 | retention subscriptions | `(cache_stable_id, registry_stable_id, stable_id)` |
 | inventories | `(cache_stable_id, generation)` |
 | inventory `placement_manifests` references | `(placement_stable_id, manifest_stable_id)` |
@@ -362,7 +362,7 @@ The preflight is read-only and runs against the still-serving old deployment.
     placement, and backend binding kind in the plan.
     Every public route has an anonymous success; every non-public route has an
     anonymous denial and an authorized success. Control-plane API and CLI tests
-    use no delivery route and separately prove denied anonymous API access and
+    use no route and separately prove denied anonymous API access and
     successful least-privileged CLI access. The full matrix also covers
     retention freshness, inventory completeness, route parity, and
     legacy-route absence.
@@ -482,7 +482,7 @@ Validation is read-only and produces typed, signed evidence:
 - binding owner/grant and credential-purpose references resolve;
 - every placement belongs to the intended surface and binding, and write
   authority is singular and observed rather than inferred;
-- route/domain/backend relationships resolve, canonical routes are singular by
+- route/domain/backend relationships resolve, route advertisements are singular by
   surface/audience, and all planned HTTP paths retain their intended status,
   range, cache, and authentication behavior;
 - principal and route authorization proofs contain zero widening;

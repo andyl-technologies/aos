@@ -221,7 +221,7 @@ pub struct DeployConfig {
     /// set: `wrangler deploy` reconciles the live routes to exactly these, so a
     /// partial list would drop the omitted ones — list every domain the Worker
     /// should serve. Every domain's zone must be on the same Cloudflare account.
-    /// Bind the hub's own domain plus typed delivery endpoint domains
+    /// Bind the hub's own domain plus typed endpoint domains
     /// it dispatches by `Host`.
     ///
     /// **Empty preserves, it does not unbind.** When empty, the generated config
@@ -309,7 +309,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // Each custom-domain route binds the Worker to one hostname (e.g.
     // aos.example.com); `wrangler deploy` provisions the domain (DNS record +
     // cert) when the zone is on the account. Multiple routes let one Worker serve
-    // the hub's own domain plus delivery endpoint domains it
+    // the hub's own domain plus endpoint domains it
     // dispatches by Host. With none, NO routes block is emitted — which (per
     // Cloudflare's contract) leaves any already-bound custom domains untouched
     // rather than unbinding them, so a code-only redeploy is non-destructive.

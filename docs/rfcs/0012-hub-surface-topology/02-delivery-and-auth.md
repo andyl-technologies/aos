@@ -17,7 +17,7 @@ endpoint authority + path
   -> origin read
 ```
 
-Control-plane paths are classified before delivery routes. The shared
+Control-plane paths are classified before routes. The shared
 native/Worker router implements this complete per-request pipeline for
 Hub-served routes and uses the same host/path normalization, typed resolution
 result, selectors, and eligibility predicates. Direct routes use the weaker but
@@ -27,15 +27,15 @@ verified route health requires representative Git and/or Nix-cache machine-path
 probes. Routes that cannot be probed from an authorized network are explicitly
 `declared`, not reported healthy.
 
-## Delivery endpoint transport
+## Endpoint transport
 
-Routes select a typed delivery endpoint, never an opaque origin string. The
+Routes select a typed endpoint, never an opaque origin string. The
 endpoint fixes scheme, DNS/IPv4/IPv6 host, effective port, and ingress/network
 boundary. It is an inbound client URL and is distinct from the outbound storage
 origin, which remains an independently credentialed SSRF boundary.
 
 Plain HTTP requires explicit cleartext acknowledgement and is valid only for
-anonymous public machine data or inside a named network boundary whose
+anonymous public machine data or inside a named network policy whose
 protected-transport assertion is observed. Hub session cookies, bearer/Basic
 credentials, presigned capabilities, and origin secrets never cross
 unauthenticated cleartext. Hub redirect is HTTPS-only. Generated snippets label
@@ -220,7 +220,7 @@ with the same route binding and durable replay contract.
 
 A route may be restricted by VPN, VPC, tunnel, or source IP. Network location
 is the enforcement mechanism; obscurity of the hostname or path is not. The
-route's closed `private_network` access policy pins the named network boundary
+route's closed `private_network` access policy pins the named network policy
 and exact immutable revision and uses its configured in-boundary health probe.
 
 A redirect is valid only when the presigned origin independently enforces that
@@ -452,7 +452,7 @@ configuration and unsigned evidence-header contract do not exist after cutover.
 
 ## Writes
 
-Consumer delivery routes do not imply write authority. Registry producers use
+Consumer routes do not imply write authority. Registry producers use
 `PublishService`: they declare an exact publication manifest, upload through
 object-id URLs bound to its frozen placement set, and commit only after every
 required placement verifies the immutable objects and mutable pointers.
@@ -497,7 +497,7 @@ header. Typed proxy and multipart requests require the caller's normal Hub
 authorization.
 
 The cache client uses this API for NARs, narinfos, and arbitrary static cache
-artifacts. Consumer `PUT` on a delivery route is never an upload protocol, and
+artifacts. Consumer `PUT` on a route is never an upload protocol, and
 there is no slug-shaped write fallback.
 
 For replicated surfaces, publishing is phase-major:

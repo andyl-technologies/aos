@@ -77,12 +77,12 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
 {
     async fn probe(
         &self,
-        binding: &aos_hub_core::db::StorageBindingRecord,
-        credential: &aos_hub_core::db::StorageBindingCredentialRevisionRecord,
+        binding: &aos_hub_core::db::BindingRecord,
+        credential: &aos_hub_core::db::BindingCredentialRevisionRecord,
         probe_token: &str,
     ) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
         anyhow::ensure!(
-            credential.storage_binding_id == binding.id,
+            credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
         );
         let secret = self

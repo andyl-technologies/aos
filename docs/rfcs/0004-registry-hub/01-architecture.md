@@ -20,7 +20,7 @@ Consequence: the SQL database is **a rebuildable cache plus the
 tenancy/IAM system of record**. Registry content (packages, versions,
 channels, rosters) is always derivable by re-indexing the git surface;
 only tenancy (orgs, projects, users), registry identity and topology
-(visibility, storage binding, frontends — facts that exist nowhere on
+(visibility, binding, frontends — facts that exist nowhere on
 the surface), tokens, and audit live solely in SQL. This keeps the
 sqlite→postgres→mysql story trivial and makes "import an existing
 registry" a first-class operation rather than a migration.

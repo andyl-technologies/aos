@@ -9,7 +9,7 @@
    implement the same machine-path contract wherever their declared
    capabilities overlap.
 5. A registry may use several caches; several registries may share one cache;
-   and those caches and registries may occupy unrelated storage bindings.
+   and those caches and registries may occupy unrelated bindings.
 6. Client publication, artifact upload, retention, replication, and serving
    are explicit relationships with one effect each.
 7. Private surfaces remain private regardless of placement or delivery mode.
@@ -26,7 +26,7 @@
   authentication gateways remain supported.
 - Pretending a direct route has the same observability or access telemetry as a
   proxied route. Protocol equivalence does not imply operational equivalence.
-- Treating a storage binding as a consumer-facing URL.
+- Treating a binding as a consumer-facing URL.
 
 ## Terminology
 
@@ -35,15 +35,15 @@
 | **Surface** | Stable logical HTTP namespace: a registry or binary cache |
 | **Registry** | Signed catalog/Git surface, also Nix-cache compatible |
 | **Binary cache** | Standalone Nix substituter namespace |
-| **Storage binding** | Credentials and capabilities for an object-store origin |
+| **Binding** | Credentials and capabilities for an object-store origin |
 | **Placement** | A surface's data at one binding and prefix |
 | **Write authority** | Per-surface desired and observed selection of the placement that accepts Hub writes |
 | **Domain** | Verified DNS name and certificate lifecycle |
-| **Network boundary** | Stable network realm with revisioned desired protection/trusted-ingress posture and exact observed verification |
-| **Delivery endpoint** | Typed client origin: scheme, DNS/IP host, port, and ingress/network realm |
-| **Delivery route** | Delivery endpoint + base path mapped to a surface and mode |
+| **Network policy** | Stable network realm with revisioned desired protection/trusted-ingress posture and exact observed verification |
+| **Endpoint** | Typed client origin: scheme, DNS/IP host, port, and ingress/network realm |
+| **Route** | Endpoint + base path mapped to a surface and mode |
 | **Route URL** | Concrete URL derived from an endpoint origin and route base path |
-| **Storage gateway** | Reusable direct mapping from an endpoint/base path to a binding |
+| **Gateway** | Reusable direct mapping from an endpoint/base path to a binding |
 | **Consumer cache stack** | Signed registry policy telling clients which substituters to try |
 | **Retention subscription** | Policy selecting registry artifacts that root a cache's GC graph |
 | **Population target** | Policy causing a producer/release workflow to upload to a cache |
@@ -58,7 +58,7 @@ interfaces; they each hide more than one effect in the current model.
 
 ### Identity is not location
 
-A surface id and logical identity survive changes to storage bindings,
+A surface id and logical identity survive changes to bindings,
 prefixes, domains, CDNs, routes, and active placements. A deliberately retained
 Hub-owned route can preserve one canonical URL across backend moves; replacing
 its endpoint intentionally changes that audience's selected URL. No consumer
@@ -74,7 +74,7 @@ never materialize a placement, select write authority, or mutate an existing
 surface when the surface itself is created.
 
 Storing a registry or cache on a public binding does not publish it to clients.
-Adding a delivery route does not add a cache to a registry's signed cache
+Adding a route does not add a cache to a registry's signed cache
 stack. Adding a cache to a signed stack does not upload content or protect it
 from GC.
 
@@ -84,7 +84,7 @@ from GC.
 - Retention subscription: affects GC roots only.
 - Population target: affects uploads only.
 - Replication policy: affects placement copies only.
-- Delivery route: affects HTTP reachability only.
+- Route: affects HTTP reachability only.
 
 A console wizard may create several of these in one reviewed operation, but
 the stored records and audit events remain separate.
@@ -202,5 +202,5 @@ may not.
 
 After cutover, the schema, source, Web UI, CLI, generated API, native binary,
 and Worker contain only the new model. Old external URLs survive only as
-ordinary validated delivery routes. Rollback restores the complete old
+ordinary validated routes. Rollback restores the complete old
 deployment and database backup; it is not a branch in the new runtime.
