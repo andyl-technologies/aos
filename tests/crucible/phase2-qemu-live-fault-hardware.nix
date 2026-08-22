@@ -61,6 +61,8 @@ in
             ${faultHardwareGuest}/evidence.env
           grep -Fxq 'guest_accelerator_transport=modern-virtio-pci-split-virtqueue' \
             ${faultHardwareGuest}/evidence.env
+          grep -Fq '.with_fingerprint(QemuLaunchPluginSwitch::On)' \
+            crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
 
           cargo build \
             --frozen \
