@@ -859,8 +859,9 @@ fixed content-addressed `rr_switch_quantum` in node-icount, the S11-relevant
 capture, produces a **bit-identical aggregate-icount instruction stream AND
 extended fingerprint** — the existing [DET-29] RAM fingerprint extended to cover
 all N vCPUs' register files plus the round-robin cursor — across a clean run and
-a host-jitter run. Because round-robin TCG pins every vCPU onto a single host
-thread, host CPU load is irrelevant to the interleaving *by construction*; the
+a bounded-scheduler-preemption run. Because round-robin TCG pins every vCPU
+onto a single host thread, interrupting that QEMU thread is an adequate direct
+host-scheduling adversary; the
 switch boundary is decided by virtual time, not by host scheduling. S11 retires
 the RR-TCG interleaving risk (E13/E21); unrelated entropy sources such as
 QEMU-internal RNG seeding, plugin time control, block-device completion timing,
@@ -877,8 +878,10 @@ initramfs and MUST then assert `block_devices=0`, so S11 isolates the RR-TCG
 multi-vCPU interleaving from unrelated asynchronous block-device completion
 paths. Drive an SMP-contended microworkload (shared counter / spinlock ping-pong
 across vCPUs). Diff the two extended-fingerprint sequences. Then repeat with
-injected host scheduling jitter/load ([DET-38]) — which, because RR pins all
-vCPUs to one host thread, should be irrelevant by construction.
+six configured 15 ms SIGSTOP/SIGCONT preemptions ([DET-38]) — which, because RR
+pins all vCPUs to one host thread, should be irrelevant by construction. The
+finite adversary consumes no synthetic busy CPU, requests 90 ms total stopped
+time, and has an independent two-second resume watchdog.
 
 ```text
 S11 procedure (throwaway; no engine, no scheduler):
@@ -887,7 +890,7 @@ S11 procedure (throwaway; no engine, no scheduler):
           plugin-visible all-vCPU fingerprint capture active
   run A: boot diskless to horizon H; extended fingerprint at cadence C and at H -> EFP_A[]
          (extended FP = per-vCPU reg hashes + RR cursor + RAM hash; block_devices=0)
-  run B: identical config, adversarial host jitter/load
+  run B: identical config, bounded scheduler preemption of QEMU
          boot to H; extended fingerprint -> EFP_B[]
   compare: EFP_A == EFP_B  (element-by-element, all vCPUs + RR cursor)
 ```
@@ -895,7 +898,7 @@ S11 procedure (throwaway; no engine, no scheduler):
 ### Pass / fail criterion
 
 **Pass:** `EFP_A[i] == EFP_B[i]` for every cadence point `i` and at the horizon
-across the clean and host-jitter runs, where each extended fingerprint covers all
+across the clean and bounded-preemption runs, where each extended fingerprint covers all
 N vCPUs' register files, the RR cursor, and the [DET-29] RAM hash; the Phase-0
 diskless proof additionally asserts from the launch argv that no block-device
 state is present.
@@ -909,7 +912,7 @@ RR cursor — so the leaking source is identified.
   content-addressed `rr_switch_quantum`, diskless launch, the S11-relevant §4.6
   launch eliminations, and plugin-visible all-vCPU fingerprint capture produces a
   **bit-identical aggregate-icount stream and extended fingerprint** (all N vCPUs'
-  register files + the RR cursor) across clean and host-jitter runs ([DET-38]).
+  register files + the RR cursor) across clean and bounded-preemption runs ([DET-38]).
   S11 MUST pass before any multi-vCPU foundation code is built; a mismatch MUST
   be localized to the first differing node-icount and component (which vCPU /
   the RR cursor) and treated as a leaking source to eliminate, never a tolerance
@@ -1316,7 +1319,8 @@ diskless initramfs twice with no block devices, `-smp 1`,
 `-accel sim,thread=single`, `-icount shift=0,sleep=off,align=off`, a fixed RTC,
 fixed seed material through `fw_cfg`, `virtio-rng`, and the conservative
 `nokaslr norandmaps random.trust_cpu=off` kernel arguments. The second run
-injected host scheduling jitter with CPU load. The plugin sampled the extended
+applied six configured 15 ms scheduler preemptions directly to QEMU under a
+two-second resume watchdog. The plugin sampled the extended
 fingerprint every `100000000` retired guest instructions, requested a stop at
 the fixed `3600000000`-instruction horizon, and compared both the exact horizon
 cadence sample and the stable projection of the plugin-exit sample. The
@@ -1504,7 +1508,7 @@ white-box on/off fingerprint gates remain owned by the later `T-GHC-*` and
 `checks.crucible.phase0.s6KaslrAslr` booted the same stock Linux kernel plus a
 diskless initramfs under the S1 deterministic launch controls, first with the
 conservative `nokaslr norandmaps` command-line control and then with those flags
-removed. Each mode ran twice; the second run injected host scheduling jitter. The
+removed. Each mode ran twice; the second run applied bounded scheduler preemption to QEMU. The
 guest probe mounted `/proc`, confirmed `randomize_va_space=0` for the control and
 `randomize_va_space=2` for the randomized mode, read the resolved kernel text
 symbol from `/proc/kallsyms`, and sampled stack, heap, brk, anonymous-`mmap`, and
@@ -1630,7 +1634,7 @@ The spike records `whitebox_on_trap_tested=true`,
 **RISK-25** is retired by `T-RISK-17`.
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the stock Linux diskless
 initramfs twice under the normative `-accel sim,thread=single` path, including a
-host-jitter run, with `vcpus=4`, `rr_switch_quantum=4096`,
+bounded-scheduler-preemption run, with `vcpus=4`, `rr_switch_quantum=4096`,
 `cadence=100000000`, and an exact `horizon_icount=4000000000`. The sustained
 pthread spinlock workload reported affinity on vCPUs `0,1,2,3`; both runs
 produced 33 periodic samples plus a sole final teardown record,
@@ -1918,13 +1922,13 @@ never tolerated). Results live in the decision register (31).
   fixed `rr_switch_quantum`, S11-relevant §4.6 launch eliminations, and an
   asserted no-block-device launch; capture the **extended fingerprint** (all N
   vCPUs' nonempty register descriptor sets + RR cursor + RAM hash) at a cadence
-  and at the horizon under an SMP-contended microworkload and host jitter/load,
+  and at the horizon under an SMP-contended microworkload and bounded QEMU scheduler preemption,
   and diff; localize any
   mismatch to the first differing node-icount + component. Block multi-vCPU
   foundation work until green; fall back to `-smp 1` if irrecoverable. Phase 0
   completed the two sim-mode runs through 4 billion aggregate instructions,
   observed all four affinity-pinned workload vCPUs and 731765 RR switches, and
-  matched the complete horizon fingerprint under host jitter; no `-smp 1`
+  matched the complete horizon fingerprint under bounded scheduler preemption; no `-smp 1`
   fallback was needed. —
   satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.
 - [x] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for

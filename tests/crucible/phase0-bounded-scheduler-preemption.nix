@@ -1,0 +1,311 @@
+{
+  pkgs,
+  lib,
+}: let
+  harnessSource = builtins.readFile ./_bounded-scheduler-preemption.sh;
+  targetWrapperSource = builtins.readFile ./_bounded-scheduler-preemption-target.sh;
+  consumerSources = [
+    {
+      label = "tests/crucible/phase0-s1.nix";
+      source = builtins.readFile ./phase0-s1.nix;
+      evidence = "host_adversary=\"$HOST_ADVERSARY\"";
+      cleanup = "bounded_preemption_cleanup; exit 143";
+    }
+    {
+      label = "tests/crucible/phase0-s6.nix";
+      source = builtins.readFile ./phase0-s6.nix;
+      evidence = "host_adversary=bounded-scheduler-preemption";
+      cleanup = "bounded_preemption_cleanup; exit 143";
+    }
+    {
+      label = "tests/crucible/phase0-s11.nix";
+      source = builtins.readFile ./phase0-s11.nix;
+      evidence = "host_adversary=bounded-scheduler-preemption";
+      cleanup = "cleanup_active_qemu; exit 143";
+    }
+    {
+      label = "tests/crucible/phase0-aarch64-s1-s6.nix";
+      source = builtins.readFile ./phase0-aarch64-s1-s6.nix;
+      evidence = "host_adversary=bounded-scheduler-preemption";
+      cleanup = "bounded_preemption_cleanup; exit 143";
+    }
+    {
+      label = "tests/crucible/phase1-guest-entropy-launch.nix";
+      source = builtins.readFile ./phase1-guest-entropy-launch.nix;
+      evidence = "host_adversary=bounded-scheduler-preemption-second-run";
+      cleanup = "bounded_preemption_cleanup; exit 143";
+    }
+    {
+      label = "tests/crucible/phase2-qemu-nvcpu-fingerprint.nix";
+      source = builtins.readFile ./phase2-qemu-nvcpu-fingerprint.nix;
+      evidence = "real_qemu_adversary=second-run-bounded-scheduler-preemption";
+      cleanup = "cleanup_qemu; exit 143";
+    }
+  ];
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+
+  sourceRequirements = [
+    {
+      label = "finite perturbation count";
+      needle = "BOUNDED_PREEMPTION_COUNT=6";
+    }
+    {
+      label = "short bounded pause";
+      needle = "BOUNDED_PREEMPTION_PAUSE_SECONDS=0.015";
+    }
+    {
+      label = "sleep between perturbations";
+      needle = "BOUNDED_PREEMPTION_INTERVAL_SECONDS=0.025";
+    }
+    {
+      label = "independent wall timeout";
+      needle = "BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=2";
+    }
+    {
+      label = "actual target stop";
+      needle = "kill -STOP \"$bsp_worker_target\"";
+    }
+    {
+      label = "unconditional target resume";
+      needle = "kill -CONT \"$bsp_worker_target\"";
+    }
+    {
+      label = "worker exit cleanup";
+      needle = "trap 'bsp_worker_cleanup' EXIT";
+    }
+    {
+      label = "worker interruption cleanup";
+      needle = "trap 'exit 143' TERM";
+    }
+    {
+      label = "verified QEMU executable";
+      needle = ''readlink -f "/proc/$BOUNDED_QEMU_PID/exe"'';
+    }
+  ];
+  sourceFailures = failuresFor "tests/crucible/_bounded-scheduler-preemption.sh" harnessSource sourceRequirements;
+  forbiddenFailures =
+    lib.optional (hasInfix "yes >" harnessSource || hasInfix "yes >/" harnessSource)
+    "bounded scheduler preemption harness contains an unbounded yes worker";
+  targetWrapperFailures = failuresFor "tests/crucible/_bounded-scheduler-preemption-target.sh" targetWrapperSource [
+    {
+      label = "PID recorded before exec";
+      needle = ''printf '%s\n' "$$" > "$pid_file_tmp"'';
+    }
+    {
+      label = "stable target process identity";
+      needle = ''exec "$@"'';
+    }
+  ];
+  consumerFailures =
+    lib.concatMap (
+      consumer:
+        failuresFor consumer.label consumer.source [
+          {
+            label = "shared actual-QEMU launcher";
+            needle = "bounded_preemption_launch_qemu";
+          }
+          {
+            label = "bounded scheduler perturbation";
+            needle = "bounded_preemption_start";
+          }
+          {
+            label = "cancellation cleanup";
+            needle = consumer.cleanup;
+          }
+          {
+            label = "accurate adversary evidence";
+            needle = consumer.evidence;
+          }
+        ]
+        ++ lib.optionals (
+          hasInfix "yes >" consumer.source
+          || hasInfix "yes >/" consumer.source
+          || hasInfix ("start_" + "jitter") consumer.source
+          || hasInfix ("host_adversary=" + "jitter-load") consumer.source
+        ) ["${consumer.label}: retains an unbounded or stale jitter fixture"]
+    )
+    consumerSources;
+  sourceCheck =
+    if sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures == []
+    then true
+    else
+      throw (lib.concatStringsSep "\n"
+        (sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures));
+in
+  assert sourceCheck;
+    pkgs.mkDerivation {
+      pname = "crucible-phase0-bounded-scheduler-preemption";
+      version = "0";
+      src = null;
+
+      HARNESS = ./_bounded-scheduler-preemption.sh;
+      TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+
+      phases = [
+        {
+          name = "run-bounded-scheduler-preemption-tests";
+          script = ''
+            set -eu
+
+            fail() {
+              echo "FAIL: $*" >&2
+              exit 1
+            }
+
+            cat > "$TMPDIR/qemu-system-preemption-fixture.c" <<'FIXTURE_C'
+            #define _POSIX_C_SOURCE 200809L
+            #include <signal.h>
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include <time.h>
+            #include <unistd.h>
+
+            static volatile sig_atomic_t continued;
+
+            static void on_continue(int signal_number) {
+              (void)signal_number;
+              continued++;
+            }
+
+            int main(int argc, char **argv) {
+              struct sigaction action = {0};
+              struct timespec delay = {.tv_sec = 0, .tv_nsec = 10000000};
+              FILE *events;
+
+              if (argc != 2) {
+                return 2;
+              }
+              events = fopen(argv[1], "w");
+              if (events == NULL) {
+                return 2;
+              }
+              setvbuf(events, NULL, _IONBF, 0);
+              action.sa_handler = on_continue;
+              if (sigemptyset(&action.sa_mask) != 0
+                  || sigaction(SIGCONT, &action, NULL) != 0) {
+                return 2;
+              }
+              fprintf(events, "ready pid=%ld\n", (long)getpid());
+              for (unsigned iteration = 0; iteration < 3000; iteration++) {
+                fprintf(events, "heartbeat=%u continued=%d\n", iteration, continued);
+                nanosleep(&delay, NULL);
+              }
+              return 0;
+            }
+            FIXTURE_C
+            cc -std=c11 -O2 -Wall -Wextra -Werror \
+              "$TMPDIR/qemu-system-preemption-fixture.c" \
+              -o "$TMPDIR/qemu-system-preemption-fixture"
+
+            BOUNDED_PREEMPTION_TARGET_WRAPPER="$TARGET_WRAPPER"
+            . "$HARNESS"
+
+            wait_for_pattern() {
+              bsp_pattern="$1"
+              bsp_path="$2"
+              bsp_attempt=0
+              while [ "$bsp_attempt" -lt 500 ]; do
+                if grep -q "$bsp_pattern" "$bsp_path" 2>/dev/null; then
+                  return 0
+                fi
+                sleep 0.01
+                bsp_attempt=$((bsp_attempt + 1))
+              done
+              return 1
+            }
+
+            # Startup proves that the PID selected for perturbation belongs to
+            # the exec'd target, not to the timeout process.
+            bounded_preemption_launch_qemu \
+              10 "$TMPDIR/startup.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
+              "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/startup.events"
+            startup_pid="$BOUNDED_QEMU_PID"
+            [ "$startup_pid" != "$BOUNDED_QEMU_WAIT_PID" ] \
+              || fail "target PID aliases timeout PID"
+            wait_for_pattern '^ready pid=' "$TMPDIR/startup.events" \
+              || fail "target did not start"
+            bounded_preemption_cleanup
+            ! kill -0 "$startup_pid" 2>/dev/null \
+              || fail "normal cleanup left target alive"
+
+            # Perturbation proves all finite STOP/CONT pairs execute and the
+            # target observes continued execution afterward.
+            bounded_preemption_launch_qemu \
+              10 "$TMPDIR/perturb.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
+              "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/perturb.events"
+            bounded_preemption_start "$TMPDIR/perturbation.log"
+            bounded_preemption_finish "$TMPDIR/perturbation.log"
+            wait_for_pattern 'continued=6' "$TMPDIR/perturb.events" \
+              || fail "target did not observe every continuation"
+            bounded_preemption_cleanup
+
+            # An ordinary failing test body must run its EXIT cleanup and reap
+            # both the target and finite adversary.
+            failure_pid_file="$TMPDIR/failure-target.pid"
+            (
+              trap 'bounded_preemption_cleanup' EXIT TERM INT
+              bounded_preemption_launch_qemu \
+                10 "$TMPDIR/failure-launch.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
+                "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/failure.events"
+              printf '%s\n' "$BOUNDED_QEMU_PID" > "$failure_pid_file"
+              bounded_preemption_start "$TMPDIR/failure-preemption.log"
+              false
+            ) && fail "failure-cleanup fixture unexpectedly succeeded"
+            failure_pid=$(cat "$failure_pid_file")
+            ! kill -0 "$failure_pid" 2>/dev/null \
+              || fail "failure cleanup left target alive"
+
+            # Cancellation is exercised while QEMU is known to be stopped.
+            # TERM must resume it before the enclosing cleanup terminates it.
+            interruption_pid_file="$TMPDIR/interruption-target.pid"
+            interruption_worker_file="$TMPDIR/interruption-worker.pid"
+            (
+              trap 'bounded_preemption_cleanup; exit 143' TERM
+              trap 'bounded_preemption_cleanup' EXIT INT
+              BOUNDED_PREEMPTION_PAUSE_SECONDS=2
+              BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=5
+              bounded_preemption_launch_qemu \
+                10 "$TMPDIR/interruption-launch.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
+                "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/interruption.events"
+              printf '%s\n' "$BOUNDED_QEMU_PID" > "$interruption_pid_file"
+              bounded_preemption_start "$TMPDIR/interruption-preemption.log"
+              printf '%s\n' "$BOUNDED_PREEMPTION_PID" > "$interruption_worker_file"
+              while [ ! -f "$TMPDIR/release-interruption" ]; do
+                sleep 0.01
+              done
+            ) &
+            interruption_controller_pid="$!"
+            wait_for_pattern '^stop iteration=1 ' "$TMPDIR/interruption-preemption.log" \
+              || fail "interruption fixture never stopped target"
+            kill -TERM "$interruption_controller_pid"
+            wait "$interruption_controller_pid" 2>/dev/null || true
+            interruption_pid=$(cat "$interruption_pid_file")
+            interruption_worker_pid=$(cat "$interruption_worker_file")
+            ! kill -0 "$interruption_pid" 2>/dev/null \
+              || fail "interruption cleanup left target alive"
+            ! kill -0 "$interruption_worker_pid" 2>/dev/null \
+              || fail "interruption cleanup left adversary alive"
+            grep -q '^cleanup target=' "$TMPDIR/interruption-preemption.log" \
+              || fail "interruption cleanup did not resume the stopped target"
+
+            mkdir -p "$out"
+            cp "$TMPDIR/perturbation.log" "$out/perturbation.log"
+            cp "$TMPDIR/interruption-preemption.log" "$out/interruption.log"
+            {
+              echo PASS
+              echo startup=actual-exec-pid
+              echo perturbations=6
+              echo normal_cleanup=complete
+              echo failure_cleanup=complete
+              echo interruption_cleanup=resumed-and-reaped
+              echo maximum_stopped_milliseconds=90
+              echo nominal_worker_wall_milliseconds=240
+              echo worker_wall_timeout_seconds=2
+              echo synthetic_busy_workers=0
+            } > "$out/result"
+          '';
+        }
+      ];
+
+      meta.description = "Bounded QEMU scheduler-preemption adversary tests";
+    }
