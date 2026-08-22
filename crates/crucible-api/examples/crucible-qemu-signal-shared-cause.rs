@@ -12,19 +12,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crucible::model::{
-    BindingEventParent, BindingMapping, BindingObservabilityPolicy, BindingSampling,
-    BindingSearchPolicy, DagStore, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
-    EffectSpecification, FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits,
-    FaultSignalPlan, MemoryDagStore, NetworkEffectSpecification, NetworkForwarderTransition,
-    NetworkQueueDiscipline, NetworkQueueOverflow, NetworkStatePolicy, NodeBootPolicy,
-    NodeEffectSpecification, NodeLifecycleTransition, NodeStatePolicy, PositiveU64,
-    ResolvedFaultTarget, ResolvedTargetSet, SignalCoordinate, SignalDomain, SignalId, SignalNode,
-    SignalNodeKind, SignalPoint, SignalResourceLimits, SignalShape, SignalSourceSpecification,
-    SignalUnit, SignalValue, SignalValueType, StorageEffectSpecification,
-    StorageVolatileCacheLossKind, StorageVolatileCacheLossSelector, TargetSelector,
-    WorldCompletionDurability, WorldDiscardSemantics, WorldFlushSemantics, WorldNetworkForwarder,
-    WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
-    WorldNetworkQueue, WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
+    BindingActionCause, BindingActionKind, BindingEventParent, BindingMapping,
+    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, DagStore,
+    EFFECT_SEMANTIC_VERSION, EffectKind, EffectLifetime, EffectRequest, EffectSpecification,
+    FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits, FaultSignalPlan, MemoryDagStore,
+    NetworkEffectSpecification, NetworkForwarderTransition, NetworkQueueDiscipline,
+    NetworkQueueOverflow, NetworkStatePolicy, NodeBootPolicy, NodeEffectSpecification,
+    NodeLifecycleTransition, NodeStatePolicy, PositiveU64, ResolvedFaultTarget, ResolvedTargetSet,
+    SignalCoordinate, SignalDomain, SignalId, SignalNode, SignalNodeKind, SignalPoint,
+    SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit, SignalValue,
+    SignalValueType, StorageEffectSpecification, StorageVolatileCacheLossKind,
+    StorageVolatileCacheLossSelector, TargetSelector, WorldCompletionDurability,
+    WorldDiscardSemantics, WorldFlushSemantics, WorldNetworkForwarder, WorldNetworkForwarderKind,
+    WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop, WorldNetworkQueue,
+    WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
     WorldNetworkSegmentKind, WorldNetworkTechnology, WorldStorageFaultDevice, WorldStorageKind,
     WorldStorageMedia, WorldStoragePersistence,
 };
@@ -39,6 +40,10 @@ use crucible_api::{
     ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
     build_production_vm_lifecycle_loop_from_checkpoint,
 };
+
+#[path = "crucible_qemu_signal_shared_cause/evidence.rs"]
+mod evidence;
+use evidence::{exact_shared_event_effects, reached_restarted_node};
 
 const EVENT_NANOS: u64 = 8_000_000_000;
 const DEVICE_BYTES: u64 = 1_048_576;
@@ -421,21 +426,6 @@ fn build_source() -> Result<(ScenarioDefForm, Arc<MemoryDagStore>), Box<dyn Erro
     Ok((source, artifacts))
 }
 
-fn effect_count(snapshot: &ProductionFaultEvidenceSnapshot) -> usize {
-    snapshot
-        .resolved_effect_trace
-        .as_ref()
-        .map_or(0, |trace| trace.work_items.len())
-}
-
-fn reached_restarted_node(snapshot: &ProductionFaultEvidenceSnapshot) -> bool {
-    snapshot.frontier.ticks >= EVENT_NANOS
-        && snapshot
-            .nodes
-            .iter()
-            .any(|node| node.node.name == "node-a" && node.generation > 1)
-}
-
 fn drive_to_restarted_node(
     lifecycle: &mut ProductionVmLifecycleLoop,
     mut configuration: Configuration,
@@ -548,7 +538,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .block_devices
             .iter()
             .any(|device| device.volatile_entries != 0)
-        || effect_count(&after) < effect_count(&before) + 3
+        || !exact_shared_event_effects(&before, &after)
     {
         return Err("shared event did not produce all production consequences".into());
     }
@@ -613,6 +603,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("pre_event_queue_and_volatile_cache=true");
     println!("pre_event_queue_finish_after_event=true");
     println!("network_storage_node_same_event=true");
+    println!("shared_event_effect_records=3");
+    println!("node_effective_icount_authenticated=true");
     println!("exact_checkpoint_evidence_match=true");
     println!("locked_effect_replay_evidence_match=true");
     Ok(())

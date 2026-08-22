@@ -37,7 +37,11 @@ impl FaultBindingRuntime<'_> {
                     opportunity.map(FaultOpportunity::id),
                 ));
             }
-            return Ok(generated.to_vec());
+            let mut replayed = generated.to_vec();
+            for (action, record) in replayed.iter_mut().zip(&records) {
+                action.coordinate = record.coordinate;
+            }
+            return Ok(replayed);
         }
         self.active = active_before.clone();
         for (binding, state) in &mut self.states {
@@ -146,7 +150,16 @@ pub(super) fn verify_replay_results(
                     FaultReplayMode::OutcomeOnlyNetwork(_) => opportunity
                         .is_some_and(|opportunity| outcome_action(record, opportunity) == *action),
                 };
+                let coordinate_matches = match trace.mode {
+                    FaultReplayMode::OutcomeOnlyNetwork(_) => {
+                        result.observation.coordinate == action.coordinate
+                    }
+                    FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
+                        result.observation.coordinate == record.coordinate
+                    }
+                };
                 action_matches
+                    && coordinate_matches
                     && result.precondition == record.precondition_digest
                     && result.observation.evidence == record.evidence_digest
             });
@@ -194,8 +207,15 @@ pub(super) fn resolved_replay_work_item(
 ) -> Result<ResolvedReplayWorkItem, BindingRuntimeError> {
     let mut records = Vec::with_capacity(actions.len());
     for (action, result) in actions.iter().zip(results) {
+        if !action.accepts_observation_coordinate(result.observation.coordinate) {
+            return Err(BindingRuntimeError::AdapterCommit(
+                FaultRuntimeError::IncompleteAdapterState,
+            ));
+        }
+        let mut committed_action = action.clone();
+        committed_action.coordinate = result.observation.coordinate;
         let record = ResolvedEffectRecord::from_committed_action(
-            action,
+            &committed_action,
             opportunity,
             same_coordinate_sequence,
             derivation_fingerprint,
