@@ -44,6 +44,8 @@
   patchStackRepositorySource = builtins.readFile ./_qemu-patch-stack-repository.nix;
   dropOneRepositorySource = builtins.readFile ./_qemu-drop-one-repository.nix;
   dropOneBuildSource = builtins.readFile ./_drop-one-build.nix;
+  dropOneSource = builtins.readFile ./_drop-one.nix;
+  buildEvidenceSource = builtins.readFile ./_drop-one-build-evidence.sh;
   patchRegenerationSource = builtins.readFile ./phase2-qemu-patch-regeneration.nix;
   staticFailures =
     lib.optionals (!(lib.hasInfix "git add -A" patchStackRepositorySource)) [
@@ -79,14 +81,23 @@
     ++ lib.optionals (!(lib.hasInfix "--diff-filter=U" dropOneRepositorySource)) [
       "drop-one conflicts must contain unmerged paths"
     ]
-    ++ lib.optionals (!(lib.hasInfix "exact discriminator" dropOneBuildSource)) [
-      "drop-one build failures must name an exact manifest discriminator symbol"
+    ++ lib.optionals (!(lib.hasInfix "extract_drop_one_build_evidence" dropOneSource)) [
+      "the cheap classifier must parse raw drop-one compiler and linker diagnostics"
     ]
-    ++ lib.optionals (lib.hasInfix "printf 'path\\t" dropOneBuildSource) [
+    ++ lib.optionals (!(lib.hasInfix "(fatal )?error:" buildEvidenceSource)) [
+      "drop-one symbol evidence must originate from an error or fatal diagnostic"
+    ]
+    ++ lib.optionals (lib.hasInfix "printf 'path\\t" buildEvidenceSource) [
       "source-path correlation must not classify a drop-one build failure"
     ]
-    ++ lib.optionals (lib.hasInfix "ninja -C build -j" dropOneBuildSource) [
-      "per-patch builds must leave Ninja parallelism to the build environment"
+    ++ lib.optionals (lib.hasInfix " -j" dropOneBuildSource) [
+      "per-patch builds must not pass an explicit short-form job count"
+    ]
+    ++ lib.optionals (lib.hasInfix "--jobs" dropOneBuildSource) [
+      "per-patch builds must not pass an explicit long-form job count"
+    ]
+    ++ lib.optionals (lib.hasInfix "NIX_BUILD_CORES" dropOneBuildSource) [
+      "per-patch builds must not override Nix-selected build parallelism"
     ]
     ++ lib.optionals (lib.hasInfix "tar -xf \${qemuPackage.src}" patchRegenerationSource) [
       "patch regeneration must reuse the shared verified base repository"
@@ -173,12 +184,31 @@
     "0063-crucible-plugin-vmstop.patch" = ["qemu_plugin_request_vmstop"];
   };
 
+  # Some clean 3-way drops expose a later patch's semantic dependency as a
+  # fatal reference to a file-local identifier rather than a missing exported
+  # ABI symbol. Bind those cases to both the exact compiler identifier and an
+  # exact definition present in the full stack but absent from the prepared
+  # variant.
+  internalBuildFailureDiscriminators = {
+    "0092-crucible-canonical-terminal-rr-cursor.patch" = [
+      {
+        identifier = "terminal_cursor";
+        path = "plugins/api.c";
+        fullSourceNeedle = "bool terminal_cursor = !exact_boundary && cpu &&";
+      }
+    ];
+  };
+
   dropOnes =
     lib.imap (i: patch: let
       index = i + 1;
       symbols =
         if builtins.hasAttr patch symbolDiscriminators
         then symbolDiscriminators.${patch}
+        else [];
+      internalBuildFailures =
+        if builtins.hasAttr patch internalBuildFailureDiscriminators
+        then internalBuildFailureDiscriminators.${patch}
         else [];
       # 0007 (block-rtc-read) forces the sim RTC to the virtual clock; it is only
       # observable when the guest reads a host-backed RTC, so its variant probe
@@ -192,6 +222,7 @@
       drv = import ./_drop-one.nix {
         inherit pkgs lib qemuPackage index rtcClock dropOneRepository;
         expectAbsentSymbols = symbols;
+        expectInternalBuildFailures = internalBuildFailures;
         attrPath = "${attrPath}.p${toString index}";
       };
     })
@@ -209,7 +240,7 @@
         grep -q '^materialized_source_identity=[0-9a-f]\{64\}$' "$result"
       fi
       if [ "$method" = drop-one-build-required ]; then
-        grep -q '^exact_exported_symbol_build_failure_evidence=true$' "$result"
+        grep -q '^exact_manifest_build_failure_evidence=true$' "$result"
       fi
       printf '%s\t%s\t%s\n' "${toString entry.index}" "${entry.patch}" "$method" \
         >> "$out/methods.tsv"
@@ -221,7 +252,7 @@
     version = "0";
     src = null;
 
-    buildDeps = [pkgs.coreutils pkgs.grep];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed];
 
     phases = [
       {
@@ -235,26 +266,51 @@
           printf '%s\n' qemu_plugin_expected > "$TMPDIR/full-exports"
           printf 'path\t%s\n' accel/tcg/tcg-all.c > "$TMPDIR/path-only"
           if validate_drop_one_build_evidence \
-            "$TMPDIR/path-only" "$TMPDIR/full-exports" qemu_plugin_expected; then
+            "$TMPDIR/path-only" "$TMPDIR/full-exports" qemu_plugin_expected ""; then
             echo "FAIL: source-path correlation was accepted as causal evidence" >&2
             exit 1
           fi
 
+          cat > "$TMPDIR/warning-plus-unrelated-failure.log" <<'LOG'
+          source.c:1:2: warning: implicit declaration of function 'qemu_plugin_expected'
+          ninja: build stopped: interrupted by user
+          LOG
+          extract_drop_one_build_evidence \
+            "$TMPDIR/warning-plus-unrelated-failure.log" \
+            "$TMPDIR/warning-evidence" "$TMPDIR/warning-diagnostics"
+          if validate_drop_one_build_evidence \
+            "$TMPDIR/warning-evidence" "$TMPDIR/full-exports" \
+            qemu_plugin_expected ""; then
+            echo "FAIL: nonfatal exact-symbol warning was accepted as causal evidence" >&2
+            exit 1
+          fi
+
+          cat > "$TMPDIR/exact-fatal.log" <<'LOG'
+          source.c:1:2: error: implicit declaration of function 'qemu_plugin_expected'
+          LOG
+          extract_drop_one_build_evidence \
+            "$TMPDIR/exact-fatal.log" "$TMPDIR/exact-fatal-evidence" \
+            "$TMPDIR/exact-fatal-diagnostics"
+          validate_drop_one_build_evidence \
+            "$TMPDIR/exact-fatal-evidence" "$TMPDIR/full-exports" \
+            qemu_plugin_expected ""
+
           printf 'symbol\t%s\n' qemu_plugin_unrelated > "$TMPDIR/unrelated-symbol"
           if validate_drop_one_build_evidence \
-            "$TMPDIR/unrelated-symbol" "$TMPDIR/full-exports" qemu_plugin_expected; then
+            "$TMPDIR/unrelated-symbol" "$TMPDIR/full-exports" qemu_plugin_expected ""; then
             echo "FAIL: unrelated compiler symbol was accepted as causal evidence" >&2
             exit 1
           fi
 
           printf 'symbol\t%s\n' qemu_plugin_expected > "$TMPDIR/exact-symbol"
           validate_drop_one_build_evidence \
-            "$TMPDIR/exact-symbol" "$TMPDIR/full-exports" qemu_plugin_expected
+            "$TMPDIR/exact-symbol" "$TMPDIR/full-exports" qemu_plugin_expected ""
 
           cat > "$out/result" <<RESULT
           PASS
           path_only_build_failure_rejected=true
           unrelated_symbol_build_failure_rejected=true
+          exact_symbol_warning_plus_unrelated_failure_rejected=true
           exact_manifest_symbol_build_failure_accepted=true
           RESULT
         '';
@@ -300,6 +356,8 @@ in
             grep -q '^path_only_build_failure_rejected=true$' \
               ${buildFailureEvidencePolicy}/result
             grep -q '^unrelated_symbol_build_failure_rejected=true$' \
+              ${buildFailureEvidencePolicy}/result
+            grep -q '^exact_symbol_warning_plus_unrelated_failure_rejected=true$' \
               ${buildFailureEvidencePolicy}/result
             grep -q '^exact_manifest_symbol_build_failure_accepted=true$' \
               ${buildFailureEvidencePolicy}/result
@@ -349,7 +407,8 @@ in
             shared_source_reconstruction_inventory_verified=true
             all_drop_one_branches_computed_in_one_repository=true
             conflicts_require_pinned_rebase_head_and_unmerged_paths=true
-            build_failures_require_exact_exported_symbol_diagnostics=true
+            build_failures_require_exact_manifest_fatal_diagnostics=true
+            internal_build_failures_require_full_minus_variant_source_proof=true
             hostile_unrelated_build_failure_negative_control=true
             successful_variants_verify_tracked_tree_and_source_identity=true
             successful_variants_materialize_prepared_refs=true

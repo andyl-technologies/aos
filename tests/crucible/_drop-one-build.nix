@@ -7,9 +7,8 @@
 #   conflict      -- N cannot be removed without breaking a later patch's 3-way
 #                    application ($out/conflict.env names the conflicting commit
 #                    and files).
-#   build-failed  -- N drops clean but full-minus-N has a compiler/linker failure
-#                    naming an exact exported-ABI discriminator implemented by N
-#                    ($out/build.log, $out/patch-specific-build-evidence).
+#   build-failed  -- N drops clean but full-minus-N fails to build. The raw log
+#                    is classified fail-closed by the cheap `_drop-one.nix`.
 #   built         -- N drops clean and full-minus-N builds
 #                    ($out/variant-qemu-system-x86_64).
 {
@@ -18,7 +17,6 @@
   qemuPackage ? pkgs.qemu-crucible,
   index,
   attrPath ? "drop-one-build",
-  expectAbsentSymbols ? [],
   dropOneRepository ?
     import ./_qemu-drop-one-repository.nix {
       inherit pkgs lib qemuPackage;
@@ -28,7 +26,6 @@
   patchFiles = series.patchFiles;
   droppedPatch = builtins.elemAt patchFiles (index - 1);
   configureFlags = lib.escapeShellArgs qemuPackage.passthru.qemuConfigureFlags;
-  expectedSymbols = builtins.concatStringsSep " " expectAbsentSymbols;
 in
   pkgs.mkDerivation {
     pname = "crucible-drop-one-build-${toString index}";
@@ -68,7 +65,6 @@ in
     DROPPED_PATCH = droppedPatch;
     DROP_INDEX = toString index;
     DROP_ONE_REPOSITORY = "${dropOneRepository}";
-    EXPECT_ABSENT_SYMBOLS = expectedSymbols;
 
     phases = [
       {
@@ -80,35 +76,6 @@ in
           fail() { echo "FAIL: $*" >&2; exit 1; }
           printf '%s\n' "$DROPPED_PATCH" > "$out/dropped-patch"
           printf '%s\n' "$DROP_INDEX" > "$out/drop-index"
-
-          record_attributable_build_failure() {
-            : > "$out/failing-symbols"
-            grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$out/build.log" \
-              | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
-            grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            LC_ALL=C sort -u "$out/failing-symbols" -o "$out/failing-symbols"
-
-            grep -E 'FAILED:|(^|[[:space:]])(fatal )?error:|undefined reference|implicit declaration|undeclared|unknown type name' \
-              "$out/build.log" > "$out/build-diagnostics" \
-              || fail "Ninja failed without a compiler or linker diagnostic"
-            test -n "$EXPECT_ABSENT_SYMBOLS" \
-              || fail "non-symbol drop failed to build and has no causal discriminator"
-            : > "$out/patch-specific-build-evidence"
-            for symbol in $EXPECT_ABSENT_SYMBOLS; do
-              if grep -Fqx "$symbol" "$out/failing-symbols"; then
-                printf 'symbol\t%s\n' "$symbol" >> "$out/patch-specific-build-evidence"
-              fi
-            done
-            test -s "$out/patch-specific-build-evidence" \
-              || fail "Ninja failure names no exact discriminator for $DROPPED_PATCH"
-            echo build-failed > "$out/outcome"
-            exit 0
-          }
 
           grep -q '^PASS$' "$DROP_ONE_REPOSITORY/result"
           prepared="$DROP_ONE_REPOSITORY/drop-one/$DROP_INDEX"
@@ -209,7 +176,10 @@ in
             echo built > "$out/outcome"
             cp build/qemu-system-x86_64 "$out/variant-qemu-system-x86_64"
           else
-            record_attributable_build_failure
+            # Preserve the raw failure for the cheap classifier. Attribution is
+            # intentionally outside this expensive derivation so parser and
+            # policy hardening never rebuild QEMU.
+            echo build-failed > "$out/outcome"
           fi
         '';
       }
