@@ -263,9 +263,16 @@ impl ProductionFaultRuntime {
                         }
                     })?;
                     self.resource_limits.reserve("event_records", retained, 1)?;
+                    let retained_action = try_clone_action(action, || {
+                        runtime_collection_allocation(
+                            "event_records",
+                            self.qemu_issued_actions.len(),
+                            self.resource_limits,
+                        )
+                    })?;
                     if self
                         .qemu_issued_actions
-                        .try_insert(identity, action.clone())
+                        .try_insert(identity, retained_action)
                         .map_err(|_| {
                             runtime_collection_allocation(
                                 "event_records",

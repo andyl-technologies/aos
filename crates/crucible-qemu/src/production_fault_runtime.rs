@@ -41,6 +41,10 @@ type PendingQemuEventMap = QemuNodeMap<Vec<DequeuedFaultEvent>>;
 
 mod checkpoint_codec;
 pub use checkpoint_codec::ProductionFaultRuntimeCheckpointCodecError;
+mod fallible_clone;
+use fallible_clone::{
+    try_clone_action, try_clone_fault_events, try_clone_node_id as try_clone_ledger_node_id,
+};
 
 /// Complete resumable state for the production fault runtime.
 #[derive(Debug)]

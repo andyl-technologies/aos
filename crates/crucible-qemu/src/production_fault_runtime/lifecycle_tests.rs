@@ -187,6 +187,37 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
         "recovery evidence names the issued upsert after removal"
     );
     assert_eq!(runtime.qemu_active_rule_ids.len(), 0);
+    let event_node = NodeId {
+        name: String::from("node-a"),
+    };
+    let retained_event = lifecycle_event(&impulse);
+    runtime
+        .pending_qemu_events
+        .try_insert(event_node.clone(), vec![retained_event.clone()])
+        .unwrap_or_else(|error| panic!("pending event fixture should allocate: {error}"));
+    let duplicate = runtime
+        .try_clone()
+        .unwrap_or_else(|error| panic!("runtime ledger should clone fallibly: {error}"));
+    let duplicated_impulse = duplicate
+        .qemu_issued_actions
+        .get(&impulse.id())
+        .unwrap_or_else(|| panic!("duplicated ledger should retain the impulse"));
+    assert_eq!(duplicated_impulse, &impulse);
+    assert_ne!(
+        duplicated_impulse.binding.as_str().as_ptr(),
+        impulse.binding.as_str().as_ptr(),
+        "heap-owning ledger identifiers must not be shallow aliases"
+    );
+    let duplicated_event = &duplicate
+        .pending_qemu_events
+        .get(&event_node)
+        .unwrap_or_else(|| panic!("duplicated ledger should retain the node event"))[0];
+    assert_eq!(duplicated_event, &retained_event);
+    assert_ne!(
+        duplicated_event.payload.as_ptr(),
+        retained_event.payload.as_ptr(),
+        "event evidence payloads must be duplicated through fallible storage"
+    );
     assert!(
         runtime
             .update_qemu_action_ledger(std::slice::from_ref(&remove), committed(&remove, 4))

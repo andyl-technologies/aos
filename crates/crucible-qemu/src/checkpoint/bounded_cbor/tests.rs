@@ -92,6 +92,34 @@ fn bounded_map_and_set_preserve_tree_cbor_shape() {
 }
 
 #[test]
+fn bounded_map_and_set_delegate_nested_duplication_fallibly() {
+    let mut map = BoundedMap::<String, String, 2>::new();
+    map.try_insert(String::from("key"), String::from("value"))
+        .unwrap_or_else(|error| panic!("map fixture should allocate: {error}"));
+    let duplicate = map
+        .try_clone_with(
+            |key| Ok::<_, &'static str>(key.clone()),
+            |_value| Err("nested value allocation"),
+            || "outer map allocation",
+        )
+        .err()
+        .unwrap_or_else(|| panic!("nested clone refusal must propagate"));
+    assert_eq!(duplicate, "nested value allocation");
+
+    let mut set = BoundedSet::<String, 2>::new();
+    set.try_insert(String::from("value"))
+        .unwrap_or_else(|error| panic!("set fixture should allocate: {error}"));
+    let duplicate = set
+        .try_clone_with(
+            |_value| Err("nested set allocation"),
+            || "outer set allocation",
+        )
+        .err()
+        .unwrap_or_else(|| panic!("nested clone refusal must propagate"));
+    assert_eq!(duplicate, "nested set allocation");
+}
+
+#[test]
 fn bounded_map_rejects_noncanonical_key_order() {
     let descending_map = [0xa2, 0x02, 0x00, 0x01, 0x00];
     assert!(

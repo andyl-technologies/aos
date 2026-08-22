@@ -315,7 +315,6 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         }],
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
-
     let nodes = ProductionNodeSet::new();
     let runtime = ProductionFaultRuntime::new(
         down_plan(segment.clone()),
@@ -367,7 +366,6 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             &mut pending_outputs,
         )
         .unwrap_or_else(|error| panic!("availability boundary should execute: {error}"));
-
     assert!(!append.entries.is_empty());
     assert_eq!(interceptor.transition_ledger.len(), 1);
     let transition = interceptor
@@ -461,7 +459,10 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         down_plan(segment.clone()),
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
-        super::super::clone_fault_checkpoint_fixture(&checkpoint),
+        super::super::duplicate_network_fault_checkpoint_fixture(
+            &checkpoint,
+            &down_plan(segment.clone()),
+        ),
         super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
@@ -519,12 +520,15 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     );
     assert!(rejected_pending.is_empty());
     let mut restored_pending = Vec::new();
+    let restored_plan = down_plan(segment);
+    let restored_fault_checkpoint =
+        super::super::duplicate_network_fault_checkpoint_fixture(&checkpoint, &restored_plan);
     let (restored_interceptor, restored_committed_frontier) =
         ProductionFaultNetworkInterceptor::restore(
-            down_plan(segment),
+            restored_plan,
             Some(Arc::new(NoArtifacts)),
             ContentHash::from_bytes(b"production-availability-drop"),
-            super::super::clone_fault_checkpoint_fixture(&checkpoint),
+            restored_fault_checkpoint,
             super::super::fault_implementation::test_host_manifests(),
             &mut nodes,
             world.fault_topology().clone(),
