@@ -6,7 +6,7 @@
 //! may report [`CrucibleMaterializationTier::HotFork`].
 
 use crucible::Configuration;
-use crucible_campaign::AttemptResourceLimits;
+use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId};
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
     QemuVmRealizationKind, QemuVmRealizationStore, QemuVmSnapshot, instantiate_qemu_vm,
@@ -212,6 +212,12 @@ pub enum QemuExactThinRunnerError<E> {
     /// Work was canceled before QEMU realization began.
     #[error("campaign attempt was canceled before QEMU realization")]
     Canceled,
+    /// Exact operational resume has not yet been composed with this runner.
+    #[error("campaign attempt requires exact-checkpoint resume from {checkpoint}")]
+    ResumeNotIntegrated {
+        /// Exact root that must be restored instead of running from the start.
+        checkpoint: ExactCheckpointId,
+    },
     /// Exact restore and thin replay could not realize the starting configuration.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
@@ -235,6 +241,11 @@ where
         if context.cancellation().is_canceled() {
             return Err(AttemptWorkerFailure::Canceled(
                 QemuExactThinRunnerError::Canceled,
+            ));
+        }
+        if let Some(checkpoint) = context.resume_checkpoint() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuExactThinRunnerError::ResumeNotIntegrated { checkpoint },
             ));
         }
         let configuration = match input.start() {
@@ -395,7 +406,9 @@ fn classify_realization_failure<E>(
         ) => AttemptWorkerFailure::Retryable(error),
         QemuExactThinRunnerError::Realization(QemuVmRealizationError::Canceled { .. })
         | QemuExactThinRunnerError::Canceled => AttemptWorkerFailure::Canceled(error),
-        QemuExactThinRunnerError::Realization(_) | QemuExactThinRunnerError::Driver(_) => {
+        QemuExactThinRunnerError::Realization(_)
+        | QemuExactThinRunnerError::ResumeNotIntegrated { .. }
+        | QemuExactThinRunnerError::Driver(_) => {
             AttemptWorkerFailure::Terminal(error)
         }
     }

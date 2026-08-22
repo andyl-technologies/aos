@@ -1259,6 +1259,23 @@ impl ResumeAttemptExecutionRequest {
         self.retention
     }
 
+    /// Reconstructs the exact new-incarnation assignment basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fields of this already-valid request no
+    /// longer satisfy the bounded submit-message contract.
+    pub fn assignment_request(&self) -> Result<SubmitAttemptRequest, CampaignCodecError> {
+        SubmitAttemptRequest::new(
+            self.assignment,
+            self.daemon_epoch,
+            self.lineage,
+            self.attempt,
+            self.resources,
+            self.retention,
+        )
+    }
+
     /// Returns the assignment-neutral execution-contract digest.
     #[must_use]
     pub fn execution_basis_digest(&self) -> CampaignHash {
@@ -2309,6 +2326,20 @@ pub trait ExecutorControlService: ExecutorStatusService {
     ) -> Result<CancelAttemptExecutionResponse, Self::Error>;
 }
 
+/// Exact-checkpoint resume extension implemented by direct and RPC executors.
+pub trait ExecutorResumeService: ExecutorStatusService {
+    /// Admits one fresh execution incarnation from a durable paused root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific error when operational state cannot
+    /// be authenticated or changed, or a protocol response cannot be built.
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error>;
+}
+
 /// Coordinator-facing checked client over one direct or RPC executor service.
 pub struct ExecutorClient<S> {
     service: S,
@@ -2407,6 +2438,28 @@ impl<S: ExecutorControlService> ExecutorClient<S> {
         let response = self
             .service
             .cancel_attempt_execution(request)
+            .map_err(ExecutorClientError::Service)?;
+        response
+            .validate_for(request)
+            .map_err(ExecutorClientError::InvalidResponse)?;
+        Ok(response)
+    }
+}
+
+impl<S: ExecutorResumeService> ExecutorClient<S> {
+    /// Resumes and validates one exact durable paused execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorClientError::Service`] for service failure or
+    /// [`ExecutorClientError::InvalidResponse`] for a cross-request response.
+    pub fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, ExecutorClientError<S::Error>> {
+        let response = self
+            .service
+            .resume_attempt_execution(request)
             .map_err(ExecutorClientError::Service)?;
         response
             .validate_for(request)

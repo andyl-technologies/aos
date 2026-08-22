@@ -325,7 +325,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.attempt-state-record",
-            "3",
+            "4",
             "operational-record",
         ),
         (
@@ -381,7 +381,7 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
-    assert_eq!(loopback[1], "4");
+    assert_eq!(loopback[1], "5");
     assert_eq!(loopback[2], "crucible-daemon::executor_loopback");
     assert_eq!(loopback[3], "component-message");
     let planner_loopback = rows

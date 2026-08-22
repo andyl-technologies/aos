@@ -8,7 +8,10 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::{ActiveAttemptPolicy, CampaignName, ExecutorControlService, PlannerService};
+use crate::{
+    ActiveAttemptPolicy, CampaignName, ExecutorControlService, ExecutorResumeService,
+    PlannerService,
+};
 
 /// Maximum worker slots coordinated by one campaign supervisor.
 pub const MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS: u32 = 256;
@@ -91,7 +94,7 @@ impl<P, E> CampaignSupervisor<P, E> {
     ) -> Result<CampaignSupervisorStepOutcome, CampaignSupervisorError<P::Error, E::Error>>
     where
         P: PlannerService,
-        E: ExecutorControlService,
+        E: ExecutorControlService + ExecutorResumeService,
     {
         let (head, lifecycle) = self
             .repository
@@ -174,7 +177,7 @@ impl<P, E> CampaignSupervisor<P, E> {
     ) -> Result<CampaignSupervisorStepOutcome, CampaignSupervisorError<P::Error, E::Error>>
     where
         P: PlannerService,
-        E: ExecutorControlService,
+        E: ExecutorControlService + ExecutorResumeService,
     {
         if self.planner_pending {
             self.planner_pending = false;

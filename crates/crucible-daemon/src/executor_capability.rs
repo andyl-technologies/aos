@@ -10,9 +10,10 @@ use crucible_campaign::{
     CampaignCodecError, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
-    ExecutorMaterializationLocality, ExecutorService, ExecutorStatusService,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, SubmitAttemptRequest,
-    SubmitAttemptResponse, WatchExecutorCapacityRequest,
+    ExecutorMaterializationLocality, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
+    WatchExecutorCapacityRequest,
 };
 
 use crate::{
@@ -145,6 +146,19 @@ where
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
         self.supervisor.cancel_attempt_execution(request)
+    }
+}
+
+impl<L, V> ExecutorResumeService for LocalExecutorCapabilityService<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.supervisor.resume_attempt_execution(request)
     }
 }
 

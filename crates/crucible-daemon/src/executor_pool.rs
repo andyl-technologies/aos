@@ -17,8 +17,9 @@ use crucible_campaign::{
     CampaignExecutorStore, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
     ExecutorCapabilityService, ExecutorCapacityReport, ExecutorControlService, ExecutorDescription,
-    ExecutorRejection, ExecutorService, ExecutorStatusService, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
+    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SubmitAttemptRequest, SubmitAttemptResponse,
     WatchExecutorCapacityRequest,
 };
 
@@ -209,6 +210,42 @@ where
             .lock_executor()?
             .cancel_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
+    }
+}
+
+impl<L, V> ExecutorResumeService for LocalExecutorPoolService<L, V>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator + Send + Sync,
+{
+    fn resume_attempt_execution(
+        &mut self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        self.shared.require_running()?;
+        let assignment = request
+            .assignment_request()
+            .map_err(LocalExecutorError::from)
+            .map_err(LocalExecutorPoolServiceError::Supervisor)?;
+        let validation = match catch_unwind(AssertUnwindSafe(|| {
+            self.shared.validator.validate(&assignment)
+        })) {
+            Ok(validation) => validation,
+            Err(_) => {
+                self.shared.poison();
+                return Err(LocalExecutorPoolServiceError::WorkerPanicked);
+            }
+        };
+        self.shared.require_running()?;
+        let mut executor = self.shared.lock_executor()?;
+        let response = executor
+            .supervisor_mut()
+            .resume_after_validation(request, validation)
+            .map_err(LocalExecutorPoolServiceError::Supervisor)?;
+        if executor.supervisor().queued_count() != 0 {
+            self.shared.ready.notify_one();
+        }
+        Ok(response)
     }
 }
 

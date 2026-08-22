@@ -401,8 +401,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   reauthentication and fail-closed VMState resume materialization are
   implemented. Strict v2 resume request/response messages now bind a fresh
   assignment to the exact prior execution, checkpoint, and unchanged execution
-  basis; durable supervisor, worker, loopback, and campaign-driver resume wiring
-  remains open. Guarded QEMU launch/session composition also remains open. The
+  basis. Durable supervisor, worker, loopback, and campaign-driver resume wiring
+  is implemented, including restart recovery and GC retention of the resume
+  input root. The QEMU attempt runner currently rejects resumed work before
+  guest execution; composing exact-root materialization with the guarded live
+  session remains open. Guarded QEMU launch/session composition also remains
+  open. The
   fixed worker pool and its linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:
