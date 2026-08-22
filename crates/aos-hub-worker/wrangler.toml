@@ -10,6 +10,9 @@ name = "aos-hub"
 main = "build/worker/shim.mjs"
 compatibility_date = "2024-09-23"
 
+[vars]
+HUB_REQUEST_SHARDING = "on"
+
 # Build the Rust cdylib to wasm with the workers-rs wasm-pack pipeline.
 # `worker-build` (installed via `cargo install worker-build`) wraps
 # `cargo build --target wasm32-unknown-unknown` + wasm-bindgen and emits the JS
@@ -18,9 +21,9 @@ compatibility_date = "2024-09-23"
 command = "worker-build --release"
 
 # Run at the edge near each client (never smart placement): the worker is a thin
-# edge that forwards to the `HubDb` Durable Object (the colocated-SQLite system
-# of record, pinned to its own region), so the worker itself should stay near the
-# client. Hardcoded `off` so a dashboard toggle to `smart` is reverted on deploy.
+# edge that forwards to resource-affine execution objects or the `HubDb`
+# Durable Object, so the worker itself should stay near the client. Hardcoded
+# `off` so a dashboard toggle to `smart` is reverted on deploy.
 [placement]
 mode = "off"
 
@@ -59,12 +62,31 @@ crons = ["*/15 * * * *"]
 name = "COORDINATOR"
 class_name = "CoordinatorObject"
 
-# The colocated-SQLite **system of record** (RFC-0004 ch.14 Phase E). When the
-# `HUB_SQLITE_DO` var is "1", the Worker forwards every request to this
-# SQLite-backed DO. Class `HubDb` (SQLite storage).
+# The colocated-SQLite **system of record** (RFC-0004 ch.14 Phase E). Internal
+# SQL calls and administrative requests always reach this SQLite-backed DO;
+# `HUB_REQUEST_SHARDING` controls whether public service execution runs here or
+# in the resource-affine objects below.
 [[durable_objects.bindings]]
 name = "HUB_DB"
 class_name = "HubDb"
+
+# Stateless request-execution partitions. Each logical namespace has
+# resource-affine instances and sends only short SQL operations to HubDb.
+[[durable_objects.bindings]]
+name = "HUB_CONTROL_SHARDS"
+class_name = "HubControlShard"
+
+[[durable_objects.bindings]]
+name = "HUB_TENANT_SHARDS"
+class_name = "HubTenantShard"
+
+[[durable_objects.bindings]]
+name = "HUB_REGISTRY_SHARDS"
+class_name = "HubRegistryShard"
+
+[[durable_objects.bindings]]
+name = "HUB_CACHE_SHARDS"
+class_name = "HubCacheShard"
 
 # Declare the DO classes on first deploy. `CoordinatorObject` uses the
 # transactional key-value storage (`new_classes`); `HubDb` uses SQLite storage.
@@ -72,6 +94,10 @@ class_name = "HubDb"
 tag = "v1"
 new_classes = ["CoordinatorObject"]
 new_sqlite_classes = ["HubDb"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["HubControlShard", "HubTenantShard", "HubRegistryShard", "HubCacheShard"]
 
 # Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
 # no network hop. One binding per budget tier (period 60); the worker routes a

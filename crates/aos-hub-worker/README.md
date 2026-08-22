@@ -8,6 +8,8 @@ Platform-specific adapters provide:
 
 - `HubDb`, a Durable Object with colocated SQLite, as the relational system of
   record;
+- resource-affine control, tenant, registry, and cache Durable Objects for
+  concurrent request execution;
 - R2 for registry/cache surface objects;
 - KV for cache-aside session state and revocation tombstones;
 - Durable Objects/Queues for coordination and deferred work;
@@ -18,6 +20,13 @@ Platform-specific adapters provide:
 
 `HubDb` applies the shared schema on first use, and administrative mutations
 use the typed Hub API.
+
+The execution objects retain no relational copy. They run the same shared
+router over a seal-gated remote backend, and `HubDb` executes every short SQL
+operation and checked transaction. `HUB_REQUEST_SHARDING=off|read|on` provides a
+data-migration-free staged cutover and rollback path. Resource keys are used
+only for deterministic load affinity; authorization always re-resolves the
+resource from authoritative state.
 
 Queue messages use a versioned envelope with a stable operation ID. The
 consumer leases that identity in `HubDb`, performs provider and network I/O in

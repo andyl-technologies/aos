@@ -1,24 +1,26 @@
-//! The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004).
+//! The Cloudflare Workers runtime for the AOS registry hub (RFC-0004).
 //!
 //! RFC-0004 specifies a Cloudflare Workers deployment of the registry hub —
 //! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of record, R2
 //! as zero-egress storage, KV for sessions, and Cron Triggers driving the
 //! indexer ("Architecture and runtime targets"). The native hub is a sync
 //! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
-//! **separate Worker crate** implementing the RFC's phase-1 Cloudflare
-//! deployment: **read the index + serve typed routes**. It deliberately reuses
-//! the pure, shared crates rather than porting the native hub:
+//! **separate Worker crate** implementing the RFC's Cloudflare deployment. It
+//! deliberately reuses the pure, shared crates rather than porting the native
+//! hub:
 //!
 //! - [`aos_registry_surface`] — the wasm-clean reader (objects, tags, refs,
 //!   Ed25519 verification) the native hub indexer and `apm` already run, reused
 //!   verbatim in the Cron indexer ([`indexer`]).
 //! - [`aos_hub_core`] — the shared `Database` (schema `MIGRATIONS` + read
-//!   queries) the native hub runs, driven over the [`sqldobackend`] so the
-//!   Worker's read path and indexer cannot drift from the hub's.
+//!   queries) the native hub runs. Application requests execute in
+//!   resource-affine Durable Objects over [`remotebackend`], while the
+//!   authoritative `HubDb` owns checked transactions through
+//!   [`sqldobackend`].
 //! - The shared machine-object classification in [`aos_hub_core::keymap`] — re-exported
 //!   through [`keymap`] for Worker object-key mapping.
 //!
-//! # What is and isn't here (yet)
+//! # Request and storage architecture
 //!
 //! The data layer is shared with the native hub
 //! (`aos_hub_core::Database` over the [`sqldobackend`]), and the **entire
@@ -57,11 +59,15 @@
 //! runtimes. Registries whose canonical paths contain slashes are offered to
 //! the shared nested dispatcher before delivery-route and facade routing.
 //!
-//! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
-//! handler bridges every request to the shared router; the schema is migrated
-//! inside the `HubDb` Durable Object on first use (no external init step), and
-//! the root admin is bootstrapped over a seal-gated `HubDb` endpoint. See
-//! `README.md` and the RFC.
+//! The outer `fetch` handler assigns public requests to deterministic control,
+//! tenant, registry, or cache execution objects. Those objects bridge to the
+//! shared router and make only short, seal-gated SQL calls to `HubDb`; they do
+//! not copy relational state. Internal and administrative endpoints remain
+//! pinned to `HubDb`. The schema is migrated there on first use (no external
+//! init step), and the root admin is bootstrapped over a seal-gated endpoint.
+//! Cron and queue handlers run outside the database object and likewise keep
+//! provider or network I/O outside its serialized request turn. See `README.md`
+//! and the RFC.
 //!
 //! # Module map
 //!
@@ -88,6 +94,8 @@
 //! - `remotebackend` — the seal-gated SQL transport used by background jobs;
 //!   checked batches remain atomic inside `HubDb`, while provider I/O does not
 //!   occupy the database object's request turn.
+//! - `requestshard` — deterministic public-request affinity and staged
+//!   `off`/`read`/`on` cutover classification.
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_hub_core::fetch::SurfaceProvider`]
@@ -142,6 +150,7 @@ pub mod placeholder;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
+mod requestshard;
 #[cfg(target_arch = "wasm32")]
 pub mod secretversions;
 #[cfg(target_arch = "wasm32")]
@@ -221,6 +230,8 @@ mod entry {
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
+    /// Staged request-execution cutover: `off`, `read`, or `on`.
+    const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
     /// Non-cacheable endpoint exposing [`HUB_DEPLOYMENT_ID`].
     const DEPLOYMENT_ID_PATH: &str = "/.well-known/aos-deployment";
     /// Required `[vars]` entry naming the deployment's default R2 bucket.
@@ -246,6 +257,82 @@ mod entry {
     /// Optional `[vars]` entry: the verified sender address the Email Service
     /// binding sends `from`. Required to use the [`EMAIL_BINDING`].
     const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RequestShardingMode {
+        Off,
+        ReadOnly,
+        On,
+    }
+
+    fn request_sharding_mode(env: &Env) -> Result<RequestShardingMode> {
+        match env
+            .var(HUB_REQUEST_SHARDING)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| "off".to_string())
+            .as_str()
+        {
+            "off" => Ok(RequestShardingMode::Off),
+            "read" => Ok(RequestShardingMode::ReadOnly),
+            "on" => Ok(RequestShardingMode::On),
+            value => Err(worker::Error::RustError(format!(
+                "{HUB_REQUEST_SHARDING} must be off, read, or on; got {value:?}"
+            ))),
+        }
+    }
+
+    fn request_shard_binding(kind: crate::requestshard::RequestShardKind) -> &'static str {
+        use crate::requestshard::RequestShardKind;
+
+        match kind {
+            RequestShardKind::Control => crate::handlers::bindings::HUB_CONTROL_SHARDS,
+            RequestShardKind::Tenant => crate::handlers::bindings::HUB_TENANT_SHARDS,
+            RequestShardKind::Registry => crate::handlers::bindings::HUB_REGISTRY_SHARDS,
+            RequestShardKind::Cache => crate::handlers::bindings::HUB_CACHE_SHARDS,
+        }
+    }
+
+    async fn request_execution_route(
+        req: &Request,
+        env: &Env,
+    ) -> Result<Option<crate::requestshard::RequestShardRoute>> {
+        let mode = request_sharding_mode(env)?;
+        if mode == RequestShardingMode::Off {
+            return Ok(None);
+        }
+        let url = req.url()?;
+        let path = url.path();
+        if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
+            return Ok(None);
+        }
+        let request_method = req.method();
+        let method = request_method.as_ref();
+        let authority = url.host_str().unwrap_or_default();
+        let initial = crate::requestshard::classify_request(method, path, authority, None);
+        let content_length = req
+            .headers()
+            .get("content-length")?
+            .and_then(|value| value.parse::<usize>().ok());
+        let json_content = req
+            .headers()
+            .get("content-type")?
+            .is_some_and(|value| value.starts_with("application/json"));
+        let body = if !initial.resource_specific
+            && method == "POST"
+            && json_content
+            && content_length.is_some_and(|length| length <= 512 * 1024)
+        {
+            let mut cloned = req.clone()?;
+            cloned.bytes().await.ok()
+        } else {
+            None
+        };
+        let route = crate::requestshard::classify_request(method, path, authority, body.as_deref());
+        if mode == RequestShardingMode::ReadOnly && !route.read_only {
+            return Ok(None);
+        }
+        Ok(Some(route))
+    }
 
     fn worker_egress(env: &Env) -> worker::Result<Arc<WorkerEgressClient>> {
         match (
@@ -341,7 +428,7 @@ mod entry {
         Ok((router, service, console_deps))
     }
 
-    /// Build the shared `axum` router over HubDb SQLite and R2 bindings.
+    /// Builds the shared `axum` router over a database backend and R2 bindings.
     ///
     /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
     /// over the colocated-SQLite [`crate::sqldobackend`] (the schema is applied by the operator
@@ -368,11 +455,12 @@ mod entry {
     /// `HUB_SEAL_KEY` secret is absent or empty, or the rate-limiter table cannot
     /// be ensured.
     ///
-    /// The caller constructs `db` from the colocated
-    /// [`SqlDoBackend`](crate::sqldobackend) inside the
-    /// [`HubDb`](crate::hubdb) Durable Object. Everything else (JWT, rate-limit
-    /// bindings, surface, lease, reindexer, and KV projections) is built from
-    /// `env`.
+    /// The authoritative `HubDb` caller supplies a colocated
+    /// [`SqlDoBackend`](crate::sqldobackend). Resource-affine execution objects
+    /// supply the seal-gated [`RemoteHubBackend`](crate::remotebackend), which
+    /// keeps transaction ownership in `HubDb`. Everything else (JWT,
+    /// rate-limit bindings, surface, lease, reindexer, and KV projections) is
+    /// built from `env`.
     async fn router_from(
         env: &Env,
         db: Arc<Database>,
@@ -771,30 +859,50 @@ mod entry {
             };
         }
 
-        // The request's own `scheme://host`, the fallback canonical URL when
-        // The **`HubDb` colocated-SQLite Durable Object is the only system of
-        // record**. The
-        // worker forwards the request to `HubDb`, whose SQLite runs in the DO's
-        // own thread (no
-        // per-request session cost). The DO runs the shared router over
-        // `SqlDoBackend`. Pinned to WNAM (the hub's home) via a location hint so a
-        // fresh instance lands near the readership; the package data plane
-        // (NAR/narinfo on R2/CDN) is globally replicated independently.
+        // `HubDb` remains the only relational system of record. During the
+        // staged execution-shard cutover, the outer Worker routes application
+        // work to a control singleton or a resource-affine tenant, registry, or
+        // cache object. Those objects run the shared router and use short,
+        // seal-gated SQL calls into HubDb. `off` (and internal/admin requests)
+        // retains the legacy direct HubDb path; `read` moves only read methods;
+        // `on` moves the complete public request surface.
         let database_instance = env
             .var("HUB_DATABASE_INSTANCE")
             .map(|value| value.to_string())
             .unwrap_or_else(|_| "hub".to_string());
+        let route = request_execution_route(&req, &env).await?;
+        let (binding, instance_name, timing_name, shard_kind) = match route.as_ref() {
+            Some(route) => (
+                request_shard_binding(route.kind),
+                route.instance_name(&database_instance),
+                "hubshard",
+                route.kind.as_str(),
+            ),
+            None => (
+                crate::handlers::bindings::HUB_DB,
+                database_instance,
+                "hubdb",
+                "database",
+            ),
+        };
         let stub = env
-            .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name(&database_instance)
+            .durable_object(binding)?
+            .id_from_name(&instance_name)
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
         let started_at = worker::Date::now().as_millis();
         let mut resp = stub.fetch_with_request(req).await?;
         let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
-        resp.headers_mut()
-            .set("server-timing", &format!("hubdb;dur={duration_ms}"))?;
+        let prior_timing = resp
+            .headers()
+            .get("server-timing")?
+            .filter(|value| !value.is_empty());
+        let timing = prior_timing
+            .map(|prior| format!("{prior}, {timing_name};dur={duration_ms}"))
+            .unwrap_or_else(|| format!("{timing_name};dur={duration_ms}"));
+        resp.headers_mut().set("server-timing", &timing)?;
+        resp.headers_mut().set("x-aos-hub-shard", shard_kind)?;
         worker::console_log!(
-            "hub_edge_request status={} hubdb_ms={duration_ms}",
+            "hub_edge_request status={} route={shard_kind} dispatch_ms={duration_ms}",
             resp.status_code()
         );
 
@@ -1744,11 +1852,180 @@ mod entry {
         }
     }
 
+    /// Cached shared-router dependencies for one request-execution shard.
+    #[derive(Clone)]
+    struct HubShardRuntime {
+        router: Router,
+        service: Arc<RpcService>,
+        console_deps: ConsoleDeps,
+        remote_sql_metrics: crate::remotebackend::RemoteSqlMetrics,
+        delivery_attestation_verifier:
+            Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
+    }
+
+    async fn shard_request_runtime(
+        env: &Env,
+        runtime: &Mutex<Option<HubShardRuntime>>,
+    ) -> Result<HubShardRuntime> {
+        let mut runtime = runtime.lock().await;
+        if let Some(runtime) = runtime.as_ref() {
+            return Ok(runtime.clone());
+        }
+
+        let remote_sql_metrics = crate::remotebackend::RemoteSqlMetrics::default();
+        let db = Arc::new(Database::attach(Box::new(
+            crate::remotebackend::RemoteHubBackend::with_metrics(env, remote_sql_metrics.clone()),
+        )));
+        let (router, service, console_deps, delivery_attestation_verifier) =
+            router_from(env, db).await?;
+        let initialized = HubShardRuntime {
+            router,
+            service,
+            console_deps,
+            remote_sql_metrics,
+            delivery_attestation_verifier,
+        };
+        *runtime = Some(initialized.clone());
+        Ok(initialized)
+    }
+
+    async fn execute_sharded_request(
+        shard: &'static str,
+        env: &Env,
+        runtime: &Mutex<Option<HubShardRuntime>>,
+        req: Request,
+    ) -> Result<Response> {
+        crate::tracinglog::init();
+        let path = req
+            .url()
+            .ok()
+            .map(|url| url.path().to_string())
+            .unwrap_or_else(|| "<invalid>".to_string());
+        if path.starts_with("/_internal/") || path.starts_with("/_admin/") {
+            return Response::error("not found", 404);
+        }
+        let method = format!("{:?}", req.method());
+        let runtime = shard_request_runtime(env, runtime).await?;
+        let started_at = worker::Date::now().as_millis();
+        let sql_before = runtime.remote_sql_metrics.snapshot();
+        let mut response = crate::bridge::dispatch(
+            runtime.router,
+            runtime.service.as_ref(),
+            runtime.console_deps,
+            runtime.delivery_attestation_verifier.as_deref(),
+            req,
+        )
+        .await?;
+        let duration_ms = worker::Date::now().as_millis().saturating_sub(started_at);
+        let sql = runtime.remote_sql_metrics.snapshot().since(sql_before);
+        let existing_timing = response
+            .headers()
+            .get("server-timing")?
+            .filter(|value| !value.is_empty());
+        let shard_timing = format!(
+            "hubexec;dur={duration_ms}, hubsql;dur={};desc=\"{} calls\"",
+            sql.duration_ms, sql.calls
+        );
+        let timing = existing_timing
+            .map(|existing| format!("{existing}, {shard_timing}"))
+            .unwrap_or(shard_timing);
+        response.headers_mut().set("server-timing", &timing)?;
+        worker::console_log!(
+            "hub_shard_request shard={shard} method={method} path={path} status={} duration_ms={duration_ms} sql_calls={} sql_ms={} sql_rows_read={}",
+            response.status_code(),
+            sql.calls,
+            sql.duration_ms,
+            sql.rows_read,
+        );
+        Ok(response)
+    }
+
+    /// Instance-wide request-execution shard.
+    #[durable_object]
+    pub struct HubControlShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubControlShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("control", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine tenant request-execution shard.
+    #[durable_object]
+    pub struct HubTenantShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubTenantShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("tenant", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine registry request-execution shard.
+    #[durable_object]
+    pub struct HubRegistryShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubRegistryShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("registry", &self.env, &self.runtime, req).await
+        }
+    }
+
+    /// Resource-affine binary-cache request-execution shard.
+    #[durable_object]
+    pub struct HubCacheShard {
+        env: Env,
+        runtime: Mutex<Option<HubShardRuntime>>,
+    }
+
+    impl DurableObject for HubCacheShard {
+        fn new(_state: State, env: Env) -> Self {
+            Self {
+                env,
+                runtime: Mutex::new(None),
+            }
+        }
+
+        async fn fetch(&self, req: Request) -> Result<Response> {
+            execute_sharded_request("cache", &self.env, &self.runtime, req).await
+        }
+    }
+
     /// The colocated-SQLite system-of-record Durable Object.
     ///
-    /// The `fetch` handler forwards every request to this DO (a single global
-    /// instance, `id_from_name("hub")`). The DO runs
-    /// the **same shared router** ([`router_from`]) over a
+    /// Internal and administrative requests are forwarded directly to this
+    /// DO. Public requests may also run here when execution sharding is off or
+    /// in read-only cutover mode. The DO runs the **same shared router**
+    /// ([`router_from`]) over a
     /// [`SqlDoBackend`](crate::sqldobackend) whose SQLite lives in the DO's own
     /// thread — so the request makes one hop to the DO's region and every query
     /// is local to the object. The schema is the shared
