@@ -85,7 +85,7 @@ index c62471c50..b37dfd519 100644
   * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
   * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index eb8e2fe04..a2a83d786 100644
+index b577dc8ac..6744c564c 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -216,6 +216,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)

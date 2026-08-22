@@ -209,7 +209,7 @@ pub(super) fn ninep_result_evidence(
         "crucible.ninep-result-evidence.v1",
         &format!(
             "action={}\nrequest_icount={}\ntransport_sequence={}\ntag={}\nrequest_digest={}\noperation={:?}\n{result}\ncompletion_icount={}\nresponse_transport_sequence={}\nresponse_status={status}\nresponse_len={}\nresponse_digest={}",
-            action.id().to_hex(),
+            action.committed_state_id().to_hex(),
             request.identity.request_icount,
             request.identity.transport_sequence,
             request.identity.tag,
@@ -265,7 +265,7 @@ pub(super) fn ninep_visibility_evidence(
         "crucible.ninep-visibility-evidence.v1",
         &format!(
             "action={}\nupdate_id={}\nsequence={sequence}\n{}\nscope={scope}\natomic_metadata_and_data={}\nretain_deleted_objects={}\nrelease={release}\ndata_lag_nanos={data_lag_nanos}\nwriter_session={writer_session}\ncommitted_frontier={}\nsession_frontiers={frontiers}\nlookup={lookup}",
-            action.id().to_hex(),
+            action.committed_state_id().to_hex(),
             update_id.to_hex(),
             ninep_object_evidence(object),
             policy.atomic_metadata_and_data,

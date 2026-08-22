@@ -5,6 +5,43 @@ use crucible_shmem::{
     FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result, enqueue_fault_command,
 };
 
+#[test]
+fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
+    let mut raw = vec![0_u8; 304];
+    raw[..8].copy_from_slice(b"CRUCLIF1");
+    raw[24..32].copy_from_slice(&12_u64.to_le_bytes());
+    let event = QemuFaultEvent {
+        observed_icount: 12,
+        ..QemuFaultEvent::default()
+    };
+
+    let translated = translate_lifecycle_evidence(&raw, &event, 40)
+        .unwrap_or_else(|error| panic!("valid lifecycle evidence should translate: {error}"));
+    assert_eq!(
+        u64::from_le_bytes(
+            translated[24..32]
+                .try_into()
+                .unwrap_or_else(|_| panic!("translated coordinate should have eight bytes"))
+        ),
+        52
+    );
+    assert_eq!(&translated[..24], &raw[..24]);
+    assert_eq!(&translated[32..], &raw[32..]);
+
+    let mismatched = QemuFaultEvent {
+        observed_icount: 13,
+        ..QemuFaultEvent::default()
+    };
+    assert_eq!(
+        translate_lifecycle_evidence(&raw, &mismatched, 40),
+        Err(FaultCommandBridgeError::EventEnvelope)
+    );
+    assert_eq!(
+        translate_lifecycle_evidence(&raw, &event, u64::MAX),
+        Err(FaultCommandBridgeError::CoordinateOverflow)
+    );
+}
+
 fn complete_x86_hardware_manifest(
     recoverable: FaultHardwareErrorCapabilityRowV1,
 ) -> FaultHardwareErrorCapabilityManifestV1 {

@@ -379,8 +379,8 @@ impl BoundaryNetworkState {
                 (pair[0].release_nanos, pair[0].sequence)
                     >= (pair[1].release_nanos, pair[1].sequence)
             }) || control.overflow_timeouts.windows(2).any(|pair| {
-                (pair[0].deadline_nanos, pair[0].action.id())
-                    >= (pair[1].deadline_nanos, pair[1].action.id())
+                (pair[0].deadline_nanos, pair[0].action.committed_state_id())
+                    >= (pair[1].deadline_nanos, pair[1].action.committed_state_id())
             }) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -745,7 +745,11 @@ impl BoundaryNetworkState {
                     control.overflow_timeouts.sort_by(|left, right| {
                         left.deadline_nanos
                             .cmp(&right.deadline_nanos)
-                            .then_with(|| left.action.id().cmp(&right.action.id()))
+                            .then_with(|| {
+                                left.action
+                                    .committed_state_id()
+                                    .cmp(&right.action.committed_state_id())
+                            })
                     });
                     application.next_wakeup_nanos =
                         earliest_wakeup(application.next_wakeup_nanos, Some(deadline));
@@ -1171,7 +1175,11 @@ impl BoundaryNetworkState {
             left.release_nanos
                 .cmp(&right.release_nanos)
                 .then_with(|| left.sequence.cmp(&right.sequence))
-                .then_with(|| left.action.id().cmp(&right.action.id()))
+                .then_with(|| {
+                    left.action
+                        .committed_state_id()
+                        .cmp(&right.action.committed_state_id())
+                })
         });
         self.advance_associations(coordinate.virtual_nanos, topology, &mut application)?;
         application.next_wakeup_nanos = earliest_wakeup(

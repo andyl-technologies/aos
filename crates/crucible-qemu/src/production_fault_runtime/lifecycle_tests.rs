@@ -52,10 +52,24 @@ fn terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest() {
         decision.effective_transition,
         NodeLifecycleTransition::Crash
     );
+    let mut authorization_evidence: [u8; LIFECYCLE_EVIDENCE_BYTES] = event
+        .payload
+        .as_slice()
+        .try_into()
+        .unwrap_or_else(|_| panic!("lifecycle evidence should have its fixed ABI length"));
+    authorization_evidence[24..32].fill(0);
+    assert_eq!(
+        decision.event_evidence.bytes,
+        <[u8; 32]>::from(Sha256::digest(authorization_evidence))
+    );
 
     let mut substituted = event.clone();
     substituted.payload[256] ^= 1;
     assert!(validate_node_event_evidence(&substituted, &crash).is_err());
+
+    let mut changed_device_encoding_size = event.clone();
+    changed_device_encoding_size.payload[120..128].copy_from_slice(&129_u64.to_le_bytes());
+    assert!(validate_node_event_evidence(&changed_device_encoding_size, &crash).is_ok());
 }
 
 #[test]

@@ -16,7 +16,7 @@ use crucible::{
     SchedulingNodeKind,
 };
 use crucible_shmem::{
-    AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey,
+    AdvanceCeiling, FingerprintSample, FingerprintSampleSlot, FrameDeliveryKey, FrameDeliveryState,
     FrameDeliveryStateError, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
     NodeSlotError, NodeSlotSnapshot, RingHeader, STATUS_IDLE, STATUS_RUNNING,
     SchedulerWakePublicationError, SpscRingError, authorize_advance_ceiling,
@@ -26,8 +26,8 @@ use thiserror::Error;
 
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
-    QemuAsyncQuantumCompletion, QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState,
-    QemuNodePendingQuantum, QemuShmemHotPathChannel,
+    QemuAdvanceCompletionFence, QemuAsyncQuantumCompletion, QemuNodeChannelError,
+    QemuNodeEmittedFrame, QemuNodeIdleState, QemuNodePendingQuantum, QemuShmemHotPathChannel,
 };
 
 mod channel;
@@ -301,6 +301,8 @@ pub struct QemuPendingQuantum {
     /// coordinate. This distinguishes that terminal state from a stale running
     /// report against the original scheduler ceiling.
     pub initial_control_boundary_ack: u32,
+    /// Fresh plugin publication required because scheduler input capped this quantum.
+    pub completion_fence: Option<QemuAdvanceCompletionFence>,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -310,6 +312,7 @@ struct QemuInboundConsumptionBaseline {
     read_idx: u64,
     write_idx: u64,
     delivery_keys: Vec<FrameDeliveryKey>,
+    next_wake_icount: Option<u64>,
 }
 
 enum QemuInboundDeliveryLedger<'a> {
@@ -513,10 +516,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
         self.record(QemuQuantumOperation::ComputeSchedulerCeiling);
         let earliest_delivery = inbound_consumption
-            .delivery_keys
-            .iter()
-            .find(|key| key.delivery_icount > initial_state.current_icount.retired)
-            .map(|key| key.delivery_icount);
+            .next_wake_icount
+            .map(|icount| icount.max(initial_state.current_icount.retired));
         let effective_ceiling = earliest_delivery
             .map_or(horizon.icount.retired, |delivery_icount| {
                 horizon.icount.retired.min(delivery_icount)
@@ -554,6 +555,11 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
             initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
+            completion_fence: earliest_delivery
+                .filter(|delivery_icount| *delivery_icount <= horizon.icount.retired)
+                .map(|_| QemuAdvanceCompletionFence {
+                    initial_publish_generation: initial_snapshot.publish_gen,
+                }),
             operation_start,
             inbound_consumption,
         })

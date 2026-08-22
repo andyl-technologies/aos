@@ -169,7 +169,7 @@ index d2e89855f..0db640157 100644
   * qemu_plugin_register_sim_shmem_dispatch_cb() - register sim shmem clock hooks
   * @publish_icount_cb: callback that publishes the current raw icount
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 2f4939337..cedcf92e4 100644
+index f3b6a53bc..cecbf9cc4 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -15,6 +15,7 @@

@@ -72,7 +72,7 @@ index 000000000..806cc49f7
 +
 +#endif
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index f8a57a500..115558b28 100644
+index 343f0ed4f..1dcd4d60e 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,11 @@

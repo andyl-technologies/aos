@@ -59,6 +59,29 @@ fn async_driver_completes_one_quantum_with_bounded_wait_and_yields() {
     assert_eq!(target.finished, 1);
     assert_eq!(target.shutdowns, 0);
     assert_eq!(runtime.yields, 2);
+    assert_eq!(runtime.armed_fences, vec![None]);
+}
+
+#[test]
+fn async_driver_arms_the_pending_scheduler_input_fence_before_waiting() {
+    let policy = QemuAsyncDriverPolicy::fast_test();
+    let mut target = ScriptedTarget::completed();
+    target.completion_fence = Some(QemuAdvanceCompletionFence {
+        initial_publish_generation: 17,
+    });
+    let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]);
+    let crash_detector = QemuCrashDetector::new("vm-a");
+
+    run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &crash_detector,
+        horizon(12),
+    )
+    .unwrap_or_else(|error| panic!("fenced node-step should complete: {error}"));
+
+    assert_eq!(runtime.armed_fences, vec![target.completion_fence]);
 }
 
 #[test]
@@ -208,6 +231,7 @@ fn async_driver_rejects_qmp_or_plugin_ipc_in_quantum_hot_path() {
     let policy = QemuAsyncDriverPolicy::fast_test();
     let mut target = ScriptedTarget {
         completion: QemuAsyncQuantumCompletion {
+            ceiling: Icount { retired: 0 },
             outcome: AdvanceOutcome::ReachedHorizon,
             final_state: QemuNodeIdleState {
                 current_icount: Icount { retired: 0 },
@@ -358,6 +382,7 @@ struct ScriptedRuntime {
     yields: usize,
     awaits: usize,
     repolls: usize,
+    armed_fences: Vec<Option<QemuAdvanceCompletionFence>>,
 }
 
 impl ScriptedRuntime {
@@ -367,11 +392,20 @@ impl ScriptedRuntime {
             yields: 0,
             awaits: 0,
             repolls: 0,
+            armed_fences: Vec::new(),
         }
     }
 }
 
 impl QemuHostIoRuntime for ScriptedRuntime {
+    fn arm_advance_completion_fence(
+        &mut self,
+        fence: Option<QemuAdvanceCompletionFence>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.armed_fences.push(fence);
+        Ok(())
+    }
+
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.yields += 1;
         Ok(())
@@ -407,12 +441,14 @@ struct ScriptedTarget {
     started: Vec<u64>,
     finished: usize,
     shutdowns: usize,
+    completion_fence: Option<QemuAdvanceCompletionFence>,
 }
 
 impl ScriptedTarget {
     fn completed() -> Self {
         Self {
             completion: QemuAsyncQuantumCompletion {
+                ceiling: Icount { retired: 0 },
                 outcome: AdvanceOutcome::ReachedHorizon,
                 final_state: QemuNodeIdleState {
                     current_icount: Icount { retired: 0 },
@@ -430,6 +466,7 @@ impl ScriptedTarget {
             started: Vec::new(),
             finished: 0,
             shutdowns: 0,
+            completion_fence: None,
         }
     }
 
@@ -466,6 +503,13 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
         self.started.push(horizon.icount.retired);
         Ok(horizon.icount.retired)
+    }
+
+    fn advance_completion_fence(
+        &self,
+        _pending: &Self::PendingQuantum,
+    ) -> Option<QemuAdvanceCompletionFence> {
+        self.completion_fence
     }
 
     fn finish_quantum(

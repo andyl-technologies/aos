@@ -1030,6 +1030,11 @@ impl LiveVcpuTimeCallbackState {
                     },
                 )?;
                 let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
+                    // QEMU still owns the preceding advance barrier. Its
+                    // completion kicks every halted vCPU, so release this
+                    // one-shot edge and let that later all-halted callback
+                    // recompute from the then-current ceiling and inbox.
+                    self.all_halted_idle_handled.store(false, Ordering::Release);
                     return Ok(());
                 };
                 self.arm_idle_advance(raw_icount, target_icount, pending)
@@ -1202,6 +1207,7 @@ impl LiveVcpuTimeCallbackState {
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
         }
+        self.pump_fault_commands(raw_icount)?;
         PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
         Ok(())
     }

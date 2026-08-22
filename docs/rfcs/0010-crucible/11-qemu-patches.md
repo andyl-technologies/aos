@@ -474,8 +474,11 @@ determinism-critical.
   from transient guest backpressure and permanent failure. The plugin consumes
   a frame from the bounded shared-memory ring only after complete delivery; a
   backpressured frame remains canonical and checkpoint-visible there for retry
-  at a later idle boundary. Delivery is therefore a pure function of icount,
-  not "as it arrives on a socket."
+  at a later idle boundary. Each retry clears QEMU's otherwise persistent
+  `receive_disabled` hint before re-probing the guest device: that hint normally
+  belongs to QEMU's private packet queue, which this canonical path deliberately
+  does not use. Delivery is therefore a pure function of icount, not "as it
+  arrives on a socket."
 - **Micro-test:** inject the same frame at the same delivery icount under skewed
   producer timing across two runs; assert the guest observes it at the identical
   icount.
@@ -1491,6 +1494,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   and migration retain upstream behavior.
 - **Risk:** D.
 
+### crucible-control-boundary-node-faults — complete halted-node mutations
+
+- **Patch:** `0109-crucible-control-boundary-node-faults.patch`.
+- **Enforces:** [QFP-LIFE-1], [QFP-LIFE-2], [FAULT-ORDER].
+- **Mechanism:** QEMU samples one raw icount for the drained control callback,
+  lets the plugin dequeue and submit commands, and then dispatches any due
+  node-boundary command at that same coordinate before leaving the exact
+  boundary. The pending predicate is phase-qualified, so instruction and
+  device mutations remain owned by their native execution seams. Terminal
+  lifecycle authorization hashes zero the raw-coordinate field in CRUCLIF
+  evidence before the plugin translates it to scheduler-logical space; the
+  action and event header still bind the exact logical coordinate.
+- **Micro-test:** the production shared-cause gate reaches the event with a
+  halted real guest, requires typed lifecycle PREPARE and APPLY to complete,
+  and compares uninterrupted execution with fresh-process restore. The plugin
+  unit regression proves command pumping precedes the control-token release
+  acknowledgement.
+- **Inertness:** the added dispatch runs only inside the existing exact drained
+  control callback and only when a due node-boundary command is pending. It does
+  not advance guest time, synthesize a result, or affect ordinary QEMU modes.
+- **Risk:** F.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
@@ -1845,8 +1870,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   deliberately not used because they are neither canonical nor part of the
   durable checkpoint protocol.
 - **Micro-test:** inject a frame while the receiver is momentarily unready; assert
-  it is not dropped, remains in the canonical ring, and is delivered on a later
-  deterministic retry; two runs agree.
+  it is not dropped, remains in the canonical ring, QEMU's `receive_disabled`
+  latch cannot suppress the later canonical probe, and the frame is delivered
+  on a deterministic retry; two runs agree.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D (it determines RX delivery timing; a regression reintroduces
   nondeterministic loss).
@@ -1856,7 +1882,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   frame is never silently dropped when the receiver is momentarily unready and
   is delivered at the plugin's chosen virtual-time moment. Backpressure
   retention MUST remain in the bounded, checkpointed shared-memory ring, never
-  a QEMU-private packet queue. *Gate:* `gate:layer1-injection`,
+  a QEMU-private packet queue. A canonical retry MUST re-probe the guest device
+  independently of QEMU's private-queue `receive_disabled` latch. *Gate:*
+  `gate:layer1-injection`,
   `gate:qemu-inert`. *Spec:* §11.6; satisfies [DET-18] (E18).
 
 ## 11.7 Guest↔host channel: no new patch required

@@ -2312,7 +2312,7 @@ impl ProductionNinepFaultCoordinator {
                 "crucible.ninep.visibility-update.v1",
                 &format!(
                     "action={}\nupdate={}",
-                    action.id().to_hex(),
+                    action.committed_state_id().to_hex(),
                     update.as_str()
                 ),
             );
@@ -2680,6 +2680,41 @@ use evidence::*;
 mod tests {
     use super::*;
 
+    fn storage_evidence_action() -> ResolvedBindingAction {
+        ResolvedBindingAction {
+            kind: crucible::model::BindingActionKind::Apply,
+            binding: FaultObjectId::parse(String::from("storage-evidence-binding"))
+                .unwrap_or_else(|error| panic!("test binding should parse: {error}")),
+            target: ResolvedFaultTarget::BlockDevice {
+                device: ContentHash::from_bytes(b"storage-evidence-device"),
+            },
+            phase: FaultPhase::Complete,
+            effect: Arc::new(
+                crucible::model::EffectRequest::new(
+                    crucible::model::EFFECT_SEMANTIC_VERSION,
+                    crucible::model::EffectLifetime::Persistent,
+                    EffectSpecification::Storage(StorageEffectSpecification::Availability {
+                        state: crucible::model::StorageAvailabilityState::Online,
+                        reconnect_policy: crucible::model::StorageTransitionPolicy::Preserve,
+                    }),
+                )
+                .unwrap_or_else(|error| panic!("test effect should validate: {error}")),
+            ),
+            mapping_output: Arc::new(crucible::model::ResolvedMappingOutput::Activation {
+                active: true,
+            }),
+            mapped_digest: ContentHash::from_bytes(b"storage-evidence-mapping"),
+            transition_sequence: 1,
+            opportunity: Some(ContentHash::from_bytes(b"storage-evidence-opportunity")),
+            coordinate: FaultCoordinate {
+                virtual_nanos: 17,
+                retired_instructions: None,
+            },
+            cause: crucible::model::BindingActionCause::Signal,
+            expected_precondition: None,
+        }
+    }
+
     fn observation(evidence: &'static [u8]) -> FaultObservation {
         observation_at(0, evidence)
     }
@@ -2697,6 +2732,38 @@ mod tests {
             opportunity: None,
             evidence: ContentHash::from_bytes(evidence),
         }
+    }
+
+    #[test]
+    fn ninep_result_evidence_excludes_locked_replay_authorization() {
+        let action = storage_evidence_action();
+        let mut locked = action.clone();
+        locked.expected_precondition = Some(ContentHash::from_bytes(b"recorded-storage-state"));
+        let request = NinepRequestOpportunity {
+            identity: crucible_device::NinepRequestIdentity {
+                request_icount: 19,
+                transport_sequence: 3,
+                tag: 7,
+                digest: *blake3::hash(b"ninep-request").as_bytes(),
+            },
+            request_icount: 19,
+            operation: NinepOperation::Read,
+            frame: Vec::new(),
+        };
+        let response = QemuLive9pResponseEvidence {
+            completion_icount: 23,
+            transport_sequence: 3,
+            status: crucible_device::ResponseStatus::Ok,
+            payload_len: 4,
+            payload_digest: *blake3::hash(b"ninep-response").as_bytes(),
+        };
+
+        assert_ne!(action.id(), locked.id());
+        assert_eq!(action.committed_state_id(), locked.committed_state_id());
+        assert_eq!(
+            ninep_result_evidence(&action, &request, &NinepResultDirective::Normal, response),
+            ninep_result_evidence(&locked, &request, &NinepResultDirective::Normal, response),
+        );
     }
 
     #[test]

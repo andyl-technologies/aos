@@ -89,6 +89,13 @@ impl<'a> FaultBindingRuntime<'a> {
                         trace,
                     )?;
                 }
+                let recording_derivation_fingerprint = match replay.as_deref() {
+                    Some(trace) if authoritative_replay => trace
+                        .work_item_for_context(coordinate, same_coordinate_sequence, opportunity)
+                        .map_err(BindingRuntimeError::Runtime)?
+                        .map_or(derivation_fingerprint, |item| item.derivation_fingerprint),
+                    _ => derivation_fingerprint,
+                };
                 if let Some(work_items) = recorded.as_deref() {
                     reserve_usize_runtime(
                         self.resource_limits,
@@ -121,7 +128,7 @@ impl<'a> FaultBindingRuntime<'a> {
                         coordinate,
                         opportunity,
                         same_coordinate_sequence,
-                        derivation_fingerprint,
+                        recording_derivation_fingerprint,
                     )?);
                 }
                 evaluation

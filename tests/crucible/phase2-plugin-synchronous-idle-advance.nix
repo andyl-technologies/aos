@@ -112,6 +112,10 @@
         label = "completion barrier wording";
         needle = "order timer bottom halves before completion";
       }
+      {
+        label = "busy queued advance retry wording";
+        needle = "re-arm the all-halted edge and recompute after QEMU's";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
@@ -397,6 +401,10 @@
         needle = "self.arm_idle_advance(raw_icount, target_icount, pending)";
       }
       {
+        label = "busy queued advance re-arms the all-halted edge";
+        needle = "self.all_halted_idle_handled.store(false, Ordering::Release);";
+      }
+      {
         label = "live completion validates and commits pending state";
         needle = "state.complete_idle_advance(TimeAdvanceCompletion::from_qemu";
       }
@@ -415,8 +423,12 @@
         needle = "live_idle_callback_queues_then_commits_only_from_normal_loop_completion";
       }
       {
+        label = "busy queued advance retry-edge regression";
+        needle = "live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier";
+      }
+      {
         label = "pending idle/resume/reentrancy rejection test";
-        needle = "live_pending_advance_rejects_idle_resume_and_reentrant_publication";
+        needle = "live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publication";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -519,7 +531,15 @@ in
               --target-dir "$TMPDIR/crucible-plugin-synchronous-idle-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
-              live_pending_advance_rejects_idle_resume_and_reentrant_publication \
+              live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-plugin-synchronous-idle-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publication \
               -- --test-threads=1
             cargo test \
               --frozen \

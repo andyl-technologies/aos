@@ -85,6 +85,7 @@ in
           grep -Fxq 'gate=gate:signal-shared-cause' result
           grep -Fxq 'backend=production-qemu-lifecycle' result
           grep -Fxq 'pre_event_queue_and_volatile_cache=true' result
+          grep -Fxq 'pre_event_queue_finish_after_event=true' result
           grep -Fxq 'network_storage_node_same_event=true' result
           grep -Fxq 'exact_checkpoint_evidence_match=true' result
           grep -Fxq 'locked_effect_replay_evidence_match=true' result

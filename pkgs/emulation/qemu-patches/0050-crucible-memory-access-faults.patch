@@ -2787,7 +2787,7 @@ index e142f7efa..64ca04103 100644
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index d3c305392..2014d9585 100644
+index 8252173a5..b1dcce5ec 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -24,6 +24,7 @@
