@@ -311,8 +311,12 @@ all been observed. The first implementation streams the complete qcow2 object;
 extent manifests and changed-state capture remain the required hot-path
 optimization rather than a correctness precondition.
 
-The single-host restore transaction pins the pre-provisioned run directory and
-VMState inode before copying. A valid declared length is checked against the
+The single-host restore transaction accepts either a current exact-pin
+selection or the exact root retained by a paused execution origin. The latter
+must name the attempt's pre-selection or post-selection configuration; a
+foreign root is rejected before the first destination write. The transaction
+pins the pre-provisioned run directory and VMState inode before copying. A
+valid declared length is checked against the
 attempt's aggregate writable-byte reservation before truncation. Beginning the
 copy marks the destination unavailable for launch; only an exact-length,
 authenticated, file-synchronized completion records the aggregate

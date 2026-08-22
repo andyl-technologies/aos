@@ -1,14 +1,15 @@
-//! Exact-pin checkpoint restoration into a guarded QEMU run directory.
+//! Exact checkpoint restoration into a guarded QEMU run directory.
 //!
 //! This module joins three independently owned authorities without granting
-//! any of them broader mutation capability: the current campaign exact pin,
-//! the durable operational selection, and the immutable exact-checkpoint
-//! store. The VMState child streams into a pinned run-directory transaction;
-//! only a complete authenticated copy becomes eligible for guarded launch.
+//! any of them broader mutation capability: a semantic exact pin or durable
+//! attempt-resume root, the operational owner that retained it, and the
+//! immutable exact-checkpoint store. The VMState child streams into a pinned
+//! run-directory transaction; only a complete authenticated copy becomes
+//! eligible for guarded launch.
 
 use std::io::{self, Write};
 
-use crucible::Configuration;
+use crucible::{Configuration, ContentHash};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
@@ -25,8 +26,9 @@ use crucible_campaign::{
 
 use crate::{
     ExactCheckpointStore, ExactCheckpointStoreError, ExactPinRetentionAdmin,
-    ExactPinRetentionError, ExecutionCancellation, QemuAttemptOperationalBoundary,
-    QemuAttemptProcessResourceGuard,
+    ExactPinRetentionError, ExecutionCancellation, LoadedExactCheckpoint,
+    QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
+    QemuExactCheckpointRealization,
 };
 
 /// One exact checkpoint durably materialized for guarded QEMU restore.
@@ -34,6 +36,19 @@ use crate::{
 pub struct MaterializedExactCheckpoint {
     checkpoint: ExactCheckpointId,
     pin_fact: CampaignFactId,
+    vmstate_binding: QemuVmStateBinding,
+    snapshot: QemuVmSnapshot,
+}
+
+/// One operational attempt checkpoint durably materialized for guarded resume.
+///
+/// Unlike [`MaterializedExactCheckpoint`], this value is rooted by the exact
+/// resume identity retained in the supervisor ledger rather than by a semantic
+/// campaign pin. It still authenticates the same complete immutable root and
+/// commits the same root-derived VMState binding before launch.
+#[derive(Clone, Debug)]
+pub struct MaterializedAttemptCheckpoint {
+    checkpoint: ExactCheckpointId,
     vmstate_binding: QemuVmStateBinding,
     snapshot: QemuVmSnapshot,
 }
@@ -254,6 +269,32 @@ impl MaterializedExactCheckpoint {
     }
 }
 
+impl MaterializedAttemptCheckpoint {
+    /// Returns the complete immutable exact-checkpoint root.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the complete-root binding committed with the pinned VMState.
+    #[must_use]
+    pub const fn vmstate_binding(&self) -> QemuVmStateBinding {
+        self.vmstate_binding
+    }
+
+    /// Returns the authenticated snapshot metadata bound to the VMState file.
+    #[must_use]
+    pub const fn snapshot(&self) -> &QemuVmSnapshot {
+        &self.snapshot
+    }
+
+    /// Consumes the materialization into its authenticated snapshot metadata.
+    #[must_use]
+    pub fn into_snapshot(self) -> QemuVmSnapshot {
+        self.snapshot
+    }
+}
+
 /// Materializes the current selected exact checkpoint into `run_directory`.
 ///
 /// Selection inventory authority is held only for the bounded journal lookup.
@@ -296,32 +337,63 @@ where
 
     check_cancellation(cancellation)?;
     let loaded = selection.authenticate_current(repository, checkpoints)?;
-    check_cancellation(cancellation)?;
-    let snapshot = loaded.snapshot().clone();
-    let vmstate_binding = restore_binding(selection.checkpoint());
-    let mut materialization = run_directory
-        .begin_exact_vmstate_materialization(vmstate_binding, loaded.vmstate_bytes())?;
-    let copy_result = {
-        let mut destination = CancellationCheckedWriter {
-            destination: &mut materialization,
-            cancellation,
-        };
-        loaded.copy_vmstate_to(&mut destination)
-    };
-    if let Err(source) = copy_result {
-        if cancellation.is_canceled() {
-            return Err(ExactCheckpointRestoreError::Canceled);
-        }
-        return Err(ExactCheckpointRestoreError::Checkpoint(source));
-    }
-    check_cancellation(cancellation)?;
-    materialization.finish()?;
-    run_directory.require_exact_vmstate(vmstate_binding)?;
-    check_cancellation(cancellation)?;
+    let (vmstate_binding, snapshot) = materialize_loaded_checkpoint(
+        selection.checkpoint(),
+        &loaded,
+        run_directory,
+        cancellation,
+    )?;
 
     Ok(MaterializedExactCheckpoint {
         checkpoint: selection.checkpoint(),
         pin_fact: selection.pin_fact(),
+        vmstate_binding,
+        snapshot,
+    })
+}
+
+/// Materializes one supervisor-retained exact root for attempt resume.
+///
+/// The root is authenticated directly from the immutable checkpoint store.
+/// Its checkpoint configuration must equal `initial` or, for a branch attempt,
+/// `post_selection`. The VMState child is streamed into the pinned destination
+/// and authenticated before the destination becomes eligible for guarded QEMU
+/// launch. No semantic pin or selection journal is consulted: the durable
+/// supervisor execution origin is the root authority for this operation.
+///
+/// # Errors
+///
+/// Returns [`ExactCheckpointRestoreError`] when cancellation wins, the root is
+/// unavailable or corrupt, the checkpoint names another configuration, or the
+/// pinned destination cannot be committed.
+pub fn materialize_attempt_exact_checkpoint(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+    run_directory: &mut QemuPreparedRunDirectory,
+    cancellation: &ExecutionCancellation,
+) -> Result<MaterializedAttemptCheckpoint, ExactCheckpointRestoreError> {
+    check_cancellation(cancellation)?;
+    let loaded = checkpoints.load(checkpoint)?;
+    check_cancellation(cancellation)?;
+
+    let configuration = loaded.snapshot().checkpoint().configuration;
+    let configuration_is_allowed = configuration == initial.id()
+        || post_selection.is_some_and(|selected| configuration == selected.id());
+    if !configuration_is_allowed {
+        return Err(
+            ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint,
+                configuration,
+            },
+        );
+    }
+
+    let (vmstate_binding, snapshot) =
+        materialize_loaded_checkpoint(checkpoint, &loaded, run_directory, cancellation)?;
+    Ok(MaterializedAttemptCheckpoint {
+        checkpoint,
         vmstate_binding,
         snapshot,
     })
@@ -352,11 +424,86 @@ where
     L: QemuGuardedNodeRealizationLauncher,
     G: QemuAttemptProcessResourceGuard,
 {
+    realize_materialized_snapshot_guarded(executor, guard, configuration, materialized.snapshot())
+}
+
+/// Realizes one supervisor-retained attempt materialization under its guard.
+/// The returned realization explicitly echoes the immutable root authenticated
+/// by `materialized`, allowing the runner to reject cross-root substitution.
+///
+/// # Errors
+///
+/// Returns [`ExactCheckpointResumeError::Canceled`] when cancellation wins, or
+/// [`ExactCheckpointResumeError::Realization`] when replay admission, guarded
+/// launch, restore, or runtime validation fails.
+pub fn realize_materialized_attempt_checkpoint_guarded<L, G>(
+    executor: &mut QemuNodeRealizationExecutor<L>,
+    guard: &mut G,
+    configuration: &Configuration,
+    materialized: &MaterializedAttemptCheckpoint,
+) -> Result<QemuExactCheckpointRealization, ExactCheckpointResumeError>
+where
+    L: QemuGuardedNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
+    let realization = realize_materialized_snapshot_guarded(
+        executor,
+        guard,
+        configuration,
+        materialized.snapshot(),
+    )?;
+    Ok(QemuExactCheckpointRealization::new(
+        materialized.checkpoint(),
+        realization,
+    ))
+}
+
+fn materialize_loaded_checkpoint(
+    checkpoint: ExactCheckpointId,
+    loaded: &LoadedExactCheckpoint,
+    run_directory: &mut QemuPreparedRunDirectory,
+    cancellation: &ExecutionCancellation,
+) -> Result<(QemuVmStateBinding, QemuVmSnapshot), ExactCheckpointRestoreError> {
+    check_cancellation(cancellation)?;
+    let snapshot = loaded.snapshot().clone();
+    let vmstate_binding = restore_binding(checkpoint);
+    let mut materialization = run_directory
+        .begin_exact_vmstate_materialization(vmstate_binding, loaded.vmstate_bytes())?;
+    let copy_result = {
+        let mut destination = CancellationCheckedWriter {
+            destination: &mut materialization,
+            cancellation,
+        };
+        loaded.copy_vmstate_to(&mut destination)
+    };
+    if let Err(source) = copy_result {
+        if cancellation.is_canceled() {
+            return Err(ExactCheckpointRestoreError::Canceled);
+        }
+        return Err(ExactCheckpointRestoreError::Checkpoint(source));
+    }
+    check_cancellation(cancellation)?;
+    materialization.finish()?;
+    run_directory.require_exact_vmstate(vmstate_binding)?;
+    check_cancellation(cancellation)?;
+    Ok((vmstate_binding, snapshot))
+}
+
+fn realize_materialized_snapshot_guarded<L, G>(
+    executor: &mut QemuNodeRealizationExecutor<L>,
+    guard: &mut G,
+    configuration: &Configuration,
+    snapshot: &QemuVmSnapshot,
+) -> Result<QemuVmRealization, ExactCheckpointResumeError>
+where
+    L: QemuGuardedNodeRealizationLauncher,
+    G: QemuAttemptProcessResourceGuard,
+{
     check_resume_boundary(guard)?;
     let runtime = executor.resume_materialized_exact_snapshot_guarded(
         guard.child_process_contract(),
         configuration,
-        materialized.snapshot(),
+        snapshot,
     )?;
     check_resume_boundary(guard)?;
     Ok(QemuVmRealization {
@@ -364,7 +511,7 @@ where
         configuration: configuration.clone(),
         runtime,
         branch: QemuVmRealizationKind::ExactSnapshotLoadvm {
-            checkpoint: materialized.snapshot().checkpoint().clone(),
+            checkpoint: snapshot.checkpoint().clone(),
         },
     })
 }
@@ -411,6 +558,14 @@ pub enum ExactCheckpointRestoreError {
         campaign: CampaignName,
         /// Exact pinned configuration being resumed.
         configuration: ConfigurationId,
+    },
+    /// The retained root belongs to neither legal attempt boundary.
+    #[error("exact checkpoint {checkpoint} names foreign configuration {configuration:?}")]
+    CheckpointConfigurationMismatch {
+        /// Exact root selected by the durable execution origin.
+        checkpoint: ExactCheckpointId,
+        /// Configuration committed by the checkpoint metadata.
+        configuration: ContentHash,
     },
     /// Semantic pin or selection-journal authentication failed.
     #[error(transparent)]

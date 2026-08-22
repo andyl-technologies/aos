@@ -28,8 +28,9 @@
 //! publishes immutable observation candidates; [`executor_pool`] owns the
 //! fixed worker threads and their short supervisor reconciliation phases;
 //! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
-//! [`exact_checkpoint_restore`] authenticates current exact-pin selections and
-//! streams their VMState into fail-closed guarded launch authorities;
+//! [`exact_checkpoint_restore`] authenticates exact-pin selections or durable
+//! attempt-resume roots and streams their VMState into fail-closed guarded
+//! launch authorities;
 //! [`exact_pin_retention`] binds current exact semantic pins to authenticated
 //! durable checkpoint materializations for generation-fenced GC;
 //! [`crucible_artifact`] strictly
@@ -145,15 +146,16 @@ pub use crucible_qemu_runner::{
 };
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
-    QemuAttemptResourceGuardFactory, QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver,
-    QemuLiveAttemptResult, QemuLiveAttemptSession, QemuLiveAttemptSessionError,
-    QemuLiveAttemptSessionFactory,
+    QemuAttemptResourceGuardFactory, QemuExactCheckpointRealization,
+    QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
+    QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
 #[cfg(target_os = "linux")]
 pub use exact_checkpoint_restore::{
-    ExactCheckpointRestoreError, ExactCheckpointResumeError, MaterializedExactCheckpoint,
-    QemuGuardedReplayOracleSession, materialize_selected_exact_checkpoint,
-    realize_materialized_exact_checkpoint_guarded,
+    ExactCheckpointRestoreError, ExactCheckpointResumeError, MaterializedAttemptCheckpoint,
+    MaterializedExactCheckpoint, QemuGuardedReplayOracleSession,
+    materialize_attempt_exact_checkpoint, materialize_selected_exact_checkpoint,
+    realize_materialized_attempt_checkpoint_guarded, realize_materialized_exact_checkpoint_guarded,
 };
 pub use exact_checkpoint_store::{
     CapturedExactCheckpoint, EXACT_CHECKPOINT_ROOT_SCHEMA, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,

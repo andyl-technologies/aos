@@ -356,11 +356,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   the session converts a winning sticky request into a guarded exact capture,
   and the fixed pool carries that linear capture through no-write preparation,
   root staging, immutable publication, and durable pause without rerunning the
-  guest. Resume now reauthenticates the selected current exact pin and complete
-  checkpoint, streams opaque VMState through a length-bounded pinned-file
-  transaction, and records a selected-root binding over metadata plus VMState
-  only after authenticated EOF and file sync; interruption leaves guarded
-  launch fail-closed. A guarded-only exact-root launcher now consumes that
+  guest. Exact-pin resume now reauthenticates the selected current exact pin
+  and complete checkpoint, while operational attempt resume authenticates the
+  exact root retained by the durable execution origin and accepts only the
+  attempt's pre-selection or post-selection configuration. Both stream opaque
+  VMState through a length-bounded pinned-file transaction and record a root
+  binding over metadata plus VMState only after authenticated EOF and file
+  sync; interruption leaves guarded launch fail-closed. A guarded-only
+  exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
   daemon resume adapter derives production replay admission inside the QEMU
@@ -403,11 +406,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   assignment to the exact prior execution, checkpoint, and unchanged execution
   basis. Durable supervisor, worker, loopback, and campaign-driver resume wiring
   is implemented, including restart recovery and GC retention of the resume
-  input root. The QEMU attempt runner currently rejects resumed work before
-  guest execution; composing exact-root materialization with the guarded live
-  session remains open. Guarded QEMU launch/session composition also remains
-  open. The
-  fixed worker pool and its linear observation/checkpoint
+  input root. The QEMU attempt runner now bypasses ordinary exact-cache and
+  thin-replay lookup for resumed work, delegates the retained root to the
+  guarded live session, requires the returned immutable root ID to match, and
+  rejects a non-resume, foreign-configuration, or non-exact realization before
+  modeled guest execution. The complete-root attempt materializer and session
+  trait handoff are implemented. Concrete
+  composition of raw-root replay-oracle validation/promotion, run-directory
+  ownership, the real-node guarded launcher, and the production process guard
+  remains open; `NotRun` is still fail-closed. The fixed worker pool and its
+  linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:
   graph-scoped target validation, exact command replay and reuse rejection,
