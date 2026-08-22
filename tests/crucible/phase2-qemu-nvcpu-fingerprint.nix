@@ -472,6 +472,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.grep
         pkgs.jq
         pkgs.pkg-config

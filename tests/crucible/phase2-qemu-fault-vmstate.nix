@@ -207,6 +207,7 @@ in
         pkgs.coreutils
         pkgs.binutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.grep
         pkgs.sed
         pkgs.jq

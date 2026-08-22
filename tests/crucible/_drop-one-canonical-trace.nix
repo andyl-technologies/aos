@@ -16,7 +16,7 @@
     pname = "crucible-drop-one-exec-boundary-plugin";
     version = "0";
     src = null;
-    buildDeps = [pkgs.glib pkgs.pkg-config qemuPackage];
+    buildDeps = [pkgs.glib pkgs.glib.dev pkgs.pkg-config qemuPackage];
     PLUGIN_SOURCE = "${execBoundaryPluginSource}";
     phases = [
       {
@@ -43,7 +43,7 @@
     pname = "crucible-drop-one-warp-boundary-plugin";
     version = "0";
     src = null;
-    buildDeps = [pkgs.glib pkgs.pkg-config qemuPackage];
+    buildDeps = [pkgs.glib pkgs.glib.dev pkgs.pkg-config qemuPackage];
     PLUGIN_SOURCE = "${warpBoundaryPluginSource}";
     phases = [
       {

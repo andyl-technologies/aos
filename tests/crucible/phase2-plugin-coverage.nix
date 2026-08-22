@@ -655,6 +655,7 @@ in
 
       buildDeps = [
         pkgs.glib
+        pkgs.glib.dev
         pkgs.pkg-config
         pkgs.qemu-crucible
         pkgs.rust

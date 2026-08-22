@@ -226,6 +226,7 @@ in
       pkgs.coreutils
       pkgs.gawk
       pkgs.glib
+      pkgs.glib.dev
       pkgs.grep
       pkgs.pkg-config
       pkgs.qemu-crucible

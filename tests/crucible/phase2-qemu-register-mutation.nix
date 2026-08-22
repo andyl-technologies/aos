@@ -130,6 +130,7 @@ in
         pkgs.binutils
         pkgs.coreutils
         pkgs.glib
+        pkgs.glib.dev
         pkgs.grep
         pkgs.llvm
         pkgs.pkg-config
