@@ -285,10 +285,19 @@ in
 
             apply_dir="$TMPDIR/qemu-regenerated-apply-clean"
             mkdir -p "$apply_dir"
-            git --git-dir="$repository" archive --format=tar \
-              --output="$TMPDIR/qemu-base.tar" refs/heads/base
-            tar -xf "$TMPDIR/qemu-base.tar" -C "$apply_dir"
-            cp -R ${patchStackRepository}/source-supplement/. "$apply_dir/"
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" read-tree refs/heads/base
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" --work-tree="$apply_dir" checkout-index \
+                --all --prefix="$apply_dir/"
+            expected_supplement_hash=$(cat ${patchStackRepository}/source-supplement.sha256)
+            actual_supplement_hash=$(sha256sum ${patchStackRepository}/source-supplement.tar \
+              | gawk '{ print $1 }')
+            test "$actual_supplement_hash" = "$expected_supplement_hash" \
+              || fail "shared source supplement hash mismatch"
+            tar -xf ${patchStackRepository}/source-supplement.tar -C "$apply_dir"
+            tar -df ${patchStackRepository}/source-supplement.tar -C "$apply_dir" \
+              || fail "regeneration source supplement differs after materialization"
             cd "$apply_dir"
             for patch_name in ${patchList}; do
               patch --batch --forward --fuzz=0 --no-backup-if-mismatch \

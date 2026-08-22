@@ -58,8 +58,26 @@
     ++ lib.optionals (lib.hasInfix "tar -xf \${qemuPackage.src}" dropOneBuildSource) [
       "per-patch builds must materialize prepared refs instead of extracting QEMU"
     ]
-    ++ lib.optionals (!(lib.hasInfix "source-supplement/." dropOneBuildSource)) [
+    ++ lib.optionals (!(lib.hasInfix "source-supplement.tar" dropOneBuildSource)) [
       "per-patch builds must retain QEMU's ignored vendored subprojects"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "checkout-index" dropOneBuildSource)) [
+      "per-patch builds must check out only their prepared shared-repository ref"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "source_reconstruction_inventory_verified=true" patchStackRepositorySource)) [
+      "shared source reconstruction must prove a normalized exact inventory"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "source_reconstruction_inventory_consumed=true" dropOneBuildSource)) [
+      "clean variants must consume the verified source inventory and supplement"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "REBASE_HEAD" dropOneRepositorySource)) [
+      "drop-one conflicts must identify an exact pinned replay commit"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "--diff-filter=U" dropOneRepositorySource)) [
+      "drop-one conflicts must contain unmerged paths"
+    ]
+    ++ lib.optionals (!(lib.hasInfix "patch-specific-build-evidence" dropOneBuildSource)) [
+      "drop-one build failures must carry patch-specific compiler or linker evidence"
     ]
     ++ lib.optionals (lib.hasInfix "ninja -C build -j" dropOneBuildSource) [
       "per-patch builds must leave Ninja parallelism to the build environment"
@@ -210,8 +228,12 @@ in
             grep -q '^full_tree_staging_passes=1$' ${patchStackRepository}/result
             grep -q '^ignored_vendored_subprojects_preserved=true$' \
               ${patchStackRepository}/result
+            grep -q '^source_reconstruction_inventory_verified=true$' \
+              ${patchStackRepository}/result
             grep -q '^PASS$' ${dropOneRepository}/result
             grep -q '^all_drop_one_branches_computed_in_one_repository=true$' \
+              ${dropOneRepository}/result
+            grep -q '^conflicts_require_pinned_rebase_head_and_unmerged_paths=true$' \
               ${dropOneRepository}/result
             cp ${dropOneRepository}/drop-one-manifest.tsv \
               "$out/drop-one-repository-manifest.tsv"
@@ -256,7 +278,10 @@ in
             shared_patch_stack_source_extractions=1
             shared_patch_stack_full_tree_staging_passes=1
             shared_patch_stack_preserves_ignored_vendored_subprojects=true
+            shared_source_reconstruction_inventory_verified=true
             all_drop_one_branches_computed_in_one_repository=true
+            conflicts_require_pinned_rebase_head_and_unmerged_paths=true
+            build_failures_require_patch_specific_diagnostics=true
             successful_variants_materialize_prepared_refs=true
             conflict_variants_skip_source_checkout=true
             drop_one_repository_manifest=drop-one-repository-manifest.tsv

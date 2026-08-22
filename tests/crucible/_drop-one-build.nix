@@ -7,8 +7,9 @@
 #   conflict      -- N cannot be removed without breaking a later patch's 3-way
 #                    application ($out/conflict.env names the conflicting commit
 #                    and files).
-#   build-failed  -- N drops clean but full-minus-N fails to build ($out/build.log,
-#                    $out/failing-symbols).
+#   build-failed  -- N drops clean but full-minus-N has a compiler/linker failure
+#                    tied to a symbol or path introduced by N
+#                    ($out/build.log, $out/patch-specific-build-evidence).
 #   built         -- N drops clean and full-minus-N builds
 #                    ($out/variant-qemu-system-x86_64).
 {
@@ -17,6 +18,7 @@
   qemuPackage ? pkgs.qemu-crucible,
   index,
   attrPath ? "drop-one-build",
+  expectAbsentSymbols ? [],
   dropOneRepository ?
     import ./_qemu-drop-one-repository.nix {
       inherit pkgs lib qemuPackage;
@@ -26,6 +28,7 @@
   patchFiles = series.patchFiles;
   droppedPatch = builtins.elemAt patchFiles (index - 1);
   configureFlags = lib.escapeShellArgs qemuPackage.passthru.qemuConfigureFlags;
+  expectedSymbols = builtins.concatStringsSep " " expectAbsentSymbols;
 in
   pkgs.mkDerivation {
     pname = "crucible-drop-one-build-${toString index}";
@@ -63,8 +66,10 @@ in
     ];
 
     DROPPED_PATCH = droppedPatch;
+    DROPPED_PATCH_SOURCE = "${../../pkgs/emulation/qemu-patches}/${droppedPatch}";
     DROP_INDEX = toString index;
     DROP_ONE_REPOSITORY = "${dropOneRepository}";
+    EXPECT_ABSENT_SYMBOLS = expectedSymbols;
 
     phases = [
       {
@@ -73,26 +78,43 @@ in
           set -eu
           export LC_ALL=C
           mkdir -p "$out"
+          fail() { echo "FAIL: $*" >&2; exit 1; }
           printf '%s\n' "$DROPPED_PATCH" > "$out/dropped-patch"
           printf '%s\n' "$DROP_INDEX" > "$out/drop-index"
 
-          record_build_failure() {
-            echo build-failed > "$out/outcome"
+          record_attributable_build_failure() {
             : > "$out/failing-symbols"
-            for log_path in "$out/configure.log" "$out/build.log"; do
-              if [ ! -f "$log_path" ]; then
-                continue
-              fi
-              grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-              grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-              grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$log_path" \
-                | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
-              grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            done
+            grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+            grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+            grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$out/build.log" \
+              | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
+            grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
             LC_ALL=C sort -u "$out/failing-symbols" -o "$out/failing-symbols"
+
+            grep -E 'FAILED:|(^|[[:space:]])(fatal )?error:|undefined reference|implicit declaration|undeclared|unknown type name' \
+              "$out/build.log" > "$out/build-diagnostics" \
+              || fail "Ninja failed without a compiler or linker diagnostic"
+            : > "$out/patch-specific-build-evidence"
+            for symbol in $EXPECT_ABSENT_SYMBOLS; do
+              if grep -Fqx "$symbol" "$out/failing-symbols"; then
+                printf 'symbol\t%s\n' "$symbol" >> "$out/patch-specific-build-evidence"
+              fi
+            done
+            gawk '
+              /^--- a\// { sub(/^--- a\//, ""); if ($0 != "/dev/null") print }
+              /^\+\+\+ b\// { sub(/^\+\+\+ b\//, ""); if ($0 != "/dev/null") print }
+            ' "$DROPPED_PATCH_SOURCE" | LC_ALL=C sort -u > "$out/dropped-patch-paths"
+            while IFS= read -r touched_path; do
+              if grep -Fq "$touched_path" "$out/build-diagnostics"; then
+                printf 'path\t%s\n' "$touched_path" >> "$out/patch-specific-build-evidence"
+              fi
+            done < "$out/dropped-patch-paths"
+            test -s "$out/patch-specific-build-evidence" \
+              || fail "Ninja failure has no diagnostic tied to $DROPPED_PATCH"
+            echo build-failed > "$out/outcome"
             exit 0
           }
 
@@ -125,12 +147,26 @@ in
 
           src="$TMPDIR/qemu-src"
           mkdir -p "$src"
-          git --git-dir="$DROP_ONE_REPOSITORY/repo.git" archive \
-            --format=tar --output="$TMPDIR/qemu-variant.tar" "$variant_ref"
-          tar -xf "$TMPDIR/qemu-variant.tar" -C "$src"
-          cp -R "$DROP_ONE_REPOSITORY/source-supplement/." "$src/"
+          expected_supplement_hash=$(cat "$DROP_ONE_REPOSITORY/source-supplement.sha256")
+          actual_supplement_hash=$(sha256sum "$DROP_ONE_REPOSITORY/source-supplement.tar" \
+            | gawk '{ print $1 }')
+          test "$actual_supplement_hash" = "$expected_supplement_hash" \
+            || fail "shared QEMU source supplement hash mismatch"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" read-tree "$variant_ref"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" --work-tree="$src" checkout-index \
+              --all --prefix="$src/"
+          tar -xf "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src"
+          tar -df "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src" \
+            || fail "materialized QEMU supplement differs from the verified archive"
           chmod -R u+w "$src"
           echo true > "$out/source-materialized"
+          {
+            echo "source_inventory_sha256=$(cat "$DROP_ONE_REPOSITORY/source-inventory.sha256")"
+            echo "source_supplement_sha256=$actual_supplement_hash"
+            echo "source_reconstruction_inventory_consumed=true"
+          } > "$out/source-reconstruction.env"
           cd "$src"
 
           # Prepare + build full-minus-N (match the shipped build's effective
@@ -145,11 +181,13 @@ in
           done
           export PYTHONPATH="${pkgs.meson}/lib/python3/site-packages:${pkgs.distlib}/lib/python3.14/site-packages:${pkgs.setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           export PYTHONDONTWRITEBYTECODE=1
-          "$CONFIG_SHELL" ./configure \
+          if ! "$CONFIG_SHELL" ./configure \
             --prefix="$TMPDIR/install" \
             ${configureFlags} \
             --disable-werror \
-            > "$out/configure.log" 2>&1 || record_build_failure
+            > "$out/configure.log" 2>&1; then
+            fail "full-minus-$DROP_INDEX QEMU configuration failed"
+          fi
           rm -f subprojects/.wraplock
 
           if ninja -C build qemu-system-x86_64 \
@@ -157,7 +195,7 @@ in
             echo built > "$out/outcome"
             cp build/qemu-system-x86_64 "$out/variant-qemu-system-x86_64"
           else
-            record_build_failure
+            record_attributable_build_failure
           fi
         '';
       }
