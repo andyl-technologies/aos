@@ -440,12 +440,44 @@ in {
       '';
     };
 
+    systemd.services.aos-ssh-ready = {
+      description = "Wait for live AOS host authentication policy";
+      wants = ["aos-eval.service"];
+      after = ["aos-eval.service"];
+      before = ["sshd.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "20s";
+      };
+      script = ''
+        attempts=0
+        while [ ! -e /run/aos/host-policy-live ] && [ "$attempts" -lt 150 ]; do
+          ${pkgs.coreutils}/bin/sleep 0.1
+          attempts=$((attempts + 1))
+        done
+
+        if [ ! -e /run/aos/host-policy-live ]; then
+          echo "aos-ssh-ready: host policy did not activate within 15 seconds; allowing recovery SSH startup" >&2
+        fi
+      '';
+    };
+
     # sshd.service — OpenSSH server daemon.
     systemd.services."sshd" = {
       description = "OpenSSH Daemon";
       wantedBy = ["multi-user.target"];
+      wants = ["aos-ssh-ready.service"];
       requires = ["sshd-keygen.service"];
-      after = ["network.target" "sshd-keygen.service"];
+      # The readiness unit observes the post-/etc-swap marker rather than
+      # ordering on graph compilation. Activation may synchronously start or
+      # restart sshd, which would create a cycle with the compiler awaiting
+      # activation if sshd depended on the compiler itself.
+      after = [
+        "network.target"
+        "sshd-keygen.service"
+        "aos-ssh-ready.service"
+      ];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";

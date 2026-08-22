@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
+mod checkpoint_codec;
+
 /// Committed live state for host-owned network and storage effects.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,50 +18,6 @@ pub struct HostFaultActionState {
     active: BTreeMap<ActiveContributionKey, ResolvedBindingAction>,
     impulses: Vec<ResolvedBindingAction>,
     digest: ContentHash,
-}
-
-impl HostFaultActionState {
-    /// Decodes host adapter state and authenticates its derived digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::CheckpointEncoding`] for malformed data or
-    /// [`FaultRuntimeError::IncompleteAdapterState`] when keys, actions, or the
-    /// carried digest disagree.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, FaultRuntimeError> {
-        let mut state: Self =
-            ciborium::de::from_reader(bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
-        if state.active.iter().any(|(key, action)| {
-            action.kind != BindingActionKind::UpsertPersistent
-                || action.binding != key.binding
-                || action.target != key.target
-                || action.phase != key.phase
-                || action.effect.kind() != key.effect
-        }) {
-            return Err(FaultRuntimeError::IncompleteAdapterState);
-        }
-        let expected = state.digest;
-        state.recompute_digest();
-        if state.digest != expected {
-            return Err(FaultRuntimeError::IncompleteAdapterState);
-        }
-        if state.canonical_bytes()?.as_slice() != bytes {
-            return Err(FaultRuntimeError::CheckpointEncoding);
-        }
-        Ok(state)
-    }
-
-    /// Encodes host adapter state as deterministic CBOR.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::CheckpointEncoding`] when serialization fails.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
-        let mut bytes = Vec::new();
-        ciborium::ser::into_writer(self, &mut bytes)
-            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
-        Ok(bytes)
-    }
 }
 
 impl Default for HostFaultActionState {

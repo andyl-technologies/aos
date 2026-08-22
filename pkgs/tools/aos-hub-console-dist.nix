@@ -7,6 +7,8 @@
 {
   lib,
   mkDerivation,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoVendor,
   rust,
   wasm-bindgen-cli,
@@ -35,18 +37,37 @@
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
       );
   };
+  cargoDeps = fetchCargoVendor {
+    inherit src;
+    name = "aos-vendor-${version}";
+    sourceRoot = "source/crates";
+    hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
+  };
+  cargoEnv = {PROTOC = "${protobuf}/bin/protoc";};
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-hub-console-wasm-artifacts";
+    inherit version cargoDeps cargoEnv;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-hub-console-wasm-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-hub-console --target wasm32-unknown-unknown";
+    cargoArtifactContract = {
+      family = "aos-hub-console-wasm-release";
+      target = "wasm32-unknown-unknown";
+      nativeInputs = map toString [protobuf stdenv.cc];
+    };
+    buildDeps = [protobuf stdenv.cc];
+  };
 in
   mkDerivation {
     pname = "aos-hub-console-dist";
     inherit version src;
 
     buildDeps = [rust wasm-bindgen-cli protobuf stdenv.cc];
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      name = "aos-vendor-${version}";
-      sourceRoot = "source/crates";
-      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
-    };
+    inherit cargoDeps;
 
     phases = [
       {
@@ -65,6 +86,10 @@ in
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
             > .cargo/config.toml
           export PROTOC="${protobuf}/bin/protoc"
+          mkdir -p target
+          tar xf ${cargoArtifacts}/target.tar -C target
+          chmod -R u+w target
+          find . -path ./target -prune -o -type f -name '*.rs' -exec touch {} +
         '';
       }
       {

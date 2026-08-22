@@ -16,6 +16,8 @@
 {
   lib,
   mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
   fetchCargoVendor,
   openssl,
   perl,
@@ -46,6 +48,41 @@
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
       );
   };
+  cargoDeps = fetchCargoVendor {
+    inherit src;
+    name = "aos-vendor-${version}";
+    sourceRoot = "source/crates";
+    hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
+  };
+  cargoEnv = {
+    OPENSSL_DIR = "${openssl}";
+    OPENSSL_LIB_DIR = "${openssl}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl}/include";
+    OPENSSL_NO_VENDOR = "1";
+    OPENSSL_STATIC = "0";
+    PROTOC = "${protobuf}/bin/protoc";
+    AOS_HUB_CONSOLE_JS = "${aos-hub-console-dist}/hub-console.js";
+    AOS_HUB_CONSOLE_WASM = "${aos-hub-console-dist}/hub-console_bg.wasm";
+    AOS_HUB_CONSOLE_CSS = "${aos-hub-console-dist}/hub-console.css";
+  };
+  cargoArtifactContract = {
+    family = "aos-hub-native-postgres-release";
+    features = ["postgres"];
+    nativeInputs = map toString [openssl pkg-config protobuf aos-hub-console-dist];
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-hub-native-postgres-artifacts";
+    inherit version cargoDeps cargoEnv cargoArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../../crates;
+      name = "aos-hub-native-postgres-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-hub --features postgres";
+    buildDeps = [perl pkg-config openssl protobuf aos-hub-console-dist];
+    runtimeDeps = [openssl zlib];
+  };
 in
   mkCargoPackage {
     pname = "aos-hub";
@@ -56,35 +93,13 @@ in
     # aos-hub-egress deployments. SQLite remains available for a singleton.
     cargoFlags = "-p aos-hub --features postgres";
 
-    # The workspace's vendored dependency set. This hash is the
-    # The lockfile-aware vendor output over the whole workspace Cargo.lock is
-    # shared in shape with `aos.nix` but is its own derivation. Regenerate with
-    # `nix build` once and copy the reported `got:` hash here (the lockfile
-    # gained `hmac` for the phase-4 webhook HMAC signatures).
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      name = "aos-vendor-${version}";
-      sourceRoot = "source/crates";
-      hash = "sha256-HpIXteO0Adw3+VmLING6Fd5vDHrGHUt+KQ8gZ312bkU=";
-    };
+    inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
+    cargoRoot = "crates";
 
     buildDeps = [perl pkg-config openssl protobuf];
     # rusqlite is built with the `bundled` feature (its own sqlite amalgamation).
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl zlib];
-
-    preBuild = ''
-      cd crates
-      export OPENSSL_DIR="${openssl}"
-      export OPENSSL_LIB_DIR="${openssl}/lib"
-      export OPENSSL_INCLUDE_DIR="${openssl}/include"
-      export OPENSSL_NO_VENDOR=1
-      export OPENSSL_STATIC=0
-      export PROTOC="${protobuf}/bin/protoc"
-      export AOS_HUB_CONSOLE_JS="${aos-hub-console-dist}/hub-console.js"
-      export AOS_HUB_CONSOLE_WASM="${aos-hub-console-dist}/hub-console_bg.wasm"
-      export AOS_HUB_CONSOLE_CSS="${aos-hub-console-dist}/hub-console.css"
-    '';
 
     # The workspace test suite is exercised by the `aos` package's
     # `cargoTestFlags = "--workspace"`; this derivation only needs to compile

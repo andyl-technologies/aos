@@ -14,22 +14,52 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
     failuresFor "crates/crucible model" graphSource [
-      {label = "ordinary materialization policy"; needle = "pub struct MaterializationPolicy";}
-      {label = "exact checkpoint materialization"; needle = "pub fn materialize_checkpoint(";}
-      {label = "thin reconstruction cache"; needle = "pub fn record_thin_checkpoint(";}
+      {
+        label = "ordinary materialization policy";
+        needle = "pub struct MaterializationPolicy";
+      }
+      {
+        label = "exact checkpoint materialization";
+        needle = "pub fn materialize_checkpoint(";
+      }
+      {
+        label = "thin reconstruction cache";
+        needle = "pub fn record_thin_checkpoint(";
+      }
     ]
     ++ forbiddenFor "crates/crucible model" graphSource [
-      {label = "savevm hedge type"; needle = "SavevmCompletenessHedge";}
-      {label = "savevm hedge method"; needle = "savevm_hedge";}
-      {label = "S3 fallback constructor"; needle = "thin_replay_until_full_s3";}
+      {
+        label = "savevm hedge type";
+        needle = "SavevmCompletenessHedge";
+      }
+      {
+        label = "savevm hedge method";
+        needle = "savevm_hedge";
+      }
+      {
+        label = "S3 fallback constructor";
+        needle = "thin_replay_until_full_s3";
+      }
     ]
     ++ failuresFor "crates/crucible/tests/gate_checkpoint_materialization.rs" gateTest [
-      {label = "fat persistence gate"; needle = "gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuration";}
-      {label = "content-address closure assertion"; needle = "store.exists(&key)?";}
+      {
+        label = "fat persistence gate";
+        needle = "gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuration";
+      }
+      {
+        label = "content-address closure assertion";
+        needle = "store.exists(&key)?";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
-      {label = "phase6 checkpoint gate"; needle = "checkpointMaterialization = greenBeforeAdvance";}
-      {label = "phase6 checkpoint import"; needle = "gate = import ./phase6-checkpoint-materialization.nix";}
+      {
+        label = "phase6 checkpoint gate";
+        needle = "checkpointMaterialization = greenBeforeAdvance";
+      }
+      {
+        label = "phase6 checkpoint import";
+        needle = "gate = import ./phase6-checkpoint-materialization.nix";
+      }
     ];
 in
   if failures != []

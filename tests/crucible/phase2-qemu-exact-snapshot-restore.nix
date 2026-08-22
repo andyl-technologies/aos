@@ -25,53 +25,146 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
     failuresFor "crates/crucible-qemu/src/checkpoint.rs" qemuCheckpoint [
-      {label = "host-I/O checkpoint"; needle = "pub struct QemuHostIoCheckpoint";}
-      {label = "block continuation"; needle = "Option<QemuLiveBlockIoServicerCheckpoint>";}
-      {label = "node continuation"; needle = "pub struct QemuNodeContinuationCheckpoint";}
+      {
+        label = "host-I/O checkpoint";
+        needle = "pub struct QemuHostIoCheckpoint";
+      }
+      {
+        label = "block continuation";
+        needle = "Option<QemuLiveBlockIoServicerCheckpoint>";
+      }
+      {
+        label = "node continuation";
+        needle = "pub struct QemuNodeContinuationCheckpoint";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot.rs" qemuNodeExactSnapshot [
-      {label = "coordinated capture API"; needle = "pub fn capture_exact_snapshot";}
-      {label = "node-addressed icount validation"; needle = "checkpoint.node_icounts.get(node)";}
-      {label = "live boundary icount validation"; needle = "let observed_icount = self.current_icount()?";}
-      {label = "host capture before VMState"; needle = ".checkpoint_host_io(checkpoint.id)";}
-      {label = "opaque aggregate snapshot"; needle = "QemuVmSnapshot::from_live_capture";}
+      {
+        label = "coordinated capture API";
+        needle = "pub fn capture_exact_snapshot";
+      }
+      {
+        label = "node-addressed icount validation";
+        needle = "checkpoint.node_icounts.get(node)";
+      }
+      {
+        label = "live boundary icount validation";
+        needle = "let observed_icount = self.current_icount()?";
+      }
+      {
+        label = "host capture before VMState";
+        needle = ".checkpoint_host_io(checkpoint.id)";
+      }
+      {
+        label = "opaque aggregate snapshot";
+        needle = "QemuVmSnapshot::from_live_capture";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
-      {label = "forced crash gate"; needle = "force_crash_and_reap_for_gate";}
+      {
+        label = "forced crash gate";
+        needle = "force_crash_and_reap_for_gate";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node_factory.rs" qemuNodeFactory [
-      {label = "host prevalidation"; needle = ".validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";}
-      {label = "authorized VMState restore"; needle = ".restore_checkpoint_vmstate_authorized(checkpoint)";}
-      {label = "host continuation commit"; needle = ".restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";}
-      {label = "node continuation commit"; needle = "node.restore_node_continuation(continuation)";}
+      {
+        label = "host prevalidation";
+        needle = ".validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";
+      }
+      {
+        label = "authorized VMState restore";
+        needle = ".restore_checkpoint_vmstate_authorized(checkpoint)";
+      }
+      {
+        label = "host continuation commit";
+        needle = ".restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";
+      }
+      {
+        label = "node continuation commit";
+        needle = "node.restore_node_continuation(continuation)";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-live-exact-snapshot.rs" qemuExactRunner [
-      {label = "real exact runner"; needle = "run_qemu_live_exact_snapshot_gate";}
-      {label = "pending block mode"; needle = "CRUCIBLE_EXACT_PENDING_BLOCK";}
-      {label = "optional diskless initrd"; needle = "!value.is_empty() && !require_pending_block";}
-      {label = "forced crash evidence"; needle = "old_process_force_crashed";}
-      {label = "paired replay oracle"; needle = "replay_oracle_pair_match";}
+      {
+        label = "real exact runner";
+        needle = "run_qemu_live_exact_snapshot_gate";
+      }
+      {
+        label = "pending block mode";
+        needle = "CRUCIBLE_EXACT_PENDING_BLOCK";
+      }
+      {
+        label = "optional diskless initrd";
+        needle = "!value.is_empty() && !require_pending_block";
+      }
+      {
+        label = "forced crash evidence";
+        needle = "old_process_force_crashed";
+      }
+      {
+        label = "paired replay oracle";
+        needle = "replay_oracle_pair_match";
+      }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
-      {label = "selectable busy guest"; needle = "guestIdle ? true,";}
-      {label = "busy BSP"; needle = "bsp_busy:";}
-      {label = "busy application processor"; needle = "ap_busy:";}
-      {label = "halted AP selection"; needle = "startAps ? true,";}
-      {label = "busy BSP and halted AP evidence"; needle = ''else "bsp-busy-aps-halted";'';}
+      {
+        label = "selectable busy guest";
+        needle = "guestIdle ? true,";
+      }
+      {
+        label = "busy BSP";
+        needle = "bsp_busy:";
+      }
+      {
+        label = "busy application processor";
+        needle = "ap_busy:";
+      }
+      {
+        label = "halted AP selection";
+        needle = "startAps ? true,";
+      }
+      {
+        label = "busy BSP and halted AP evidence";
+        needle = ''else "bsp-busy-aps-halted";'';
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionLoop [
-      {label = "snapshot control boundary capture"; needle = "self.capture_exact_checkpoint_set(&configuration)?";}
-      {label = "production paired capture"; needle = ".capture_exact_snapshot(&node, checkpoint)";}
-      {label = "VMState artifact persistence"; needle = "PRODUCTION_VMSTATE_FILE_NAME";}
+      {
+        label = "snapshot control boundary capture";
+        needle = "self.capture_exact_checkpoint_set(&configuration)?";
+      }
+      {
+        label = "production paired capture";
+        needle = ".capture_exact_snapshot(&node, checkpoint)";
+      }
+      {
+        label = "VMState artifact persistence";
+        needle = "PRODUCTION_VMSTATE_FILE_NAME";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
-      {label = "production exact relaunch"; needle = "launch_production_live_node_exact_snapshot";}
-      {label = "artifact authentication"; needle = "failed content authentication";}
-      {label = "restored fingerprint check"; needle = "restored_fingerprint != expected_fingerprint";}
+      {
+        label = "production exact relaunch";
+        needle = "launch_production_live_node_exact_snapshot";
+      }
+      {
+        label = "artifact authentication";
+        needle = "failed content authentication";
+      }
+      {
+        label = "restored fingerprint check";
+        needle = "restored_fingerprint != expected_fingerprint";
+      }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/exact_snapshot_policy.rs" (builtins.readFile ../../crates/crucible-qemu/src/exact_snapshot_policy.rs) [
-      {label = "public runtime loadvm minting"; needle = "pub const fn authorize_loadvm_runtime";}
-      {label = "legacy fallback API"; needle = "Fallback";}
+      {
+        label = "public runtime loadvm minting";
+        needle = "pub const fn authorize_loadvm_runtime";
+      }
+      {
+        label = "legacy fallback API";
+        needle = "Fallback";
+      }
     ];
 in
   if failures != []

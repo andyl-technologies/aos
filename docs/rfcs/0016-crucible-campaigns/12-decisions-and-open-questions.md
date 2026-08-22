@@ -1,6 +1,6 @@
 # Decisions and open questions
 
-This document collects the architectural decisions made by RFC-0015. The
+This document collects the architectural decisions made by RFC-0016. The
 normative details remain in the topical documents; this index makes the major
 tradeoffs reviewable without reconstructing them from the whole RFC.
 

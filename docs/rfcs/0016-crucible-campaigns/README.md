@@ -1,4 +1,4 @@
-# RFC-0015: Crucible campaigns, adaptive exploration, and hot forking
+# RFC-0016: Crucible campaigns, adaptive exploration, and hot forking
 
 - **Status:** Proposed. Implementation is landing incrementally in this draft
   pull request behind non-default library and test surfaces; no campaign or
