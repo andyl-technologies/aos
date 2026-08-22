@@ -93,7 +93,9 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
 ///
 /// The opened file's device/inode is compared with the path metadata, closing
 /// the check/open replacement race without relying on a host-specific command.
-/// On Unix, any group/other permission bit is rejected.
+/// On Unix, any group/other permission bit is rejected. Ownership by either
+/// the effective user or root is accepted so systemd's root-owned
+/// `LoadCredential=` mounts can be consumed by an unprivileged service.
 ///
 /// # Errors
 ///
@@ -141,8 +143,8 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         path.display()
     );
     anyhow::ensure!(
-        metadata.st_uid == rustix::process::geteuid().as_raw(),
-        "secret file {} is not owned by the effective user",
+        trusted_secret_owner(metadata.st_uid),
+        "secret file {} is not owned by root or the effective user",
         path.display()
     );
     anyhow::ensure!(
@@ -233,12 +235,22 @@ fn open_private_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std
         .with_context(|| format!("inspecting secret parent {}", parent.display()))?;
     anyhow::ensure!(
         rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory
-            && metadata.st_uid == rustix::process::geteuid().as_raw()
+            && trusted_secret_owner(metadata.st_uid)
             && metadata.st_mode & 0o077 == 0,
-        "secret parent {} must be an owner-private directory owned by the effective user",
+        "secret parent {} must be an owner-private directory owned by root or the effective user",
         parent.display()
     );
     Ok((parent_fd, name))
+}
+
+#[cfg(unix)]
+fn trusted_secret_owner(owner: u32) -> bool {
+    trusted_secret_owner_for(owner, rustix::process::geteuid().as_raw())
+}
+
+#[cfg(unix)]
+fn trusted_secret_owner_for(owner: u32, effective_user: u32) -> bool {
+    owner == 0 || owner == effective_user
 }
 
 /// Writes `key` to `path` with `0600` permissions, creating parent dirs.
@@ -337,6 +349,14 @@ mod tests {
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         }
         dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_owner_accepts_service_and_root_custody() {
+        assert!(trusted_secret_owner_for(802, 802));
+        assert!(trusted_secret_owner_for(0, 802));
+        assert!(!trusted_secret_owner_for(803, 802));
     }
 
     #[test]
