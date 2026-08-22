@@ -1,14 +1,15 @@
 {
   pkgs,
   lib,
-  enableJitter ? true,
+  enableSchedulerPreemption ? true,
   hostAdversary ? (
-    if enableJitter
-    then "jitter-load"
+    if enableSchedulerPreemption
+    then "bounded-scheduler-preemption"
     else "none"
   ),
   sampleCount ? 36,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   cadence = 100000000;
   horizon = cadence * sampleCount;
   rrSwitchQuantum = 4096;
@@ -265,11 +266,14 @@ in
     CADENCE = builtins.toString cadence;
     HORIZON = builtins.toString horizon;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
-    ENABLE_JITTER =
-      if enableJitter
+    ENABLE_SCHEDULER_PREEMPTION =
+      if enableSchedulerPreemption
       then "1"
       else "0";
     HOST_ADVERSARY = hostAdversary;
+    BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+    BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+    BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
 
     phases = [
       {
@@ -278,6 +282,7 @@ in
           set -eu
 
           unset LD_LIBRARY_PATH || true
+          grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
           fail() {
             echo "FAIL: $*" >&2
@@ -292,37 +297,10 @@ in
           seed="$TMPDIR/seed.bin"
           printf 'crucible-phase0-s1-seed-v2\n' > "$seed"
 
-          jitter_pids=""
-          qemu_pid=""
-
-          start_jitter() {
-            i=0
-            while [ "$i" -lt 3 ]; do
-              yes > /dev/null &
-              jitter_pids="$jitter_pids $!"
-              i=$((i + 1))
-            done
-          }
-
-          stop_jitter() {
-            for pid in $jitter_pids; do
-              kill "$pid" 2>/dev/null || true
-            done
-            for pid in $jitter_pids; do
-              wait "$pid" 2>/dev/null || true
-            done
-            jitter_pids=""
-          }
-
-          cleanup_qemu() {
-            if [ -n "$qemu_pid" ]; then
-              kill "$qemu_pid" 2>/dev/null || true
-              wait "$qemu_pid" 2>/dev/null || true
-              qemu_pid=""
-            fi
-          }
-
-          trap 'stop_jitter; cleanup_qemu' EXIT
+          . "$BOUNDED_PREEMPTION_HARNESS"
+          trap 'bounded_preemption_cleanup' EXIT
+          trap 'bounded_preemption_cleanup; exit 143' TERM
+          trap 'bounded_preemption_cleanup; exit 130' INT
 
           json_string() {
             printf '%s\n' "$1" | jq -R .
@@ -489,16 +467,36 @@ in
               fail "guest $label launch is not diskless"
             fi
 
-            timeout 1200 "$@" &
-            qemu_pid="$!"
+            qemu_binary=$(command -v "$1")
+            bounded_preemption_launch_qemu \
+              1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+              || fail "guest $label QEMU launch failed"
 
             wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
+            if [ "$label" = b ] && [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
+              # The invariant is trace independence from host scheduling. Six
+              # short QEMU preemptions begin only after the first guest trace
+              # coordinate, perturb scheduling directly with no synthetic CPU
+              # load, and retain a two-second independent resume watchdog.
+              progress_needle="\"observed_icount\":$CADENCE"
+              bounded_preemption_wait_for_guest_progress \
+                "$trace_path" "$progress_needle" 12000 0.1 \
+                || fail "guest $label made no pre-adversary trace progress"
+              bounded_preemption_start \
+                "$TMPDIR/preemption-$label.log" "$trace_path" "$progress_needle" \
+                || fail "guest $label scheduler adversary did not start"
+            fi
+
             wait_for_horizon_pause "$label" "$qmp_socket" || fail "guest $label did not pause at horizon"
 
             migrate_state "$label" "$qmp_socket"
+            if [ "$label" = b ] && [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
+              bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                || fail "guest $label scheduler adversary was incomplete"
+            fi
             qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
-            wait "$qemu_pid" || fail "guest $label QEMU exited unsuccessfully"
-            qemu_pid=""
+            bounded_preemption_wait_qemu \
+              || fail "guest $label QEMU exited unsuccessfully"
             cp "$serial_path" "$TMPDIR/serial-$label.log"
             cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
             if ! wait_for_guest_pass "$label"; then
@@ -510,11 +508,7 @@ in
           }
 
           run_one a
-          if [ "$ENABLE_JITTER" = 1 ]; then
-            start_jitter
-          fi
           run_one b
-          stop_jitter
 
           for label in a b; do
             jq --argjson horizon "$HORIZON" \
@@ -559,6 +553,9 @@ in
           [ "$samples_a" -eq "$samples_b" ] || fail "sample count mismatch: $samples_a/$samples_b"
 
           mkdir -p "$out"
+          if [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
+            cp "$TMPDIR/preemption-b.log" "$out/preemption-b.log"
+          fi
           if ! diff -u "$TMPDIR/trace-a-cadence.jsonl" "$TMPDIR/trace-b-cadence.jsonl" > "$out/trace.diff"; then
             gawk '
               NR == FNR { left[FNR] = $0; next }
@@ -739,6 +736,16 @@ in
             echo cadence="$CADENCE"
             echo horizon_icount="$HORIZON"
             echo host_adversary="$HOST_ADVERSARY"
+            if [ "$ENABLE_SCHEDULER_PREEMPTION" = 1 ]; then
+              echo host_adversary_perturbations=6
+              echo host_adversary_configured_pause_milliseconds=15
+              echo host_adversary_configured_total_stopped_milliseconds=90
+              echo host_adversary_nominal_worker_wall_milliseconds=240
+              echo host_adversary_worker_wall_timeout_seconds=2
+              echo host_adversary_busy_workers=0
+            else
+              echo host_adversary_perturbations=0
+            fi
             echo stop_request=plugin-requested-icount-pause
             echo extended_fingerprint_match=true
             echo aggregate_icount_stream_match=true

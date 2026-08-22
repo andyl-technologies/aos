@@ -1061,7 +1061,10 @@ genuinely unresolved and is tracked as a spike in
   run and records `production_aarch64_doorbell_trap_implemented=true`,
   `aarch64_whitebox_supported=true`, and `fallback_adopted=none`.
   `checks.crucible.phase0.aarch64S1S6` boots the same seeded AArch64 guest twice
-  under different host load, compares its exact-icount extended fingerprints,
+  with six configured 15 ms scheduler preemptions applied directly to QEMU in
+  the second run after a live kernel progress marker and under a two-second
+  resume watchdog, compares its exact-icount
+  extended fingerprints,
   and records `aarch64_s1_complete=true`, `aarch64_s6_complete=true`,
   `randomized_kernel_offset_reproducible=true`,
   `randomized_pie_aslr_layout_reproducible=true`, and
@@ -1116,7 +1119,8 @@ genuinely unresolved and is tracked as a spike in
   default-only deterministic interleaving. The modeled S13 overhead sweep found
   4096 to be the smallest candidate above its provisional throughput floor, and
   S11 then validated that quantum across two 4-billion-instruction sim-mode
-  runs with a real four-vCPU contended workload under host jitter.
+  runs with a real four-vCPU contended workload under bounded scheduler
+  preemption.
 - **Resolution:** S12/S13 now compose the modeled known-race discrimination
   witness with exact live QEMU commanded-preemption application across the full
   quantum sweep. D-36 promotes `4096` into the final shipped default.
@@ -1516,7 +1520,8 @@ register.
   - **Result:** `scenario=stock-linux-diskless-initramfs-workload`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
     `cadence=100000000`, `horizon_icount=3600000000`,
-    `host_adversary=jitter-load`, `stop_request=plugin-requested-icount-pause`,
+    `host_adversary=bounded-scheduler-preemption`,
+    `stop_request=plugin-requested-icount-pause`,
     `extended_fingerprint_match=true`,
     `aggregate_icount_stream_match=true`,
     `cadence_fingerprint_match=true`,
@@ -1558,7 +1563,9 @@ register.
     launched twice with `-smp 1`, `-accel sim,thread=single`,
     `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
     seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
-    controls. The second run adds scheduling jitter/load. The proof compares the
+    controls. The second run applies six configured 15 ms SIGSTOP/SIGCONT
+    preemptions to QEMU itself after the first positive trace coordinate and
+    under a two-second resume watchdog. The proof compares the
     aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
     IO-event multiset digest at each cadence point including the requested
     `3600000000` horizon. It also compares the stable projection of the
@@ -1725,7 +1732,8 @@ register.
   - **Result:** `scenario=stock-linux-diskless-initramfs-kaslr-aslr`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
     `cadence=200000000`, `horizon_icount=3400000000`,
-    `host_adversary=jitter-load`, `qemu_internal_seed=0x0010c006`,
+    `host_adversary=bounded-scheduler-preemption`,
+    `qemu_internal_seed=0x0010c006`,
     `guest_entropy_seed=fw_cfg_and_deterministic_virtio_rng`,
     `control_cmdline_has_nokaslr_norandmaps=true`,
     `randomized_cmdline_has_nokaslr_norandmaps=false`,
@@ -1770,7 +1778,7 @@ register.
     userspace ASLR is enabled through `/proc/sys/kernel/randomize_va_space`,
     reads a nonzero kernel text base from `/proc/kallsyms`, samples user address
     bases, and compares two randomized extended fingerprints plus explicit base
-    reports under host jitter. The proof uses QMP only to stop at a fixed icount
+    reports under bounded scheduler preemption. The proof uses QMP only to stop at a fixed icount
     after the guest reports PASS; it does not flip the global launch default.
   - **Delivery-icount seal:** reproducibility here required sealing the *icount*
     at which the seeded virtio-rng entropy is delivered, not only its bytes. The
@@ -2165,7 +2173,9 @@ register.
     SMP pthread spinlock workload across four guest vCPUs. The extended samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
-    identical run and a host-jitter run. The check asserts every sampled vCPU
+    clean run and a run with six configured 15 ms preemptions of QEMU itself
+    after the first positive trace coordinate and under a two-second resume
+    watchdog. The check asserts every sampled vCPU
     has a nonempty register descriptor set and zero register-read failures.
     Memory/device-event callbacks are disabled in this diskless proof; full
     device-event hashing remains later §4.6 gate work. The check scans the
@@ -2310,7 +2320,8 @@ register.
   backed by the AOS-built `qemu-system-aarch64` target and green
   `checks.crucible.phase0.s10Aarch64Doorbell` activation gate. The live
   `checks.crucible.phase0.aarch64S1S6` gate closes the AArch64 S1 fingerprint
-  and S6 KASLR/ASLR legs across repeated seeded boots under host load. riscv64
+  and S6 KASLR/ASLR legs across repeated seeded boots under bounded scheduler
+  preemption. riscv64
   is judged feasible-but-deferred (assessment only).
 - [x] **T-D-2** Run the remote-checkpoint-store spike: confirm the local
   content-addressed store's interface is backend-pluggable and decide whether the

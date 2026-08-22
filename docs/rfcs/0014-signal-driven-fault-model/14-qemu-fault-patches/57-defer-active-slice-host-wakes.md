@@ -44,7 +44,7 @@ Apache/GPL process boundary.
 ## Required gates
 
 1. The production four-vCPU fingerprint streams are byte-identical when the
-   second run executes under host CPU load.
+   second run executes under bounded scheduler preemption.
 2. S1 reaches its exact horizon and preserves checkpoint/replay liveness.
 3. Production live networking retains exact delivery and acknowledgement
    coordinates.

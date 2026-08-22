@@ -2,15 +2,15 @@
 
 use super::*;
 
-struct NoArtifacts;
+#[path = "binding_runtime/refined_coordinate_test.rs"]
+mod refined_coordinate;
 
+struct NoArtifacts;
 #[derive(Default)]
 struct AcceptActions {
     prepared: Option<PreparedActionBatch>,
 }
-
 struct RejectActions;
-
 #[derive(Default)]
 struct MismatchedActions {
     prepared: bool,

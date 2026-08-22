@@ -650,8 +650,8 @@ impl ResolvedReplayWorkItem {
         }
         for record in &self.records {
             record.validate().map_err(FaultRuntimeError::Contract)?;
-            if record.coordinate != self.coordinate
-                || record.same_coordinate_sequence != self.same_coordinate_sequence
+            if !(record.refines_work_item_coordinate(self.coordinate)
+                && record.same_coordinate_sequence == self.same_coordinate_sequence)
                 || record.opportunity != self.opportunity
                 || record.derivation_fingerprint != self.derivation_fingerprint
                 || self.target.as_ref() != Some(&record.target) && self.opportunity.is_some()

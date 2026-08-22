@@ -1013,7 +1013,8 @@ determinism contract (04).
   differing component, including per-vCPU register digests and RR cursor
   position. The task check realizes the plugin per-vCPU introspection check and
   the typed QMP control-boundary check, runs the same bounded real-QEMU `-smp 4`
-  sim/RR-TCG workload twice with second-run host load, checks exact sorted QMP
+  sim/RR-TCG workload twice with second-run bounded scheduler preemption after
+  the first positive guest trace coordinate, checks exact sorted QMP
   CPU indexes on both runs, binds register schemas/bytes and retired-count sums,
   uses a definition-only QEMU preflight to pin the observation shape before
   importing both plugin traces through the Rust path, and executes

@@ -4,6 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuNvcpuFingerprint",
   taskIds ? ["T-QEMU-16"],
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   nvcpuGuest = import ./phase2-qemu-nvcpu-bios.nix {inherit pkgs;};
@@ -485,6 +486,9 @@ in
 
       SMP_GUEST_KERNEL_APPEND = "";
       SMP_GUEST_FIRMWARE = "${nvcpuGuest}/nvcpu-bios.bin";
+      BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+      BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+      BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
 
       phases = [
         {
@@ -516,6 +520,7 @@ in
           name = "run-qemu-nvcpu-fingerprint";
           script = ''
             set -eu
+            grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
@@ -668,8 +673,7 @@ in
               --example crucible-qemu-fingerprint
 
             cd "$TMPDIR"
-            qemu_pid=""
-            jitter_pids=""
+            . "$BOUNDED_PREEMPTION_HARNESS"
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
             argv_launcher="$TMPDIR/qemu-argv-launcher"
             cadence=4000000
@@ -726,42 +730,20 @@ in
             done
 
             cleanup_qemu() {
-              if [ -n "$qemu_pid" ]; then
-                kill "$qemu_pid" 2>/dev/null || true
-                wait "$qemu_pid" 2>/dev/null || true
-                qemu_pid=""
-              fi
-            }
-
-            stop_jitter() {
-              for pid in $jitter_pids; do
-                kill "$pid" 2>/dev/null || true
-              done
-              for pid in $jitter_pids; do
-                wait "$pid" 2>/dev/null || true
-              done
-              jitter_pids=""
-            }
-
-            start_jitter() {
-              i=0
-              while [ "$i" -lt 3 ]; do
-                yes > /dev/null &
-                jitter_pids="$jitter_pids $!"
-                i=$((i + 1))
-              done
+              bounded_preemption_cleanup
             }
 
             fail() {
               echo "FAIL: $*" >&2
               cleanup_qemu
-              stop_jitter
               exit 1
             }
 
             [ -x "$fingerprint_cli" ] || fail "fingerprint importer executable was not built"
 
-            trap 'cleanup_qemu; stop_jitter' EXIT
+            trap 'cleanup_qemu' EXIT
+            trap 'cleanup_qemu; exit 143' TERM
+            trap 'cleanup_qemu; exit 130' INT
 
             qmp_cmd() {
               socket="$1"
@@ -862,7 +844,7 @@ in
               prepared_argv="$TMPDIR/prepared-argv-definition.json"
               rm -f "$qmp_socket" "$trace" "$prepared_argv"
 
-              timeout 2400 "$argv_launcher" "$prepared_argv" "$qemu_binary" \
+              set -- "$argv_launcher" "$prepared_argv" "$qemu_binary" \
                 -nodefaults \
                 -no-user-config \
                 -display none \
@@ -885,8 +867,10 @@ in
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
                 -plugin "$trace_plugin",out="$trace",definition_only=on,vcpus=4,launch_digest="$launch_definition_digest",qemu_build_digest="$qemu_build_digest",plugin_build_digest="$trace_plugin_build_digest" \
                 -no-shutdown \
-                -no-reboot &
-              qemu_pid="$!"
+                -no-reboot
+              bounded_preemption_launch_qemu \
+                2400 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+                || fail "definition-only QEMU launch failed"
 
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for the definition preflight"
               wait_for_stop_at_pause "$label" "$qmp_socket" true \
@@ -899,8 +883,8 @@ in
               wait_for_definition_record "$trace" \
                 || fail "definition preflight genesis callback did not complete"
               qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
-              wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
-              qemu_pid=""
+              bounded_preemption_wait_qemu \
+                || fail "definition-only QEMU exited unsuccessfully"
               jq -e -s \
                 --slurpfile prepared "$prepared_argv" \
                 --argjson quantum "$quantum" \
@@ -980,7 +964,7 @@ in
               prepared_argv="$TMPDIR/prepared-argv-$label.json"
               rm -f "$qmp_socket" "$trace" "$prepared_argv"
 
-              timeout 2400 "$argv_launcher" "$prepared_argv" "$qemu_binary" \
+              set -- "$argv_launcher" "$prepared_argv" "$qemu_binary" \
                 -nodefaults \
                 -no-user-config \
                 -display none \
@@ -1002,10 +986,25 @@ in
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
                 -plugin "$trace_plugin",out="$trace",cadence="$cadence",stop_at="$horizon",extended=on,mem_events=on,rr_switch_events=on,vcpus=4,launch_digest="$launch_definition_digest",qemu_build_digest="$qemu_build_digest",plugin_build_digest="$trace_plugin_build_digest" \
                 -no-shutdown \
-                -no-reboot &
-              qemu_pid="$!"
+                -no-reboot
+              bounded_preemption_launch_qemu \
+                2400 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+                || fail "QEMU run $label launch failed"
 
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for run $label"
+              if [ "$label" = b ]; then
+                # The trace must be invariant under host scheduling. The first
+                # cadence record anchors bounded preemption inside active guest
+                # execution without synthetic busy CPU time.
+                progress_needle="\"observed_icount\":$cadence"
+                bounded_preemption_wait_for_guest_progress \
+                  "$trace" "$progress_needle" 12000 0.1 \
+                  || fail "QEMU run $label made no pre-adversary trace progress"
+                bounded_preemption_start \
+                  "$TMPDIR/preemption-$label.log" "$trace" "$progress_needle" \
+                  || fail "QEMU run $label scheduler adversary did not start"
+              fi
+
               wait_for_stop_at_pause "$label" "$qmp_socket" \
                 || fail "QEMU run $label did not pause at the N-vCPU horizon"
               qmp_cmd "$qmp_socket" '{"execute":"query-cpus-fast"}' "$TMPDIR/qmp-cpus-$label.json" \
@@ -1015,9 +1014,13 @@ in
               jq -e -s '[.[] | select(.return | type == "array")][-1].return | map(."cpu-index") | sort == [0,1,2,3]' \
                 "$TMPDIR/qmp-cpus-$label.json" >/dev/null \
                 || fail "QMP did not report exact CPU indexes 0..3 for run $label"
+              if [ "$label" = b ]; then
+                bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                  || fail "QEMU run $label scheduler adversary was incomplete"
+              fi
               qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
-              wait "$qemu_pid" || fail "QEMU run $label exited unsuccessfully"
-              qemu_pid=""
+              bounded_preemption_wait_qemu \
+                || fail "QEMU run $label exited unsuccessfully"
 
               if ! jq -e -s \
                 --slurpfile prepared "$prepared_argv" \
@@ -1193,9 +1196,7 @@ in
 
             run_definition
             run_one a
-            start_jitter
             run_one b
-            stop_jitter
 
             jq -n \
               --slurpfile trace "$TMPDIR/qemu-nvcpu-definition.jsonl" \
@@ -1395,6 +1396,7 @@ in
               "$TMPDIR/qemu-nvcpu-trace-b.jsonl" 'QMP CPU indexes must be the exact sorted set'
 
             mkdir -p "$out"
+            cp "$TMPDIR/preemption-b.log" "$out/preemption-b.log"
             cp "$TMPDIR/qemu-nvcpu-definition.jsonl" "$out/qemu-nvcpu-definition.jsonl"
             # The importer fingerprints the exact horizon sample and consumes
             # only stop/cursor fields from the post-QMP terminal record. QMP
@@ -1485,7 +1487,13 @@ in
             plugin_introspection=checks.crucible.phase2.qemuPluginVcpuIntrospection
             qmp_control=checks.crucible.phase2.qemuQmpClient
             real_qemu_runs=two-bounded-sim-smp4-stop-at-traces
-            real_qemu_adversary=second-run-host-cpu-load
+            real_qemu_adversary=second-run-bounded-scheduler-preemption
+            real_qemu_adversary_perturbations=6
+            real_qemu_adversary_configured_pause_milliseconds=15
+            real_qemu_adversary_configured_total_stopped_milliseconds=90
+            real_qemu_adversary_nominal_worker_wall_milliseconds=240
+            real_qemu_adversary_worker_wall_timeout_seconds=2
+            real_qemu_adversary_busy_workers=0
             real_qemu_importer=crucible-qemu-fingerprint
             real_qemu_comparison=canonical-rust-stream
             real_qemu_gate_hook=run_single_vm_fingerprint_gate
@@ -1513,7 +1521,7 @@ in
             periodic_cadence=4000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
             postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
-            live_perturbation_controls=second-run-host-cpu-load
+            live_perturbation_controls=second-run-bounded-scheduler-preemption
             device_component_scope=current-non-ram-qemu-vmstate
             component_digest_strength=sha256
             device_schema_contract=registered-non-ram-vmstate-sections

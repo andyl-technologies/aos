@@ -69,6 +69,7 @@ in rec {
         inherit pkgs;
         attrPath = "checks.crucible.phase0.gates.blockers";
         blockers = [
+          (import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;})
           (import ./phase0-s1.nix {inherit pkgs lib;})
           (import ./phase0-s2.nix {inherit pkgs lib;})
           (import ./phase0-s4.nix {inherit pkgs;})
@@ -87,6 +88,7 @@ in rec {
         dependencies = [blockers];
       };
     };
+    boundedSchedulerPreemption = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};
     s3SavevmLoadvm = import ./phase0-s3.nix {inherit pkgs lib;};

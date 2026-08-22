@@ -244,7 +244,7 @@
       }
       {
         label = "jitter adversary";
-        needle = "host_adversary=jitter-load-second-run";
+        needle = "host_adversary=bounded-scheduler-preemption-second-run";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
