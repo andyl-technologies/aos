@@ -326,6 +326,8 @@ macro_rules! vals {
     };
 }
 
+mod cache_write_admission;
+pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod egress_nonce;

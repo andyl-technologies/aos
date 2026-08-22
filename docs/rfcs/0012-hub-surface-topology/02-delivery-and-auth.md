@@ -496,7 +496,12 @@ signed release metadata and all required placement copies are available.
 
 ### Cache object uploads
 
-`CreateCacheObjectUploads` admits one or a batch of exact cache-relative paths.
+`CreateCacheObjectUploads` admits one or up to 256 unique, exact
+cache-relative paths. Bound-R2 proxy admission resolves topology once, reads
+all active same-key slots in one query, and creates every unoccupied ticket in
+one checked transaction. Exact retries return the durable ticket already
+occupying that key; incompatible or stale slots remain fenced and return no
+URL until recovery settles them.
 For a small object it returns either a short-lived direct-origin PUT capability
 or an authenticated typed Hub proxy URL. An empty URL means the object requires
 the `BeginCacheMultipartUpload`, typed part upload, and

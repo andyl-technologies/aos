@@ -10004,7 +10004,7 @@ fn quota_reservation_statements(
     .expecting(1)]
 }
 
-fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
+pub(super) fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
     Ok(CacheWriteTicketRecord {
         ticket_id: row.get(0)?,
         cache_id: row.get(1)?,

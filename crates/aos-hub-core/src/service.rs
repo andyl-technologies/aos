@@ -38,7 +38,7 @@ use aos_proto_types as pb;
 use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
 use aos_registry_surface::object::Oid;
 use base64::Engine as _;
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
 use crate::auth::jwt::{Claims, JwtKeys};
@@ -2095,6 +2095,11 @@ pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
 
 /// Maximum narinfos accepted by one cache-upload completion request.
 pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;
+/// Maximum independent narinfo registrations in flight within one bulk RPC.
+const CACHE_NARINFO_REGISTRATION_CONCURRENCY: usize = 8;
+/// Maximum object-upload admissions accepted by one bulk cache request.
+pub const MAX_CACHE_UPLOAD_ADMISSION_BATCH: usize =
+    crate::db::MAX_CACHE_WRITE_TICKET_ADMISSION_BATCH;
 
 /// Maximum encoded length of one registry publication object key.
 pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
@@ -22329,8 +22334,7 @@ impl RpcService {
         Ok(pb::GetCacheObjectResponse { object })
     }
 
-    /// `BinaryCacheService.CreateCacheObjectUploads` — a presigned `PUT` URL for
-    /// uploading one object directly to a cache's private external origin.
+    /// Admits one or a bounded batch of exact cache-object uploads.
     ///
     /// Requires cache-write authority. A presign-capable placement returns a
     /// direct-origin URL; every other placement returns a typed Hub-proxy URL.
@@ -22338,8 +22342,10 @@ impl RpcService {
     ///
     /// # Errors
     ///
-    /// [`RpcError::NotFound`] for an unknown cache, auth errors, and
-    /// [`RpcError::Internal`] on a signing or database failure.
+    /// Returns not found for an unknown cache, authentication or authorization
+    /// errors, invalid argument or resource exhausted for malformed or
+    /// oversized batches, failed precondition for conflicting durable state,
+    /// and internal error on signing or persistence failure.
     pub async fn create_cache_object_uploads(
         &self,
         auth: Option<&str>,
@@ -22364,12 +22370,92 @@ impl RpcService {
         let expires_at = now + i64::from(PRESIGN_EXPIRES_SECS);
         let proxy_limit = self.effective_complete_upload_bytes().await as u64;
         // Batch form: one round-trip mints a URL per path (the single-path
-        // `upload_url` is unused). A non-machine path or a non-presignable cache
-        // yields an empty URL for that entry, so the client falls back per-NAR.
+        // `upload_url` is unused). A non-machine path, or an object too large
+        // for both the selected direct-origin mode and the typed proxy, yields
+        // an empty URL so the client falls back to multipart.
         if !req.paths.is_empty() {
             if req.paths.len() != req.sizes.len() {
                 return Err(RpcError::invalid("paths and sizes must have equal length"));
             }
+            if req.paths.len() > MAX_CACHE_UPLOAD_ADMISSION_BATCH {
+                return Err(RpcError::ResourceExhausted(format!(
+                    "at most {MAX_CACHE_UPLOAD_ADMISSION_BATCH} cache uploads may be admitted at once"
+                )));
+            }
+            if req.paths.iter().collect::<BTreeSet<_>>().len() != req.paths.len() {
+                return Err(RpcError::invalid("cache upload paths must be unique"));
+            }
+
+            // Resolve the physical authority and presign capability once. The
+            // bound-R2 Worker path is not presign-configured; it admits every
+            // eligible proxy ticket below with one active-slot query and one
+            // atomic database batch instead of repeating the topology and
+            // ticket workflow for every path.
+            let first_machine = req
+                .paths
+                .iter()
+                .zip(&req.sizes)
+                .find(|(path, _)| keymap::is_machine_path(path));
+            let mut batch_placement = None;
+            let presignable = if let Some((path, size)) = first_machine {
+                let placement = self
+                    .effective_surface_writer(SurfaceTarget::BinaryCache(cache.id))
+                    .await?;
+                let presignable = self
+                    .presign_placement(&placement, path, now, Some(*size), None)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .is_some();
+                batch_placement = Some(placement);
+                presignable
+            } else {
+                false
+            };
+            if !presignable {
+                let tickets = match batch_placement.as_ref() {
+                    Some(placement) => {
+                        self.admit_cache_proxy_writes(
+                            &cache,
+                            placement,
+                            &req.paths,
+                            &req.sizes,
+                            proxy_limit,
+                            now,
+                        )
+                        .await?
+                    }
+                    None => vec![None; req.paths.len()],
+                };
+                let uploads = req
+                    .paths
+                    .into_iter()
+                    .zip(tickets)
+                    .map(|(path, ticket)| {
+                        let (upload_url, upload_ticket_id) = ticket.map_or_else(
+                            || (String::new(), String::new()),
+                            |ticket_id| {
+                                (
+                                    self.cache_proxy_upload_url(&cache, &ticket_id, &path),
+                                    ticket_id,
+                                )
+                            },
+                        );
+                        pb::CacheObjectUpload {
+                            path,
+                            upload_url,
+                            expires_at: 0,
+                            upload_ticket_id,
+                        }
+                    })
+                    .collect();
+                return Ok(pb::CreateCacheObjectUploadsResponse {
+                    upload_url: String::new(),
+                    expires_at,
+                    uploads,
+                    upload_ticket_id: String::new(),
+                });
+            }
+
             let mut uploads = Vec::with_capacity(req.paths.len());
             for (path, size) in req.paths.iter().zip(&req.sizes) {
                 let (upload_url, upload_ticket_id) = if keymap::is_machine_path(path) {
@@ -22451,6 +22537,113 @@ impl RpcService {
             uploads: Vec::new(),
             upload_ticket_id,
         })
+    }
+
+    async fn admit_cache_proxy_writes(
+        &self,
+        cache: &crate::db::BinaryCache,
+        placement: &crate::db::SurfacePlacementRecord,
+        paths: &[String],
+        sizes: &[u64],
+        proxy_limit: u64,
+        now: i64,
+    ) -> Result<Vec<Option<String>>, RpcError> {
+        let (binding_revision, credential_generation) =
+            self.placement_write_snapshot(placement).await?;
+        let mut candidates = Vec::new();
+        let mut results = vec![None; paths.len()];
+        for (index, (path, size)) in paths.iter().zip(sizes).enumerate() {
+            if !keymap::is_machine_path(path) || *size > proxy_limit {
+                continue;
+            }
+            let declared_size = i64::try_from(*size)
+                .map_err(|_| RpcError::invalid("declared upload size is too large"))?;
+            candidates.push((
+                index,
+                crate::db::CacheProxyWriteAdmission {
+                    ticket_id: uuid::Uuid::new_v4().simple().to_string(),
+                    object_key: path.clone(),
+                    declared_size,
+                },
+            ));
+        }
+        if candidates.is_empty() {
+            return Ok(results);
+        }
+
+        let object_keys = candidates
+            .iter()
+            .map(|(_, candidate)| candidate.object_key.clone())
+            .collect::<Vec<_>>();
+        let expires_at = now.saturating_add(INTERNAL_UPLOAD_AUTH_TTL_SECS);
+        let mut last_conflict = None;
+        for _ in 0..3 {
+            let occupied = self
+                .db
+                .cache_write_ticket_slots(
+                    cache.id,
+                    &object_keys,
+                    placement.id,
+                    placement.resource_version,
+                    binding_revision,
+                    credential_generation,
+                    now,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .map(|slot| (slot.ticket.object_key.clone(), slot))
+                .collect::<BTreeMap<_, _>>();
+            let mut missing = Vec::new();
+            for (index, candidate) in &candidates {
+                if let Some(slot) = occupied.get(&candidate.object_key) {
+                    if slot.topology_current
+                        && slot.ticket.declared_size == candidate.declared_size
+                        && slot.ticket.upload_kind == "single"
+                        && matches!(slot.ticket.state.as_str(), "observing" | "active")
+                    {
+                        results[*index] = Some(slot.ticket.ticket_id.clone());
+                    }
+                    continue;
+                }
+                missing.push(candidate.clone());
+            }
+            if missing.is_empty() {
+                return Ok(results);
+            }
+            match self
+                .db
+                .begin_cache_proxy_write_tickets(
+                    cache.id,
+                    placement.id,
+                    placement.resource_version,
+                    binding_revision,
+                    credential_generation,
+                    cache.org_id,
+                    expires_at,
+                    now,
+                    &missing,
+                )
+                .await
+            {
+                Ok(()) => {
+                    let ticket_ids = missing
+                        .into_iter()
+                        .map(|ticket| (ticket.object_key, ticket.ticket_id))
+                        .collect::<BTreeMap<_, _>>();
+                    for (index, candidate) in &candidates {
+                        if let Some(ticket_id) = ticket_ids.get(&candidate.object_key) {
+                            results[*index] = Some(ticket_id.clone());
+                        }
+                    }
+                    return Ok(results);
+                }
+                Err(error) => last_conflict = Some(error),
+            }
+        }
+        Err(RpcError::internal(last_conflict.unwrap_or_else(|| {
+            anyhow::anyhow!("cache proxy upload admission conflicted repeatedly")
+        })))
     }
 
     async fn admit_cache_proxy_write(
@@ -22902,45 +23095,60 @@ impl RpcService {
         cache: &crate::db::BinaryCache,
         narinfos: &[pb::CacheNarinfo],
     ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
-        let now = clock::now_unix_secs();
-        let mut registered = 0i64;
-        for narinfo in narinfos {
-            let path = format!("{}.narinfo", narinfo.store_hash);
-            if !narinfo.nar_upload_ticket_id.is_empty() {
-                let parsed =
-                    parse_cache_narinfo(cache.id, &narinfo.store_hash, &narinfo.narinfo, now)
-                        .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
-                self.observe_presigned_cache_upload(
-                    cache,
-                    &parsed.nar_url,
-                    &narinfo.nar_upload_ticket_id,
-                )
-                .await?;
-            }
-            match self
-                .write_cache_object_authorized(cache, &path, narinfo.narinfo.as_bytes(), None)
-                .await
-            {
-                SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => registered += 1,
-                SurfaceWriteOutcome::BadPath(reason) => return Err(RpcError::invalid(reason)),
-                SurfaceWriteOutcome::TooLarge => {
-                    return Err(RpcError::invalid("narinfo too large"));
-                }
-                SurfaceWriteOutcome::QuotaExceeded => {
-                    return Err(RpcError::invalid("org storage quota exceeded"));
-                }
-                SurfaceWriteOutcome::NotFound => return Err(RpcError::not_found("cache")),
-                SurfaceWriteOutcome::Unauthorized(reason)
-                | SurfaceWriteOutcome::NotWritable(reason) => {
-                    return Err(RpcError::invalid(reason));
-                }
-                other => {
-                    return Err(RpcError::internal(anyhow::anyhow!(
-                        "narinfo register failed: {other:?}"
-                    )));
-                }
-            }
+        if narinfos.len() > MAX_CACHE_NARINFO_REGISTRATION_BATCH {
+            return Err(RpcError::ResourceExhausted(format!(
+                "at most {MAX_CACHE_NARINFO_REGISTRATION_BATCH} narinfos may be registered at once"
+            )));
         }
+        if narinfos
+            .iter()
+            .map(|narinfo| narinfo.store_hash.as_str())
+            .collect::<BTreeSet<_>>()
+            .len()
+            != narinfos.len()
+        {
+            return Err(RpcError::invalid(
+                "cache narinfo store hashes must be unique",
+            ));
+        }
+        let now = clock::now_unix_secs();
+        let registered = futures_util::stream::iter(narinfos.iter().cloned())
+            .map(|narinfo| async move {
+                let path = format!("{}.narinfo", narinfo.store_hash);
+                if !narinfo.nar_upload_ticket_id.is_empty() {
+                    let parsed =
+                        parse_cache_narinfo(cache.id, &narinfo.store_hash, &narinfo.narinfo, now)
+                            .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
+                    self.observe_presigned_cache_upload(
+                        cache,
+                        &parsed.nar_url,
+                        &narinfo.nar_upload_ticket_id,
+                    )
+                    .await?;
+                }
+                match self
+                    .write_cache_object_authorized(cache, &path, narinfo.narinfo.as_bytes(), None)
+                    .await
+                {
+                    SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => Ok(1_i64),
+                    SurfaceWriteOutcome::BadPath(reason) => Err(RpcError::invalid(reason)),
+                    SurfaceWriteOutcome::TooLarge => Err(RpcError::invalid("narinfo too large")),
+                    SurfaceWriteOutcome::QuotaExceeded => {
+                        Err(RpcError::invalid("org storage quota exceeded"))
+                    }
+                    SurfaceWriteOutcome::NotFound => Err(RpcError::not_found("cache")),
+                    SurfaceWriteOutcome::Unauthorized(reason)
+                    | SurfaceWriteOutcome::NotWritable(reason) => Err(RpcError::invalid(reason)),
+                    other => Err(RpcError::internal(anyhow::anyhow!(
+                        "narinfo register failed: {other:?}"
+                    ))),
+                }
+            })
+            .buffer_unordered(CACHE_NARINFO_REGISTRATION_CONCURRENCY)
+            .try_fold(0_i64, |registered, count| async move {
+                Ok(registered.saturating_add(count))
+            })
+            .await?;
         Ok(pb::CacheNarinfoRegistrationResponse { registered })
     }
 
@@ -35895,6 +36103,73 @@ mod cache_upload_tests {
 
         assert_eq!(by_slug.stable_id, stored.stable_id);
         assert_eq!(by_stable_id.stable_id, stored.stable_id);
+    }
+
+    #[tokio::test]
+    async fn cache_upload_batch_returns_replayable_proxy_tickets_in_input_order() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let request = pb::CreateCacheObjectUploadsRequest {
+            cache_id: cache.stable_id,
+            paths: vec!["nar/bulk-one.nar".into(), "nar/bulk-two.nar".into()],
+            sizes: vec![11, 22],
+            ..Default::default()
+        };
+
+        let first = service
+            .create_cache_object_uploads(Some(&auth), request.clone())
+            .await
+            .unwrap();
+        let replay = service
+            .create_cache_object_uploads(Some(&auth), request)
+            .await
+            .unwrap();
+
+        assert_eq!(first.uploads.len(), 2);
+        assert_eq!(first.uploads[0].path, "nar/bulk-one.nar");
+        assert_eq!(first.uploads[1].path, "nar/bulk-two.nar");
+        assert!(first
+            .uploads
+            .iter()
+            .all(|upload| upload.expires_at == 0 && !upload.upload_url.is_empty()));
+        assert_eq!(
+            first
+                .uploads
+                .iter()
+                .map(|upload| upload.upload_ticket_id.as_str())
+                .collect::<Vec<_>>(),
+            replay
+                .uploads
+                .iter()
+                .map(|upload| upload.upload_ticket_id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn narinfo_batch_rejects_duplicate_identities_before_writing() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let duplicate = pb::CacheNarinfo {
+            store_hash: "duplicate".into(),
+            narinfo: "invalid but never parsed".into(),
+            nar_upload_ticket_id: String::new(),
+        };
+
+        let error = service
+            .register_cache_narinfos_authorized(&cache, &[duplicate.clone(), duplicate])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RpcError::InvalidArgument(_)));
     }
 
     #[tokio::test]

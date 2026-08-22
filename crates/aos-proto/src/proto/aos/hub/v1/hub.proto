@@ -2611,9 +2611,9 @@ message CreateCacheObjectUploadsRequest {
   // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
   // Used for one upload; for bulk admission use `paths` instead.
   string path = 2;
-  // Batch of object paths to admit in one round-trip. When non-empty,
-  // the response's `uploads` is populated (parallel to this list) and the
-  // single-path `upload_url` is unused.
+  // Batch of at most 256 unique object paths to admit in one round-trip. When
+  // non-empty, the response's `uploads` is populated (parallel to this list)
+  // and the single-path `upload_url` is unused.
   repeated string paths = 3;
   // Declared byte size for `path`.
   uint64 size = 4;
