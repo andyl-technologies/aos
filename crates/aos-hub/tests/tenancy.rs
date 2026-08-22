@@ -629,7 +629,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(
-        value["storageBinding"]["spec"]["s3"]["bucket"],
+        value["binding"]["spec"]["s3"]["bucket"],
         "acme-primary"
     );
 

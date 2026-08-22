@@ -1215,7 +1215,7 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
                     String::new(),
                     Permission::BindingManage,
                     serde_json::json!({
-                        "storageBindingId": stable_id,
+                        "bindingId": stable_id,
                         "purpose": purpose,
                         "credentialGeneration": generation,
                         "credentialHeadResourceVersion": credential_head_resource_version,
@@ -1629,7 +1629,7 @@ impl DomainProbeController {
                 "storage credential adapter returned inconsistent evidence"
             );
             let checkpoint_detail = serde_json::json!({
-                "storageBindingId": target.stable_id,
+                "bindingId": target.stable_id,
                 "purpose": purpose,
                 "credentialGeneration": generation,
                 "credentialHeadResourceVersion": expected_head_version,
@@ -1718,7 +1718,7 @@ impl DomainProbeController {
             .await?;
         }
         let completed_detail = serde_json::json!({
-            "storageBindingId": target.stable_id,
+            "bindingId": target.stable_id,
             "purpose": purpose,
             "credentialGeneration": generation,
             "credentialHeadResourceVersion": expected_head_version,
