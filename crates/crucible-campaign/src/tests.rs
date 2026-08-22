@@ -243,6 +243,8 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.submit-attempt-response",
         "crucible.campaign.get-attempt-execution-request",
         "crucible.campaign.get-attempt-execution-response",
+        "crucible.campaign.resume-attempt-execution-request",
+        "crucible.campaign.resume-attempt-execution-response",
         "crucible.campaign.cancel-attempt-execution-request",
         "crucible.campaign.cancel-attempt-execution-response",
         "crucible.campaign.checkpoint-attempt-execution-request",

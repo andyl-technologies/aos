@@ -12,6 +12,13 @@
 //!                                execution | execution-basis-digest
 //! GetAttemptExecutionResponseV2 = version | daemon-epoch | attempt | execution |
 //!                                 request-digest | disposition
+//! ResumeAttemptExecutionRequestV2 = version | assignment | daemon-epoch |
+//!                                    lineage | attempt | prior-execution |
+//!                                    checkpoint | resource-limits |
+//!                                    retention-intent
+//! ResumeAttemptExecutionResponseV2 = version | assignment | daemon-epoch |
+//!                                     attempt | prior-execution | checkpoint |
+//!                                     request-digest | disposition
 //! CheckpointAttemptExecutionRequestV2 = version | daemon-epoch | lineage |
 //!                                       attempt | execution |
 //!                                       execution-basis-digest
@@ -1155,6 +1162,426 @@ impl Canonical for GetAttemptExecutionResponse {
     }
 }
 
+/// Strict request to resume one durably paused execution from its exact root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeAttemptExecutionRequest {
+    schema_version: u32,
+    assignment: AssignmentId,
+    daemon_epoch: DaemonEpoch,
+    lineage: CampaignLineageId,
+    attempt: AttemptId,
+    prior_execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+    resources: AttemptResourceLimits,
+    retention: ExecutionRetentionIntent,
+}
+
+impl ResumeAttemptExecutionRequest {
+    /// Builds a resume request from one fresh assignment and exact paused root.
+    ///
+    /// The supplied assignment provides the new daemon incarnation, resource,
+    /// retention, lineage, and semantic-attempt basis. It is not submitted
+    /// separately: this request is the sole idempotent admission operation for
+    /// the new execution incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        assignment: &SubmitAttemptRequest,
+        prior_execution: ExecutionId,
+        checkpoint: ExactCheckpointId,
+    ) -> Result<Self, CampaignCodecError> {
+        let request = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            assignment: assignment.assignment(),
+            daemon_epoch: assignment.daemon_epoch(),
+            lineage: assignment.lineage(),
+            attempt: assignment.attempt(),
+            prior_execution,
+            checkpoint,
+            resources: assignment.resources(),
+            retention: assignment.retention(),
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "resume-attempt-execution-request-encoded-bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the fresh idempotent assignment identity.
+    #[must_use]
+    pub const fn assignment(&self) -> AssignmentId {
+        self.assignment
+    }
+
+    /// Returns the daemon incarnation that will own resumed execution.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the exact compatibility lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> CampaignLineageId {
+        self.lineage
+    }
+
+    /// Returns the immutable semantic attempt being resumed.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the execution incarnation that published the paused root.
+    #[must_use]
+    pub const fn prior_execution(&self) -> ExecutionId {
+        self.prior_execution
+    }
+
+    /// Returns the complete exact checkpoint selected for resume.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the resumed execution's hard resource ceilings.
+    #[must_use]
+    pub const fn resources(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    /// Returns the resumed execution's retention intent.
+    #[must_use]
+    pub const fn retention(&self) -> ExecutionRetentionIntent {
+        self.retention
+    }
+
+    /// Returns the assignment-neutral execution-contract digest.
+    #[must_use]
+    pub fn execution_basis_digest(&self) -> CampaignHash {
+        let mut encoder = Encoder::new();
+        self.lineage.encode(&mut encoder);
+        self.attempt.encode(&mut encoder);
+        self.resources.encode(&mut encoder);
+        self.retention.encode(&mut encoder);
+        CampaignHash::derive(
+            "crucible.campaign.submit-attempt-execution-basis.v1",
+            &encoder.finish(),
+        )
+    }
+
+    /// Returns the domain-separated digest of every canonical request field.
+    #[must_use]
+    pub fn request_digest(&self) -> CampaignHash {
+        CampaignHash::derive(
+            "crucible.campaign.resume-attempt-execution-request.v2",
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "resume-attempt-execution-request-encoded-bytes")
+    }
+}
+
+impl Canonical for ResumeAttemptExecutionRequest {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.assignment.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.lineage.encode(encoder);
+        self.attempt.encode(encoder);
+        self.prior_execution.encode(encoder);
+        self.checkpoint.encode(encoder);
+        self.resources.encode(encoder);
+        self.retention.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let assignment = AssignmentId::decode(decoder)?;
+        let daemon_epoch = DaemonEpoch::decode(decoder)?;
+        let lineage = CampaignLineageId::decode(decoder)?;
+        let attempt = AttemptId::decode(decoder)?;
+        let prior_execution = ExecutionId::decode(decoder)?;
+        let checkpoint = ExactCheckpointId::decode(decoder)?;
+        let resources = AttemptResourceLimits::decode(decoder)?;
+        let retention = ExecutionRetentionIntent::decode(decoder)?;
+        let assignment = SubmitAttemptRequest::new(
+            assignment,
+            daemon_epoch,
+            lineage,
+            attempt,
+            resources,
+            retention,
+        )?;
+        Self::new(&assignment, prior_execution, checkpoint)
+    }
+}
+
+/// Idempotent outcome of one exact paused-execution resume request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeAttemptExecutionDisposition {
+    /// A new local execution incarnation was admitted from the checkpoint.
+    Accepted {
+        /// Newly admitted local execution identity.
+        execution: ExecutionId,
+    },
+    /// This exact resume request already owns a running incarnation.
+    AlreadyRunning {
+        /// Existing resumed execution identity.
+        execution: ExecutionId,
+    },
+    /// Canonical completion won before resume.
+    AlreadyCompleted {
+        /// Published immutable observation identity.
+        observation: ObservationId,
+    },
+    /// Durable cancellation won before resume.
+    AlreadyCanceled,
+    /// The named prior execution/checkpoint is not the current paused state.
+    NotCurrent,
+    /// Resume admission was rejected without guest execution.
+    Rejected {
+        /// Stable rejection reason.
+        reason: ExecutorRejection,
+    },
+}
+
+impl Canonical for ResumeAttemptExecutionDisposition {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Accepted { execution } => {
+                encoder.u8(0);
+                execution.encode(encoder);
+            }
+            Self::AlreadyRunning { execution } => {
+                encoder.u8(1);
+                execution.encode(encoder);
+            }
+            Self::AlreadyCompleted { observation } => {
+                encoder.u8(2);
+                observation.encode(encoder);
+            }
+            Self::AlreadyCanceled => encoder.u8(3),
+            Self::NotCurrent => encoder.u8(4),
+            Self::Rejected { reason } => {
+                encoder.u8(5);
+                reason.encode(encoder);
+            }
+        }
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Accepted {
+                execution: ExecutionId::decode(decoder)?,
+            }),
+            1 => Ok(Self::AlreadyRunning {
+                execution: ExecutionId::decode(decoder)?,
+            }),
+            2 => Ok(Self::AlreadyCompleted {
+                observation: ObservationId::decode(decoder)?,
+            }),
+            3 => Ok(Self::AlreadyCanceled),
+            4 => Ok(Self::NotCurrent),
+            5 => Ok(Self::Rejected {
+                reason: ExecutorRejection::decode(decoder)?,
+            }),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "resume-attempt-execution-disposition",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Strict response bound to one exact paused-execution resume request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeAttemptExecutionResponse {
+    schema_version: u32,
+    assignment: AssignmentId,
+    daemon_epoch: DaemonEpoch,
+    attempt: AttemptId,
+    prior_execution: ExecutionId,
+    checkpoint: ExactCheckpointId,
+    request_digest: CampaignHash,
+    disposition: ResumeAttemptExecutionDisposition,
+}
+
+impl ResumeAttemptExecutionResponse {
+    /// Builds one response that cannot be replayed across another paused root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resulting component message exceeds 4 KiB.
+    pub fn new(
+        request: &ResumeAttemptExecutionRequest,
+        disposition: ResumeAttemptExecutionDisposition,
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            assignment: request.assignment(),
+            daemon_epoch: request.daemon_epoch(),
+            attempt: request.attempt(),
+            prior_execution: request.prior_execution(),
+            checkpoint: request.checkpoint(),
+            request_digest: request.request_digest(),
+            disposition,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "resume-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+
+    /// Returns the fresh assignment identity copied from the request.
+    #[must_use]
+    pub const fn assignment(&self) -> AssignmentId {
+        self.assignment
+    }
+
+    /// Returns the new daemon incarnation copied from the request.
+    #[must_use]
+    pub const fn daemon_epoch(&self) -> DaemonEpoch {
+        self.daemon_epoch
+    }
+
+    /// Returns the semantic attempt copied from the request.
+    #[must_use]
+    pub const fn attempt(&self) -> AttemptId {
+        self.attempt
+    }
+
+    /// Returns the prior execution copied from the request.
+    #[must_use]
+    pub const fn prior_execution(&self) -> ExecutionId {
+        self.prior_execution
+    }
+
+    /// Returns the exact checkpoint copied from the request.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the digest of the complete request this response answers.
+    #[must_use]
+    pub const fn request_digest(&self) -> CampaignHash {
+        self.request_digest
+    }
+
+    /// Returns the executor's stable resume outcome.
+    #[must_use]
+    pub const fn disposition(&self) -> ResumeAttemptExecutionDisposition {
+        self.disposition
+    }
+
+    /// Validates that this response answers every field of one exact request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an echoed identity or request digest differs.
+    pub fn validate_for(
+        &self,
+        request: &ResumeAttemptExecutionRequest,
+    ) -> Result<(), CampaignCodecError> {
+        if self.assignment == request.assignment()
+            && self.daemon_epoch == request.daemon_epoch()
+            && self.attempt == request.attempt()
+            && self.prior_execution == request.prior_execution()
+            && self.checkpoint == request.checkpoint()
+            && self.request_digest == request.request_digest()
+        {
+            Ok(())
+        } else {
+            Err(CampaignCodecError::InvalidValue {
+                reason: "resume attempt execution response does not match request",
+            })
+        }
+    }
+
+    /// Returns strict canonical component-message bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes strict canonical component-message bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, invalid, or oversized
+    /// input.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        decode_executor_message(bytes, "resume-attempt-execution-response-encoded-bytes")
+    }
+
+    /// Decodes and binds a response to one exact resume request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ordinary strict-decoding error or a cross-request mismatch.
+    pub fn from_canonical_bytes_for(
+        request: &ResumeAttemptExecutionRequest,
+        bytes: &[u8],
+    ) -> Result<Self, CampaignCodecError> {
+        let response = Self::from_canonical_bytes(bytes)?;
+        response.validate_for(request)?;
+        Ok(response)
+    }
+}
+
+impl Canonical for ResumeAttemptExecutionResponse {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.schema_version.encode(encoder);
+        self.assignment.encode(encoder);
+        self.daemon_epoch.encode(encoder);
+        self.attempt.encode(encoder);
+        self.prior_execution.encode(encoder);
+        self.checkpoint.encode(encoder);
+        self.request_digest.encode(encoder);
+        self.disposition.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        require_executor_message_version(u32::decode(decoder)?)?;
+        let response = Self {
+            schema_version: EXECUTOR_MESSAGE_SCHEMA_VERSION,
+            assignment: AssignmentId::decode(decoder)?,
+            daemon_epoch: DaemonEpoch::decode(decoder)?,
+            attempt: AttemptId::decode(decoder)?,
+            prior_execution: ExecutionId::decode(decoder)?,
+            checkpoint: ExactCheckpointId::decode(decoder)?,
+            request_digest: CampaignHash::decode(decoder)?,
+            disposition: ResumeAttemptExecutionDisposition::decode(decoder)?,
+        };
+        codec::ensure_encoded_size(
+            &response,
+            MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES,
+            "resume-attempt-execution-response-encoded-bytes",
+        )?;
+        Ok(response)
+    }
+}
+
 /// Strict idempotent exact-checkpoint request for one execution incarnation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointAttemptExecutionRequest {
@@ -2268,6 +2695,86 @@ mod tests {
             GetAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
             Err(CampaignCodecError::UnknownTag {
                 kind: "get-attempt-execution-disposition",
+                tag: 0xff
+            })
+        );
+    }
+
+    #[test]
+    fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
+        let assignment = fixture_request();
+        let prior_execution = ExecutionId::from_bytes([0x3d; 16]).expect("prior execution");
+        let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            2,
+            b"executor-resume-checkpoint-root",
+        ))
+        .expect("checkpoint root");
+        let request = ResumeAttemptExecutionRequest::new(&assignment, prior_execution, checkpoint)
+            .expect("resume request");
+        let request_bytes = request.canonical_bytes();
+        assert_eq!(
+            ResumeAttemptExecutionRequest::from_canonical_bytes(&request_bytes)
+                .expect("resume request decode"),
+            request
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.resume-attempt-execution-request-vector.v2",
+                &request_bytes,
+            )
+            .to_hex(),
+            "5ac0a6c32480b9b337a39f9b4768db543de765dbe7de44099066565ee6b4a24c"
+        );
+
+        let execution = ExecutionId::from_bytes([0x3e; 16]).expect("resumed execution");
+        let response = ResumeAttemptExecutionResponse::new(
+            &request,
+            ResumeAttemptExecutionDisposition::Accepted { execution },
+        )
+        .expect("resume response");
+        let response_bytes = response.canonical_bytes();
+        assert_eq!(
+            ResumeAttemptExecutionResponse::from_canonical_bytes_for(&request, &response_bytes)
+                .expect("resume response decode"),
+            response
+        );
+        assert_eq!(
+            CampaignHash::derive(
+                "crucible.test.resume-attempt-execution-response-vector.v2",
+                &response_bytes,
+            )
+            .to_hex(),
+            "fda096f0dfd2bccd0d8cc060fb90eed72e0e965c62e2f3c597113663a73c34e4"
+        );
+
+        let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            2,
+            b"other-resume-checkpoint-root",
+        ))
+        .expect("other checkpoint root");
+        let other =
+            ResumeAttemptExecutionRequest::new(&assignment, prior_execution, other_checkpoint)
+                .expect("other resume request");
+        assert_eq!(
+            ResumeAttemptExecutionResponse::from_canonical_bytes_for(&other, &response_bytes),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "resume attempt execution response does not match request"
+            })
+        );
+
+        let mut unknown_disposition = ResumeAttemptExecutionResponse::new(
+            &request,
+            ResumeAttemptExecutionDisposition::AlreadyCanceled,
+        )
+        .expect("already canceled response")
+        .canonical_bytes();
+        *unknown_disposition.last_mut().expect("disposition tag") = 0xff;
+        assert_eq!(
+            ResumeAttemptExecutionResponse::from_canonical_bytes(&unknown_disposition),
+            Err(CampaignCodecError::UnknownTag {
+                kind: "resume-attempt-execution-disposition",
                 tag: 0xff
             })
         );

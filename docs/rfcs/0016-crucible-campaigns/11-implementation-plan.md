@@ -399,8 +399,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   restart root preservation, GC enumeration, captured-result propagation, and
   paused-capacity replacement are implemented. Exact-pin selection
   reauthentication and fail-closed VMState resume materialization are
-  implemented; guarded QEMU launch/session and campaign lifecycle resume remain
-  open. The fixed worker pool and its linear observation/checkpoint
+  implemented. Strict v2 resume request/response messages now bind a fresh
+  assignment to the exact prior execution, checkpoint, and unchanged execution
+  basis; durable supervisor, worker, loopback, and campaign-driver resume wiring
+  remains open. Guarded QEMU launch/session composition also remains open. The
+  fixed worker pool and its linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:
   graph-scoped target validation, exact command replay and reuse rejection,
