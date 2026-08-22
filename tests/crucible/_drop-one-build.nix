@@ -8,7 +8,7 @@
 #                    application ($out/conflict.env names the conflicting commit
 #                    and files).
 #   build-failed  -- N drops clean but full-minus-N has a compiler/linker failure
-#                    tied to a symbol or path introduced by N
+#                    naming an exact exported-ABI discriminator implemented by N
 #                    ($out/build.log, $out/patch-specific-build-evidence).
 #   built         -- N drops clean and full-minus-N builds
 #                    ($out/variant-qemu-system-x86_64).
@@ -66,7 +66,6 @@ in
     ];
 
     DROPPED_PATCH = droppedPatch;
-    DROPPED_PATCH_SOURCE = "${../../pkgs/emulation/qemu-patches}/${droppedPatch}";
     DROP_INDEX = toString index;
     DROP_ONE_REPOSITORY = "${dropOneRepository}";
     EXPECT_ABSENT_SYMBOLS = expectedSymbols;
@@ -97,23 +96,16 @@ in
             grep -E 'FAILED:|(^|[[:space:]])(fatal )?error:|undefined reference|implicit declaration|undeclared|unknown type name' \
               "$out/build.log" > "$out/build-diagnostics" \
               || fail "Ninja failed without a compiler or linker diagnostic"
+            test -n "$EXPECT_ABSENT_SYMBOLS" \
+              || fail "non-symbol drop failed to build and has no causal discriminator"
             : > "$out/patch-specific-build-evidence"
             for symbol in $EXPECT_ABSENT_SYMBOLS; do
               if grep -Fqx "$symbol" "$out/failing-symbols"; then
                 printf 'symbol\t%s\n' "$symbol" >> "$out/patch-specific-build-evidence"
               fi
             done
-            gawk '
-              /^--- a\// { sub(/^--- a\//, ""); if ($0 != "/dev/null") print }
-              /^\+\+\+ b\// { sub(/^\+\+\+ b\//, ""); if ($0 != "/dev/null") print }
-            ' "$DROPPED_PATCH_SOURCE" | LC_ALL=C sort -u > "$out/dropped-patch-paths"
-            while IFS= read -r touched_path; do
-              if grep -Fq "$touched_path" "$out/build-diagnostics"; then
-                printf 'path\t%s\n' "$touched_path" >> "$out/patch-specific-build-evidence"
-              fi
-            done < "$out/dropped-patch-paths"
             test -s "$out/patch-specific-build-evidence" \
-              || fail "Ninja failure has no diagnostic tied to $DROPPED_PATCH"
+              || fail "Ninja failure names no exact discriminator for $DROPPED_PATCH"
             echo build-failed > "$out/outcome"
             exit 0
           }
@@ -158,13 +150,35 @@ in
             git --git-dir="$DROP_ONE_REPOSITORY/repo.git" --work-tree="$src" checkout-index \
               --all --prefix="$src/"
           tar -xf "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src"
-          tar -df "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src" \
+          tar --no-recursion --null --format=gnu --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner -C "$src" \
+            --files-from="$DROP_ONE_REPOSITORY/source-supplement.entries0" \
+            -cf "$TMPDIR/materialized-source-supplement.tar"
+          materialized_supplement_hash=$(sha256sum \
+            "$TMPDIR/materialized-source-supplement.tar" | gawk '{ print $1 }')
+          test "$materialized_supplement_hash" = "$expected_supplement_hash" \
             || fail "materialized QEMU supplement differs from the verified archive"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" --work-tree="$src" \
+              update-index --refresh \
+            || fail "materialized QEMU tracked source cannot refresh its prepared index"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" --work-tree="$src" \
+              diff-files --quiet -- \
+            || fail "materialized QEMU tracked source differs from its prepared ref"
+          base_inventory_hash=$(cat "$DROP_ONE_REPOSITORY/source-inventory.sha256")
+          expected_source_identity=$(cat "$prepared/source-identity")
+          actual_source_identity=$(printf 'crucible.qemu-materialized-source.v1\n%s\n%s\n%s\n' \
+            "$actual_tree" "$actual_supplement_hash" "$base_inventory_hash" \
+            | sha256sum | gawk '{ print $1 }')
+          test "$actual_source_identity" = "$expected_source_identity" \
+            || fail "materialized QEMU source identity mismatch"
           chmod -R u+w "$src"
           echo true > "$out/source-materialized"
           {
-            echo "source_inventory_sha256=$(cat "$DROP_ONE_REPOSITORY/source-inventory.sha256")"
+            echo "source_inventory_sha256=$base_inventory_hash"
             echo "source_supplement_sha256=$actual_supplement_hash"
+            echo "materialized_source_identity=$actual_source_identity"
             echo "source_reconstruction_inventory_consumed=true"
           } > "$out/source-reconstruction.env"
           cd "$src"

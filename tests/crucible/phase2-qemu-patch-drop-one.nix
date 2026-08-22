@@ -70,14 +70,20 @@
     ++ lib.optionals (!(lib.hasInfix "source_reconstruction_inventory_consumed=true" dropOneBuildSource)) [
       "clean variants must consume the verified source inventory and supplement"
     ]
+    ++ lib.optionals (!(lib.hasInfix "diff-files --quiet" dropOneBuildSource)) [
+      "clean variants must verify checked-out tracked bytes against the prepared ref"
+    ]
     ++ lib.optionals (!(lib.hasInfix "REBASE_HEAD" dropOneRepositorySource)) [
       "drop-one conflicts must identify an exact pinned replay commit"
     ]
     ++ lib.optionals (!(lib.hasInfix "--diff-filter=U" dropOneRepositorySource)) [
       "drop-one conflicts must contain unmerged paths"
     ]
-    ++ lib.optionals (!(lib.hasInfix "patch-specific-build-evidence" dropOneBuildSource)) [
-      "drop-one build failures must carry patch-specific compiler or linker evidence"
+    ++ lib.optionals (!(lib.hasInfix "exact discriminator" dropOneBuildSource)) [
+      "drop-one build failures must name an exact manifest discriminator symbol"
+    ]
+    ++ lib.optionals (lib.hasInfix "printf 'path\\t" dropOneBuildSource) [
+      "source-path correlation must not classify a drop-one build failure"
     ]
     ++ lib.optionals (lib.hasInfix "ninja -C build -j" dropOneBuildSource) [
       "per-patch builds must leave Ninja parallelism to the build environment"
@@ -198,10 +204,63 @@
       grep -q "^dropped_patch=${entry.patch}$" "$result"
       cp "$result" "$out/per-patch/${entry.patch}.result"
       method=$(gawk -F= '/^attribution_method=/ { print $2 }' "$result")
+      if [ "$method" != drop-one-source-dependency ]; then
+        grep -q '^source_reconstruction_inventory_consumed=true$' "$result"
+        grep -q '^materialized_source_identity=[0-9a-f]\{64\}$' "$result"
+      fi
+      if [ "$method" = drop-one-build-required ]; then
+        grep -q '^exact_exported_symbol_build_failure_evidence=true$' "$result"
+      fi
       printf '%s\t%s\t%s\n' "${toString entry.index}" "${entry.patch}" "$method" \
         >> "$out/methods.tsv"
     '')
     dropOnes;
+
+  buildFailureEvidencePolicy = pkgs.mkDerivation {
+    pname = "crucible-drop-one-build-evidence-policy";
+    version = "0";
+    src = null;
+
+    buildDeps = [pkgs.coreutils pkgs.grep];
+
+    phases = [
+      {
+        name = "check-build-evidence-policy";
+        script = ''
+          set -eu
+          export LC_ALL=C
+          mkdir -p "$out"
+          . ${./_drop-one-build-evidence.sh}
+
+          printf '%s\n' qemu_plugin_expected > "$TMPDIR/full-exports"
+          printf 'path\t%s\n' accel/tcg/tcg-all.c > "$TMPDIR/path-only"
+          if validate_drop_one_build_evidence \
+            "$TMPDIR/path-only" "$TMPDIR/full-exports" qemu_plugin_expected; then
+            echo "FAIL: source-path correlation was accepted as causal evidence" >&2
+            exit 1
+          fi
+
+          printf 'symbol\t%s\n' qemu_plugin_unrelated > "$TMPDIR/unrelated-symbol"
+          if validate_drop_one_build_evidence \
+            "$TMPDIR/unrelated-symbol" "$TMPDIR/full-exports" qemu_plugin_expected; then
+            echo "FAIL: unrelated compiler symbol was accepted as causal evidence" >&2
+            exit 1
+          fi
+
+          printf 'symbol\t%s\n' qemu_plugin_expected > "$TMPDIR/exact-symbol"
+          validate_drop_one_build_evidence \
+            "$TMPDIR/exact-symbol" "$TMPDIR/full-exports" qemu_plugin_expected
+
+          cat > "$out/result" <<RESULT
+          PASS
+          path_only_build_failure_rejected=true
+          unrelated_symbol_build_failure_rejected=true
+          exact_manifest_symbol_build_failure_accepted=true
+          RESULT
+        '';
+      }
+    ];
+  };
 in
   if staticFailures != []
   then throw "crucible QEMU drop-one setup regression: ${builtins.concatStringsSep "; " staticFailures}"
@@ -235,6 +294,15 @@ in
               ${dropOneRepository}/result
             grep -q '^conflicts_require_pinned_rebase_head_and_unmerged_paths=true$' \
               ${dropOneRepository}/result
+            grep -q '^successful_refs_bind_materialized_source_identity=true$' \
+              ${dropOneRepository}/result
+            grep -q '^PASS$' ${buildFailureEvidencePolicy}/result
+            grep -q '^path_only_build_failure_rejected=true$' \
+              ${buildFailureEvidencePolicy}/result
+            grep -q '^unrelated_symbol_build_failure_rejected=true$' \
+              ${buildFailureEvidencePolicy}/result
+            grep -q '^exact_manifest_symbol_build_failure_accepted=true$' \
+              ${buildFailureEvidencePolicy}/result
             cp ${dropOneRepository}/drop-one-manifest.tsv \
               "$out/drop-one-repository-manifest.tsv"
 
@@ -281,7 +349,9 @@ in
             shared_source_reconstruction_inventory_verified=true
             all_drop_one_branches_computed_in_one_repository=true
             conflicts_require_pinned_rebase_head_and_unmerged_paths=true
-            build_failures_require_patch_specific_diagnostics=true
+            build_failures_require_exact_exported_symbol_diagnostics=true
+            hostile_unrelated_build_failure_negative_control=true
+            successful_variants_verify_tracked_tree_and_source_identity=true
             successful_variants_materialize_prepared_refs=true
             conflict_variants_skip_source_checkout=true
             drop_one_repository_manifest=drop-one-repository-manifest.tsv

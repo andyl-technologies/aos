@@ -85,6 +85,7 @@ in
           export LC_ALL=C
           mkdir -p "$out"
           fail() { echo "FAIL: $*" >&2; exit 1; }
+          . ${./_drop-one-build-evidence.sh}
 
           test "$(cat "$BUILD_DRV/dropped-patch")" = "$DROPPED_PATCH" \
             || fail "build derivation names a different patch"
@@ -129,12 +130,18 @@ in
                 "$out/patch-specific-build-evidence"
               test -s "$out/patch-specific-build-evidence" \
                 || fail "build failure lacks patch-specific compiler/linker evidence"
+              nm -D --defined-only "$FULL_QEMU" | gawk 'NF { print $NF }' | LC_ALL=C sort -u \
+                > "$out/full-exports"
+              validate_drop_one_build_evidence \
+                "$out/patch-specific-build-evidence" "$out/full-exports" \
+                "$EXPECT_ABSENT_SYMBOLS" \
+                || fail "build failure evidence is not an exact exported manifest discriminator"
               grep -E '^qemu_plugin_' "$out/failing-symbols" > "$out/failing-plugin-symbols" || true
               {
                 echo "attribution_method=drop-one-build-required"
                 echo "drop_conflicts=false"
                 echo "full_minus_n_build_fails=true"
-                echo "patch_specific_build_failure_evidence=true"
+                echo "exact_exported_symbol_build_failure_evidence=true"
                 echo "failing_symbol_count=$(wc -l < "$out/failing-symbols" | tr -d ' ')"
                 echo "build_failure_references_plugin_symbols=$(test -s "$out/failing-plugin-symbols" && echo true || echo false)"
               } > "$out/attribution.env"
