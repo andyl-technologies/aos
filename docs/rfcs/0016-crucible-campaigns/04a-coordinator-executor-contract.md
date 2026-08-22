@@ -195,9 +195,11 @@ SubmitBranchRequest    DeriveCampaign       QueryFindings
 ExplainObject          ExplainAttempt       WatchCampaign
 ```
 
-Every mutation of an existing campaign carries an idempotent command ID and its
-expected snapshot ID. Creation instead uses the canonical campaign name as its
-idempotency boundary and carries expected name absence.
+Every operator-command mutation of an existing campaign carries an idempotent
+command ID and its expected snapshot ID. An exhaustive-policy branch instead
+uses its exact content-addressed request as the idempotency boundary. Creation
+uses the canonical campaign name as its idempotency boundary and carries
+expected name absence.
 Repeated `WatchCampaign` calls form a resumable coalesced watch; the campaign
 ref and immutable objects remain authoritative. A stale or lost watch cursor
 therefore cannot lose campaign state.
@@ -475,8 +477,10 @@ capability; a transport adapter authenticates its peer or an exact-request
 proof. Authorization receives the exact request digest and fails before any
 repository read or write. Treating the self-asserted principal text alone as
 authentication is non-conforming. The repository-backed adapter then invokes
-the existing `head`/lifecycle, `apply_control`, and operator-only branch owner
-paths, preserving their idempotence and CAS rules.
+the existing `head`/lifecycle, `apply_control`, and cause-specific operator or
+exhaustive-policy branch owner paths, preserving their idempotence and CAS
+rules. Planner and debugger causes remain confined to their authority-specific
+adapters.
 
 Creation carries the complete by-value lineage and policy. Large scenario and
 genesis configuration artifacts and the exact transitive generator closure do
@@ -706,7 +710,10 @@ no arbitrary exploration-root or content-store read.
 
 `GetChoiceObject` is the separately authorized dependency read for one exact
 graph-authenticated opportunity, including opportunities returned by
-`QueryChoices`. Its lookup proof authenticates the opportunity under the
+`QueryChoices`. The requested snapshot may be the current head or an exact
+authenticated ancestor in that named campaign; this permits an idempotent
+mutation retry to reconstruct the same semantic request after later head
+advances. Its lookup proof authenticates the opportunity under the
 deterministic authoritative graph key and the response
 reconstructs that opportunity's exact content identity. The closed selector
 then permits only the declaration or effective domain named by that body. The
@@ -715,6 +722,16 @@ requires it to equal the corresponding opportunity field. The response carries
 the complete anchoring snapshot body and therefore grants the same full
 snapshot-metadata visibility as the other proof-bearing graph operations, but
 it grants no arbitrary content-store read.
+
+An exhaustive branch request uses `BranchRequestCause::ExhaustivePolicy` with
+the exact active policy from that authenticated snapshot, implementation-
+version 2 `all`, and a proposal budget equal to the Boolean or discrete
+domain's exact cardinality. Local acceptance and imported-successor validation
+require the named policy to be active, its explorer to be `Exhaustive`, its
+choice policy to select that exact generator, and the cardinality to be no
+greater than `maximum_cardinality`. A non-`all` generator, another domain
+family, a partial or excessive proposal budget, or an over-ceiling domain is
+rejected before immutable request or Merkle publication.
 
 The checked local porcelain exposes these proof-bearing reads through
 `campaign graph-object`, `campaign choice-object`, and

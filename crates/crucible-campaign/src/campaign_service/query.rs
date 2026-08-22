@@ -2179,7 +2179,7 @@ impl GetCampaignChoiceObjectRequest {
         &self.campaign
     }
 
-    /// Returns the exact current snapshot that anchors the opportunity.
+    /// Returns the exact named-history snapshot that anchors the opportunity.
     #[must_use]
     pub const fn snapshot(&self) -> CampaignSnapshotId {
         self.snapshot

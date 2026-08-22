@@ -1541,6 +1541,40 @@ impl CampaignRepository {
             | BranchRequestCause::Debugger(_) => {}
         }
 
+        if let BranchRequestCause::ExhaustivePolicy(policy_id) = request.cause() {
+            let policy = self.read_policy(policy_id.content_id())?;
+            let crate::ExplorerPolicy::Exhaustive {
+                maximum_cardinality,
+            } = policy.explorer()
+            else {
+                return Err(integrity(
+                    "exhaustive-branch-request-policy-is-not-exhaustive",
+                ));
+            };
+            let CandidateSource::Generated(generator_id) = request.source() else {
+                return Err(integrity(
+                    "exhaustive-branch-request-source-is-not-generated",
+                ));
+            };
+            let generator = self.read_generator(generator_id.content_id())?;
+            if generator.implementation_version()
+                != crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
+                || generator.algorithm() != &CandidateGeneratorAlgorithm::All
+            {
+                return Err(integrity("exhaustive-branch-request-generator-is-not-all"));
+            }
+            let domain = self.read_choice_domain(request.domain().content_id())?;
+            let cardinality = domain.cardinality();
+            if cardinality > u128::from(*maximum_cardinality) {
+                return Err(integrity("exhaustive-branch-request-domain-exceeds-policy"));
+            }
+            if u128::from(request.budget().maximum_proposals()) != cardinality {
+                return Err(integrity(
+                    "exhaustive-branch-request-budget-is-not-domain-cardinality",
+                ));
+            }
+        }
+
         if let CandidateSource::Generated(generator) = request.source()
             && matches!(
                 request.cause(),

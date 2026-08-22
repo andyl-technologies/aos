@@ -3611,6 +3611,19 @@ fn choice_discovery_is_exact_replayable_and_required_before_branching() {
     let accepted = repository
         .submit_branch_request("choice-discovery", discovered.new_snapshot, &request)
         .expect("submit known request");
+    let historical_response = crate::CampaignClient::new(crate::RepositoryCampaignService::new(
+        &repository,
+        PermitAlice,
+    ))
+    .get_campaign_choice_object(&object_request)
+    .expect("load choice domain from an exact historical snapshot");
+    assert_eq!(
+        historical_response
+            .snapshot_body()
+            .id()
+            .expect("snapshot id"),
+        discovered.new_snapshot
+    );
     let replay = repository
         .discover_choice_opportunity(
             "choice-discovery",

@@ -931,7 +931,7 @@ impl Canonical for ApplyCampaignCommandRequest {
     }
 }
 
-/// Strict request for one additive operator branch source.
+/// Strict request for one additive operator or exhaustive-policy branch source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmitCampaignBranchRequest {
     schema_version: u32,
@@ -1552,7 +1552,7 @@ pub trait CampaignService {
         request: &PinCampaignRequest,
     ) -> Result<PinCampaignResponse, Self::Error>;
 
-    /// Submits one exact additive operator branch request.
+    /// Submits one exact additive operator or exhaustive-policy branch request.
     ///
     /// # Errors
     ///
@@ -2634,16 +2634,11 @@ where
             request.campaign(),
             request.request_digest(),
         )?;
-        let head = self.repository.head(request.campaign().as_str())?;
-        if head.snapshot_id() != request.snapshot() {
-            return Err(CampaignRepositoryError::Stale {
-                expected: request.snapshot(),
-                current: head.snapshot_id(),
-            }
-            .into());
-        }
+        let snapshot = self
+            .repository
+            .snapshot_in_campaign(request.campaign().as_str(), request.snapshot())?;
         let (_, proof) = self.repository.graph_object_with_proof(
-            head.snapshot().roots().graph,
+            snapshot.roots().graph,
             crate::repository::authoritative_choice_key(request.opportunity()),
         )?;
         let (opportunity, declaration, domain) = self
@@ -2655,7 +2650,7 @@ where
         };
         Ok(GetCampaignChoiceObjectResponse::new(
             request,
-            head.snapshot().clone(),
+            snapshot,
             opportunity,
             object,
             proof,
@@ -2704,11 +2699,28 @@ where
             request.campaign(),
             request.request_digest(),
         )?;
-        let result = self.repository.submit_operator_branch_request(
-            request.campaign().as_str(),
-            request.expected_snapshot(),
-            request.request(),
-        )?;
+        let result = match request.request().cause() {
+            crate::BranchRequestCause::Operator(_) => {
+                self.repository.submit_operator_branch_request(
+                    request.campaign().as_str(),
+                    request.expected_snapshot(),
+                    request.request(),
+                )?
+            }
+            crate::BranchRequestCause::ExhaustivePolicy(_) => {
+                self.repository.submit_branch_request(
+                    request.campaign().as_str(),
+                    request.expected_snapshot(),
+                    request.request(),
+                )?
+            }
+            crate::BranchRequestCause::Planner(_) | crate::BranchRequestCause::Debugger(_) => {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "branch-request-cause-requires-authority-specific-adapter",
+                }
+                .into());
+            }
+        };
         Ok(SubmitCampaignBranchResponse::new(request, result)?)
     }
 }

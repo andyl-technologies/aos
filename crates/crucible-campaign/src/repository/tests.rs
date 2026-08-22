@@ -244,16 +244,25 @@ fn policy_with_generator(
     scenario: ScenarioDefId,
     generator: CandidateGeneratorSpecId,
 ) -> CampaignPolicy {
+    exhaustive_policy_with_generator(scenario, generator, "product.recovery", 64)
+}
+
+fn exhaustive_policy_with_generator(
+    scenario: ScenarioDefId,
+    generator: CandidateGeneratorSpecId,
+    selectable: &str,
+    maximum_cardinality: u64,
+) -> CampaignPolicy {
     CampaignPolicy::new(
         scenario,
         CampaignSeed::from_bytes([9; 32]),
         CampaignMode::Strict,
         ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 64,
+            maximum_cardinality,
         },
         BTreeMap::from([(
-            "product.recovery".to_owned(),
-            ChoicePolicy::new("product.recovery", generator, true).expect("choice policy"),
+            selectable.to_owned(),
+            ChoicePolicy::new(selectable, generator, true).expect("choice policy"),
         )]),
         BTreeMap::new(),
         BTreeMap::new(),
