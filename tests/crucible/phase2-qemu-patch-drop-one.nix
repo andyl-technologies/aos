@@ -200,74 +200,74 @@ in
         {
           name = "aggregate-drop-one-attribution";
           script = ''
-              set -eu
-              export LC_ALL=C
-              mkdir -p "$out/per-patch"
-              : > "$out/methods.tsv"
+            set -eu
+            export LC_ALL=C
+            mkdir -p "$out/per-patch"
+            : > "$out/methods.tsv"
 
-              grep -q '^PASS$' ${patchStackRepository}/result
-              grep -q '^source_extractions=1$' ${patchStackRepository}/result
-              grep -q '^full_tree_staging_passes=1$' ${patchStackRepository}/result
-              grep -q '^ignored_vendored_subprojects_preserved=true$' \
-                ${patchStackRepository}/result
-              grep -q '^PASS$' ${dropOneRepository}/result
-              grep -q '^all_drop_one_branches_computed_in_one_repository=true$' \
-                ${dropOneRepository}/result
-              cp ${dropOneRepository}/drop-one-manifest.tsv \
-                "$out/drop-one-repository-manifest.tsv"
+            grep -q '^PASS$' ${patchStackRepository}/result
+            grep -q '^source_extractions=1$' ${patchStackRepository}/result
+            grep -q '^full_tree_staging_passes=1$' ${patchStackRepository}/result
+            grep -q '^ignored_vendored_subprojects_preserved=true$' \
+              ${patchStackRepository}/result
+            grep -q '^PASS$' ${dropOneRepository}/result
+            grep -q '^all_drop_one_branches_computed_in_one_repository=true$' \
+              ${dropOneRepository}/result
+            cp ${dropOneRepository}/drop-one-manifest.tsv \
+              "$out/drop-one-repository-manifest.tsv"
 
-              ${perPatchChecks}
+            ${perPatchChecks}
 
-              # Every patch resolves to exactly one recognized attribution method.
-              bad=$(gawk -F'\t' '
-                $3 != "drop-one-source-dependency" &&
-                $3 != "drop-one-build-required" &&
-                $3 != "drop-one-symbol" &&
-                $3 != "drop-one-semantic" &&
-                $3 != "drop-one-composition" &&
-                $3 != "structural-fallback" { print }
-              ' "$out/methods.tsv")
-              if [ -n "$bad" ]; then
-                echo "patches without a recognized drop-one method:" >&2
-                printf '%s\n' "$bad" >&2
-                exit 1
-              fi
+            # Every patch resolves to exactly one recognized attribution method.
+            bad=$(gawk -F'\t' '
+              $3 != "drop-one-source-dependency" &&
+              $3 != "drop-one-build-required" &&
+              $3 != "drop-one-symbol" &&
+              $3 != "drop-one-semantic" &&
+              $3 != "drop-one-composition" &&
+              $3 != "structural-fallback" { print }
+            ' "$out/methods.tsv")
+            if [ -n "$bad" ]; then
+              echo "patches without a recognized drop-one method:" >&2
+              printf '%s\n' "$bad" >&2
+              exit 1
+            fi
 
-              rows=$(wc -l < "$out/methods.tsv" | tr -d ' ')
-              test "$rows" -eq "$PATCH_COUNT"
+            rows=$(wc -l < "$out/methods.tsv" | tr -d ' ')
+            test "$rows" -eq "$PATCH_COUNT"
 
-              count() { gawk -F'\t' -v m="$1" '$3==m{c++} END{print c+0}' "$out/methods.tsv"; }
-              n_srcdep=$(count drop-one-source-dependency)
-              n_build=$(count drop-one-build-required)
-              n_symbol=$(count drop-one-symbol)
-              n_semantic=$(count drop-one-semantic)
-              n_composition=$(count drop-one-composition)
-              n_fallback=$(count structural-fallback)
-              test "$n_composition" -eq 0
-              test "$n_fallback" -eq 0
+            count() { gawk -F'\t' -v m="$1" '$3==m{c++} END{print c+0}' "$out/methods.tsv"; }
+            n_srcdep=$(count drop-one-source-dependency)
+            n_build=$(count drop-one-build-required)
+            n_symbol=$(count drop-one-symbol)
+            n_semantic=$(count drop-one-semantic)
+            n_composition=$(count drop-one-composition)
+            n_fallback=$(count structural-fallback)
+            test "$n_composition" -eq 0
+            test "$n_fallback" -eq 0
 
-              cat > "$out/result" <<RESULT
-              PASS
-              check=${attrPath}
-              gate=gate:patch-microtests
-              patch_count=${toString patchCount}
-              every_patch_has_exactly_one_drop_one_method=true
-              clean_conflict_split_recomputed_live=true
-              shared_patch_stack_source_extractions=1
-              shared_patch_stack_full_tree_staging_passes=1
-              shared_patch_stack_preserves_ignored_vendored_subprojects=true
-              all_drop_one_branches_computed_in_one_repository=true
+            cat > "$out/result" <<RESULT
+            PASS
+            check=${attrPath}
+            gate=gate:patch-microtests
+            patch_count=${toString patchCount}
+            every_patch_has_exactly_one_drop_one_method=true
+            clean_conflict_split_recomputed_live=true
+            shared_patch_stack_source_extractions=1
+            shared_patch_stack_full_tree_staging_passes=1
+            shared_patch_stack_preserves_ignored_vendored_subprojects=true
+            all_drop_one_branches_computed_in_one_repository=true
             successful_variants_materialize_prepared_refs=true
-              conflict_variants_skip_source_checkout=true
-              drop_one_repository_manifest=drop-one-repository-manifest.tsv
-              drop_one_source_dependency_count=$n_srcdep
-              drop_one_build_required_count=$n_build
-              drop_one_symbol_count=$n_symbol
-              drop_one_semantic_count=$n_semantic
-              drop_one_composition_count=$n_composition
-              structural_fallback_count=$n_fallback
-              methods_manifest=methods.tsv
-              RESULT
+            conflict_variants_skip_source_checkout=true
+            drop_one_repository_manifest=drop-one-repository-manifest.tsv
+            drop_one_source_dependency_count=$n_srcdep
+            drop_one_build_required_count=$n_build
+            drop_one_symbol_count=$n_symbol
+            drop_one_semantic_count=$n_semantic
+            drop_one_composition_count=$n_composition
+            structural_fallback_count=$n_fallback
+            methods_manifest=methods.tsv
+            RESULT
           '';
         }
       ];
