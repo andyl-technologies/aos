@@ -1089,12 +1089,25 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when `sequence` would reuse setup-time or
     /// already-reserved command identities.
     pub fn restore_fault_command_sequence(&mut self, sequence: u64) -> Result<(), QemuNodeError> {
+        self.validate_fault_command_sequence_restore(sequence)?;
+        self.next_fault_command_sequence = sequence;
+        Ok(())
+    }
+
+    /// Validates a restored command cursor without mutating the live node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the cursor would reuse setup identities.
+    pub(crate) fn validate_fault_command_sequence_restore(
+        &self,
+        sequence: u64,
+    ) -> Result<(), QemuNodeError> {
         if sequence < self.setup_fault_command_sequence_floor {
             return Err(QemuNodeError::fault_command(
                 "restored fault command sequence reuses setup admission identity",
             ));
         }
-        self.next_fault_command_sequence = sequence;
         Ok(())
     }
 
@@ -1104,13 +1117,26 @@ impl QemuNode {
     ///
     /// Returns [`QemuNodeError`] when `sequence` is zero.
     pub fn restore_fault_event_sequence(&mut self, sequence: u64) -> Result<(), QemuNodeError> {
+        self.validate_fault_event_sequence_restore(sequence)?;
+        self.next_fault_event_sequence = sequence;
+        self.fault_event_terminal_failure = None;
+        Ok(())
+    }
+
+    /// Validates a restored event cursor without mutating the live node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the cursor is zero.
+    pub(crate) fn validate_fault_event_sequence_restore(
+        &self,
+        sequence: u64,
+    ) -> Result<(), QemuNodeError> {
         if sequence == 0 {
             return Err(QemuNodeError::fault_command(
                 "restored fault event sequence is zero",
             ));
         }
-        self.next_fault_event_sequence = sequence;
-        self.fault_event_terminal_failure = None;
         Ok(())
     }
 

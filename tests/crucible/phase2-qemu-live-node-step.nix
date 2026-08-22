@@ -103,6 +103,9 @@ in
             -p crucible-qemu \
             --example crucible-qemu-live-node-step
 
+          grep -Fq '.with_fingerprint(QemuLaunchPluginSwitch::On)' \
+            crates/crucible-qemu/examples/crucible-qemu-live-node-step.rs
+
           run_dir="$TMPDIR/live-node-step-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-node-step.result"

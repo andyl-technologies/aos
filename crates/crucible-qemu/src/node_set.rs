@@ -568,146 +568,99 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Reads the current execution fingerprint of every live node.
+    /// Iterates live execution fingerprints without building an intermediate map.
+    pub(crate) fn execution_fingerprint_entries(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = Result<(&NodeId, crucible::ContentHash), BackendError>> {
+        self.nodes.iter_mut().map(|(node, backend)| {
+            backend
+                .execution_fingerprint()
+                .map(|fingerprint| (node, fingerprint.hash))
+                .map_err(BackendError::from)
+        })
+    }
+
+    /// Iterates next fault-command sequences without building an intermediate map.
+    pub(crate) fn fault_command_sequence_entries(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&NodeId, u64)> {
+        self.nodes
+            .iter()
+            .map(|(node, backend)| (node, backend.next_fault_command_sequence()))
+    }
+
+    /// Iterates next required fault-event sequences without an intermediate map.
+    pub(crate) fn fault_event_sequence_entries(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&NodeId, u64)> {
+        self.nodes
+            .iter()
+            .map(|(node, backend)| (node, backend.next_fault_event_sequence()))
+    }
+
+    /// Returns one node's next required fault-event sequence.
+    pub(crate) fn fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
+        self.nodes
+            .get(node)
+            .map(QemuNode::next_fault_event_sequence)
+    }
+
+    /// Atomically restores canonically ordered command and event continuations.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when any live node cannot supply an
-    /// authenticated shared-memory execution fingerprint.
-    pub fn execution_fingerprints(
+    /// Returns [`BackendError`] without mutation when either node membership
+    /// differs or any sequence is invalid for its shared-memory ABI.
+    pub(crate) fn restore_ordered_fault_sequences(
         &mut self,
-    ) -> Result<BTreeMap<NodeId, crucible::ContentHash>, BackendError> {
-        self.nodes
+        command_sequences: &[(NodeId, u64)],
+        event_sequences: &[(NodeId, u64)],
+    ) -> Result<(), BackendError> {
+        if self
+            .nodes
+            .keys()
+            .ne(command_sequences.iter().map(|(node, _sequence)| node))
+            || self
+                .nodes
+                .keys()
+                .ne(event_sequences.iter().map(|(node, _sequence)| node))
+        {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "QEMU fault-sequence checkpoint node membership differs from live nodes",
+                ),
+            });
+        }
+        for (node, sequence) in command_sequences {
+            self.nodes
+                .get(node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("QEMU fault checkpoint names unknown node `{}`", node.name),
+                })?
+                .validate_fault_command_sequence_restore(*sequence)
+                .map_err(BackendError::from)?;
+        }
+        for (node, sequence) in event_sequences {
+            self.nodes
+                .get(node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("QEMU fault checkpoint names unknown node `{}`", node.name),
+                })?
+                .validate_fault_event_sequence_restore(*sequence)
+                .map_err(BackendError::from)?;
+        }
+
+        for (((_node, backend), (_command_node, command)), (_event_node, event)) in self
+            .nodes
             .iter_mut()
-            .map(|(node, backend)| {
-                backend
-                    .execution_fingerprint()
-                    .map(|fingerprint| (node.clone(), fingerprint.hash))
-                    .map_err(BackendError::from)
-            })
-            .collect()
-    }
-
-    /// Returns the next fault-command sequence of every live node.
-    #[must_use]
-    pub fn fault_command_sequences(&self) -> BTreeMap<NodeId, u64> {
-        self.nodes
-            .iter()
-            .map(|(node, backend)| (node.clone(), backend.next_fault_command_sequence()))
-            .collect()
-    }
-
-    /// Returns the next required fault-event sequence of every live node.
-    #[must_use]
-    pub fn fault_event_sequences(&self) -> BTreeMap<NodeId, u64> {
-        self.nodes
-            .iter()
-            .map(|(node, backend)| (node.clone(), backend.next_fault_event_sequence()))
-            .collect()
-    }
-
-    /// Restores the per-node command continuation paired with VM snapshots.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when node membership differs or a sequence is
-    /// invalid for the fault-command ABI.
-    pub fn restore_fault_command_sequences(
-        &mut self,
-        sequences: &BTreeMap<NodeId, u64>,
-    ) -> Result<(), BackendError> {
-        if self.nodes.keys().ne(sequences.keys()) {
-            return Err(BackendError::Rejected {
-                message: String::from(
-                    "QEMU fault-command checkpoint node membership differs from live nodes",
-                ),
-            });
-        }
-        for (node, sequence) in sequences {
-            self.node_mut(node)?
-                .restore_fault_command_sequence(*sequence)
-                .map_err(BackendError::from)?;
-        }
-        Ok(())
-    }
-
-    /// Restores a canonically ordered per-node command continuation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when node membership differs or a sequence is
-    /// invalid for the fault-command ABI.
-    pub(crate) fn restore_ordered_fault_command_sequences(
-        &mut self,
-        sequences: &[(NodeId, u64)],
-    ) -> Result<(), BackendError> {
-        if self
-            .nodes
-            .keys()
-            .ne(sequences.iter().map(|(node, _sequence)| node))
+            .zip(command_sequences)
+            .zip(event_sequences)
         {
-            return Err(BackendError::Rejected {
-                message: String::from(
-                    "QEMU fault-command checkpoint node membership differs from live nodes",
-                ),
-            });
-        }
-        for (node, sequence) in sequences {
-            self.node_mut(node)?
-                .restore_fault_command_sequence(*sequence)
+            backend
+                .restore_fault_command_sequence(*command)
                 .map_err(BackendError::from)?;
-        }
-        Ok(())
-    }
-
-    /// Restores per-node event continuation paired with exact VM snapshots.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when membership differs or a sequence is zero.
-    pub fn restore_fault_event_sequences(
-        &mut self,
-        sequences: &BTreeMap<NodeId, u64>,
-    ) -> Result<(), BackendError> {
-        if self.nodes.keys().ne(sequences.keys()) {
-            return Err(BackendError::Rejected {
-                message: String::from(
-                    "QEMU fault-event checkpoint node membership differs from live nodes",
-                ),
-            });
-        }
-        for (node, sequence) in sequences {
-            self.node_mut(node)?
-                .restore_fault_event_sequence(*sequence)
-                .map_err(BackendError::from)?;
-        }
-        Ok(())
-    }
-
-    /// Restores a canonically ordered per-node event continuation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when node membership differs or a sequence is
-    /// zero.
-    pub(crate) fn restore_ordered_fault_event_sequences(
-        &mut self,
-        sequences: &[(NodeId, u64)],
-    ) -> Result<(), BackendError> {
-        if self
-            .nodes
-            .keys()
-            .ne(sequences.iter().map(|(node, _sequence)| node))
-        {
-            return Err(BackendError::Rejected {
-                message: String::from(
-                    "QEMU fault-event checkpoint node membership differs from live nodes",
-                ),
-            });
-        }
-        for (node, sequence) in sequences {
-            self.node_mut(node)?
-                .restore_fault_event_sequence(*sequence)
+            backend
+                .restore_fault_event_sequence(*event)
                 .map_err(BackendError::from)?;
         }
         Ok(())

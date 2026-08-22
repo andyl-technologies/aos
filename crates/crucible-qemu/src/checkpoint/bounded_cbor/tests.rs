@@ -98,3 +98,34 @@ fn bounded_map_rejects_noncanonical_key_order() {
         ciborium::de::from_reader::<BoundedMap<u8, u8, 4>, _>(descending_map.as_slice()).is_err()
     );
 }
+
+#[test]
+fn bounded_map_and_set_reject_programmatic_growth_past_the_ceiling() {
+    let mut map = BoundedMap::<u8, u8, 1>::new();
+    assert_eq!(map.try_insert(1, 2), Ok(None));
+    assert_eq!(
+        map.try_insert(3, 4),
+        Err(BoundedCborError::ResourceLimit {
+            field: "bounded CBOR map",
+            current: 1,
+            requested: 1,
+            configured: 1,
+            hard: 1,
+        })
+    );
+    assert_eq!(map.try_insert(1, 5), Ok(Some(2)));
+
+    let mut set = BoundedSet::<u8, 1>::new();
+    assert_eq!(set.try_insert(1), Ok(true));
+    assert_eq!(set.try_insert(1), Ok(false));
+    assert_eq!(
+        set.try_insert(2),
+        Err(BoundedCborError::ResourceLimit {
+            field: "bounded CBOR set",
+            current: 1,
+            requested: 1,
+            configured: 1,
+            hard: 1,
+        })
+    );
+}

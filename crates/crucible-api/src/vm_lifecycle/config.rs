@@ -68,7 +68,6 @@ impl ProductionVmLifecycleConfig {
             signal_artifacts: None,
             fault_replay: None,
             world_artifacts: None,
-            restore_checkpoint: None,
             validate_guest_asset_references: false,
         }
     }

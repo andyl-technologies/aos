@@ -11,9 +11,16 @@ pub(super) trait NodeSequenceLookup {
     fn sequence(&self, node: &NodeId) -> Option<u64>;
 }
 
+#[cfg(test)]
 impl NodeSequenceLookup for BTreeMap<NodeId, u64> {
     fn sequence(&self, node: &NodeId) -> Option<u64> {
         self.get(node).copied()
+    }
+}
+
+impl NodeSequenceLookup for QemuNodeSet {
+    fn sequence(&self, node: &NodeId) -> Option<u64> {
+        self.fault_event_sequence(node)
     }
 }
 

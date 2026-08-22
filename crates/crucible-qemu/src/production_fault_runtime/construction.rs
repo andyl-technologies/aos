@@ -183,7 +183,8 @@ impl ProductionFaultRuntime {
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        let observed_qemu_fingerprints = nodes.execution_fingerprints()?;
+        let observed_qemu_fingerprints =
+            super::checkpoint::qemu_fingerprint_map(nodes, resource_limits)?;
         validate_checkpoint_qemu_fingerprints(
             &checkpoint.qemu_fingerprints,
             &observed_qemu_fingerprints,
@@ -227,8 +228,10 @@ impl ProductionFaultRuntime {
             }
             _ => return Err(FaultExecutionError::CheckpointPresence.into()),
         };
-        nodes.restore_ordered_fault_command_sequences(qemu_fault_sequences.as_slice())?;
-        nodes.restore_ordered_fault_event_sequences(qemu_fault_event_sequences.as_slice())?;
+        nodes.restore_ordered_fault_sequences(
+            qemu_fault_sequences.as_slice(),
+            qemu_fault_event_sequences.as_slice(),
+        )?;
         Ok(Self {
             plan_id,
             resource_limits,
@@ -364,7 +367,7 @@ pub(crate) fn validate_qemu_fingerprints(
 
 fn validate_checkpoint_qemu_fingerprints(
     expected: &QemuNodeMap<ContentHash>,
-    observed: &BTreeMap<NodeId, ContentHash>,
+    observed: &QemuNodeMap<ContentHash>,
 ) -> Result<(), ProductionFaultRuntimeError> {
     if expected.len() == observed.len()
         && expected

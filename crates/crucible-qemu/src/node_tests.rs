@@ -18,11 +18,14 @@ use crucible_shmem::{
 };
 
 use crate::{
-    QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuQuantumOperation,
+    QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuNodeSet,
+    QemuQuantumOperation,
 };
 
 use super::*;
 
+#[path = "node/tests/sequence_restore.rs"]
+mod sequence_restore;
 #[path = "node/tests/shutdown_and_preemption.rs"]
 mod shutdown_and_preemption;
 
