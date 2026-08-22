@@ -1,6 +1,7 @@
 //! Production fault-runtime checkpoint codec tests.
 
 use super::*;
+use sha2::{Digest as _, Sha256};
 
 fn empty_checkpoint(
     plan: &FaultSignalPlan,
@@ -71,6 +72,33 @@ fn pending_network_output(payload: Vec<u8>) -> BackendNetworkOutput {
     }
 }
 
+fn authenticated_qemu_event(payload: Vec<u8>) -> DequeuedFaultEvent {
+    DequeuedFaultEvent {
+        header: crucible_shmem::FaultEventHeaderV1 {
+            command_kind: crucible_shmem::FaultCommandKind::CpuService,
+            outcome: crucible_shmem::FaultEventOutcomeV1::Applied,
+            event_sequence: 1,
+            rule_command_sequence: 1,
+            observed_icount: 1,
+            model_phase: 1,
+            target_kind: 1,
+            generation: 1,
+            binding_hash: [1; 32],
+            opportunity_hash: [2; 32],
+            action_hash: [3; 32],
+            target_hash: [4; 32],
+            before_hash: [5; 32],
+            after_hash: [6; 32],
+            evidence_hash: Sha256::digest(&payload).into(),
+            payload_hash: *blake3::hash(&payload).as_bytes(),
+            payload_offset: 0,
+            payload_length: u32::try_from(payload.len())
+                .unwrap_or_else(|_| panic!("test payload length should fit")),
+        },
+        payload,
+    }
+}
+
 #[test]
 fn complete_production_checkpoint_round_trips_canonically() {
     let plan = FaultSignalPlan::empty();
@@ -101,6 +129,32 @@ fn complete_production_checkpoint_round_trips_canonically() {
             .to_canonical_bytes()
             .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}")),
         bytes
+    );
+}
+
+#[test]
+fn qemu_event_record_is_admitted_before_output_allocation() {
+    let event = authenticated_qemu_event(vec![7; 4096]);
+    let encoded_length = event
+        .canonical_length()
+        .unwrap_or_else(|error| panic!("event fixture should validate: {error}"));
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let events = BTreeMap::from([(node, vec![event])]);
+    let maximum = u64::try_from(encoded_length.saturating_sub(1))
+        .unwrap_or_else(|_| panic!("event length should fit the aggregate limit"));
+    let mut budget = CheckpointConstructionBudget::new(maximum);
+
+    assert_eq!(
+        encode_qemu_event_map(&events, &mut budget).map(|_| ()),
+        Err(ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "production fault checkpoint",
+            current: 0,
+            requested: u64::try_from(encoded_length).unwrap_or(u64::MAX),
+            configured: maximum,
+            hard: 68_719_476_736,
+        })
     );
 }
 

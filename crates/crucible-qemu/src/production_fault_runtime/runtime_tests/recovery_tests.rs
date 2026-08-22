@@ -309,3 +309,23 @@ fn pending_qemu_observation_identity_reserves_before_growth() {
         )) if requested > 1
     ));
 }
+
+#[test]
+fn pending_observation_reports_the_exhausted_checkpoint_resource() {
+    let observation = pending_qemu_observation();
+    let mut limits = FaultResourceLimits::default();
+    limits.fat_checkpoint_bytes = 64;
+
+    assert!(matches!(
+        observation_identity_material_at_checkpoint_offset(&observation, limits, 63),
+        Err(ProductionFaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "fat_checkpoint_bytes",
+                current: 63,
+                requested,
+                configured: 64,
+                hard: 68_719_476_736,
+            }
+        )) if requested > 1
+    ));
+}

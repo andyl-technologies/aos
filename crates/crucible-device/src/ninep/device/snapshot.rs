@@ -187,7 +187,9 @@ impl NinepSnapshot {
         validate_ninep_snapshot(self)?;
         let wire = NinepSnapshotEncodeWire {
             core: bounded_bytes(
-                self.core.canonical_bytes().map_err(map_io_core_error)?,
+                self.core
+                    .canonical_bytes_with_limit(maximum.min(MAX_NINEP_SNAPSHOT_BYTES))
+                    .map_err(map_io_core_error)?,
                 "9p I/O core bytes",
             )?,
             server: NinepServerEncodeWire {
@@ -251,8 +253,11 @@ impl NinepSnapshot {
             map_decode_error(error).map_or(NinepSnapshotCodecError::Malformed, map_resource_error)
         })?;
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes(wire.core.as_slice())
-                .map_err(map_io_core_error)?,
+            core: IoCoreSnapshot::from_canonical_bytes_with_limit(
+                wire.core.as_slice(),
+                maximum.min(MAX_NINEP_SNAPSHOT_BYTES),
+            )
+            .map_err(map_io_core_error)?,
             server: decode_server(wire.server)?,
             latency: NinepLatency::new(wire.latency[0], wire.latency[1], wire.latency[2]),
             require_fault_directives: wire.require_fault_directives,

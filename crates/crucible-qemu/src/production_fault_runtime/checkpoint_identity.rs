@@ -216,6 +216,26 @@ pub(super) fn observation_identity_material(
     observation: &FaultObservation,
     resource_limits: FaultResourceLimits,
 ) -> Result<Vec<u8>, ProductionFaultRuntimeError> {
+    observation_identity_material_with_checkpoint_offset(observation, resource_limits, None)
+}
+
+pub(super) fn observation_identity_material_at_checkpoint_offset(
+    observation: &FaultObservation,
+    resource_limits: FaultResourceLimits,
+    checkpoint_offset: u64,
+) -> Result<Vec<u8>, ProductionFaultRuntimeError> {
+    observation_identity_material_with_checkpoint_offset(
+        observation,
+        resource_limits,
+        Some(checkpoint_offset),
+    )
+}
+
+fn observation_identity_material_with_checkpoint_offset(
+    observation: &FaultObservation,
+    resource_limits: FaultResourceLimits,
+    checkpoint_offset: Option<u64>,
+) -> Result<Vec<u8>, ProductionFaultRuntimeError> {
     if observation.semantic_version != crucible::model::FAULT_RUNTIME_STATE_VERSION
         || observation.evidence == ContentHash::default()
         || !matches!(
@@ -233,7 +253,12 @@ pub(super) fn observation_identity_material(
     {
         return Err(FaultExecutionError::CheckpointPresence.into());
     }
-    let mut material = BoundedObservationIdentityMaterial::new(resource_limits);
+    let mut material = match checkpoint_offset {
+        Some(offset) => {
+            BoundedObservationIdentityMaterial::at_checkpoint_offset(resource_limits, offset)
+        }
+        None => BoundedObservationIdentityMaterial::new(resource_limits),
+    };
     material.append(&observation.semantic_version.to_be_bytes())?;
     material.append_length_prefixed(observation.kind.as_str().as_bytes())?;
     material.append(&observation.coordinate.virtual_nanos.to_be_bytes())?;
@@ -348,13 +373,11 @@ pub(super) fn production_checkpoint_identity(
         material.append(&event.evidence.bytes)?;
     }
     for observation in pending_qemu_observations {
-        let mut observation_limits = resource_limits;
-        observation_limits.event_log_bytes = observation_limits
-            .event_log_bytes
-            .min(material.remaining_after_length_prefix()?);
-        material.append_length_prefixed(&observation_identity_material(
+        let checkpoint_offset = material.offset_after_length_prefix()?;
+        material.append_length_prefixed(&observation_identity_material_at_checkpoint_offset(
             observation,
-            observation_limits,
+            resource_limits,
+            checkpoint_offset,
         )?)?;
     }
     for (node, events) in pending_qemu_events {
