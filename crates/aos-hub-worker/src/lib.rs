@@ -82,9 +82,12 @@
 //! - `sqldobackend` — the [`aos_hub_core::backend::Backend`] over the `HubDb`
 //!   Durable Object's colocated SQLite system of record.
 //! - `handlers` — the Wrangler binding names.
-//! - `indexer` — the Cron-trigger indexer: lists public registries and runs the
-//!   shared [`aos_hub_core::indexer`] over each registry's R2 [`surface`]
-//!   fetcher (driven inside `HubDb` over `sqldobackend`).
+//! - `indexer` — the queued reconciler: runs the shared
+//!   [`aos_hub_core::indexer`] over each registry's R2 [`surface`] fetcher in
+//!   the queue isolate while short SQL operations cross through `remotebackend`.
+//! - `remotebackend` — the seal-gated SQL transport used by background jobs;
+//!   checked batches remain atomic inside `HubDb`, while provider I/O does not
+//!   occupy the database object's request turn.
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_hub_core::fetch::SurfaceProvider`]
@@ -138,6 +141,8 @@ pub mod indexer;
 pub mod placeholder;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
+mod remotebackend;
+#[cfg(target_arch = "wasm32")]
 pub mod secretversions;
 #[cfg(target_arch = "wasm32")]
 pub mod sqldobackend;
@@ -171,10 +176,10 @@ mod entry {
     use std::sync::Arc;
 
     use futures_util::{lock::Mutex, stream, StreamExt};
-    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen::JsCast;
     use worker::{
-        durable_object, Context, DurableObject, Env, MessageExt, Method, Request, RequestInit,
-        Response, Result, ScheduleContext, ScheduledEvent, State,
+        durable_object, Context, DurableObject, Env, MessageExt, Method, Request, Response, Result,
+        ScheduleContext, ScheduledEvent, State,
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -823,8 +828,8 @@ mod entry {
     /// ch.14 Phase D).
     ///
     /// Decodes each [`Job`](aos_hub_core::jobs::Job) in the batch and runs it.
-    /// Supported jobs execute inside HubDb and return success only after their
-    /// durable outcome is recorded. Messages are acknowledged independently so
+    /// Supported jobs execute network/provider work in the queue isolate and
+    /// send short SQL operations to HubDb. Messages are acknowledged independently so
     /// one transient or malformed job cannot replay successful neighbors.
     #[worker::event(queue)]
     async fn queue(
@@ -866,17 +871,7 @@ mod entry {
                             }
                         };
                     let operation_id = envelope.operation_id.clone();
-                    let body = match serde_json::to_string(&envelope) {
-                        Ok(body) => body,
-                        Err(error) => {
-                            worker::console_error!(
-                                "queue: message={message_id} age_ms={queue_age_ms} encode failed: {error}"
-                            );
-                            message.retry();
-                            return;
-                        }
-                    };
-                    match forward_internal(env, "/_internal/job", Some(body)).await {
+                    match run_job_envelope(&envelope, None, env).await {
                         Ok(()) => {
                             worker::console_log!(
                                 "queue: message={message_id} operation={operation_id} age_ms={queue_age_ms} acknowledged"
@@ -896,41 +891,11 @@ mod entry {
         Ok(())
     }
 
-    /// Forwards an internal control-plane request (Cron tick or a single queue
-    /// job) to the `HubDb` Durable Object's seal-gated `/_internal/*` endpoint,
-    /// so the work runs over the colocated SQLite system of record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the seal secret or `HUB_DB` binding is unavailable, the
-    /// DO cannot be reached, or it responds non-200.
-    async fn forward_internal(env: &Env, path: &str, body: Option<String>) -> Result<()> {
-        let seal = env.secret(HUB_SEAL_KEY)?.to_string();
-        let database_instance = env
-            .var("HUB_DATABASE_INSTANCE")
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| "hub".to_string());
-        let stub = env
-            .durable_object(crate::handlers::bindings::HUB_DB)?
-            .id_from_name(&database_instance)
-            .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-        let headers = worker::Headers::new();
-        headers.set("x-hub-seal", &seal)?;
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_headers(headers);
-        if let Some(body) = body {
-            init.with_body(Some(JsValue::from_str(&body)));
+    fn job_backend(state: Option<&State>, env: &Env) -> Box<dyn aos_hub_core::backend::Backend> {
+        match state {
+            Some(state) => Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage())),
+            None => Box::new(crate::remotebackend::RemoteHubBackend::new(env)),
         }
-        let req = Request::new_with_init(&format!("https://hub{path}"), &init)?;
-        let mut resp = stub.fetch_with_request(req).await?;
-        if resp.status_code() != 200 {
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(worker::Error::RustError(format!(
-                "HubDb {path}: {} {detail}",
-                resp.status_code()
-            )));
-        }
-        Ok(())
     }
 
     /// Fans a maintenance tick out into independent bounded queue jobs.
@@ -939,14 +904,12 @@ mod entry {
     /// DNS, or KV I/O. A slow registry or cache therefore cannot hold the
     /// global database object for the duration of every other maintenance job.
     async fn run_cron(
-        state: &State,
+        state: Option<&State>,
         env: &Env,
         parent: &aos_hub_core::jobs::JobEnvelope,
     ) -> Result<()> {
         let now = now_for_worker();
-        let db = aos_hub_core::db::Database::attach(Box::new(
-            crate::sqldobackend::SqlDoBackend::new(state.storage()),
-        ));
+        let db = aos_hub_core::db::Database::attach(job_backend(state, env));
         db.prune_expired_invitation_secrets(now, 1_000)
             .await
             .map_err(|error| {
@@ -1166,7 +1129,7 @@ mod entry {
     /// Claims, executes, and durably completes one versioned queue operation.
     async fn run_job_envelope(
         envelope: &aos_hub_core::jobs::JobEnvelope,
-        state: &State,
+        state: Option<&State>,
         env: &Env,
     ) -> Result<()> {
         use aos_hub_core::db::WorkerJobClaim;
@@ -1178,9 +1141,7 @@ mod entry {
             .payload_digest()
             .map_err(|error| worker::Error::RustError(format!("job payload digest: {error:#}")))?;
         let now = now_for_worker();
-        let db = aos_hub_core::db::Database::attach(Box::new(
-            crate::sqldobackend::SqlDoBackend::new(state.storage()),
-        ));
+        let db = aos_hub_core::db::Database::attach(job_backend(state, env));
         let claim = db
             .claim_worker_job(
                 &envelope.operation_id,
@@ -1255,17 +1216,17 @@ mod entry {
         error[..end].to_string()
     }
 
-    /// Runs a single deferred [`Job`](aos_hub_core::jobs::Job) inside `HubDb` over
-    /// its colocated SQLite (the queue consumer's per-job body, Phase E).
+    /// Runs one deferred [`Job`](aos_hub_core::jobs::Job) in its caller's isolate.
+    ///
+    /// Queue callers use the remote SQL backend; the retained internal endpoint
+    /// uses colocated SQL for compatibility and runtime tests.
     async fn run_job(
         envelope: &aos_hub_core::jobs::JobEnvelope,
-        state: &State,
+        state: Option<&State>,
         env: &Env,
     ) -> Result<()> {
         use aos_hub_core::jobs::Job;
-        let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage()))
-        };
+        let make = || job_backend(state, env);
         match &envelope.job {
             Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
             Job::RunTopologyProbes => run_domain_probes(make(), env).await,
@@ -1778,13 +1739,11 @@ mod entry {
                     return self.e2e_managed_registry_bootstrap(&body).await;
                 }
             }
-            // Seal-gated control-plane (RFC-0004 ch.14 Phase E): the worker's
-            // `scheduled`/`queue` handlers forward the Cron tick and each job to
-            // `/_internal/{cron,job}` so maintenance runs over the colocated
-            // SQLite, and the operator's `worker install` creates the instance
-            // root admin via `/_admin/bootstrap-root`. All require the `x-hub-seal`
-            // secret, so an external caller forwarded through the worker cannot
-            // reach them.
+            // Seal-gated control-plane (RFC-0004 ch.14 Phase E). Background
+            // queue isolates use `/_internal/sql` for short database operations;
+            // the cron/job endpoints remain compatible administrative entry
+            // points. Root bootstrap uses `/_admin/bootstrap-root`. All require
+            // `x-hub-seal`, so forwarded external callers cannot reach them.
             {
                 let path = req
                     .url()
@@ -1794,6 +1753,7 @@ mod entry {
                 if req.method() == Method::Post
                     && (path == "/_internal/cron"
                         || path == "/_internal/job"
+                        || path == crate::remotebackend::REMOTE_SQL_PATH
                         || path == "/_admin/bootstrap-root")
                 {
                     let want = self
@@ -1810,11 +1770,29 @@ mod entry {
                     if want.is_empty() || got != want {
                         return Response::error("forbidden", 403);
                     }
+                    if path == crate::remotebackend::REMOTE_SQL_PATH {
+                        let operation: crate::remotebackend::RemoteSqlRequest = match req
+                            .json()
+                            .await
+                        {
+                            Ok(operation) => operation,
+                            Err(error) => {
+                                return Response::error(format!("remote SQL decode: {error}"), 400)
+                            }
+                        };
+                        let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+                        return match crate::remotebackend::execute_remote_sql(&backend, operation)
+                            .await
+                        {
+                            Ok(response) => Response::from_json(&response),
+                            Err(error) => Response::error(format!("remote SQL: {error:#}"), 500),
+                        };
+                    }
                     if path == "/_internal/cron" {
                         let envelope = aos_hub_core::jobs::JobEnvelope::new(
                             aos_hub_core::jobs::Job::DispatchMaintenance,
                         );
-                        return match run_cron(&self.state, &self.env, &envelope).await {
+                        return match run_cron(Some(&self.state), &self.env, &envelope).await {
                             Ok(()) => Response::ok("ok"),
                             Err(error) => Response::error(format!("cron: {error}"), 500),
                         };
@@ -1848,7 +1826,7 @@ mod entry {
                         Ok(envelope) => envelope,
                         Err(err) => return Response::error(format!("job decode: {err}"), 400),
                     };
-                    return match run_job_envelope(&envelope, &self.state, &self.env).await {
+                    return match run_job_envelope(&envelope, Some(&self.state), &self.env).await {
                         Ok(()) => Response::ok("ok"),
                         Err(error) => Response::error(format!("job: {error}"), 500),
                     };
