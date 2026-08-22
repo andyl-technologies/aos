@@ -5,8 +5,16 @@ extract_drop_one_build_evidence() {
   evidence_path=$2
   diagnostics_path=$3
 
-  grep -E "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'|(^|[[:space:]])(fatal )?error:.*(implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'|'[A-Za-z_][A-Za-z0-9_]*' undeclared|unknown type name '[A-Za-z_][A-Za-z0-9_]*')" \
-    "$build_log_path" > "$diagnostics_path" || true
+  : > "$diagnostics_path"
+  grep -E "^([^:]+:[0-9]+(:[0-9]+)?|[^:]+):[[:space:]]*(fatal[[:space:]]+)?error:.*(implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'|'[A-Za-z_][A-Za-z0-9_]*' undeclared|unknown type name '[A-Za-z_][A-Za-z0-9_]*')" \
+    "$build_log_path" >> "$diagnostics_path" || true
+  if grep -Eq '^collect2:[[:space:]]+error:[[:space:]]+ld returned [1-9][0-9]* exit status$' \
+    "$build_log_path"; then
+    grep -E "^[[:space:]]*[^[:space:]].*:[[:space:]]+undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" \
+      "$build_log_path" \
+      | grep -Ev '(^|:[[:space:]]*)warning:' \
+      >> "$diagnostics_path" || true
+  fi
   : > "$evidence_path"
   grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$diagnostics_path" \
     | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/symbol\\t\\1/" \

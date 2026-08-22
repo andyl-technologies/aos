@@ -163,13 +163,17 @@ in
                   "$out/patch-specific-build-evidence"; then
                   continue
                 fi
+                full_internal_source="$TMPDIR/full-internal-source"
+                variant_internal_source="$TMPDIR/variant-internal-source"
                 git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
-                  show "refs/heads/patch-stack:$source_path" \
-                  | grep -Fq "$full_source_needle" \
+                  show "refs/heads/patch-stack:$source_path" > "$full_internal_source" \
+                  || fail "cannot read the full-stack source for $identifier"
+                grep -Fq "$full_source_needle" "$full_internal_source" \
                   || fail "full stack lacks the manifest internal definition for $identifier"
-                if git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
-                  show "$variant_ref:$source_path" \
-                  | grep -Fq "$full_source_needle"; then
+                git --git-dir="$DROP_ONE_REPOSITORY/repo.git" \
+                  show "$variant_ref:$source_path" > "$variant_internal_source" \
+                  || fail "cannot read the full-minus-N source for $identifier"
+                if grep -Fq "$full_source_needle" "$variant_internal_source"; then
                   fail "full-minus-N source still contains the internal definition for $identifier"
                 fi
                 internal_source_definition_loss_verified=true

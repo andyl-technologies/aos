@@ -285,6 +285,36 @@
             exit 1
           fi
 
+          cat > "$TMPDIR/linker-warning-plus-unrelated-failure.log" <<'LOG'
+          link-wrapper: warning: undefined reference to `qemu_plugin_expected'
+          ninja: build stopped: interrupted by user
+          LOG
+          extract_drop_one_build_evidence \
+            "$TMPDIR/linker-warning-plus-unrelated-failure.log" \
+            "$TMPDIR/linker-warning-evidence" \
+            "$TMPDIR/linker-warning-diagnostics"
+          if validate_drop_one_build_evidence \
+            "$TMPDIR/linker-warning-evidence" "$TMPDIR/full-exports" \
+            qemu_plugin_expected ""; then
+            echo "FAIL: nonfatal linker warning was accepted as causal evidence" >&2
+            exit 1
+          fi
+
+          cat > "$TMPDIR/embedded-error-warning.log" <<'LOG'
+          source.c:1:2: warning: prior error: implicit declaration of function 'qemu_plugin_expected'
+          ninja: build stopped: interrupted by user
+          LOG
+          extract_drop_one_build_evidence \
+            "$TMPDIR/embedded-error-warning.log" \
+            "$TMPDIR/embedded-error-warning-evidence" \
+            "$TMPDIR/embedded-error-warning-diagnostics"
+          if validate_drop_one_build_evidence \
+            "$TMPDIR/embedded-error-warning-evidence" "$TMPDIR/full-exports" \
+            qemu_plugin_expected ""; then
+            echo "FAIL: warning with embedded error text was accepted as causal evidence" >&2
+            exit 1
+          fi
+
           cat > "$TMPDIR/exact-fatal.log" <<'LOG'
           source.c:1:2: error: implicit declaration of function 'qemu_plugin_expected'
           LOG
@@ -311,6 +341,8 @@
           path_only_build_failure_rejected=true
           unrelated_symbol_build_failure_rejected=true
           exact_symbol_warning_plus_unrelated_failure_rejected=true
+          linker_warning_plus_unrelated_failure_rejected=true
+          embedded_error_warning_plus_unrelated_failure_rejected=true
           exact_manifest_symbol_build_failure_accepted=true
           RESULT
         '';
@@ -358,6 +390,10 @@ in
             grep -q '^unrelated_symbol_build_failure_rejected=true$' \
               ${buildFailureEvidencePolicy}/result
             grep -q '^exact_symbol_warning_plus_unrelated_failure_rejected=true$' \
+              ${buildFailureEvidencePolicy}/result
+            grep -q '^linker_warning_plus_unrelated_failure_rejected=true$' \
+              ${buildFailureEvidencePolicy}/result
+            grep -q '^embedded_error_warning_plus_unrelated_failure_rejected=true$' \
               ${buildFailureEvidencePolicy}/result
             grep -q '^exact_manifest_symbol_build_failure_accepted=true$' \
               ${buildFailureEvidencePolicy}/result
