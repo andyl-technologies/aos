@@ -393,6 +393,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("publication_object_evidence.sql"),
     include_str!("worker_jobs.sql"),
     include_str!("registry_index_build.sql"),
+    include_str!("publication_manifest_session.sql"),
 ];
 
 /// Identity stamped into databases created by the topology hard-cutover

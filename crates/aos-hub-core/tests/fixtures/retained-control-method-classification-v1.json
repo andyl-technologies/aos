@@ -71,6 +71,36 @@
   },
   {
     "service": "PublishService",
+    "method": "BeginRegistryPublicationManifest",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "AppendRegistryPublicationManifest",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "SealRegistryPublicationManifest",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
     "method": "BeginRegistryPublicationMultipartUpload",
     "exposure": "public",
     "durability": "durable",

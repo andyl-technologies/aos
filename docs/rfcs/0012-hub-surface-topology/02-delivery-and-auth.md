@@ -463,13 +463,22 @@ URL through route state and never parses a resource identity from its path.
 
 ### Registry publication transaction
 
-`BeginRegistryPublication` freezes the registry generation, declared object
-manifest, required placement set, and each placement's write authority. The
-returned object URLs contain opaque publication/object identities rather than
-registry slugs or storage paths. Each upload verifies the declared path, media
-type, byte size, and SHA-256 while streaming the same bytes to every required
-placement. A failed upload aborts unfinished backend multipart sessions and
-leaves the publication undiscoverable.
+The CLI uses the resumable `BeginRegistryPublicationManifest`,
+`AppendRegistryPublicationManifest`, and `SealRegistryPublicationManifest`
+protocol. Begin fixes the generation, canonical manifest digest, and total
+object count without sending the object inventory. Append accepts at most 256
+objects in strict chunk order under a renewable ownership lease. Every accepted
+chunk has a durable digest receipt, so retrying a lost response is exact while a
+conflicting or out-of-order retry fails closed. Seal re-derives the complete
+manifest digest from the durable declarations and atomically freezes the
+required placement set. The legacy one-request `BeginRegistryPublication`
+remains a compatibility operation.
+
+The returned object URLs contain opaque publication/object identities rather
+than registry slugs or storage paths. Each upload verifies the declared path,
+media type, byte size, and SHA-256 while streaming the same bytes to every
+required placement. A failed upload aborts unfinished backend multipart
+sessions and leaves the publication undiscoverable.
 
 `CommitRegistryPublication` is accepted only after exact presence evidence
 exists for every declared object on every frozen placement. It writes and
