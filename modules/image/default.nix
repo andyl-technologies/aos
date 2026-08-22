@@ -29,7 +29,7 @@
   logicalDiskContractMiB =
     2
     + cfg.budgets.maxEspMiB
-    + 2 * cfg.budgets.maxRootMiB
+    + 2 * cfg.rootPartitionMiB
     + verityStorageMiB;
   buildImage = import ./_builder.nix;
   runtimeRoots =
@@ -217,6 +217,12 @@ in {
       '';
     };
 
+    rootPartitionMiB = positiveMiB 1024 ''
+      Fixed capacity in MiB of each immutable A/B root partition. This is
+      independent of budgets.maxRootMiB so devices retain update headroom
+      without weakening the root artifact growth gate.
+    '';
+
     hostConfigClosures = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -239,7 +245,7 @@ in {
     };
 
     budgets = {
-      maxRootMiB = positiveMiB 512 "Maximum immutable root payload size and capacity of each A/B root partition.";
+      maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
       maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
       maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
@@ -315,6 +321,10 @@ in {
       {
         assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
         message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
+      }
+      {
+        assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;
+        message = "aos.image.rootPartitionMiB must be at least aos.image.budgets.maxRootMiB";
       }
       {
         assertion = cfg.espExtraFreeMiB >= 0;
