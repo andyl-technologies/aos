@@ -2616,6 +2616,16 @@
   },
   {
     "service": "BinaryCacheService",
+    "method": "RegisterCacheNarinfos",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "BinaryCacheService",
     "method": "BeginCacheMultipartUpload",
     "exposure": "public",
     "durability": "durable",
