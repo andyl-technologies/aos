@@ -1322,8 +1322,9 @@ diskless initramfs twice with no block devices, `-smp 1`,
 `-accel sim,thread=single`, `-icount shift=0,sleep=off,align=off`, a fixed RTC,
 fixed seed material through `fw_cfg`, `virtio-rng`, and the conservative
 `nokaslr norandmaps random.trust_cpu=off` kernel arguments. The second run
-applied six configured 15 ms scheduler preemptions directly to QEMU under a
-two-second resume watchdog. The plugin sampled the extended
+waited for the first positive trace coordinate, then applied six configured
+15 ms scheduler preemptions directly to QEMU under a two-second resume
+watchdog. The plugin sampled the extended
 fingerprint every `100000000` retired guest instructions, requested a stop at
 the fixed `3600000000`-instruction horizon, and compared both the exact horizon
 cadence sample and the stable projection of the plugin-exit sample. The
@@ -1511,7 +1512,8 @@ white-box on/off fingerprint gates remain owned by the later `T-GHC-*` and
 `checks.crucible.phase0.s6KaslrAslr` booted the same stock Linux kernel plus a
 diskless initramfs under the S1 deterministic launch controls, first with the
 conservative `nokaslr norandmaps` command-line control and then with those flags
-removed. Each mode ran twice; the second run applied bounded scheduler preemption to QEMU. The
+removed. Each mode ran twice; the second run waited for the first positive trace
+coordinate and then applied bounded scheduler preemption to QEMU. The
 guest probe mounted `/proc`, confirmed `randomize_va_space=0` for the control and
 `randomize_va_space=2` for the randomized mode, read the resolved kernel text
 symbol from `/proc/kallsyms`, and sampled stack, heap, brk, anonymous-`mmap`, and
@@ -1925,7 +1927,8 @@ never tolerated). Results live in the decision register (31).
   fixed `rr_switch_quantum`, S11-relevant §4.6 launch eliminations, and an
   asserted no-block-device launch; capture the **extended fingerprint** (all N
   vCPUs' nonempty register descriptor sets + RR cursor + RAM hash) at a cadence
-  and at the horizon under an SMP-contended microworkload and bounded QEMU scheduler preemption,
+  and at the horizon under an SMP-contended microworkload and bounded QEMU
+  scheduler preemption admitted after the first positive trace coordinate,
   and diff; localize any
   mismatch to the first differing node-icount + component. Block multi-vCPU
   foundation work until green; fall back to `-smp 1` if irrecoverable. Phase 0
