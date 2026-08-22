@@ -1658,10 +1658,14 @@ the limits stay active and another attempt cannot use that executor until reap
 is attested.
 An error from a guarded realization call triggers a separate failed-realization
 reap attestation that covers children launched before active-backend
-installation; absent that attestation, the session quarantines the guard and
-poisons the executor. Cleanup failure takes precedence over an earlier modeled
-failure so the supervisor cannot mistake quarantined capacity for a normally
-finished slot.
+installation. A concrete launcher retains the nonduplicable child handle when
+its synchronous cleanup cannot attest reap, rejects another launch while that
+authority remains installed, and lets the guarded replay session transfer the
+child into the attempt resource guard before cancellation checks or the
+realization error escape. The session then quarantines the guard and poisons
+the executor. Cleanup failure takes precedence over an earlier modeled failure
+so the supervisor cannot mistake quarantined capacity for a normally finished
+slot.
 Checkpoint-store lookups receive the same cancellation signal, must bound their
 blocking work, and are cancellation-checked before, during, and after each
 call.
@@ -1752,14 +1756,14 @@ not stop cleanup. A startup error returns every untransferred authority, and an
 ignored error deliberately leaks them rather than invoking bounded destructor
 cleanup.
 
-This authority is not yet the production guard. Concrete guarded-launch and
-session failure paths must transfer every post-spawn child, including a child
-that failed before active-backend installation, into that owner. Aggregate
-filesystem quota, concrete guard composition of the execution-quantum counter,
-exclusive run-directory namespace ownership through QEMU artifact open, and
-that session wiring remain mandatory before the guarded path may launch a
-campaign QEMU. Until then the cgroup and quarantine authorities remain
-crate-internal.
+This authority is not yet the production guard. The guarded launch/session
+path now transfers a retained pre-install child into the abstract attempt
+guard, but the concrete guard must still compose that handoff and active-node
+failure handoff into the nondroppable cgroup owner. Aggregate filesystem quota,
+concrete guard composition of the execution-quantum counter, exclusive
+run-directory namespace ownership through QEMU artifact open, and that final
+session wiring remain mandatory before the guarded path may launch a campaign
+QEMU. Until then the cgroup and quarantine authorities remain crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

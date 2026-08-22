@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::process::Command;
 use std::rc::Rc;
 
 use crucible::{
@@ -15,8 +16,8 @@ use crucible::{
 
 use super::*;
 use crate::{
-    QemuBakedGenesisSnapshot, QemuExactSnapshotPolicy, QemuLoadvmCommandPurpose,
-    QemuNodeRestoreAdmission, QemuReplayOracleValidation,
+    QemuBakedGenesisSnapshot, QemuExactSnapshotPolicy, QemuLoadvmCommandPurpose, QemuNodeChild,
+    QemuNodeRestoreAdmission, QemuReplayOracleValidation, QemuShutdownTargetError,
 };
 
 type SharedLog = Rc<RefCell<Vec<NodeExecutorCall>>>;
@@ -464,6 +465,33 @@ fn failed_realization_surrenders_the_active_node_for_quarantine()
     assert!(executor.take_active_node_for_quarantine().is_some());
     assert!(!executor.live_backend_is_active());
     assert!(executor.take_active_node_for_quarantine().is_none());
+    Ok(())
+}
+
+#[test]
+fn failed_warm_launch_retains_child_and_poison_blocks_relaunch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
+    let process_id = child.process_id();
+    let error = QemuWarmRestoreLaunchError::FailedCleanup {
+        primary: Box::new(QemuWarmRestoreLaunchError::MissingQmpChannel),
+        cleanup: QemuShutdownTargetError::new("forced cleanup", "forced reap failure"),
+        unreaped_child: Some(Box::new(child)),
+    };
+    let mut retained = None;
+
+    assert!(matches!(
+        retain_warm_restore_result(Err(error), &mut retained),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert!(matches!(
+        require_no_failed_launch_child(&retained),
+        Err(QemuVmRealizationError::ReapQuarantined { .. })
+    ));
+
+    let mut retained = retained.ok_or("failed launch did not retain its direct child")?;
+    retained.force_kill_and_reap_failed_realization()?;
+    assert!(crate::linux_process_identity(process_id)?.is_none());
     Ok(())
 }
 

@@ -27,7 +27,7 @@ use crucible_campaign::{
     CampaignRepositoryError, ConfigurationId, ExactCheckpointId, PinRetention,
 };
 use crucible_qemu::{
-    QemuExactSnapshotPolicy, QemuGuardedNodeRealizationLauncher,
+    QemuExactSnapshotPolicy, QemuFailedLaunchChildSource, QemuGuardedNodeRealizationLauncher,
     QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuReplayOracleCheck,
     QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationStore,
     check_qemu_snapshot_replay_oracle_bound,
@@ -501,7 +501,9 @@ impl DirectoryExactPinMaterializationStore {
     ) -> Result<ExactPinReplayPromotion, ExactPinRetentionError>
     where
         S: QemuVmRealizationStore,
-        L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+        L: QemuGuardedNodeRealizationLauncher
+            + QemuGuardedThinNodeRealizationLauncher
+            + QemuFailedLaunchChildSource,
         G: QemuAttemptProcessResourceGuard,
     {
         let selected = {

@@ -10,9 +10,10 @@ use std::io::{self, Write};
 
 use crucible::Configuration;
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuGuardedNodeRealizationLauncher,
-    QemuGuardedThinNodeRealizationLauncher, QemuNodeRealizationExecutor, QemuPreparedRunDirectory,
-    QemuSpawnError, QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
+    QemuBakedGenesisRestoreAdmission, QemuFailedLaunchChildSource,
+    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
+    QemuNodeRealizationExecutor, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
     QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
     QemuVmReplayRequest, QemuVmSnapshot, QemuVmStateBinding,
 };
@@ -43,11 +44,13 @@ pub struct MaterializedExactCheckpoint {
 /// and every cached-ancestor or baked-genesis restore through a disjoint thin-
 /// path launcher. It owns the attempt resource guard until the last live QEMU
 /// generation is reaped. Any realization failure is conservatively transferred
-/// to guard quarantine because a pre-install child cannot yet be recovered by
-/// this incremental composition.
+/// to guard quarantine after first transferring any retained pre-install child
+/// authority into that guard.
 pub struct QemuGuardedReplayOracleSession<'a, L, G>
 where
-    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
     executor: &'a mut QemuNodeRealizationExecutor<L>,
@@ -59,7 +62,9 @@ where
 
 impl<'a, L, G> QemuGuardedReplayOracleSession<'a, L, G>
 where
-    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
     /// Takes ownership of one installed attempt guard for replay validation.
@@ -91,6 +96,9 @@ where
     ) -> Result<T, QemuVmRealizationError> {
         if result.is_err() {
             self.realization_failed = true;
+            if let Some(child) = self.executor.take_failed_launch_child_for_quarantine() {
+                self.guard.retain_failed_launch_child(child);
+            }
         }
         self.guard.check_operational_boundary()?;
         result
@@ -103,7 +111,7 @@ where
             return Err(QemuVmRealizationError::ReapQuarantined {
                 operation: "finish guarded replay-oracle comparison",
                 message: String::from(
-                    "a failed realization may own a pre-install child; attempt resources were quarantined",
+                    "failed-realization process authority and attempt resources were quarantined",
                 ),
             });
         }
@@ -133,7 +141,9 @@ where
 
 impl<L, G> QemuVmRealizationExecutor for QemuGuardedReplayOracleSession<'_, L, G>
 where
-    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
     fn load_exact_snapshot(
@@ -202,7 +212,9 @@ where
 
 impl<L, G> Drop for QemuGuardedReplayOracleSession<'_, L, G>
 where
-    L: QemuGuardedNodeRealizationLauncher + QemuGuardedThinNodeRealizationLauncher,
+    L: QemuGuardedNodeRealizationLauncher
+        + QemuGuardedThinNodeRealizationLauncher
+        + QemuFailedLaunchChildSource,
     G: QemuAttemptProcessResourceGuard,
 {
     fn drop(&mut self) {

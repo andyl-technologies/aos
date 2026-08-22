@@ -326,11 +326,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   A crate-internal nondroppable process-quarantine worker now accepts only a
   lifecycle-matched child, watcher, and cgroup; it retries ordinary cleanup
   failures, parks with authority after an invariant panic, and remains live
-  after its observation handle is dropped. Concrete failed-launch and active-
-  node handoff into that owner, aggregate filesystem quota, execution-quantum
-  counter composition, exclusive run-directory namespace ownership through
-  artifact open, the modeled attempt driver, and concrete session wiring remain
-  open. Real-node exact-checkpoint
+  after its observation handle is dropped. Concrete launchers now retain an
+  unreaped pre-install child and reject relaunch; the guarded replay session
+  transfers that authority into its abstract attempt guard before returning the
+  realization error. Concrete guard composition of that transfer and active-
+  node handoff into the cgroup owner, aggregate filesystem quota, execution-
+  quantum counter composition, exclusive run-directory namespace ownership
+  through artifact open, the modeled attempt driver, and concrete session
+  wiring remain open. Real-node exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
   paused VMState/host-I/O capture. The daemon now prepares and durably publishes

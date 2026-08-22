@@ -198,6 +198,8 @@ pub enum QemuNodeFactoryError {
         primary: Box<QemuNodeFactoryError>,
         /// Independent force-kill/reap failure.
         cleanup: crate::QemuShutdownTargetError,
+        /// Nonduplicable direct-child handle retained after failed reap.
+        unreaped_child: Option<Box<QemuNodeChild>>,
     },
     /// Scheduler-facing Apache node continuation could not be restored.
     #[error("QEMU node continuation restore failed: {message}")]
@@ -275,6 +277,16 @@ pub enum QemuWarmRestoreLaunchError {
         /// Underlying node factory error.
         source: QemuNodeFactoryError,
     },
+    /// A post-spawn launch step failed and the direct child could not be reaped.
+    #[error("QEMU warm restore failed ({primary}); mandatory child reap also failed ({cleanup})")]
+    FailedCleanup {
+        /// Primary warm-restore launch failure.
+        primary: Box<QemuWarmRestoreLaunchError>,
+        /// Independent force-kill/reap failure.
+        cleanup: crate::QemuShutdownTargetError,
+        /// Nonduplicable direct-child handle retained after failed reap.
+        unreaped_child: Option<Box<QemuNodeChild>>,
+    },
 }
 
 impl QemuWarmRestoreLaunchError {
@@ -282,6 +294,27 @@ impl QemuWarmRestoreLaunchError {
         Self::Prime {
             context: context.to_owned(),
             source,
+        }
+    }
+
+    /// Extracts a direct child whose mandatory synchronous reap failed.
+    pub(crate) fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        match self {
+            Self::Factory { source } => source.take_unreaped_child(),
+            Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
+            _ => None,
+        }
+    }
+}
+
+impl QemuNodeFactoryError {
+    /// Extracts a direct child whose mandatory synchronous reap failed.
+    pub(crate) fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        match self {
+            Self::FailedRestoreCleanup { unreaped_child, .. } => {
+                unreaped_child.take().map(|child| *child)
+            }
+            _ => None,
         }
     }
 }
@@ -566,25 +599,41 @@ where
     )
     .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = complete_qemu_host_plugin_setup(
+    let setup = match complete_qemu_host_plugin_setup(
         resources.into_setup_resources(),
         region_config,
         slot_index,
         command.fault_capability_requirement(),
-    )
-    .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
+    ) {
+        Ok(setup) => setup,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::HostSetup { source },
+            ));
+        }
+    };
 
     // Release the boot barrier before connecting QMP; service block I/O during
     // priming so a block-capable guest's early probe cannot wedge the barrier.
-    prime_off_boot_barrier(
+    if let Err(error) = prime_off_boot_barrier(
         &setup,
         runtime.shmem_config.clone(),
         WARM_RESTORE_PRIME_TIMEOUT,
         service_prime_poll,
-    )?;
+    ) {
+        return Err(reap_failed_warm_restore_child(child, error));
+    }
 
-    let qmp = connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory))
-        .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
+    let qmp = match connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory)) {
+        Ok(qmp) => qmp,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::QmpConnect { source },
+            ));
+        }
+    };
     build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
         .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
 }
@@ -690,23 +739,42 @@ where
     )
     .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = complete_qemu_host_plugin_setup(
+    let setup = match complete_qemu_host_plugin_setup(
         resources.into_setup_resources(),
         launch.region_config,
         launch.slot_index,
         launch.command.fault_capability_requirement(),
-    )
-    .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
+    ) {
+        Ok(setup) => setup,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::HostSetup { source },
+            ));
+        }
+    };
 
-    prime_off_boot_barrier(
+    if let Err(error) = prime_off_boot_barrier(
         &setup,
         runtime.shmem_config.clone(),
         WARM_RESTORE_PRIME_TIMEOUT,
         service_prime_poll,
-    )?;
+    ) {
+        return Err(reap_failed_warm_restore_child(child, error));
+    }
 
-    let qmp = connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(launch.run_directory.path()))
-        .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
+    let qmp = match connect_qmp_with_wake_pulsing(
+        &setup,
+        &qmp.socket_path(launch.run_directory.path()),
+    ) {
+        Ok(qmp) => qmp,
+        Err(source) => {
+            return Err(reap_failed_warm_restore_child(
+                child,
+                QemuWarmRestoreLaunchError::QmpConnect { source },
+            ));
+        }
+    };
     build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
         .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
 }
@@ -771,7 +839,7 @@ where
 }
 
 fn build_qemu_node_from_restored_checkpoint_inner<S, A, R>(
-    mut child: QemuNodeChild,
+    child: QemuNodeChild,
     setup: QemuHostPluginSetup,
     mut qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
@@ -799,12 +867,12 @@ where
         node_continuation,
     } = restore;
     if let Err(error) = validate_runtime_restore_authorization(authorization, admission) {
-        return Err(reap_failed_restore_child(&mut child, error));
+        return Err(reap_failed_restore_child(child, error));
     }
     if let Some(continuation) = node_continuation {
         if continuation.execution_binding() != checkpoint.id {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "node continuation belongs to another VMState checkpoint",
@@ -814,7 +882,7 @@ where
         }
         if continuation.next_fault_command_sequence() < 2 {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "restored fault-command sequence precedes setup capability admission",
@@ -825,7 +893,7 @@ where
         let calibration = continuation.logical_time_calibration();
         if calibration.logical_icount != continuation.last_observed_time().ticks {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: String::from(
                         "logical-time calibration does not match the scheduler continuation boundary",
@@ -835,7 +903,7 @@ where
         }
         if let Err(source) = calibration.offset() {
             return Err(reap_failed_restore_child(
-                &mut child,
+                child,
                 QemuNodeFactoryError::NodeContinuationRestore {
                     message: source.to_string(),
                 },
@@ -844,13 +912,13 @@ where
     }
     let mut prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer) {
         Ok(prepared_setup) => prepared_setup,
-        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+        Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
     let no_block_checkpoint = crate::QemuHostIoCheckpoint::without_devices(checkpoint.id);
     let host_io_checkpoint = host_io_checkpoint.unwrap_or(&no_block_checkpoint);
     if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::CheckpointPause { source },
         ));
     }
@@ -864,7 +932,7 @@ where
         host_io_runtime.validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
     {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::HostIoCheckpointValidation { source },
         ));
     }
@@ -873,11 +941,11 @@ where
             Ok(()) => QemuNodeFactoryError::CheckpointStop { source: stop },
             Err(release) => QemuNodeFactoryError::CheckpointStopAndPauseRelease { stop, release },
         };
-        return Err(reap_failed_restore_child(&mut child, primary));
+        return Err(reap_failed_restore_child(child, primary));
     }
     if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::CheckpointPauseRelease { source: release },
         ));
     }
@@ -905,7 +973,7 @@ where
         // A post-load error may not return until the fresh child is killed and
         // synchronously reaped; destructor cleanup has a bounded fallback and
         // is deliberately insufficient for this realization transaction.
-        return Err(reap_failed_restore_child(&mut child, error));
+        return Err(reap_failed_restore_child(child, error));
     }
 
     let restored_calibration = node_continuation.map_or(
@@ -925,11 +993,11 @@ where
         });
     let restore_generation = match restore_generation {
         Ok(generation) => generation,
-        Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+        Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
     if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "signal stopped control wake",
                 message: source.to_string(),
@@ -948,7 +1016,7 @@ where
             });
         let boundary_acknowledged = match boundary_acknowledged {
             Ok(acknowledged) => acknowledged,
-            Err(error) => return Err(reap_failed_restore_child(&mut child, error)),
+            Err(error) => return Err(reap_failed_restore_child(child, error)),
         };
         if boundary_acknowledged {
             acknowledged = true;
@@ -957,7 +1025,7 @@ where
         if attempt + 1 < polls {
             if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
                 return Err(reap_failed_restore_child(
-                    &mut child,
+                    child,
                     QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                         stage: "wake plugin",
                         message: source.to_string(),
@@ -969,7 +1037,7 @@ where
     }
     if !acknowledged {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "await acknowledgement",
                 message: format!(
@@ -981,7 +1049,7 @@ where
     }
     if let Err(source) = qmp.confirm_restore_boundary_pause() {
         return Err(reap_failed_restore_child(
-            &mut child,
+            child,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "confirm native stop",
                 message: source.to_string(),
@@ -1007,13 +1075,13 @@ where
         let primary = QemuNodeFactoryError::NodeContinuationRestore {
             message: source.to_string(),
         };
-        return Err(reap_failed_restored_node(&mut node, primary));
+        return Err(reap_failed_restored_node(node, primary));
     }
     if resume_guest && let Err(source) = node.resume_after_restore() {
         let primary = QemuNodeFactoryError::CheckpointResume {
             source: QemuNodeChannelError::new("resume restored QEMU", source.to_string()),
         };
-        return Err(reap_failed_restored_node(&mut node, primary));
+        return Err(reap_failed_restored_node(node, primary));
     }
     Ok(node)
 }

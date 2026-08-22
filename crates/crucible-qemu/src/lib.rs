@@ -245,11 +245,11 @@ pub use realization::{
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuExactRootWarmRestoreNodeLauncher, QemuGuardedNodeRealizationLauncher,
-    QemuGuardedThinNodeRealizationLauncher, QemuLiveAttemptBackend, QemuLiveBackendShutdown,
-    QemuNodeLauncher, QemuNodeRealizationExecutor, QemuNodeRealizationLauncher,
-    QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher, QemuVmLiveRealizationExecutor,
-    QemuWarmRestoreNodeLauncher,
+    QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
+    QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
+    QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
+    QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
+    QemuVmLiveRealizationExecutor, QemuWarmRestoreNodeLauncher,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,
