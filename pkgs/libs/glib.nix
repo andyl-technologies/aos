@@ -20,6 +20,7 @@ in
   mkDerivation {
     pname = "glib";
     inherit version;
+    outputs = ["out" "dev" "tools"];
 
     src = fetchurl {
       urls = [
@@ -40,18 +41,17 @@ in
       pcre2
       zlib
       util-linux
-      # glib installs python tools (glib-mkenums, glib-genmarshal,
-      # gdbus-codegen) used by downstream builds; their shebangs point at
-      # this interpreter, so it must stay in the closure. As a build-only
-      # dep it would be a runtime ref and nuke-references would rewrite the
-      # shebang to a placeholder, breaking the tools (e.g. json-glib build).
-      python3
     ];
     propagatedDeps = [
       libffi
       pcre2
       zlib
     ];
+    # The installed generators retain their Python interpreter in the tools
+    # output. Keep that reference during the generic runtime scrub. The image
+    # closure audit below the package layer proves it cannot escape through
+    # the runtime library output.
+    nukeRefsKeep = [python3];
 
     phases = [
       {
@@ -102,6 +102,73 @@ in
         name = "install";
         script = ''
           ninja -C build install
+
+          # Keep the default output library-only. Python-backed generators
+          # are build tools, while headers, static archives, and package
+          # metadata belong to the development output. A runtime consumer of
+          # libglib must not retain either class transitively.
+          mkdir -p "$dev/lib" "$dev/share" "$tools"
+          if [ -d "$out/include" ]; then
+            mv "$out/include" "$dev/include"
+          fi
+          for directory in pkgconfig cmake; do
+            if [ -d "$out/lib/$directory" ]; then
+              mv "$out/lib/$directory" "$dev/lib/$directory"
+            fi
+          done
+          find "$out/lib" -maxdepth 1 -type f \( -name '*.a' -o -name '*.la' \) \
+            -exec mv {} "$dev/lib/" \;
+          if [ -d "$out/share/aclocal" ]; then
+            mv "$out/share/aclocal" "$dev/share/aclocal"
+          fi
+          if [ -d "$out/bin" ]; then
+            mv "$out/bin" "$tools/bin"
+          fi
+          if [ -d "$out/libexec" ]; then
+            mv "$out/libexec" "$tools/libexec"
+          fi
+          if [ -d "$out/lib/glib-2.0/include" ]; then
+            mkdir -p "$dev/lib/glib-2.0"
+            mv "$out/lib/glib-2.0/include" "$dev/lib/glib-2.0/include"
+          fi
+          for link in "$out/lib/"*.so; do
+            [ -L "$link" ] || continue
+            target=$(readlink "$link")
+            name=$(basename "$link")
+            rm "$link"
+            ln -s "$out/lib/$target" "$dev/lib/$name"
+          done
+          if [ -d "$out/share/glib-2.0/codegen" ]; then
+            mkdir -p "$tools/share/glib-2.0"
+            mv "$out/share/glib-2.0/codegen" "$tools/share/glib-2.0/codegen"
+          fi
+          for directory in glib-2.0/gdb glib-2.0/valgrind gdb; do
+            if [ -d "$out/share/$directory" ]; then
+              mkdir -p "$dev/share/$(dirname "$directory")"
+              mv "$out/share/$directory" "$dev/share/$directory"
+            fi
+          done
+          if [ -d "$out/share/bash-completion" ]; then
+            mkdir -p "$tools/share"
+            mv "$out/share/bash-completion" "$tools/share/bash-completion"
+          fi
+
+          for pc in "$dev/lib/pkgconfig/"*.pc; do
+            [ -e "$pc" ] || continue
+            sed -i \
+              -e "s|^prefix=.*|prefix=$dev|" \
+              -e "s|^libdir=.*|libdir=$out/lib|" \
+              -e "s|^includedir=.*|includedir=$dev/include|" \
+              -e "s|^bindir=.*|bindir=$tools/bin|" \
+              "$pc"
+          done
+          sed -i \
+            -e "s|\''${libdir}/glib-2.0/include|$dev/lib/glib-2.0/include|g" \
+            "$dev/lib/pkgconfig/glib-2.0.pc"
+          sed -i \
+            -e "s|^schemasdir=.*|schemasdir=$out/share/glib-2.0/schemas|" \
+            -e "s|^dtdsdir=.*|dtdsdir=$out/share/glib-2.0/dtds|" \
+            "$dev/lib/pkgconfig/gio-2.0.pc"
         '';
       }
     ];

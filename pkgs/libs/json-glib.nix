@@ -30,6 +30,8 @@ in
       meson
       ninja
       python3
+      glib.dev
+      glib.tools
     ];
     # glib's gio-2.0.pc has `Requires.private: zlib, mount` (libmount, from
     # util-linux); pkg-config 0.29 resolves private deps too, so those must

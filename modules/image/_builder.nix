@@ -32,6 +32,7 @@
   lib,
   system,
   name,
+  runtimeClosureAudit,
 }: let
   # Kernel command line parameters from the evaluated config.
   kernelParams = lib.concatStringsSep " " system.config.aos.boot.kernelParams;
@@ -407,9 +408,6 @@
       # Make the runtime closure available to the builder itself. The raw
       # image is the publication root, so it independently enforces every
       # release budget even when callers do not build the focused check.
-      outputChecks = {};
-      exportReferencesGraph.runtime = [system.config.system.build.toplevel];
-
       buildDeps =
         [
           pkgs.util-linux # sfdisk
@@ -419,6 +417,7 @@
           pkgs.coreutils
           pkgs.jq
           pkgs.zstd
+          runtimeClosureAudit
         ]
         ++ lib.optional sb.enable pkgs.sbsigntools
         ++ lib.optionals recoveryEnabled [pkgs.binutils pkgs.openssl]; # recovery audit + bundle signature
@@ -453,6 +452,7 @@
       MAX_ESP_MIB = toString budgets.maxEspMiB;
       MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
       MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
+      RUNTIME_CLOSURE_REPORT = "${runtimeClosureAudit}/report.json";
       IMAGE_MODULE_ABI = toString system.config.aos.system.moduleAbi;
       RECOVERY_ENABLE = lib.optionalString recoveryEnabled "1";
       RECOVERY_ABI = toString recovery.abi;
@@ -506,11 +506,7 @@
               echo "initrd exceeds its $MAX_INITRD_MIB MiB artifact contract" >&2
               exit 1
             fi
-            runtime_closure_bytes=$(jq '[.runtime[].narSize] | add // 0' "$NIX_ATTRS_JSON_FILE")
-            if [ "$runtime_closure_bytes" -gt $(( MAX_RUNTIME_CLOSURE_MIB * 1048576 )) ]; then
-              echo "runtime closure exceeds its $MAX_RUNTIME_CLOSURE_MIB MiB artifact contract" >&2
-              exit 1
-            fi
+            runtime_closure_bytes=$(jq -er '.actual.closureBytes' "$RUNTIME_CLOSURE_REPORT")
             echo "    root image: $(( root_bytes / 1048576 )) MiB"
 
             # ── 2. ESP tree ─────────────────────────────────────────────
