@@ -65,7 +65,8 @@
   healthyBuildSucceeds = healthyTryBuild.success;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
   defaultRootPartitionHasHeadroom =
-    healthySystem.config.aos.image.rootPartitionMiB == 1024
+    healthySystem.config.aos.image.rootPartitionMiB
+    == 1024
     && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
 
   overriddenRootPartitionSystem = aos.mkSystem {
@@ -75,7 +76,8 @@
     ];
   };
   rootPartitionOverridePropagates =
-    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB == 1536
+    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB
+    == 1536
     && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
 
   undersizedRootPartitionSystem = aos.mkSystem {

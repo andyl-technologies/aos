@@ -87,6 +87,8 @@ in
           grep -Fxq 'pre_event_queue_and_volatile_cache=true' result
           grep -Fxq 'pre_event_queue_finish_after_event=true' result
           grep -Fxq 'network_storage_node_same_event=true' result
+          grep -Fxq 'shared_event_effect_records=3' result
+          grep -Fxq 'node_effective_icount_authenticated=true' result
           grep -Fxq 'exact_checkpoint_evidence_match=true' result
           grep -Fxq 'locked_effect_replay_evidence_match=true' result
           mkdir -p "$out"

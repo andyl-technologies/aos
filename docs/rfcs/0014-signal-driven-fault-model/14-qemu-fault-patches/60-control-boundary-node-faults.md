@@ -37,6 +37,13 @@ field on both sides. The separately authenticated action and event header bind
 the exact logical coordinate; this normalization keeps fresh-process offsets
 from changing the terminal authorization identity.
 
+The Apache-side resolved-effect record separately retains QEMU's effective
+logical retired-instruction coordinate and includes it in the node-application
+evidence domain. Recomputed and locked replay put that retained coordinate back
+into the action before QEMU preparation. The production sink compares it with
+the live boundary before issuing PREPARE or APPLY, so replay cannot resample a
+different boundary and detect the mismatch only after a mutation.
+
 ## Evidence
 
 The shared-cause live gate drives a real two-node QEMU world to an exact virtual

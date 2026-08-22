@@ -145,6 +145,14 @@ in
             -p crucible \
             --lib signal_fault_frontier_preserves_parent_time_and_typed_candidates \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib locked_replay_retains_and_enforces_a_backend_refined_coordinate \
+            -- --test-threads=1
 
           cargo test \
             --frozen \
@@ -340,6 +348,8 @@ in
           grep -Fxq 'gate=gate:signal-shared-cause' "$shared_result"
           grep -Fxq 'pre_event_queue_and_volatile_cache=true' "$shared_result"
           grep -Fxq 'network_storage_node_same_event=true' "$shared_result"
+          grep -Fxq 'shared_event_effect_records=3' "$shared_result"
+          grep -Fxq 'node_effective_icount_authenticated=true' "$shared_result"
           grep -Fxq 'exact_checkpoint_evidence_match=true' "$shared_result"
           grep -Fxq 'locked_effect_replay_evidence_match=true' "$shared_result"
 

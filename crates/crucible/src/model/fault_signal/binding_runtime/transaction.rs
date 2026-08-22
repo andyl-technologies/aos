@@ -23,7 +23,7 @@ fn validate_prepared_batch(
             || observation.binding.as_ref() != Some(&action.binding)
             || observation.target.as_ref() != Some(&action.target)
             || observation.opportunity != action.opportunity
-            || observation.coordinate != action.coordinate
+            || !action.accepts_observation_coordinate(observation.coordinate)
             || observation.evidence == ContentHash::default()
         {
             return Err(BindingRuntimeError::AdapterResult);

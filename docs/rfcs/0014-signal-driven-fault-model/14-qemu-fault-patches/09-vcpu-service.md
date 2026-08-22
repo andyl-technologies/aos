@@ -82,7 +82,7 @@ window coordinate, credits, remainder, state, recovery timers, and cursor.
    retired-instruction trajectories and virtual-time ratios on both architectures.
 2. Exercise multi-vCPU unequal shares, both service disciplines, stall, offline,
    re-online, IPI/timer pending state, and all-vCPU-ineligible deadlines.
-3. Perturb host CPU load/thread scheduling and prove identical trajectories.
+3. Apply resource-bounded scheduler preemption to QEMU and prove identical trajectories.
 4. Save/restore mid-window with fractional remainder and pending interrupts.
 5. Verify zero/overflow/bad rational, impossible routing, and bound errors.
 6. Benchmark disabled/empty/active control; revert patch and fail live gate;

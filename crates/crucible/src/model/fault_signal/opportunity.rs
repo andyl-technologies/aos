@@ -760,6 +760,25 @@ pub struct FaultCoordinate {
     pub retired_instructions: Option<u64>,
 }
 
+impl FaultCoordinate {
+    /// Reports whether `observed` is an exact backend refinement of this coordinate.
+    ///
+    /// Global virtual time and any authored retired-instruction coordinate are
+    /// immutable. A virtual-time-only coordinate must acquire the concrete
+    /// node-local instruction coordinate at which a backend applied an action.
+    #[must_use]
+    pub const fn accepts_backend_refinement(self, observed: Self) -> bool {
+        self.virtual_nanos == observed.virtual_nanos
+            && match self.retired_instructions {
+                Some(expected) => match observed.retired_instructions {
+                    Some(actual) => actual == expected,
+                    None => false,
+                },
+                None => observed.retired_instructions.is_some(),
+            }
+    }
+}
+
 /// Maximum nested scheduler-owned protocol expansions for one network frame.
 pub const HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH: usize = 256;
 /// Maximum nested scheduler-generated reverse-path responses.

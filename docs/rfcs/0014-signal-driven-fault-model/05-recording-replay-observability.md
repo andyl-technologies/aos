@@ -243,6 +243,13 @@ Ambiguous matching is an error, not a “closest packet” guess.
   mutation.
 - **[REP-16]** Recomputed and locked replay SHOULD converge on the same final
   execution fingerprint when model and capability versions match.
+- **[REP-17]** A QEMU-owned node effect authored only at virtual time MUST refine
+  its resolved record with QEMU's concrete retired-instruction application
+  coordinate and authenticate that coordinate in application evidence.
+  Recomputed and locked replay MUST supply the recorded refinement before
+  adapter preparation so a coordinate mismatch fails before mutation. Host
+  network and storage adapters MUST preserve the scheduler coordinate exactly
+  and cannot introduce a node-local refinement.
 
 ## 5.6 Event-log vocabulary
 

@@ -125,7 +125,7 @@
           mkdir -p "$out" "$TMPDIR/stock-qemu"
 
           grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
-          grep -q '^real_qemu_adversary=second-run-host-cpu-load$' \
+          grep -q '^real_qemu_adversary=second-run-bounded-scheduler-preemption$' \
             "${qemuNvcpuFingerprint}/result"
           grep -q '^real_qemu_comparison=canonical-rust-stream$' \
             "${qemuNvcpuFingerprint}/result"
@@ -169,7 +169,7 @@
           mkdir -p "$out" "$TMPDIR/stock-qemu"
 
           grep -q '^PASS$' "${qemuNvcpuFingerprint}/result"
-          grep -q '^real_qemu_adversary=second-run-host-cpu-load$' \
+          grep -q '^real_qemu_adversary=second-run-bounded-scheduler-preemption$' \
             "${qemuNvcpuFingerprint}/result"
           grep -q '^real_qemu_comparison=canonical-rust-stream$' \
             "${qemuNvcpuFingerprint}/result"

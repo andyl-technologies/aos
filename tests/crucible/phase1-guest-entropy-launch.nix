@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   root = ../..;
   rustFilesUnder = relativeRoot: let
     absoluteRoot = root + "/${relativeRoot}";
@@ -726,6 +727,9 @@ in
       INITRAMFS = "${initramfs}/initrd.img";
       KERNEL = builtins.toString pkgs.linux;
       QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
+      BOUNDED_PREEMPTION_HARNESS = ./_bounded-scheduler-preemption.sh;
+      BOUNDED_PREEMPTION_TARGET_WRAPPER = ./_bounded-scheduler-preemption-target.sh;
+      BOUNDED_PREEMPTION_CHECK = boundedSchedulerPreemptionCheck;
 
       phases = [
         {
@@ -734,6 +738,7 @@ in
             set -eu
 
             unset LD_LIBRARY_PATH || true
+            grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
             fail() {
               echo "FAIL: $*" >&2
@@ -806,27 +811,10 @@ in
               fail "no vmlinuz under $KERNEL/boot"
             fi
 
-            jitter_pids=""
-            start_jitter() {
-              i=0
-              while [ "$i" -lt 3 ]; do
-                yes > /dev/null &
-                jitter_pids="$jitter_pids $!"
-                i=$((i + 1))
-              done
-            }
-
-            stop_jitter() {
-              for pid in $jitter_pids; do
-                kill "$pid" 2>/dev/null || true
-              done
-              for pid in $jitter_pids; do
-                wait "$pid" 2>/dev/null || true
-              done
-              jitter_pids=""
-            }
-
-            trap stop_jitter EXIT
+            . "$BOUNDED_PREEMPTION_HARNESS"
+            trap 'bounded_preemption_cleanup' EXIT
+            trap 'bounded_preemption_cleanup; exit 143' TERM
+            trap 'bounded_preemption_cleanup; exit 130' INT
 
             run_one() {
               label="$1"
@@ -837,31 +825,46 @@ in
               ./write-seed "$scenario_seed" "$run_dir/crucible-guest-entropy-seed.bin" \
                 > "$run_dir/expected-seed.hex"
 
-              (
-                cd "$run_dir"
-                timeout 300 "$QEMU" \
-                  -nodefaults \
-                  -no-user-config \
-                  -display none \
-                  -monitor none \
-                  -machine q35 \
-                  -accel sim,thread=single \
-                  -icount shift=0,sleep=off,align=off \
-                  -cpu qemu64,-rdrand,-rdseed \
-                  -m 256 \
-                  -smp 1 \
-                  -rtc base=2026-01-01T00:00:00,clock=vm \
-                  -seed "$scenario_seed" \
-                  -fw_cfg name=opt/crucible/seed,file=crucible-guest-entropy-seed.bin \
-                  -object rng-builtin,id=crucible-rng0 \
-                  -device virtio-rng-pci,rng=crucible-rng0 \
-                  -kernel "$vmlinuz" \
-                  -initrd "$INITRAMFS" \
-                  -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 crucible_seed=$scenario_seed crucible.workload=httpget" \
-                  -chardev file,id=serial0,path=serial.log \
-                  -serial chardev:serial0 \
-                  -no-reboot
-              ) || {
+              set -- "$QEMU" \
+                -nodefaults \
+                -no-user-config \
+                -display none \
+                -monitor none \
+                -machine q35 \
+                -accel sim,thread=single \
+                -icount shift=0,sleep=off,align=off \
+                -cpu qemu64,-rdrand,-rdseed \
+                -m 256 \
+                -smp 1 \
+                -rtc base=2026-01-01T00:00:00,clock=vm \
+                -seed "$scenario_seed" \
+                -fw_cfg name=opt/crucible/seed,file=crucible-guest-entropy-seed.bin \
+                -object rng-builtin,id=crucible-rng0 \
+                -device virtio-rng-pci,rng=crucible-rng0 \
+                -kernel "$vmlinuz" \
+                -initrd "$INITRAMFS" \
+                -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 crucible_seed=$scenario_seed crucible.workload=httpget" \
+                -chardev file,id=serial0,path=serial.log \
+                -serial chardev:serial0 \
+                -no-reboot
+              bounded_preemption_launch_qemu \
+                300 "$TMPDIR/qemu-target-$label.pid" "$run_dir" "$QEMU" "$@" \
+                || fail "guest $label QEMU launch failed"
+              if [ "$label" = same-b ]; then
+                # Equal-seed entropy must be invariant under host scheduling.
+                # The guest-ready marker anchors six short pauses inside guest
+                # execution; the adversary consumes no busy CPU.
+                bounded_preemption_wait_for_guest_progress \
+                  "$run_dir/serial.log" "CRUCIBLE_GUEST_ENTROPY_READY" 3000 0.1 \
+                  || fail "guest $label made no pre-adversary progress"
+                bounded_preemption_start \
+                  "$TMPDIR/preemption-$label.log" \
+                  "$run_dir/serial.log" "CRUCIBLE_GUEST_ENTROPY_READY" \
+                  || fail "guest $label scheduler adversary did not start"
+                bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
+                  || fail "guest $label scheduler adversary was incomplete"
+              fi
+              bounded_preemption_wait_qemu || {
                 if [ -f "$run_dir/serial.log" ]; then
                   cat "$run_dir/serial.log" >&2
                 fi
@@ -912,9 +915,7 @@ in
             }
 
             run_one same-a 1097729
-            start_jitter
             run_one same-b 1097729
-            stop_jitter
             run_one different 1097730
 
             fw_a=$(get_kv same-a FW_CFG_SEED_HEX)
@@ -942,6 +943,7 @@ in
             [ "$workload_rng_a" != "$workload_rng_c" ] || fail "different seed did not change workload RNG transcript"
 
             mkdir -p "$out"
+            cp "$TMPDIR/preemption-same-b.log" "$out/preemption-same-b.log"
             cat > "$out/result" <<RESULT
             PASS
             check=checks.crucible.phase1.guestEntropyLaunch
@@ -967,7 +969,13 @@ in
             guest_kernel_cmdline=stock-no-entropy-suppression
             guest_entropy_seal=host-side-qemu-icount-seeded-entropy
             host_guest_entropy_sources=disabled
-            host_adversary=jitter-load-second-run
+            host_adversary=bounded-scheduler-preemption-second-run
+            host_adversary_perturbations=6
+            host_adversary_configured_pause_milliseconds=15
+            host_adversary_configured_total_stopped_milliseconds=90
+            host_adversary_nominal_worker_wall_milliseconds=240
+            host_adversary_worker_wall_timeout_seconds=2
+            host_adversary_busy_workers=0
             scenario_identity_includes=guest-entropy-seed
             RESULT
 
