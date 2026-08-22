@@ -139,6 +139,33 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     trailing.push(0);
     assert!(FaultRuntimeCheckpoint::from_canonical_bytes(&trailing, &plan, seed).is_err());
 
+    let limited_bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("limited checkpoint fixture: {error}"));
+    let configured = u64::try_from(limited_bytes.len() - 1)
+        .unwrap_or_else(|error| panic!("limited checkpoint length: {error}"));
+    let limited_plan = FaultSignalPlan::new(
+        plan.programs().to_vec(),
+        plan.bindings().to_vec(),
+        FaultResourceLimits {
+            fat_checkpoint_bytes: configured,
+            ..plan.resource_limits()
+        },
+    )
+    .unwrap_or_else(|error| panic!("limited checkpoint plan: {error}"));
+    assert_eq!(
+        FaultRuntimeCheckpoint::from_canonical_bytes(&limited_bytes, &limited_plan, seed),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "fat_checkpoint_bytes",
+                current: 0,
+                requested: configured + 1,
+                configured,
+                hard: FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes,
+            }
+        ))
+    );
+
     let mut mutated = checkpoint.clone();
     mutated.poisoned = true;
     assert_ne!(
