@@ -1,8 +1,8 @@
 # Cheap classifier half of drop-one attribution for one patch. Consumes the
-# expensive, classification-independent `_drop-one-build.nix` (which does the
-# 3-way rebase-drop and, when clean, the full-minus-N build) and assigns exactly
-# one attribution method from its raw outcome. Because this derivation does not
-# rebuild QEMU, tuning the classification is cheap.
+# expensive, classification-independent `_drop-one-build.nix` (which consumes a
+# 3-way variant prepared in the shared repository and, when clean, builds it)
+# and assigns exactly one attribution method from its raw outcome. Because this
+# derivation does not rebuild QEMU, tuning the classification is cheap.
 #
 # Attribution methods:
 #   drop-one-source-dependency : rebase-drop conflicts -- N is required for a
@@ -29,9 +29,13 @@
   expectAbsentSymbols ? [],
   # RTC clock mode for the behavioral sim-divergence probe (see _sim-diverge.nix).
   rtcClock ? "vm",
+  dropOneRepository ?
+    import ./_qemu-drop-one-repository.nix {
+      inherit pkgs lib qemuPackage;
+    },
   buildDrv ?
     import ./_drop-one-build.nix {
-      inherit pkgs lib qemuPackage index;
+      inherit pkgs lib qemuPackage index dropOneRepository;
       attrPath = "${attrPath}.build";
     },
   # Behavioral (sim-gated, no exported ABI symbol) patches are discriminated by
@@ -99,6 +103,8 @@ in
 
           case "$outcome" in
             conflict)
+              test ! -e "$BUILD_DRV/source-materialized" \
+                || fail "conflicting variant unexpectedly materialized a QEMU tree"
               cp "$BUILD_DRV/conflict.env" "$out/conflict.env"
               {
                 echo "attribution_method=drop-one-source-dependency"
@@ -109,6 +115,8 @@ in
               emit
               ;;
             build-failed)
+              test "$(cat "$BUILD_DRV/source-materialized")" = true \
+                || fail "clean variant was not materialized from its prepared ref"
               cp "$BUILD_DRV/failing-symbols" "$out/failing-symbols"
               grep -E '^qemu_plugin_' "$out/failing-symbols" > "$out/failing-plugin-symbols" || true
               {
@@ -121,6 +129,8 @@ in
               emit
               ;;
             built)
+              test "$(cat "$BUILD_DRV/source-materialized")" = true \
+                || fail "clean variant was not materialized from its prepared ref"
               variant="$BUILD_DRV/variant-qemu-system-x86_64"
               test -x "$variant" || fail "built outcome but no variant binary"
               nm -D --defined-only "$variant" | gawk 'NF { print $NF }' | LC_ALL=C sort -u \
