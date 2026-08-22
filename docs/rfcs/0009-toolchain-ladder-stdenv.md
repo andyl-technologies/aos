@@ -139,6 +139,13 @@ times:
   regenerate. This is a single helper, parametrized, not an inline
   `find` triplet per file.
 
+Keep release-generated manpages newer than their inputs when a tier adds a
+package-specific timestamp override. If a bootstrap package must rebuild Info
+manuals, retimestamp only the `.info` files; do not rewind shipped `.1` files,
+because that makes the build run help2man against not-yet-installed source
+scripts. Assert the installed executables that downstream tiers consume so an
+optional documentation target cannot conceal an incomplete tool package.
+
 These belong to `stdenv/phases.nix` next to `unpackPhase`/`fixupPhase`,
 where every consumer already looks.
 

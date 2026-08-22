@@ -125,7 +125,11 @@ in {
       export PERL="${perl}/bin/perl"
     '';
     postFreeze = ''
-      find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
+      find . -name '*.info' -exec touch -t 200001010200.00 {} + 2>/dev/null || true
+    '';
+    postInstall = ''
+      test -x "$out/bin/makeinfo" || { echo "FATAL: makeinfo not installed"; exit 1; }
+      test -x "$out/bin/texi2any" || { echo "FATAL: texi2any not installed"; exit 1; }
     '';
     meta = gnuMeta "GNU documentation system, version 5.1" "https://www.gnu.org/software/texinfo/" "GPL-3.0-or-later";
   };
