@@ -89,7 +89,7 @@ pub struct ProductionVmLifecycleConfig {
     signal_artifacts: Option<Arc<dyn DagStore>>,
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
-    restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
+    restore_checkpoint: Option<Arc<ProductionVmExactCheckpointSet>>,
     validate_guest_asset_references: bool,
 }
 
@@ -189,7 +189,7 @@ struct ProductionVmDebugRuntimeEvidence {
     runtime: Option<RuntimeState>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProductionVmExactCheckpointTarget {
     configuration: Configuration,
     counter: u64,
@@ -215,7 +215,7 @@ enum ProductionCheckpointArtifactSource {
     ChunkStore(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
@@ -816,7 +816,7 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
         ));
     }
     let mut restore_config = config.clone();
-    restore_config.restore_checkpoint = Some(restored);
+    restore_config.restore_checkpoint = Some(Arc::new(restored));
     build_production_vm_lifecycle_loop(scenario, source, &restore_config)
 }
 
@@ -1378,7 +1378,7 @@ pub fn build_production_vm_lifecycle_loop(
             signal_plan,
             signal_artifacts,
             scenario.id(),
-            checkpoint.fault_checkpoint.clone(),
+            clone_fault_checkpoint_lifecycle(&checkpoint.fault_checkpoint)?,
             host_fault_manifests.clone(),
             &mut backends,
             source.world().fault_topology().clone(),

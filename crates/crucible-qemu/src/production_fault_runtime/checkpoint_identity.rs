@@ -7,12 +7,28 @@ mod material;
 
 use material::*;
 
+pub(super) trait NodeSequenceLookup {
+    fn sequence(&self, node: &NodeId) -> Option<u64>;
+}
+
+impl NodeSequenceLookup for BTreeMap<NodeId, u64> {
+    fn sequence(&self, node: &NodeId) -> Option<u64> {
+        self.get(node).copied()
+    }
+}
+
+impl NodeSequenceLookup for QemuNodeMap<u64> {
+    fn sequence(&self, node: &NodeId) -> Option<u64> {
+        self.get(node).copied()
+    }
+}
+
 pub(super) fn validate_production_event_state(
     emitted_events: &[ReferencedSignalEvent],
     additional_emitted_events: &[ReferencedSignalEvent],
     pending_observations: &[FaultObservation],
     additional_observations: &[FaultObservation],
-    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    pending_qemu_events: &PendingQemuEventMap,
     resource_limits: FaultResourceLimits,
 ) -> Result<(), ProductionFaultRuntimeError> {
     let (records, bytes) = extend_referenced_event_usage(emitted_events, resource_limits, 0, 0)?;
@@ -27,21 +43,22 @@ pub(super) fn validate_production_event_state(
 }
 
 pub(super) fn validate_pending_qemu_event_sequences(
-    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
-    next_sequences: &BTreeMap<NodeId, u64>,
+    pending_qemu_events: &PendingQemuEventMap,
+    next_sequences: &impl NodeSequenceLookup,
 ) -> Result<(), ProductionFaultRuntimeError> {
     for (node, events) in pending_qemu_events {
         let Some(first) = events.first() else {
             continue;
         };
-        let next_sequence = next_sequences
-            .get(node)
-            .ok_or_else(|| BackendError::Rejected {
-                message: format!(
-                    "pending QEMU fault events name unknown node `{}`",
-                    node.name
-                ),
-            })?;
+        let next_sequence =
+            next_sequences
+                .sequence(node)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!(
+                        "pending QEMU fault events name unknown node `{}`",
+                        node.name
+                    ),
+                })?;
         if first.header.event_sequence == 0 {
             return Err(BackendError::Rejected {
                 message: format!(
@@ -81,7 +98,7 @@ pub(super) fn validate_pending_qemu_event_sequences(
                     node.name
                 ),
             })?;
-        if observed_next != *next_sequence {
+        if observed_next != next_sequence {
             return Err(BackendError::Rejected {
                 message: format!(
                     "pending QEMU fault events for `{}` end before sequence {}, but the live continuation requires {}",
@@ -166,7 +183,7 @@ pub(super) fn extend_observation_usage(
 }
 
 pub(super) fn extend_pending_qemu_event_usage(
-    events_by_node: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    events_by_node: &PendingQemuEventMap,
     resource_limits: FaultResourceLimits,
     mut records: u64,
     mut total_bytes: u64,
@@ -304,16 +321,16 @@ pub(super) fn production_checkpoint_identity(
     resource_limits: FaultResourceLimits,
     runtime: Option<&FaultRuntimeCheckpoint>,
     host: &HostFaultActionState,
-    qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
-    qemu_fault_sequences: &BTreeMap<NodeId, u64>,
-    qemu_fault_event_sequences: &BTreeMap<NodeId, u64>,
-    qemu_issued_actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
-    qemu_action_commits: &BTreeMap<ContentHash, CommittedQemuActionEvidence>,
-    qemu_active_rule_ids: &BTreeSet<ContentHash>,
+    qemu_fingerprints: &QemuNodeMap<ContentHash>,
+    qemu_fault_sequences: &QemuNodeMap<u64>,
+    qemu_fault_event_sequences: &QemuNodeMap<u64>,
+    qemu_issued_actions: &QemuActionMap<ResolvedBindingAction>,
+    qemu_action_commits: &QemuActionMap<CommittedQemuActionEvidence>,
+    qemu_active_rule_ids: &QemuActionSet,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
     emitted_events: &[ReferencedSignalEvent],
     pending_qemu_observations: &[FaultObservation],
-    pending_qemu_events: &BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    pending_qemu_events: &PendingQemuEventMap,
 ) -> Result<ContentHash, ProductionFaultRuntimeError> {
     let mut material = BoundedCheckpointIdentityMaterial::new(resource_limits);
     material.append(&plan.bytes)?;
@@ -431,9 +448,9 @@ pub(super) fn production_checkpoint_identity(
 }
 
 pub(super) fn validate_qemu_action_ledger(
-    actions: &BTreeMap<ContentHash, ResolvedBindingAction>,
-    commits: &BTreeMap<ContentHash, CommittedQemuActionEvidence>,
-    active_rule_ids: &BTreeSet<ContentHash>,
+    actions: &QemuActionMap<ResolvedBindingAction>,
+    commits: &QemuActionMap<CommittedQemuActionEvidence>,
+    active_rule_ids: &QemuActionSet,
 ) -> Result<(), ProductionFaultRuntimeError> {
     if commits.keys().ne(actions.keys())
         || commits

@@ -631,6 +631,35 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Restores a canonically ordered per-node command continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when node membership differs or a sequence is
+    /// invalid for the fault-command ABI.
+    pub(crate) fn restore_ordered_fault_command_sequences(
+        &mut self,
+        sequences: &[(NodeId, u64)],
+    ) -> Result<(), BackendError> {
+        if self
+            .nodes
+            .keys()
+            .ne(sequences.iter().map(|(node, _sequence)| node))
+        {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "QEMU fault-command checkpoint node membership differs from live nodes",
+                ),
+            });
+        }
+        for (node, sequence) in sequences {
+            self.node_mut(node)?
+                .restore_fault_command_sequence(*sequence)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
     /// Restores per-node event continuation paired with exact VM snapshots.
     ///
     /// # Errors
@@ -641,6 +670,35 @@ impl QemuNodeSet {
         sequences: &BTreeMap<NodeId, u64>,
     ) -> Result<(), BackendError> {
         if self.nodes.keys().ne(sequences.keys()) {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "QEMU fault-event checkpoint node membership differs from live nodes",
+                ),
+            });
+        }
+        for (node, sequence) in sequences {
+            self.node_mut(node)?
+                .restore_fault_event_sequence(*sequence)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
+    /// Restores a canonically ordered per-node event continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when node membership differs or a sequence is
+    /// zero.
+    pub(crate) fn restore_ordered_fault_event_sequences(
+        &mut self,
+        sequences: &[(NodeId, u64)],
+    ) -> Result<(), BackendError> {
+        if self
+            .nodes
+            .keys()
+            .ne(sequences.iter().map(|(node, _sequence)| node))
+        {
             return Err(BackendError::Rejected {
                 message: String::from(
                     "QEMU fault-event checkpoint node membership differs from live nodes",

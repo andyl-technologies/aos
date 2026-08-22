@@ -3,6 +3,55 @@
 use super::*;
 
 impl ProductionFaultRuntime {
+    /// Fallibly clones the live production continuation for transactional rollback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when canonical ledger storage
+    /// cannot be reserved for the clone.
+    pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeError> {
+        Ok(Self {
+            plan_id: self.plan_id,
+            resource_limits: self.resource_limits,
+            runtime: self.runtime.clone(),
+            host: self.host.clone(),
+            restored_network_state: self.restored_network_state.clone(),
+            emitted_events: self.emitted_events.clone(),
+            qemu_issued_actions: self.qemu_issued_actions.try_clone().map_err(|_| {
+                runtime_clone_allocation(
+                    "event_records",
+                    self.qemu_issued_actions.len(),
+                    self.resource_limits,
+                )
+            })?,
+            qemu_action_commits: self.qemu_action_commits.try_clone().map_err(|_| {
+                runtime_clone_allocation(
+                    "event_records",
+                    self.qemu_action_commits.len(),
+                    self.resource_limits,
+                )
+            })?,
+            qemu_active_rule_ids: self.qemu_active_rule_ids.try_clone().map_err(|_| {
+                runtime_clone_allocation(
+                    "event_records",
+                    self.qemu_active_rule_ids.len(),
+                    self.resource_limits,
+                )
+            })?,
+            pending_qemu_observations: self.pending_qemu_observations.clone(),
+            pending_qemu_events: self.pending_qemu_events.try_clone().map_err(|_| {
+                runtime_clone_allocation(
+                    "nodes",
+                    self.pending_qemu_events.len(),
+                    self.resource_limits,
+                )
+            })?,
+            pending_node_lifecycle: self.pending_node_lifecycle.clone(),
+            pending_node_boot: self.pending_node_boot.clone(),
+            pending_search_choices: self.pending_search_choices.clone(),
+        })
+    }
+
     /// Admits a complete plan and creates an empty production continuation.
     ///
     /// # Errors
@@ -68,11 +117,11 @@ impl ProductionFaultRuntime {
             host: HostFaultActionSink::new(resource_limits),
             restored_network_state: None,
             emitted_events: Vec::new(),
-            qemu_issued_actions: BTreeMap::new(),
-            qemu_action_commits: BTreeMap::new(),
-            qemu_active_rule_ids: BTreeSet::new(),
+            qemu_issued_actions: QemuActionMap::new(),
+            qemu_action_commits: QemuActionMap::new(),
+            qemu_active_rule_ids: QemuActionSet::new(),
             pending_qemu_observations: Vec::new(),
-            pending_qemu_events: BTreeMap::new(),
+            pending_qemu_events: PendingQemuEventMap::new(),
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: BTreeSet::new(),
             pending_search_choices: Vec::new(),
@@ -135,7 +184,10 @@ impl ProductionFaultRuntime {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
         let observed_qemu_fingerprints = nodes.execution_fingerprints()?;
-        validate_qemu_fingerprints(&checkpoint.qemu_fingerprints, &observed_qemu_fingerprints)?;
+        validate_checkpoint_qemu_fingerprints(
+            &checkpoint.qemu_fingerprints,
+            &observed_qemu_fingerprints,
+        )?;
         if plan.programs().is_empty() && !checkpoint.host.is_empty() {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
@@ -175,8 +227,8 @@ impl ProductionFaultRuntime {
             }
             _ => return Err(FaultExecutionError::CheckpointPresence.into()),
         };
-        nodes.restore_fault_command_sequences(&qemu_fault_sequences)?;
-        nodes.restore_fault_event_sequences(&qemu_fault_event_sequences)?;
+        nodes.restore_ordered_fault_command_sequences(qemu_fault_sequences.as_slice())?;
+        nodes.restore_ordered_fault_event_sequences(qemu_fault_event_sequences.as_slice())?;
         Ok(Self {
             plan_id,
             resource_limits,
@@ -264,11 +316,61 @@ impl ProductionFaultRuntime {
     }
 }
 
+fn runtime_clone_allocation(
+    field: &'static str,
+    requested: usize,
+    limits: FaultResourceLimits,
+) -> ProductionFaultRuntimeError {
+    FaultResourceLimitError::Exceeded {
+        field,
+        current: 0,
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        configured: limits.configured(field).unwrap_or(0),
+        hard: FaultResourceLimits::compiled_maximum()
+            .configured(field)
+            .unwrap_or(0),
+    }
+    .into()
+}
+
 pub(crate) fn validate_qemu_fingerprints(
     expected: &BTreeMap<NodeId, ContentHash>,
     observed: &BTreeMap<NodeId, ContentHash>,
 ) -> Result<(), ProductionFaultRuntimeError> {
-    if expected == observed {
+    if expected.len() == observed.len()
+        && expected
+            .iter()
+            .all(|(node, fingerprint)| observed.get(node) == Some(fingerprint))
+    {
+        return Ok(());
+    }
+
+    let node = expected
+        .keys()
+        .chain(observed.keys())
+        .find(|node| expected.get(*node) != observed.get(*node))
+        .cloned()
+        .ok_or(FaultExecutionError::CheckpointPresence)?;
+    Err(ProductionFaultRuntimeError::QemuFingerprintMismatch {
+        expected: expected
+            .get(&node)
+            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
+        observed: observed
+            .get(&node)
+            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
+        node: node.name,
+    })
+}
+
+fn validate_checkpoint_qemu_fingerprints(
+    expected: &QemuNodeMap<ContentHash>,
+    observed: &BTreeMap<NodeId, ContentHash>,
+) -> Result<(), ProductionFaultRuntimeError> {
+    if expected.len() == observed.len()
+        && expected
+            .iter()
+            .all(|(node, fingerprint)| observed.get(node) == Some(fingerprint))
+    {
         return Ok(());
     }
 

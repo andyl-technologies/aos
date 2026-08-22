@@ -186,7 +186,7 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
         Some(&persistent),
         "recovery evidence names the issued upsert after removal"
     );
-    assert!(runtime.qemu_active_rule_ids.is_empty());
+    assert_eq!(runtime.qemu_active_rule_ids.len(), 0);
     assert!(
         runtime
             .update_qemu_action_ledger(std::slice::from_ref(&remove), committed(&remove, 4))

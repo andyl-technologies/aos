@@ -215,7 +215,8 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     };
     runtime
         .pending_qemu_events
-        .insert(node.clone(), vec![event.clone()]);
+        .try_insert(node.clone(), vec![event.clone()])
+        .unwrap_or_else(|error| panic!("pending event fixture should allocate: {error}"));
 
     let result = runtime.drain_qemu_observations(
         &mut nodes,
@@ -234,21 +235,17 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     let mut second = event.clone();
     second.header.event_sequence = 2;
     let sequences = BTreeMap::from([(node.clone(), 3)]);
-    assert!(
-        validate_pending_qemu_event_sequences(
-            &BTreeMap::from([(node.clone(), vec![event.clone(), second.clone()])]),
-            &sequences,
-        )
-        .is_ok()
-    );
+    let mut pending = PendingQemuEventMap::new();
+    pending
+        .try_insert(node.clone(), vec![event.clone(), second.clone()])
+        .unwrap_or_else(|error| panic!("pending sequence fixture should allocate: {error}"));
+    assert!(validate_pending_qemu_event_sequences(&pending, &sequences).is_ok());
     second.header.event_sequence = 3;
-    assert!(
-        validate_pending_qemu_event_sequences(
-            &BTreeMap::from([(node, vec![event, second])]),
-            &sequences,
-        )
-        .is_err()
-    );
+    let mut noncontiguous = PendingQemuEventMap::new();
+    noncontiguous
+        .try_insert(node, vec![event, second])
+        .unwrap_or_else(|error| panic!("noncontiguous fixture should allocate: {error}"));
+    assert!(validate_pending_qemu_event_sequences(&noncontiguous, &sequences).is_err());
 }
 
 #[test]
@@ -260,8 +257,15 @@ fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
     let observations = vec![pending_qemu_observation(), pending_qemu_observation()];
 
     assert!(
-        validate_production_event_state(&[], &[], &observations, &[], &BTreeMap::new(), limits,)
-            .is_err()
+        validate_production_event_state(
+            &[],
+            &[],
+            &observations,
+            &[],
+            &PendingQemuEventMap::new(),
+            limits,
+        )
+        .is_err()
     );
 }
 

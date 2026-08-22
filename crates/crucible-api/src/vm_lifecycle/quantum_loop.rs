@@ -1730,7 +1730,7 @@ impl ProductionVmLifecycleLoop {
                                 length: vmstate_length,
                                 chunks: Vec::new(),
                             },
-                            fault_checkpoint: fault_checkpoint.clone(),
+                            fault_checkpoint: clone_fault_checkpoint_scheduler(&fault_checkpoint)?,
                             manifest_identity,
                         },
                     );
