@@ -47,7 +47,8 @@ in
       pkgs.coreutils
       pkgs.gawk
       pkgs.git
-      pkgs.glib
+      pkgs.glib.dev
+      pkgs.glib.tools
       pkgs.gnumake
       pkgs.grep
       pkgs.libslirp

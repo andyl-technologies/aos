@@ -226,6 +226,7 @@ in
         pkgs.patch
         pkgs.pkg-config
         pkgs.glib
+        pkgs.glib.dev
         qemuPackage
         referenceQemu
       ];

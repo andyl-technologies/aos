@@ -173,6 +173,7 @@ in
         pkgs.tar
         pkgs.xz
         pkgs.glib
+        pkgs.glib.dev
       ];
 
       phases = [
