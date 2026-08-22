@@ -2091,6 +2091,9 @@ pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 /// Maximum number of objects admitted by one registry publication manifest.
 pub const MAX_REGISTRY_PUBLICATION_OBJECTS: usize = 20_000;
 
+/// Maximum narinfos accepted by one cache-upload completion request.
+pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;
+
 /// Maximum encoded length of one registry publication object key.
 pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
 
@@ -22805,10 +22808,21 @@ impl RpcService {
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_admin(auth, &cache).await?;
+        self.observe_presigned_cache_upload(&cache, &req.path, &req.upload_ticket_id)
+            .await
+    }
+
+    /// Byte-verifies and records one direct-origin cache upload.
+    async fn observe_presigned_cache_upload(
+        &self,
+        cache: &crate::db::BinaryCache,
+        path: &str,
+        upload_ticket_id: &str,
+    ) -> Result<pb::CacheUploadObservationResponse, RpcError> {
         let now = clock::now_unix_secs();
         let ticket = self
             .db
-            .validate_cache_write_ticket(&req.upload_ticket_id, cache.id, &req.path, now, false)
+            .validate_cache_write_ticket(upload_ticket_id, cache.id, path, now, false)
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if ticket.upload_kind != "presigned" {
@@ -22826,7 +22840,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?;
         let observed = fetch
-            .inventory_evidence(&req.path)
+            .inventory_evidence(path)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("uploaded object"))?;
@@ -22853,6 +22867,79 @@ impl RpcService {
                 .expires_at
                 .saturating_sub(PRESIGN_WRITE_FENCE_GRACE_SECS),
         })
+    }
+
+    /// `BinaryCacheService.RegisterCacheNarinfos` — observes completed direct
+    /// NAR uploads and publishes their narinfos in one bounded control request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cache selector, an oversized batch,
+    /// insufficient cache-write authority, failed upload evidence, malformed
+    /// narinfo, quota exhaustion, or persistence failure.
+    pub async fn register_cache_narinfos(
+        &self,
+        auth: Option<&str>,
+        req: pb::RegisterCacheNarinfosRequest,
+    ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
+        if req.narinfos.len() > MAX_CACHE_NARINFO_REGISTRATION_BATCH {
+            return Err(RpcError::ResourceExhausted(format!(
+                "at most {MAX_CACHE_NARINFO_REGISTRATION_BATCH} narinfos may be registered at once"
+            )));
+        }
+        let cache = self
+            .cache_upload_target(&req.cache_id, &req.delivery_url)
+            .await?;
+        self.require_cache_admin(auth, &cache).await?;
+        self.register_cache_narinfos_authorized(&cache, &req.narinfos)
+            .await
+    }
+
+    async fn register_cache_narinfos_authorized(
+        &self,
+        cache: &crate::db::BinaryCache,
+        narinfos: &[pb::CacheNarinfo],
+    ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
+        let now = clock::now_unix_secs();
+        let mut registered = 0i64;
+        for narinfo in narinfos {
+            let path = format!("{}.narinfo", narinfo.store_hash);
+            if !narinfo.nar_upload_ticket_id.is_empty() {
+                let parsed =
+                    parse_cache_narinfo(cache.id, &narinfo.store_hash, &narinfo.narinfo, now)
+                        .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
+                self.observe_presigned_cache_upload(
+                    cache,
+                    &parsed.nar_url,
+                    &narinfo.nar_upload_ticket_id,
+                )
+                .await?;
+            }
+            match self
+                .write_cache_object_authorized(cache, &path, narinfo.narinfo.as_bytes(), None)
+                .await
+            {
+                SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => registered += 1,
+                SurfaceWriteOutcome::BadPath(reason) => return Err(RpcError::invalid(reason)),
+                SurfaceWriteOutcome::TooLarge => {
+                    return Err(RpcError::invalid("narinfo too large"));
+                }
+                SurfaceWriteOutcome::QuotaExceeded => {
+                    return Err(RpcError::invalid("org storage quota exceeded"));
+                }
+                SurfaceWriteOutcome::NotFound => return Err(RpcError::not_found("cache")),
+                SurfaceWriteOutcome::Unauthorized(reason)
+                | SurfaceWriteOutcome::NotWritable(reason) => {
+                    return Err(RpcError::invalid(reason));
+                }
+                other => {
+                    return Err(RpcError::internal(anyhow::anyhow!(
+                        "narinfo register failed: {other:?}"
+                    )));
+                }
+            }
+        }
+        Ok(pb::CacheNarinfoRegistrationResponse { registered })
     }
 
     /// Reports and indexes a fenced batch of cache narinfos.
@@ -22882,53 +22969,9 @@ impl RpcService {
             &req.expected_observation_version,
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
-        // Fail fast on auth; `write_cache_object` re-checks per write (cheap).
         self.require_cache_admin(auth, &cache).await?;
-        let now = clock::now_unix_secs();
-        let mut registered = 0i64;
-        for n in &req.narinfos {
-            let path = format!("{}.narinfo", n.store_hash);
-            if !n.nar_upload_ticket_id.is_empty() {
-                let parsed = parse_cache_narinfo(cache.id, &n.store_hash, &n.narinfo, now)
-                    .ok_or_else(|| RpcError::invalid("narinfo has no valid NAR URL"))?;
-                self.report_cache_upload(
-                    auth,
-                    pb::ReportCacheUploadRequest {
-                        cache_id: req.cache_id.clone(),
-                        path: parsed.nar_url,
-                        upload_ticket_id: n.nar_upload_ticket_id.clone(),
-                        controller_lease_id: req.controller_lease_id.clone(),
-                        controller_generation: req.controller_generation,
-                        expected_observation_version: req.expected_observation_version.clone(),
-                    },
-                )
-                .await?;
-            }
-            match self
-                .write_cache_object(auth, &cache, &path, n.narinfo.as_bytes(), None)
-                .await
-            {
-                SurfaceWriteOutcome::Created | SurfaceWriteOutcome::Overwritten => registered += 1,
-                SurfaceWriteOutcome::BadPath(reason) => return Err(RpcError::invalid(reason)),
-                SurfaceWriteOutcome::TooLarge => {
-                    return Err(RpcError::invalid("narinfo too large"));
-                }
-                SurfaceWriteOutcome::QuotaExceeded => {
-                    return Err(RpcError::invalid("org storage quota exceeded"));
-                }
-                SurfaceWriteOutcome::NotFound => return Err(RpcError::not_found("cache")),
-                SurfaceWriteOutcome::Unauthorized(reason)
-                | SurfaceWriteOutcome::NotWritable(reason) => {
-                    return Err(RpcError::invalid(reason));
-                }
-                other => {
-                    return Err(RpcError::internal(anyhow::anyhow!(
-                        "narinfo register failed: {other:?}"
-                    )));
-                }
-            }
-        }
-        Ok(pb::CacheNarinfoRegistrationResponse { registered })
+        self.register_cache_narinfos_authorized(&cache, &req.narinfos)
+            .await
     }
 
     /// `BinaryCacheService.CacheClosure` — the transitive closure of a store path.
@@ -26778,11 +26821,23 @@ impl RpcService {
         body: &[u8],
         admission: Option<crate::db::CacheWriteTicketRecord>,
     ) -> SurfaceWriteOutcome {
-        if cache.deleted_at.is_some() {
-            return SurfaceWriteOutcome::NotFound;
-        }
         if let Err(deny) = self.require_cache_admin(auth, &cache).await {
             return auth_denial_to_write_outcome(deny);
+        }
+        self.write_cache_object_authorized(cache, path, body, admission)
+            .await
+    }
+
+    /// Writes one cache object after the caller has checked cache authority.
+    async fn write_cache_object_authorized(
+        &self,
+        cache: &crate::db::BinaryCache,
+        path: &str,
+        body: &[u8],
+        admission: Option<crate::db::CacheWriteTicketRecord>,
+    ) -> SurfaceWriteOutcome {
+        if cache.deleted_at.is_some() {
+            return SurfaceWriteOutcome::NotFound;
         }
         if !keymap::is_machine_path(path) {
             return SurfaceWriteOutcome::BadPath("not a machine path");

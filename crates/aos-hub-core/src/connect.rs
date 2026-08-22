@@ -2800,6 +2800,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
         create_cache_object_uploads
     );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+        register_cache_narinfos
+    );
     r = r.route(
         "/aos.hub.v1.BinaryCacheService/UploadObject/{cache_id}/{ticket_id}/{encoded_path}",
         put(

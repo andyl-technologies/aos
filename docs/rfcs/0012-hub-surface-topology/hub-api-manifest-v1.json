@@ -1898,6 +1898,13 @@
          "service" : "BinaryCacheService"
       },
       {
+         "method" : "RegisterCacheNarinfos",
+         "path" : "aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+         "request" : "RegisterCacheNarinfosRequest",
+         "response" : "CacheNarinfoRegistrationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
          "method" : "BeginCacheMultipartUpload",
          "path" : "aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
          "request" : "BeginCacheMultipartUploadRequest",
