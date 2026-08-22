@@ -334,9 +334,13 @@ in
             qemu_pid="$BOUNDED_QEMU_PID"
             if [ "$label" = randomized-b ]; then
               # This comparison proves the seeded ASLR/KASLR result is
-              # independent of host scheduling. Direct finite preemption is a
-              # causal perturbation of the actual QEMU execution schedule.
-              bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+              # independent of host scheduling. A live kernel banner anchors
+              # direct finite preemption inside guest execution.
+              bounded_preemption_wait_for_guest_progress \
+                "$serial" "Linux version" 6000 0.1 \
+                || fail "$label made no pre-adversary guest progress"
+              bounded_preemption_start \
+                "$TMPDIR/preemption-$label.log" "$serial" "Linux version" \
                 || fail "$label scheduler adversary did not start"
             fi
 

@@ -881,7 +881,10 @@ across vCPUs). Diff the two extended-fingerprint sequences. Then repeat with
 six configured 15 ms SIGSTOP/SIGCONT preemptions ([DET-38]) — which, because RR
 pins all vCPUs to one host thread, should be irrelevant by construction. The
 finite adversary consumes no synthetic busy CPU, requests 90 ms total stopped
-time, and has an independent two-second resume watchdog.
+time, and has an independent two-second resume watchdog. Run B admits the
+adversary only after the first positive guest trace coordinate, so all six
+perturbations occur after guest execution has begun rather than during QEMU
+initialization.
 
 ```text
 S11 procedure (throwaway; no engine, no scheduler):

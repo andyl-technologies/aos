@@ -62,12 +62,20 @@
       needle = "BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=2";
     }
     {
+      label = "guest progress admission";
+      needle = "bounded_preemption_wait_for_guest_progress";
+    }
+    {
       label = "actual target stop";
       needle = "kill -STOP \"$bsp_worker_target\"";
     }
     {
       label = "unconditional target resume";
       needle = "kill -CONT \"$bsp_worker_target\"";
+    }
+    {
+      label = "independent watchdog resume";
+      needle = "kill -CONT \"$bsp_watchdog_target\"";
     }
     {
       label = "worker exit cleanup";
@@ -107,6 +115,10 @@
           {
             label = "bounded scheduler perturbation";
             needle = "bounded_preemption_start";
+          }
+          {
+            label = "guest execution progress anchor";
+            needle = "bounded_preemption_wait_for_guest_progress";
           }
           {
             label = "cancellation cleanup";
@@ -233,11 +245,36 @@ in
             bounded_preemption_launch_qemu \
               10 "$TMPDIR/perturb.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
               "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/perturb.events"
-            bounded_preemption_start "$TMPDIR/perturbation.log"
+            wait_for_pattern '^ready pid=' "$TMPDIR/perturb.events" \
+              || fail "perturbation target did not report progress"
+            bounded_preemption_start \
+              "$TMPDIR/perturbation.log" "$TMPDIR/perturb.events" "ready pid="
             bounded_preemption_finish "$TMPDIR/perturbation.log"
             wait_for_pattern 'continued=6' "$TMPDIR/perturb.events" \
               || fail "target did not observe every continuation"
             bounded_preemption_cleanup
+
+            # Let the independent watchdog expire while the target is stopped.
+            # It must issue SIGCONT itself before terminating the worker.
+            BOUNDED_PREEMPTION_PAUSE_SECONDS=5
+            BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=0.10
+            bounded_preemption_launch_qemu \
+              10 "$TMPDIR/watchdog.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
+              "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/watchdog.events"
+            wait_for_pattern '^ready pid=' "$TMPDIR/watchdog.events" \
+              || fail "watchdog target did not report progress"
+            bounded_preemption_start \
+              "$TMPDIR/watchdog.log" "$TMPDIR/watchdog.events" "ready pid="
+            if bounded_preemption_finish "$TMPDIR/watchdog.log"; then
+              fail "watchdog-expired adversary unexpectedly completed"
+            fi
+            grep -q '^watchdog-resume target=' "$TMPDIR/watchdog.log" \
+              || fail "watchdog did not independently resume target"
+            wait_for_pattern 'continued=' "$TMPDIR/watchdog.events" \
+              || fail "target did not execute after watchdog resume"
+            bounded_preemption_cleanup
+            BOUNDED_PREEMPTION_PAUSE_SECONDS=0.015
+            BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=2
 
             # An ordinary failing test body must run its EXIT cleanup and reap
             # both the target and finite adversary.
@@ -248,7 +285,9 @@ in
                 10 "$TMPDIR/failure-launch.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
                 "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/failure.events"
               printf '%s\n' "$BOUNDED_QEMU_PID" > "$failure_pid_file"
-              bounded_preemption_start "$TMPDIR/failure-preemption.log"
+              wait_for_pattern '^ready pid=' "$TMPDIR/failure.events"
+              bounded_preemption_start \
+                "$TMPDIR/failure-preemption.log" "$TMPDIR/failure.events" "ready pid="
               false
             ) && fail "failure-cleanup fixture unexpectedly succeeded"
             failure_pid=$(cat "$failure_pid_file")
@@ -268,7 +307,10 @@ in
                 10 "$TMPDIR/interruption-launch.pid" - "$TMPDIR/qemu-system-preemption-fixture" \
                 "$TMPDIR/qemu-system-preemption-fixture" "$TMPDIR/interruption.events"
               printf '%s\n' "$BOUNDED_QEMU_PID" > "$interruption_pid_file"
-              bounded_preemption_start "$TMPDIR/interruption-preemption.log"
+              wait_for_pattern '^ready pid=' "$TMPDIR/interruption.events"
+              bounded_preemption_start \
+                "$TMPDIR/interruption-preemption.log" \
+                "$TMPDIR/interruption.events" "ready pid="
               printf '%s\n' "$BOUNDED_PREEMPTION_PID" > "$interruption_worker_file"
               while [ ! -f "$TMPDIR/release-interruption" ]; do
                 sleep 0.01
@@ -298,7 +340,8 @@ in
               echo normal_cleanup=complete
               echo failure_cleanup=complete
               echo interruption_cleanup=resumed-and-reaped
-              echo maximum_stopped_milliseconds=90
+              echo watchdog_expiry_cleanup=independent-resume-and-reap
+              echo requested_stopped_milliseconds=90
               echo nominal_worker_wall_milliseconds=240
               echo worker_wall_timeout_seconds=2
               echo synthetic_busy_workers=0

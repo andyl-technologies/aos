@@ -852,8 +852,14 @@ in
                 || fail "guest $label QEMU launch failed"
               if [ "$label" = same-b ]; then
                 # Equal-seed entropy must be invariant under host scheduling.
-                # Six short pauses target QEMU itself and consume no busy CPU.
-                bounded_preemption_start "$TMPDIR/preemption-$label.log" \
+                # The guest-ready marker anchors six short pauses inside guest
+                # execution; the adversary consumes no busy CPU.
+                bounded_preemption_wait_for_guest_progress \
+                  "$run_dir/serial.log" "CRUCIBLE_GUEST_ENTROPY_READY" 3000 0.1 \
+                  || fail "guest $label made no pre-adversary progress"
+                bounded_preemption_start \
+                  "$TMPDIR/preemption-$label.log" \
+                  "$run_dir/serial.log" "CRUCIBLE_GUEST_ENTROPY_READY" \
                   || fail "guest $label scheduler adversary did not start"
                 bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
                   || fail "guest $label scheduler adversary was incomplete"
