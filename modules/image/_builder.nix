@@ -8,7 +8,7 @@
 ##!                          EFI/systemd/systemd-boot<arch>.efi (sd-boot canonical)
 ##!                          EFI/Linux/aos-<version>.efi       (UKI)
 ##!                          loader/loader.conf                (sd-boot config)
-##!   Partition 2 (root-a) — rootFsType (erofs/ext4), fixed contract capacity
+##!   Partition 2 (root-a) — rootFsType (erofs/ext4), fixed slot capacity
 ##!
 ##! systemd-repart creates swap and /var partitions on first boot
 ##! in the unallocated space after root-a.
@@ -446,6 +446,7 @@
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
       MAX_ROOT_MIB = toString budgets.maxRootMiB;
+      ROOT_PARTITION_MIB = toString system.config.aos.image.rootPartitionMiB;
       MAX_VERITY_MIB = toString budgets.maxVerityMiB;
       MAX_INITRD_MIB = toString budgets.maxInitrdMiB;
       MAX_UKI_MIB = toString budgets.maxUkiMiB;
@@ -641,7 +642,7 @@
             done
 
             # ── 4. Assemble final GPT image ─────────────────────────────
-            root_sectors=$(( MAX_ROOT_MIB * 2048 ))
+            root_sectors=$(( ROOT_PARTITION_MIB * 2048 ))
             # The dm-verity hash tree rides in a `root-a-hash`
             # partition immediately after root-a, sized from the build-time
             # root-verity-size-bytes and rounded up to a 1 MiB (2048-sector)
@@ -812,7 +813,7 @@
               --argjson espTransactionBytes "$esp_transaction_bytes" \
               --argjson espRequiredBytes "$esp_required_bytes" \
               --argjson rootSizeMiB "$root_size_mib" \
-              --argjson rootPartitionSizeMiB "$MAX_ROOT_MIB" \
+              --argjson rootPartitionSizeMiB "$ROOT_PARTITION_MIB" \
               --argjson espOffsetBytes "$esp_offset_bytes" \
               --argjson espPartitionSizeBytes "$esp_partition_size_bytes" \
               --argjson rootOffsetBytes "$root_offset_bytes" \
