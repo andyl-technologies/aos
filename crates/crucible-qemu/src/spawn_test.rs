@@ -419,7 +419,7 @@ fn guarded_preparation_rejects_underprovisioned_launch_before_run_directory_acce
 -> Result<(), Box<dyn Error>> {
     let (_cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
-    let contract = QemuChildProcessContract::for_test_with_resources(
+    let contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
         cgroup_write,
         cancellation,
         u32::MAX,
@@ -491,7 +491,7 @@ fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), B
 
     let (_cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
-    let changed_contract = QemuChildProcessContract::for_test_with_resources(
+    let changed_contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
         cgroup_write,
         cancellation,
         u32::MAX,
@@ -584,7 +584,7 @@ fn exact_vmstate_length_rejection_precedes_destination_mutation() -> Result<(), 
     let maximum = command.resource_requirements().minimum_writable_bytes();
     let (_cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
-    let contract = QemuChildProcessContract::for_test_with_resources(
+    let contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
         cgroup_write,
         cancellation,
         u32::MAX,
@@ -865,7 +865,7 @@ fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
 fn wide_test_process_contract() -> Result<QemuChildProcessContract, Box<dyn Error>> {
     let (_cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
-    Ok(QemuChildProcessContract::for_test_with_resources(
+    Ok(QemuChildProcessContract::from_unvalidated_test_descriptors(
         cgroup_write,
         cancellation,
         u32::MAX,

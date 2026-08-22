@@ -5,17 +5,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::model::{
     FaultPhase, SignalId, WorldNodeArchitecture, WorldNodeClockSource, WorldNodeDramGeometry,
     WorldNodeFaultCapabilities, WorldNodeRegister, WorldNodeRegisterGroup,
 };
-use crucible::{Checkpoint, CheckpointKind, Configuration, ContentHash, ScenarioDef};
+use crucible::{
+    AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, Configuration,
+    ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ScenarioDef,
+};
 use crucible_campaign::{
-    CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, ExactRational,
-    ExplorerPolicy, FairnessPolicy, PinChange, PinRequest, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, ScenarioDefId,
+    AttemptResourceLimits, CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy,
+    CampaignSeed, ExactRational, ExplorerPolicy, FairnessPolicy, PinChange, PinRequest,
+    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, BlobSource, ByteRange, ImmutableBlobBackend,
@@ -23,9 +28,13 @@ use crucible_cas::content_store::{
     StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use crucible_qemu::{
-    DeterministicLaunchProfile, QemuFaultCapabilityRequirement, QemuLaunchArtifact,
-    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuPreparedRunDirectory,
-    QemuReplayOracleValidation, QemuVmLaunchConfig, QemuVmSnapshot, QemuVmStateBinding,
+    DeterministicLaunchProfile, QemuChildProcessContract, QemuFaultCapabilityRequirement,
+    QemuGuardedNodeRealizationLauncher, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuNodeLauncher,
+    QemuNodeRealizationExecutor, QemuNodeRestorePlan, QemuPreparedRunDirectory,
+    QemuRealizedNodeBackend, QemuReplayOracleValidation, QemuVmLaunchConfig,
+    QemuVmRealizationError, QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmSnapshot,
+    QemuVmStateBinding,
 };
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
@@ -164,6 +173,362 @@ struct Fixture {
     configuration: ConfigurationId,
     pin_fact: CampaignFactId,
     checkpoint: ExactCheckpointId,
+}
+
+struct GuardedResumeLauncher {
+    snapshot: ContentHash,
+    runtime: ContentHash,
+    icount: Icount,
+    launches: Arc<AtomicUsize>,
+}
+
+struct GuardedResumeNode {
+    runtime: ContentHash,
+    icount: Icount,
+}
+
+impl QemuNodeLauncher for GuardedResumeLauncher {
+    type Node = GuardedResumeNode;
+}
+
+impl QemuGuardedNodeRealizationLauncher for GuardedResumeLauncher {
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        _config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        _restore: QemuNodeRestorePlan<'_>,
+        _process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if snapshot.id() != self.snapshot {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded resume test",
+                message: String::from("snapshot does not match selected root"),
+            });
+        }
+        self.launches.fetch_add(1, Ordering::SeqCst);
+        Ok(GuardedResumeNode {
+            runtime: self.runtime,
+            icount: self.icount,
+        })
+    }
+}
+
+impl Backend for GuardedResumeNode {
+    fn advance_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        self.icount = horizon.icount;
+        Ok(AdvanceOutcome::ReachedHorizon)
+    }
+
+    fn fingerprint(&mut self) -> Result<ExecutionFingerprint, BackendError> {
+        Ok(ExecutionFingerprint { hash: self.runtime })
+    }
+
+    fn deliver_input(&mut self, _input: BackendInput) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn snapshot(&mut self) -> Result<Checkpoint, BackendError> {
+        Err(BackendError::NotImplemented {
+            operation: "guarded resume test snapshot",
+        })
+    }
+
+    fn restore(&mut self, _checkpoint: &Checkpoint) -> Result<(), BackendError> {
+        Err(BackendError::NotImplemented {
+            operation: "guarded resume test restore",
+        })
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+impl QemuRealizedNodeBackend for GuardedResumeNode {
+    fn prepare_authoritative_observation_stream(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn advance_live_to_horizon(
+        &mut self,
+        horizon: ExecutionHorizon,
+        _event_log: &mut EventLog,
+    ) -> Result<AdvanceOutcome, BackendError> {
+        self.advance_to_horizon(horizon)
+    }
+
+    fn seal_live_observation_boundary(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn capture_live_exact_snapshot_paused(
+        &mut self,
+        _node: &NodeId,
+        _checkpoint: Checkpoint,
+    ) -> Result<QemuVmSnapshot, BackendError> {
+        Err(BackendError::NotImplemented {
+            operation: "guarded resume test capture",
+        })
+    }
+
+    fn shutdown_live_with_event_log(
+        &mut self,
+        _event_log: &mut EventLog,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, BackendError> {
+        Ok(self.icount)
+    }
+}
+
+struct GuardedResumeGuard {
+    resources: AttemptResourceLimits,
+    cancellation: crate::ExecutionCancellation,
+    process_contract: QemuChildProcessContract,
+}
+
+impl crate::QemuAttemptOperationalBoundary for GuardedResumeGuard {
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn cancellation(&self) -> &crate::ExecutionCancellation {
+        &self.cancellation
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.cancellation.is_canceled() {
+            Err(QemuVmRealizationError::Canceled {
+                operation: "guarded exact resume test",
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn charge_execution_quantum(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.check_operational_boundary()
+    }
+}
+
+impl crate::QemuAttemptResourceGuard for GuardedResumeGuard {
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    fn quarantine(&mut self) {}
+}
+
+impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
+    fn child_process_contract(&self) -> &QemuChildProcessContract {
+        &self.process_contract
+    }
+}
+
+fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard {
+    let (cgroup_procs, _cgroup_peer) = UnixStream::pair().expect("cgroup descriptor pair");
+    let (cancellation_event, _cancellation_peer) =
+        UnixStream::pair().expect("cancellation descriptor pair");
+    GuardedResumeGuard {
+        resources,
+        cancellation: crate::ExecutionCancellation::default(),
+        process_contract: QemuChildProcessContract::from_unvalidated_test_descriptors(
+            cgroup_procs.into(),
+            cancellation_event.into(),
+            resources.maximum_vcpus(),
+            resources.maximum_resident_bytes(),
+            resources.maximum_disk_bytes(),
+        ),
+    }
+}
+
+#[test]
+fn replay_validated_materialization_resumes_only_through_guarded_launcher() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("guarded-resume", backend);
+    let original = fixture
+        .checkpoints
+        .load(fixture.checkpoint)
+        .expect("load unvalidated checkpoint");
+    let runtime_hash = ContentHash::from_canonical_material(
+        "crucible.test.exact-pin-materialization.runtime.v1",
+        "guarded-resume",
+    );
+    let validated = QemuVmSnapshot::diskless(
+        original.snapshot().checkpoint().clone(),
+        QemuReplayOracleValidation::Match { runtime_hash },
+    )
+    .expect("replay-validated snapshot");
+    let prepared_checkpoint = fixture
+        .checkpoints
+        .prepare(&validated, BlobHandle::from_bytes(vec![0x5a; 4096]))
+        .expect("prepare replay-validated checkpoint");
+    let checkpoint = fixture
+        .checkpoints
+        .publish(&prepared_checkpoint)
+        .expect("publish replay-validated checkpoint")
+        .root();
+
+    let temp = tempfile::tempdir().expect("guarded resume workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    let selection = ExactPinMaterializationSelection::prepare(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &fixture.campaign,
+        fixture.configuration,
+        checkpoint,
+    )
+    .expect("authenticate replay-validated selection");
+    selections
+        .select(selection)
+        .expect("select validated checkpoint");
+
+    let command = materialization_command();
+    let run_directory = temp.path().join("run");
+    std::fs::create_dir(&run_directory).expect("run directory");
+    std::fs::write(
+        run_directory.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME),
+        b"provisioned",
+    )
+    .expect("provision VMState file");
+    let mut prepared_run_directory = QemuPreparedRunDirectory::open_for_materialization(
+        &command,
+        &run_directory,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
+    .expect("open materialization destination");
+    let materialized = crate::materialize_selected_exact_checkpoint(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &mut selections,
+        &fixture.campaign,
+        fixture.configuration,
+        &mut prepared_run_directory,
+        &crate::ExecutionCancellation::default(),
+    )
+    .expect("materialize replay-validated checkpoint");
+
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "guarded-resume",
+    ));
+    let launches = Arc::new(AtomicUsize::new(0));
+    let launcher = GuardedResumeLauncher {
+        snapshot: validated.id(),
+        runtime: runtime_hash,
+        icount: Icount { retired: 0 },
+        launches: launches.clone(),
+    };
+    let mut executor = QemuNodeRealizationExecutor::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        launcher,
+    );
+    let resources = AttemptResourceLimits::new(1, 512 * 1024 * 1024, 16 * 1024 * 1024, 16)
+        .expect("resource limits");
+    let mut guard = guarded_resume_guard(resources);
+
+    let realization = crate::realize_materialized_exact_checkpoint_guarded(
+        &mut executor,
+        &mut guard,
+        &configuration,
+        &materialized,
+    )
+    .expect("resume guarded exact checkpoint");
+
+    assert_eq!(launches.load(Ordering::SeqCst), 1);
+    assert_eq!(realization.operation, QemuVmRealizationOperation::Resume);
+    assert_eq!(realization.configuration, configuration);
+    assert_eq!(realization.runtime.id, runtime_hash);
+    assert_eq!(realization.runtime.configuration, configuration.id());
+    assert!(matches!(
+        realization.branch,
+        QemuVmRealizationKind::ExactSnapshotLoadvm { ref checkpoint }
+            if checkpoint.id == validated.checkpoint().id
+    ));
+}
+
+#[test]
+fn unvalidated_materialization_is_rejected_before_guarded_launch() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("guarded-not-run", backend);
+    let temp = tempfile::tempdir().expect("guarded resume workspace");
+    let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
+        .expect("selection store");
+    select_fixture(&mut selections, &fixture).expect("select unvalidated checkpoint");
+    let command = materialization_command();
+    let run_directory = temp.path().join("run");
+    std::fs::create_dir(&run_directory).expect("run directory");
+    std::fs::write(
+        run_directory.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME),
+        b"provisioned",
+    )
+    .expect("provision VMState file");
+    let mut prepared_run_directory = QemuPreparedRunDirectory::open_for_materialization(
+        &command,
+        &run_directory,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
+    .expect("open materialization destination");
+    let materialized = crate::materialize_selected_exact_checkpoint(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &mut selections,
+        &fixture.campaign,
+        fixture.configuration,
+        &mut prepared_run_directory,
+        &crate::ExecutionCancellation::default(),
+    )
+    .expect("materialize unvalidated checkpoint");
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "guarded-not-run",
+    ));
+    let launches = Arc::new(AtomicUsize::new(0));
+    let launcher = GuardedResumeLauncher {
+        snapshot: materialized.snapshot().id(),
+        runtime: ContentHash::from_canonical_material(
+            "crucible.test.exact-pin-materialization.runtime.v1",
+            "guarded-not-run",
+        ),
+        icount: Icount { retired: 0 },
+        launches: launches.clone(),
+    };
+    let mut executor = QemuNodeRealizationExecutor::new(
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        launcher,
+    );
+    let resources = AttemptResourceLimits::new(1, 4096, 4096, 1).expect("resource limits");
+    let mut guard = guarded_resume_guard(resources);
+
+    assert!(matches!(
+        crate::realize_materialized_exact_checkpoint_guarded(
+            &mut executor,
+            &mut guard,
+            &configuration,
+            &materialized,
+        ),
+        Err(crate::ExactCheckpointResumeError::Realization(
+            QemuVmRealizationError::SavevmPolicy { .. }
+        ))
+    ));
+    assert_eq!(launches.load(Ordering::SeqCst), 0);
 }
 
 #[test]

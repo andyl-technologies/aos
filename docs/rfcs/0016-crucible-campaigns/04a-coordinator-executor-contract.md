@@ -1799,9 +1799,13 @@ metadata plus VMState child through the selected `ExactCheckpointId` root.
 Cancellation, corruption, a short copy, or a dropped writer leaves
 the authority unready; a later exact retry must replace it completely. Guarded
 spawn separately requires the same launch-resource ceiling and exact snapshot
-basis. Concrete resource-guard ownership through that spawn and the complete
-pause/restart/resume flight remain mandatory before the full campaign/QEMU
-gate may claim completion.
+basis. The exact-root launcher is not an unguarded realization launcher: it can
+enter production resume only with the attempt guard's sealed child-process
+contract, and production replay admission rejects missing or mismatched oracle
+evidence before invoking it. Concrete resource-guard ownership through that
+spawn, generation and retention of matching replay-oracle evidence for live
+captures, and the complete pause/restart/resume flight remain mandatory before
+the full campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

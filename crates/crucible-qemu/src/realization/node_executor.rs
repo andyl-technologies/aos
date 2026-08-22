@@ -7,20 +7,25 @@
 //! save/restore on the scheduler-facing node.
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendError, Checkpoint, Configuration, ContentHash, EventLog,
-    EventLogOffset, Icount, NodeId, RuntimeState, SchedulerSendAuthorizer,
+    AdvanceOutcome, Backend, BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash,
+    EventLog, EventLogOffset, Icount, NodeId, RuntimeState, SchedulerSendAuthorizer,
 };
 use crucible_shmem::RegionConfig;
 
+use crate::node_factory::{
+    QemuPreparedWarmRestoreLaunch, spawn_setup_and_restore_prepared_qemu_node_guarded,
+};
 use crate::{
-    QemuHostIoRuntime, QemuLaunchCommand, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission, QemuNode, QemuNodeFactoryRuntime, QemuNodeRestorePlan,
-    QemuWarmRestoreLaunchError, spawn_setup_and_restore_qemu_node,
+    QemuChildProcessContract, QemuExactSnapshotPolicy, QemuHostIoRuntime, QemuLaunchCommand,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNode,
+    QemuNodeFactoryRuntime, QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuVmStateBinding, QemuWarmRestoreLaunchError, spawn_setup_and_restore_qemu_node,
 };
 
 use super::{
     QemuBakedGenesisRestoreAdmission, QemuVmRealizationError, QemuVmRealizationExecutor,
-    QemuVmReplayRequest, QemuVmSnapshot, validate_runtime_matches_admission,
+    QemuVmReplayRequest, QemuVmSnapshot, validate_checkpoint_loadvm_state,
+    validate_checkpoint_matches_config, validate_runtime_matches_admission, validate_snapshot_pair,
 };
 
 /// Backend operations required after a QEMU node has been restored.
@@ -176,7 +181,7 @@ impl QemuLiveBackendShutdown {
 /// Implementations retain ownership of process launch, VMState restore, and
 /// teardown. Attempt drivers receive only a bounded mutable borrow of the
 /// already-realized backend; they cannot replace it or invoke generic restore.
-pub trait QemuVmLiveRealizationExecutor: QemuVmRealizationExecutor {
+pub trait QemuVmLiveRealizationExecutor {
     /// Returns whether an installed backend still owns a process generation.
     #[must_use]
     fn live_backend_is_active(&self) -> bool;
@@ -272,11 +277,14 @@ impl QemuRealizedNodeBackend for QemuNode {
     }
 }
 
-/// Launches a QEMU node that has already been VMState-restored before assembly.
-pub trait QemuNodeRealizationLauncher {
+/// Common node type retained by one real-node launcher.
+pub trait QemuNodeLauncher {
     /// Concrete node handle returned by this launcher.
     type Node: QemuRealizedNodeBackend;
+}
 
+/// Launches a QEMU node that has already been VMState-restored before assembly.
+pub trait QemuNodeRealizationLauncher: QemuNodeLauncher {
     /// Launches and assembles a node for `restore`.
     ///
     /// # Errors
@@ -290,6 +298,29 @@ pub trait QemuNodeRealizationLauncher {
     ) -> Result<Self::Node, QemuVmRealizationError>;
 }
 
+/// Exact-root-bound launcher for one guarded warm restore.
+///
+/// Unlike [`QemuNodeRealizationLauncher`], this capability receives the exact
+/// paired snapshot and the sealed child-process contract. Implementations must
+/// reject any snapshot other than the one whose authenticated VMState was
+/// committed into their prepared run-directory authority, and must use only a
+/// guarded child-spawn path.
+pub trait QemuGuardedNodeRealizationLauncher: QemuNodeLauncher {
+    /// Launches one exact materialized snapshot under `process_contract`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the snapshot/root basis differs,
+    /// guarded process launch fails, or restored node assembly fails.
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError>;
+}
+
 /// Concrete launcher that composes QEMU spawn, plugin setup, QMP load, and node assembly.
 pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
@@ -298,6 +329,62 @@ pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     slot_index: u32,
     runtime_factory: F,
     _runtime: std::marker::PhantomData<fn() -> (A, R)>,
+}
+
+/// One-shot launcher for a prepared, exact-checkpoint-root-bound VMState file.
+///
+/// Construction authenticates the process-local VMState binding before the
+/// authority can enter a real-node executor. Launch rechecks the complete
+/// snapshot identity and checkpoint identity, while the node factory repeats
+/// the binding check immediately before guarded spawn.
+pub struct QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
+    command: QemuLaunchCommand,
+    run_directory: QemuPreparedRunDirectory,
+    vmstate_binding: QemuVmStateBinding,
+    snapshot: ContentHash,
+    checkpoint: ContentHash,
+    region_config: RegionConfig,
+    slot_index: u32,
+    runtime_factory: F,
+    _runtime: std::marker::PhantomData<fn() -> (A, R)>,
+}
+
+impl<A, R, F> QemuExactRootWarmRestoreNodeLauncher<A, R, F> {
+    /// Creates a launcher for one already materialized exact checkpoint root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] unless `run_directory` has committed the
+    /// supplied root binding and still retains the exact completed VMState
+    /// length.
+    pub fn new(
+        command: QemuLaunchCommand,
+        run_directory: QemuPreparedRunDirectory,
+        vmstate_binding: QemuVmStateBinding,
+        snapshot: &QemuVmSnapshot,
+        region_config: RegionConfig,
+        slot_index: u32,
+        runtime_factory: F,
+    ) -> Result<Self, QemuSpawnError> {
+        run_directory.require_exact_vmstate(vmstate_binding)?;
+        Ok(Self {
+            command,
+            run_directory,
+            vmstate_binding,
+            snapshot: snapshot.id(),
+            checkpoint: snapshot.checkpoint().id,
+            region_config,
+            slot_index,
+            runtime_factory,
+            _runtime: std::marker::PhantomData,
+        })
+    }
+
+    /// Returns the selected snapshot identity admitted by this launcher.
+    #[must_use]
+    pub const fn snapshot(&self) -> ContentHash {
+        self.snapshot
+    }
 }
 
 impl<A, R, F> QemuWarmRestoreNodeLauncher<A, R, F> {
@@ -321,14 +408,30 @@ impl<A, R, F> QemuWarmRestoreNodeLauncher<A, R, F> {
     }
 }
 
-impl<A, R, F> QemuNodeRealizationLauncher for QemuWarmRestoreNodeLauncher<A, R, F>
+impl<A, R, F> QemuNodeLauncher for QemuWarmRestoreNodeLauncher<A, R, F>
 where
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
     F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
 {
     type Node = QemuNode;
+}
 
+impl<A, R, F> QemuNodeLauncher for QemuExactRootWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    type Node = QemuNode;
+}
+
+impl<A, R, F> QemuNodeRealizationLauncher for QemuWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
     fn launch_restored_node(
         &mut self,
         config: &Configuration,
@@ -350,10 +453,49 @@ where
     }
 }
 
+impl<A, R, F> QemuGuardedNodeRealizationLauncher for QemuExactRootWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn launch_materialized_exact_node_guarded(
+        &mut self,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        restore: QemuNodeRestorePlan<'_>,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<Self::Node, QemuVmRealizationError> {
+        if snapshot.id() != self.snapshot || restore.checkpoint().id != self.checkpoint {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded exact-root warm restore",
+                message: String::from(
+                    "snapshot metadata does not match the materialized exact checkpoint root",
+                ),
+            });
+        }
+        let runtime = (self.runtime_factory)(config);
+        spawn_setup_and_restore_prepared_qemu_node_guarded(
+            QemuPreparedWarmRestoreLaunch::new(
+                &self.command,
+                &self.run_directory,
+                self.vmstate_binding,
+                process_contract,
+                self.region_config,
+                self.slot_index,
+            ),
+            restore,
+            runtime,
+            |_current_icount| {},
+        )
+        .map_err(warm_restore_error)
+    }
+}
+
 /// Realization executor backed by one active QEMU node at a time.
 pub struct QemuNodeRealizationExecutor<L>
 where
-    L: QemuNodeRealizationLauncher,
+    L: QemuNodeLauncher,
 {
     node: NodeId,
     launcher: L,
@@ -365,7 +507,7 @@ where
 
 impl<L> QemuNodeRealizationExecutor<L>
 where
-    L: QemuNodeRealizationLauncher,
+    L: QemuNodeLauncher,
 {
     /// Creates a node realization executor for `node`.
     #[must_use]
@@ -408,7 +550,10 @@ where
         config: &Configuration,
         restore: QemuNodeRestorePlan<'_>,
         operation: &'static str,
-    ) -> Result<ContentHash, QemuVmRealizationError> {
+    ) -> Result<ContentHash, QemuVmRealizationError>
+    where
+        L: QemuNodeRealizationLauncher,
+    {
         let mut node = self.launcher.launch_restored_node(config, restore)?;
         QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node)
             .map_err(|source| node_backend_error(operation, source))?;
@@ -511,6 +656,152 @@ where
     }
 }
 
+impl<L> QemuNodeRealizationExecutor<L>
+where
+    L: QemuGuardedNodeRealizationLauncher,
+{
+    /// Resumes one exact-root-bound snapshot under production replay admission.
+    ///
+    /// This is the safe external entry point for a retained campaign checkpoint.
+    /// It derives the low-level `loadvm` authorization inside the QEMU policy
+    /// boundary and refuses snapshots without matching replay-oracle evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when replay evidence is absent or
+    /// mismatched, or when the exact materialization, process contract, restore
+    /// plan, or resulting runtime differs.
+    pub fn resume_materialized_exact_snapshot_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        let policy = QemuExactSnapshotPolicy::production();
+        let admission = policy
+            .accept_loadvm_realized_runtime(snapshot.replay_oracle_validation())
+            .map_err(|source| QemuVmRealizationError::SavevmPolicy { source })?;
+        self.load_materialized_exact_snapshot_guarded(
+            process_contract,
+            config,
+            snapshot,
+            policy.authorize_loadvm_runtime(),
+            admission,
+        )
+    }
+
+    /// Loads one exact-root-bound snapshot through the guarded launcher.
+    ///
+    /// The paired snapshot identity is checked by the launcher before its
+    /// prepared VMState authority can spawn a child. The restored runtime is
+    /// then checked against replay-oracle admission before becoming active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the exact materialization basis,
+    /// child process contract, restore plan, or runtime admission differs.
+    fn load_materialized_exact_snapshot_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: QemuLoadvmCommandAuthorization,
+        admission: QemuLoadvmRealizationAdmission,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot")?;
+        validate_snapshot_pair(snapshot)?;
+        require_fat_materialized_snapshot(snapshot, "exact snapshot")?;
+        validate_checkpoint_loadvm_state(&snapshot.checkpoint, "exact snapshot")?;
+        let restore = QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission)
+            .with_host_io_checkpoint(&snapshot.host_io)
+            .with_node_continuation(&snapshot.node);
+        let mut node = self.launcher.launch_materialized_exact_node_guarded(
+            config,
+            snapshot,
+            restore,
+            process_contract,
+        )?;
+        QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node).map_err(
+            |source| node_backend_error("load guarded exact-root QEMU snapshot", source),
+        )?;
+        let runtime_id = Backend::fingerprint(&mut node)
+            .map(|fingerprint| fingerprint.hash)
+            .map_err(|source| {
+                node_backend_error("fingerprint guarded exact-root QEMU snapshot", source)
+            })?;
+        self.shutdown_active_node_for("replace active realized QEMU node")?;
+        self.active_node = Some(node);
+        let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
+        validate_runtime_matches_admission(&runtime, admission)?;
+        self.retain_runtime_basis(&runtime);
+        Ok(runtime)
+    }
+
+    /// Loads the materialized snapshot under probe-only authorization.
+    ///
+    /// This operation exists for the fat side of replay-oracle validation. It
+    /// does not grant production runtime admission; a caller must compare the
+    /// returned runtime with an independently realized thin path before using
+    /// the snapshot as an execution template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the exact materialization basis,
+    /// guarded process contract, restore plan, or snapshot pair differs.
+    pub fn load_materialized_exact_snapshot_probe_guarded(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        validate_checkpoint_matches_config(&snapshot.checkpoint, config, "exact snapshot probe")?;
+        validate_snapshot_pair(snapshot)?;
+        require_fat_materialized_snapshot(snapshot, "exact snapshot probe")?;
+        validate_checkpoint_loadvm_state(&snapshot.checkpoint, "exact snapshot probe")?;
+        let restore =
+            QemuNodeRestorePlan::snapshot_completeness_probe(&snapshot.checkpoint, authorization)
+                .with_host_io_checkpoint(&snapshot.host_io)
+                .with_node_continuation(&snapshot.node);
+        let mut node = self.launcher.launch_materialized_exact_node_guarded(
+            config,
+            snapshot,
+            restore,
+            process_contract,
+        )?;
+        QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node).map_err(
+            |source| node_backend_error("probe guarded exact-root QEMU snapshot", source),
+        )?;
+        let runtime_id = Backend::fingerprint(&mut node)
+            .map(|fingerprint| fingerprint.hash)
+            .map_err(|source| {
+                node_backend_error("fingerprint guarded exact-root QEMU snapshot probe", source)
+            })?;
+        self.shutdown_active_node_for("replace active realized QEMU node")?;
+        self.active_node = Some(node);
+        let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
+        self.retain_runtime_basis(&runtime);
+        Ok(runtime)
+    }
+
+    /// Replays one bounded quantum on a guarded materialized exact runtime.
+    ///
+    /// The caller owns operational quantum charging. This method owns only the
+    /// live runtime/event-log exactness checks and backend transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when no node is active, the supplied
+    /// runtime is stale, or the backend cannot reach the requested boundary.
+    pub fn replay_materialized_one_quantum(
+        &mut self,
+        runtime: RuntimeState,
+        request: QemuVmReplayRequest,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        self.replay_one_quantum_inner(runtime, request)
+    }
+}
+
 impl<L> QemuVmRealizationExecutor for QemuNodeRealizationExecutor<L>
 where
     L: QemuNodeRealizationLauncher,
@@ -567,6 +858,19 @@ where
     }
 
     fn replay_one_quantum(
+        &mut self,
+        runtime: RuntimeState,
+        request: QemuVmReplayRequest,
+    ) -> Result<RuntimeState, QemuVmRealizationError> {
+        self.replay_one_quantum_inner(runtime, request)
+    }
+}
+
+impl<L> QemuNodeRealizationExecutor<L>
+where
+    L: QemuNodeLauncher,
+{
+    fn replay_one_quantum_inner(
         &mut self,
         runtime: RuntimeState,
         request: QemuVmReplayRequest,
@@ -631,7 +935,7 @@ where
 
 impl<L> QemuVmLiveRealizationExecutor for QemuNodeRealizationExecutor<L>
 where
-    L: QemuNodeRealizationLauncher,
+    L: QemuNodeLauncher,
 {
     fn live_backend_is_active(&self) -> bool {
         self.active_node.is_some()
@@ -740,7 +1044,7 @@ where
 
 impl<L> QemuLiveAttemptBackend for QemuNodeRealizationExecutor<L>
 where
-    L: QemuNodeRealizationLauncher,
+    L: QemuNodeLauncher,
 {
     fn advance_to_horizon(
         &mut self,
@@ -818,6 +1122,19 @@ fn runtime_from_checkpoint_material(
     Ok(runtime_from_scheduled_checkpoint_material(
         config, checkpoint, runtime_id,
     ))
+}
+
+fn require_fat_materialized_snapshot(
+    snapshot: &QemuVmSnapshot,
+    role: &'static str,
+) -> Result<(), QemuVmRealizationError> {
+    if snapshot.checkpoint.kind != CheckpointKind::Fat {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role,
+            message: String::from("guarded exact restore requires a fat checkpoint"),
+        });
+    }
+    Ok(())
 }
 
 fn runtime_from_scheduled_checkpoint_material(

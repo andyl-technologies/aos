@@ -419,7 +419,7 @@ impl QemuChildProcessContract {
         cancellation_event: OwnedFd,
         maximum_writable_bytes: u64,
     ) -> Self {
-        Self::for_test_with_resources(
+        Self::from_unvalidated_test_descriptors(
             cgroup_procs,
             cancellation_event,
             u32::MAX,
@@ -428,8 +428,14 @@ impl QemuChildProcessContract {
         )
     }
 
-    #[cfg(test)]
-    fn for_test_with_resources(
+    /// Builds an unvalidated process contract for cross-crate conformance tests.
+    ///
+    /// This constructor exists only with the `test-support` feature or while
+    /// compiling this crate's unit tests. It must never be used as a production
+    /// containment boundary.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_test_descriptors(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_vcpus: u32,
