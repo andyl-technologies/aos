@@ -63,6 +63,24 @@ pub(super) fn map_host_error(
     }
 }
 
+pub(super) fn map_runtime_error(
+    error: FaultRuntimeError,
+) -> ProductionFaultRuntimeCheckpointCodecError {
+    match error {
+        FaultRuntimeError::ResourceLimit(error) => map_plan_resource_error(error),
+        _ => ProductionFaultRuntimeCheckpointCodecError::Runtime,
+    }
+}
+
+pub(super) fn checkpoint_runtime_bytes(
+    runtime: &crucible::model::FaultRuntimeCheckpoint,
+    maximum: u64,
+) -> Result<Vec<u8>, ProductionFaultRuntimeCheckpointCodecError> {
+    runtime
+        .canonical_bytes_with_limit(maximum)
+        .map_err(map_runtime_error)
+}
+
 pub(super) fn host_resource_limits(
     checkpoint: &ProductionFaultRuntimeCheckpoint,
     maximum: u64,

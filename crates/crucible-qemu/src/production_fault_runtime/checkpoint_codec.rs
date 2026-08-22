@@ -135,10 +135,9 @@ impl ProductionFaultRuntimeCheckpoint {
             runtime: self
                 .runtime
                 .as_ref()
-                .map(FaultRuntimeCheckpoint::canonical_bytes)
-                .transpose()
-                .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Runtime)?
-                .map(bounded_checkpoint_bytes)
+                .map(|runtime| {
+                    checkpoint_runtime_bytes(runtime, maximum).and_then(bounded_checkpoint_bytes)
+                })
                 .transpose()?,
             host: bounded_checkpoint_bytes(
                 self.host
@@ -237,7 +236,7 @@ impl ProductionFaultRuntimeCheckpoint {
                 )
             })
             .transpose()
-            .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Runtime)?;
+            .map_err(map_runtime_error)?;
         if runtime.is_none() && !plan.programs().is_empty() {
             return Err(ProductionFaultRuntimeCheckpointCodecError::Runtime);
         }
