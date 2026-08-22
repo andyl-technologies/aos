@@ -4,6 +4,10 @@
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase2.qemuPatchRegeneration",
   taskIds ? ["T-PATCH-19" "T-PKG-5" "T-DET-24"],
+  patchStackRepository ?
+    import ./_qemu-patch-stack-repository.nix {
+      inherit pkgs lib qemuPackage;
+    },
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -127,7 +131,6 @@ in
         pkgs.patch
         pkgs.sed
         pkgs.tar
-        pkgs.xz
         qemuPackage
       ];
 
@@ -160,39 +163,28 @@ in
             test "$bundle_hash" = "${series.patchBranchBundleSha256}" \
               || fail "patch branch bundle hash $bundle_hash does not match manifest ${series.patchBranchBundleSha256}"
 
+            grep -q '^PASS$' ${patchStackRepository}/result
+            repository=${patchStackRepository}/repo.git
+            test "$(git --git-dir="$repository" rev-parse refs/heads/base)" \
+              = "${series.patchBranchBaseCommit}" \
+              || fail "shared repository base does not match the manifest"
+            test "$(git --git-dir="$repository" rev-parse refs/heads/patch-stack)" \
+              = "${series.patchBranchHeadCommit}" \
+              || fail "shared repository head does not match the manifest"
+
             work_dir="$TMPDIR/qemu-patch-regeneration"
             generated_dir="$out/regenerated-patches"
             mkdir -p "$work_dir"
-            tar -xf ${qemuPackage.src} -C "$work_dir"
-            cd "$work_dir/qemu-${series.qemuVersion}"
+            cd "$work_dir"
 
-            git init -q
-            git config user.name "${series.deterministicAuthorName}"
-            git config user.email "${series.deterministicAuthorEmail}"
-            git config commit.gpgsign false
-            git config core.autocrlf false
-            # Patch files carry nine-character abbreviated blob IDs. Pin the
-            # abbreviation length so regeneration is independent of Git's
-            # version-specific default and matches the committed byte stream.
-            git config core.abbrev 9
-            git config gc.auto 0
-            git config maintenance.auto false
-            git add -A
-            GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
-            GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
-            GIT_AUTHOR_DATE="${series.deterministicBaseDate}" \
-            GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
-            GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
-            GIT_COMMITTER_DATE="${series.deterministicBaseDate}" \
-              git -c commit.gpgsign=false commit -q -m "qemu-${series.qemuVersion}-base"
-            base_commit=$(git rev-parse HEAD)
-            base_tree=$(git rev-parse HEAD^{tree})
+            base_commit=$(git --git-dir="$repository" rev-parse refs/heads/base)
+            base_tree=$(git --git-dir="$repository" rev-parse refs/heads/base^{tree})
             test "$base_commit" = "${series.patchBranchBaseCommit}" \
               || fail "base commit $base_commit does not match manifest ${series.patchBranchBaseCommit}"
             test "$base_tree" = "${series.patchBranchBaseTree}" \
               || fail "base tree $base_tree does not match manifest ${series.patchBranchBaseTree}"
 
-            git bundle verify ${series.patchBranchBundle} \
+            git --git-dir="$repository" bundle verify ${series.patchBranchBundle} \
               > "$out/patch-branch-bundle.verify" 2>&1
             grep -q '${series.patchBranchBaseCommit}' \
               "$out/patch-branch-bundle.verify" \
@@ -200,21 +192,18 @@ in
             bundle_bytes=$(wc -c < ${series.patchBranchBundle})
             test "$bundle_bytes" -lt 100000000 \
               || fail "patch branch bundle is $bundle_bytes bytes; repository artifacts must remain below GitHub's 100 MB limit"
-            # A thin bundle made from an explicitly checked-out commit records
-            # its advertised tip as HEAD. The manifest separately pins the
-            # logical branch name and exact head commit, so import that tip and
-            # verify its identity below instead of assuming a named bundle ref.
-            git fetch -q ${series.patchBranchBundle} \
-              "HEAD:refs/heads/patch-stack"
-            patch_branch_head=$(git rev-parse refs/heads/patch-stack)
+            patch_branch_head=$(git --git-dir="$repository" rev-parse refs/heads/patch-stack)
             test "$patch_branch_head" = "${series.patchBranchHeadCommit}" \
               || fail "patch branch head $patch_branch_head does not match manifest ${series.patchBranchHeadCommit}"
-            git merge-base --is-ancestor "$base_commit" refs/heads/patch-stack \
+            git --git-dir="$repository" merge-base --is-ancestor \
+              "$base_commit" refs/heads/patch-stack \
               || fail "patch branch head is not descended from the pinned QEMU base"
 
-            git rev-list --reverse "$base_commit..refs/heads/patch-stack" \
+            git --git-dir="$repository" rev-list --reverse \
+              "$base_commit..refs/heads/patch-stack" \
               > "$out/patch-branch-commits.list"
-            commit_count=$(git rev-list --count "$base_commit..refs/heads/patch-stack")
+            commit_count=$(git --git-dir="$repository" rev-list --count \
+              "$base_commit..refs/heads/patch-stack")
             test "$commit_count" = "${toString patchCount}" \
               || fail "branch commit count $commit_count does not match manifest count ${toString patchCount}"
             expected_patch_epoch=$(date -d "${series.deterministicPatchDate}" +%s)
@@ -229,20 +218,20 @@ in
               commit=$(sed -n "''${line_number}p" "$out/patch-branch-commits.list")
               test "$commit" = "$expected_commit" \
                 || fail "commit $line_number for $patch_name is $commit, expected $expected_commit"
-              subject=$(git log -1 --format=%s "$commit")
-              tree=$(git rev-parse "$commit^{tree}")
-              parent_commit=$(git rev-parse "$commit^")
+              subject=$(git --git-dir="$repository" log -1 --format=%s "$commit")
+              tree=$(git --git-dir="$repository" rev-parse "$commit^{tree}")
+              parent_commit=$(git --git-dir="$repository" rev-parse "$commit^")
               test "$subject" = "$patch_subject" \
                 || fail "subject for $patch_name is $subject, expected $patch_subject"
               test "$tree" = "$expected_tree" \
                 || fail "tree for $patch_name is $tree, expected $expected_tree"
-              author_epoch=$(git log -1 --format=%at "$commit")
-              committer_epoch=$(git log -1 --format=%ct "$commit")
+              author_epoch=$(git --git-dir="$repository" log -1 --format=%at "$commit")
+              committer_epoch=$(git --git-dir="$repository" log -1 --format=%ct "$commit")
               test "$author_epoch" = "$expected_patch_epoch" \
                 || fail "$patch_name author timestamp is not the deterministic patch timestamp"
               test "$committer_epoch" = "$expected_patch_epoch" \
                 || fail "$patch_name committer timestamp is not the deterministic patch timestamp"
-              dco_count=$(git log -1 --format=%B "$commit" | gawk '
+              dco_count=$(git --git-dir="$repository" log -1 --format=%B "$commit" | gawk '
                 /^Signed-off-by:/ { total++ }
                 $0 == "Signed-off-by: ${series.deterministicAuthorName} <${series.deterministicAuthorEmail}>" { expected++ }
                 END { print (total + 0) ":" (expected + 0) }
@@ -252,12 +241,14 @@ in
               printf '%s|%s|%s|%s\n' "$patch_name" "$commit" "$tree" "$subject" \
                 >> "$out/patch-branch-manifest.actual"
 
-              git diff --name-only "$parent_commit" "$commit" > "$paths_file"
+              git -c core.abbrev=9 --git-dir="$repository" diff --name-only \
+                "$parent_commit" "$commit" > "$paths_file"
               test -s "$paths_file" || fail "branch commit has no diff sections: $patch_name"
 
               : > "$generated_patch"
               while IFS= read -r changed_path; do
-                git diff --unified=3 --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
+                git -c core.abbrev=9 --git-dir="$repository" diff \
+                  --unified=3 --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
                   "$parent_commit" "$commit" -- "$changed_path" \
                   >> "$generated_patch"
               done < "$paths_file"
@@ -270,7 +261,8 @@ in
 
             cmp -s "$out/patch-branch-manifest.expected" "$out/patch-branch-manifest.actual" \
               || fail "patch branch commit manifest differs from actual branch"
-            git log --reverse --format=%s "$base_commit..refs/heads/patch-stack" \
+            git --git-dir="$repository" log --reverse --format=%s \
+              "$base_commit..refs/heads/patch-stack" \
               > "$out/commit-order.actual"
             cat > "$out/commit-order.expected" <<'ORDER'
             ${builtins.concatStringsSep "\n" (map (patch: patch.branchSubject or (lib.removeSuffix ".patch" patch.file)) series.patches)}
@@ -278,7 +270,7 @@ in
             cmp -s "$out/commit-order.expected" "$out/commit-order.actual" \
               || fail "deterministic commit order differs from manifest"
 
-            if find . -name '*.orig' -print -quit | grep -q .; then
+            if find "$generated_dir" -name '*.orig' -print -quit | grep -q .; then
               fail "patch regeneration left .orig backup files"
             fi
 
@@ -293,8 +285,20 @@ in
 
             apply_dir="$TMPDIR/qemu-regenerated-apply-clean"
             mkdir -p "$apply_dir"
-            tar -xf ${qemuPackage.src} -C "$apply_dir"
-            cd "$apply_dir/qemu-${series.qemuVersion}"
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" read-tree refs/heads/base
+            GIT_INDEX_FILE="$TMPDIR/qemu-base.index" \
+              git --git-dir="$repository" --work-tree="$apply_dir" checkout-index \
+                --all --prefix="$apply_dir/"
+            expected_supplement_hash=$(cat ${patchStackRepository}/source-supplement.sha256)
+            actual_supplement_hash=$(sha256sum ${patchStackRepository}/source-supplement.tar \
+              | gawk '{ print $1 }')
+            test "$actual_supplement_hash" = "$expected_supplement_hash" \
+              || fail "shared source supplement hash mismatch"
+            tar -xf ${patchStackRepository}/source-supplement.tar -C "$apply_dir"
+            tar -df ${patchStackRepository}/source-supplement.tar -C "$apply_dir" \
+              || fail "regeneration source supplement differs after materialization"
+            cd "$apply_dir"
             for patch_name in ${patchList}; do
               patch --batch --forward --fuzz=0 --no-backup-if-mismatch \
                 -p1 -i "$generated_dir/$patch_name"
@@ -362,6 +366,9 @@ in
             qemu_version=${series.qemuVersion}
             qemu_source_hash=${series.qemuSourceHash}
             patch_regeneration_from_tracked_stack=true
+            shared_patch_stack_repository=true
+            shared_patch_stack_source_extractions=1
+            shared_patch_stack_full_tree_staging_passes=1
             every_patch_commit_has_exactly_one_dco_signoff=true
             patch_branch_bundle_verified=true
             patch_branch_bundle_is_thin=true

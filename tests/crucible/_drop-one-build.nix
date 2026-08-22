@@ -1,17 +1,15 @@
 # Expensive, classification-independent half of drop-one attribution for one
-# patch: attempt to remove patch N from the series via a 3-way `git rebase
-# --onto`, and — if it drops clean — build qemu-system from the full-minus-N
-# tree. The raw outcome (conflict / build-failed / built, plus the retained
-# variant binary and logs) is an OUTPUT; nothing is hardcoded. The cheap
-# classifier (`_drop-one.nix`) consumes this and assigns the attribution method,
-# so tuning the classification never rebuilds QEMU.
+# patch. A shared repository derivation has already computed every 3-way
+# full-minus-N branch and recorded conflicts. This derivation reads that
+# manifest and builds qemu-system only when its prepared variant dropped clean.
 #
 # outcome (in $out/outcome): one of
 #   conflict      -- N cannot be removed without breaking a later patch's 3-way
 #                    application ($out/conflict.env names the conflicting commit
 #                    and files).
-#   build-failed  -- N drops clean but full-minus-N fails to build ($out/build.log,
-#                    $out/failing-symbols).
+#   build-failed  -- N drops clean but full-minus-N has a compiler/linker failure
+#                    tied to a symbol or path introduced by N
+#                    ($out/build.log, $out/patch-specific-build-evidence).
 #   built         -- N drops clean and full-minus-N builds
 #                    ($out/variant-qemu-system-x86_64).
 {
@@ -20,22 +18,17 @@
   qemuPackage ? pkgs.qemu-crucible,
   index,
   attrPath ? "drop-one-build",
+  expectAbsentSymbols ? [],
+  dropOneRepository ?
+    import ./_qemu-drop-one-repository.nix {
+      inherit pkgs lib qemuPackage;
+    },
 }: let
-  patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   patchFiles = series.patchFiles;
-  patchCount = builtins.length patchFiles;
   droppedPatch = builtins.elemAt patchFiles (index - 1);
   configureFlags = lib.escapeShellArgs qemuPackage.passthru.qemuConfigureFlags;
-  patchReplayMetadata =
-    (builtins.concatStringsSep "\n"
-      (map (patch: let
-        subject =
-          patch.branchSubject
-          or (builtins.replaceStrings [".patch"] [""] patch.file);
-      in "${patch.file}|${subject}")
-      series.patches))
-    + "\n";
+  expectedSymbols = builtins.concatStringsSep " " expectAbsentSymbols;
 in
   pkgs.mkDerivation {
     pname = "crucible-drop-one-build-${toString index}";
@@ -54,18 +47,18 @@ in
       pkgs.libslirp
       pkgs.meson
       pkgs.ninja
-      pkgs.patch
       pkgs.pixman
       pkgs.pkg-config
       pkgs.python3
       pkgs.sed
       pkgs.setuptools
       pkgs.distlib
+      pkgs.findutils
       pkgs.tar
-      pkgs.xz
       pkgs.zlib
     ];
     runtimeDeps = [
+      pkgs.dtc
       pkgs.glib
       pkgs.libslirp
       pkgs.pixman
@@ -73,10 +66,10 @@ in
     ];
 
     DROPPED_PATCH = droppedPatch;
+    DROPPED_PATCH_SOURCE = "${../../pkgs/emulation/qemu-patches}/${droppedPatch}";
     DROP_INDEX = toString index;
-    PATCH_COUNT = toString patchCount;
-    inherit patchReplayMetadata;
-    passAsFile = ["patchReplayMetadata"];
+    DROP_ONE_REPOSITORY = "${dropOneRepository}";
+    EXPECT_ABSENT_SYMBOLS = expectedSymbols;
 
     phases = [
       {
@@ -85,99 +78,96 @@ in
           set -eu
           export LC_ALL=C
           mkdir -p "$out"
+          fail() { echo "FAIL: $*" >&2; exit 1; }
           printf '%s\n' "$DROPPED_PATCH" > "$out/dropped-patch"
           printf '%s\n' "$DROP_INDEX" > "$out/drop-index"
 
-          record_build_failure() {
-            echo build-failed > "$out/outcome"
+          record_attributable_build_failure() {
             : > "$out/failing-symbols"
-            for log_path in "$out/configure.log" "$out/build.log"; do
-              if [ ! -f "$log_path" ]; then
-                continue
-              fi
-              grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-              grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-              grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$log_path" \
-                | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
-              grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
-                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            done
+            grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+            grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+            grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$out/build.log" \
+              | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
+            grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
+              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
             LC_ALL=C sort -u "$out/failing-symbols" -o "$out/failing-symbols"
+
+            grep -E 'FAILED:|(^|[[:space:]])(fatal )?error:|undefined reference|implicit declaration|undeclared|unknown type name' \
+              "$out/build.log" > "$out/build-diagnostics" \
+              || fail "Ninja failed without a compiler or linker diagnostic"
+            : > "$out/patch-specific-build-evidence"
+            for symbol in $EXPECT_ABSENT_SYMBOLS; do
+              if grep -Fqx "$symbol" "$out/failing-symbols"; then
+                printf 'symbol\t%s\n' "$symbol" >> "$out/patch-specific-build-evidence"
+              fi
+            done
+            gawk '
+              /^--- a\// { sub(/^--- a\//, ""); if ($0 != "/dev/null") print }
+              /^\+\+\+ b\// { sub(/^\+\+\+ b\//, ""); if ($0 != "/dev/null") print }
+            ' "$DROPPED_PATCH_SOURCE" | LC_ALL=C sort -u > "$out/dropped-patch-paths"
+            while IFS= read -r touched_path; do
+              if grep -Fq "$touched_path" "$out/build-diagnostics"; then
+                printf 'path\t%s\n' "$touched_path" >> "$out/patch-specific-build-evidence"
+              fi
+            done < "$out/dropped-patch-paths"
+            test -s "$out/patch-specific-build-evidence" \
+              || fail "Ninja failure has no diagnostic tied to $DROPPED_PATCH"
+            echo build-failed > "$out/outcome"
             exit 0
           }
 
-          # Deterministic git commit chain, oldest->newest.
-          src="$TMPDIR/qemu-src"
-          mkdir -p "$src"
-          tar -xf ${qemuPackage.src} -C "$src"
-          cd "$src/qemu-${qemuPackage.version}"
-          git init -q
-          git config user.name "${series.deterministicAuthorName}"
-          git config user.email "${series.deterministicAuthorEmail}"
-          git config commit.gpgsign false
-          git config core.autocrlf false
-          git config advice.detachedHead false
-          git config gc.auto 0
-          git config maintenance.auto false
-          git add -A
-          GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
-          GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
-          GIT_AUTHOR_DATE="${series.deterministicBaseDate}" \
-          GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
-          GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
-          GIT_COMMITTER_DATE="${series.deterministicBaseDate}" \
-            git -c commit.gpgsign=false commit -q -m "qemu-${series.qemuVersion}-base"
-
-          : > "$TMPDIR/commits"
-          git rev-parse HEAD >> "$TMPDIR/commits"
-          while IFS='|' read -r patch_name patch_subject; do
-            patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/$patch_name" > /dev/null
-            git add -A
-            GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
-            GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
-            GIT_AUTHOR_DATE="${series.deterministicPatchDate}" \
-            GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
-            GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
-            GIT_COMMITTER_DATE="${series.deterministicPatchDate}" \
-              git -c commit.gpgsign=false commit -q -s -m "$patch_subject"
-            git rev-parse HEAD >> "$TMPDIR/commits"
-          done < "$patchReplayMetadataPath"
-          head_commit=$(git rev-parse HEAD)
-          if [ "$head_commit" != "${series.patchBranchHeadCommit}" ]; then
-            echo "replayed patch branch head $head_commit does not match ${series.patchBranchHeadCommit}" >&2
-            exit 1
+          grep -q '^PASS$' "$DROP_ONE_REPOSITORY/result"
+          prepared="$DROP_ONE_REPOSITORY/drop-one/$DROP_INDEX"
+          test "$(cat "$prepared/dropped-patch")" = "$DROPPED_PATCH"
+          prepared_outcome=$(cat "$prepared/outcome")
+          if [ -f "$prepared/rebase.log" ]; then
+            cp "$prepared/rebase.log" "$out/rebase.log"
           fi
-
-          onto=$(sed -n "$((DROP_INDEX))p" "$TMPDIR/commits")
-          drop=$(sed -n "$((DROP_INDEX + 1))p" "$TMPDIR/commits")
-
-          git checkout -q -B dropone "$head_commit"
-          if [ "$DROP_INDEX" -eq "$PATCH_COUNT" ]; then
-            git reset -q --hard "$onto"
-            rebase_ok=1
-          elif GIT_SEQUENCE_EDITOR=true GIT_EDITOR=true \
-               git -c rerere.enabled=false rebase --onto "$onto" "$drop" dropone \
-               > "$out/rebase.log" 2>&1; then
-            rebase_ok=1
-          else
-            rebase_ok=0
-            conflict_commit=$(gawk '/could not apply/ {
-              sub(/.*could not apply /, ""); print; exit
-            }' "$out/rebase.log")
-            conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-            git rebase --abort > /dev/null 2>&1 || true
-          fi
-
-          if [ "$rebase_ok" -eq 0 ]; then
+          if [ "$prepared_outcome" = conflict ]; then
             echo conflict > "$out/outcome"
-            {
-              echo "conflicting_replayed_commit=$conflict_commit"
-              echo "conflicting_files=$conflict_files"
-            } > "$out/conflict.env"
+            cp "$prepared/conflict.env" "$out/conflict.env"
             exit 0
           fi
+          test "$prepared_outcome" = drop-clean
+
+          variant_ref=$(cat "$prepared/ref")
+          expected_head=$(cat "$prepared/head")
+          expected_tree=$(cat "$prepared/tree")
+          actual_head=$(git --git-dir="$DROP_ONE_REPOSITORY/repo.git" rev-parse "$variant_ref")
+          actual_tree=$(git --git-dir="$DROP_ONE_REPOSITORY/repo.git" rev-parse "$variant_ref^{tree}")
+          test "$actual_head" = "$expected_head"
+          test "$actual_tree" = "$expected_tree"
+          {
+            echo "prepared_ref=$variant_ref"
+            echo "prepared_head=$actual_head"
+            echo "prepared_tree=$actual_tree"
+          } > "$out/prepared-ref.env"
+
+          src="$TMPDIR/qemu-src"
+          mkdir -p "$src"
+          expected_supplement_hash=$(cat "$DROP_ONE_REPOSITORY/source-supplement.sha256")
+          actual_supplement_hash=$(sha256sum "$DROP_ONE_REPOSITORY/source-supplement.tar" \
+            | gawk '{ print $1 }')
+          test "$actual_supplement_hash" = "$expected_supplement_hash" \
+            || fail "shared QEMU source supplement hash mismatch"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" read-tree "$variant_ref"
+          GIT_INDEX_FILE="$TMPDIR/qemu-variant.index" \
+            git --git-dir="$DROP_ONE_REPOSITORY/repo.git" --work-tree="$src" checkout-index \
+              --all --prefix="$src/"
+          tar -xf "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src"
+          tar -df "$DROP_ONE_REPOSITORY/source-supplement.tar" -C "$src" \
+            || fail "materialized QEMU supplement differs from the verified archive"
+          chmod -R u+w "$src"
+          echo true > "$out/source-materialized"
+          {
+            echo "source_inventory_sha256=$(cat "$DROP_ONE_REPOSITORY/source-inventory.sha256")"
+            echo "source_supplement_sha256=$actual_supplement_hash"
+            echo "source_reconstruction_inventory_consumed=true"
+          } > "$out/source-reconstruction.env"
+          cd "$src"
 
           # Prepare + build full-minus-N (match the shipped build's effective
           # flags: no -Werror; see _drop-one.nix history for why the git tree
@@ -185,29 +175,27 @@ in
           mkdir -p include/aos/crucible
           cp ${qemuPackage.passthru.shmemGeneratedHeader} \
             include/aos/crucible/crucible_shmem_abi.h
-          # Prune .git from the traversal. Automatic GC and maintenance are
-          # disabled above so the reconstructed loose-object store cannot race
-          # this or later source walks. The QEMU Python scripts we rewrite never
-          # live under .git.
-          find . -path ./.git -prune -o -type f -name '*.py' -print | while IFS= read -r f; do
+          find . -type f -name '*.py' -print | while IFS= read -r f; do
             sed -i "1s|#!/usr/bin/env python3|#!${pkgs.python3}/bin/python3|" "$f"
             sed -i "1s|#!/usr/bin/python3|#!${pkgs.python3}/bin/python3|" "$f"
           done
           export PYTHONPATH="${pkgs.meson}/lib/python3/site-packages:${pkgs.distlib}/lib/python3.14/site-packages:${pkgs.setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           export PYTHONDONTWRITEBYTECODE=1
-          "$CONFIG_SHELL" ./configure \
+          if ! "$CONFIG_SHELL" ./configure \
             --prefix="$TMPDIR/install" \
             ${configureFlags} \
             --disable-werror \
-            > "$out/configure.log" 2>&1 || record_build_failure
+            > "$out/configure.log" 2>&1; then
+            fail "full-minus-$DROP_INDEX QEMU configuration failed"
+          fi
           rm -f subprojects/.wraplock
 
-          if ninja -C build -j "$NIX_BUILD_CORES" qemu-system-x86_64 \
+          if ninja -C build qemu-system-x86_64 \
             > "$out/build.log" 2>&1; then
             echo built > "$out/outcome"
             cp build/qemu-system-x86_64 "$out/variant-qemu-system-x86_64"
           else
-            record_build_failure
+            record_attributable_build_failure
           fi
         '';
       }
