@@ -30,6 +30,8 @@ use thiserror::Error;
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNode, QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
+mod quarantine;
+
 const CPU_PERIOD_MICROS: u64 = 100_000;
 const MAX_CGROUP_CONTROL_BYTES: u64 = 4096;
 const CGROUP_KILL_INTERVAL: Duration = Duration::from_millis(10);
@@ -820,6 +822,31 @@ impl LinuxQemuCgroupWatcher {
             }),
         }
     }
+
+    /// Joins a terminal watcher without surrendering the caller's cgroup authority.
+    ///
+    /// This blocking operation is reserved for the dedicated process-quarantine
+    /// worker after sticky cancellation is visible and the direct child has
+    /// been reaped. A caught watcher-body panic deliberately never returns: its
+    /// thread parks while retaining the duplicated control authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuCgroupError::Io`] when the watcher thread terminates
+    /// through an unguarded panic. The caller still owns the configured cgroup
+    /// and can continue kill and empty-group validation.
+    fn join_terminal_blocking(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        let Some(join) = self.join.take() else {
+            return Ok(());
+        };
+        join.join()
+            .map(|_| ())
+            .map_err(|_| LinuxQemuCgroupError::Io {
+                operation: "join QEMU cgroup cancellation watcher",
+                path: self.path.clone(),
+                source: io::Error::other("watcher thread panicked outside its guarded body"),
+            })
+    }
 }
 
 impl Drop for LinuxQemuCgroupWatcher {
@@ -1318,6 +1345,29 @@ impl LinuxQemuCgroup {
         self.retain_child(node.into_direct_child_for_quarantine())
     }
 
+    /// Transfers this group, its watcher, and one retained child to quarantine.
+    ///
+    /// The detached owner retries direct-child reap, terminal watcher join, and
+    /// authenticated cgroup removal without depending on the returned
+    /// observation handle. All three inputs must carry the same unforgeable
+    /// watcher-lifecycle token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`quarantine::LinuxQemuAttemptProcessQuarantineStartError`] with
+    /// every authority retained when the lifecycle basis differs or the worker
+    /// cannot start. Ignoring that error leaks the authorities fail-closed.
+    pub fn quarantine_process(
+        self,
+        watcher: LinuxQemuCgroupWatcher,
+        child: LinuxQemuDirectChild,
+    ) -> Result<
+        quarantine::LinuxQemuAttemptProcessQuarantine,
+        quarantine::LinuxQemuAttemptProcessQuarantineStartError,
+    > {
+        quarantine::LinuxQemuAttemptProcessQuarantine::start(self, watcher, child)
+    }
+
     fn owns_child_authority(&self, child: &LinuxQemuDirectChild) -> bool {
         self.path == child.cgroup_path
             && Arc::ptr_eq(&self.control.watcher_state, &child.attempt_lifecycle)
@@ -1362,46 +1412,39 @@ impl LinuxQemuCgroup {
     /// recover the group and continue kill/reap supervision without losing the
     /// cgroup descriptors.
     pub fn remove_if_empty(mut self) -> Result<(), LinuxQemuCgroupReleaseError> {
-        match self.is_populated() {
-            Ok(false) => {}
-            Ok(true) => {
-                let source = LinuxQemuCgroupError::InvalidEvents {
-                    path: self.path.clone(),
-                    message: String::from("cgroup remained populated at release"),
-                };
-                return Err(LinuxQemuCgroupReleaseError {
-                    group: Box::new(self),
-                    source,
-                });
-            }
-            Err(source) => {
-                return Err(LinuxQemuCgroupReleaseError {
-                    group: Box::new(self),
-                    source,
-                });
-            }
-        }
-        if let Err(source) = self.verify_named_directory() {
+        if let Err(source) = self.remove_if_empty_in_place() {
             return Err(LinuxQemuCgroupReleaseError {
                 group: Box::new(self),
                 source,
             });
         }
-        if let Err(source) = unlinkat(
+        Ok(())
+    }
+
+    /// Removes the named cgroup while retaining this authority until success.
+    ///
+    /// The dedicated quarantine state machine uses this borrowed form so an
+    /// unwind cannot drop the namespace authority between validation and an
+    /// unsuccessful removal. After success the pinned descriptors may be
+    /// dropped because the authenticated named directory no longer exists.
+    fn remove_if_empty_in_place(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        if self.is_populated()? {
+            return Err(LinuxQemuCgroupError::InvalidEvents {
+                path: self.path.clone(),
+                message: String::from("cgroup remained populated at release"),
+            });
+        }
+        self.verify_named_directory()?;
+        unlinkat(
             &self.parent_directory,
             self.name.as_str(),
             AtFlags::REMOVEDIR,
-        ) {
-            let source = LinuxQemuCgroupError::Io {
-                operation: "remove empty QEMU attempt cgroup",
-                path: self.path.clone(),
-                source: source.into(),
-            };
-            return Err(LinuxQemuCgroupReleaseError {
-                group: Box::new(self),
-                source,
-            });
-        }
+        )
+        .map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "remove empty QEMU attempt cgroup",
+            path: self.path.clone(),
+            source: source.into(),
+        })?;
         Ok(())
     }
 
@@ -2707,6 +2750,64 @@ mod tests {
 
         let mut child = child;
         child.kill_and_reap_blocking()?;
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_start_error_retains_every_cross_incarnation_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let child = QemuNodeChild::new(Command::new("sleep").arg("60").spawn()?);
+        let process_id = child.process_id();
+        fs::write(
+            directory.path().join("cgroup.procs"),
+            format!("{process_id}\n"),
+        )?;
+        let (first_control, _first_reader) = watcher_control_fixture(directory.path(), false)?;
+        let mut first = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open first quarantine-incarnation fixture",
+            )?,
+            name: String::from("same-path"),
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
+            control: first_control,
+        };
+        let child = first
+            .retain_child(child)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+
+        let (second_control, _second_reader) = watcher_control_fixture(directory.path(), false)?;
+        let mut second = LinuxQemuCgroup {
+            path: directory.path().to_owned(),
+            parent_directory: open_directory(
+                directory.path(),
+                "open second quarantine-incarnation fixture",
+            )?,
+            name: String::from("same-path"),
+            limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
+            control: second_control,
+        };
+        let watcher = second.start_watcher()?;
+        let error = match second.quarantine_process(watcher, child) {
+            Ok(_) => panic!("cross-incarnation quarantine unexpectedly started"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error.source_error(),
+            LinuxQemuCgroupError::ProcessMembership { .. }
+        ));
+        let (_second, watcher, mut child) = error
+            .into_parts()
+            .ok_or_else(|| io::Error::other("quarantine startup lost retained authority"))?;
+
+        child.kill_and_reap_blocking()?;
+        assert_eq!(
+            watcher.finish_and_wait(Duration::from_secs(1))?,
+            LinuxQemuCgroupWatcherOutcome::ClosedAndEmpty
+        );
+        assert!(linux_process_identity(process_id)?.is_none());
         Ok(())
     }
 }

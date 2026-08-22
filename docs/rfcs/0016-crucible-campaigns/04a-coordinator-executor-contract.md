@@ -1741,12 +1741,25 @@ authority. A bounded caller wait returns the still-live watcher on timeout for
 retry or quarantine. Dropping an unjoined watcher also latches terminal closure
 and leaves its worker retaining authority until empty, fail-closed.
 
-This authority is not yet the production guard. A nondroppable daemon owner
-that preserves the lifecycle-bound child/cgroup/watcher quarantine, aggregate
+The crate-internal process layer now has a nondroppable quarantine worker that
+accepts only a direct child, watcher, and configured cgroup carrying the same
+watcher-lifecycle token. It makes sticky cancellation visible, repeatedly kills
+the group, synchronously reaps the nonduplicable direct child, joins the
+watcher, and removes the authenticated empty cgroup. Ordinary host failures
+retry at the fixed kill cadence. An invariant panic is caught once and parks
+with every remaining authority retained; dropping the observation handle does
+not stop cleanup. A startup error returns every untransferred authority, and an
+ignored error deliberately leaks them rather than invoking bounded destructor
+cleanup.
+
+This authority is not yet the production guard. Concrete guarded-launch and
+session failure paths must transfer every post-spawn child, including a child
+that failed before active-backend installation, into that owner. Aggregate
 filesystem quota, concrete guard composition of the execution-quantum counter,
 exclusive run-directory namespace ownership through QEMU artifact open, and
-concrete session wiring remain mandatory before the guarded path may launch a
-campaign QEMU. Until then the cgroup authority remains crate-internal.
+that session wiring remain mandatory before the guarded path may launch a
+campaign QEMU. Until then the cgroup and quarantine authorities remain
+crate-internal.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,
@@ -1809,9 +1822,10 @@ selection. The comparison session owns one process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
 before replacement, and finishes before promotion writes. Any realization or
 cleanup failure quarantines the guard and leaves the raw root selected. The
-nondroppable child/cgroup/watcher quarantine owner and the complete
-pause/restart/resume flight remain mandatory before the full campaign/QEMU gate
-may claim completion.
+nondroppable child/cgroup/watcher worker now exists crate-internally; concrete
+failed-launch/active-node handoff into it and the complete pause/restart/resume
+flight remain mandatory before the full campaign/QEMU gate may claim
+completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
