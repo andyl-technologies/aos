@@ -143,6 +143,26 @@ fn scheduler_network_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
+fn production_network_codec_propagates_authored_limit_into_scheduler() {
+    let network = empty_network(Vec::new());
+    let error = match encode_network(&network, 1) {
+        Ok(_) => panic!("scheduler state should exceed the authored limit"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "scheduler network checkpoint bytes",
+            current,
+            requested,
+            configured: 1,
+            hard: 68_719_476_736,
+        } if current.saturating_add(requested) > 1
+    ));
+}
+
+#[test]
 fn pending_network_output_resource_coordinates_cross_production_envelope() {
     assert_eq!(
         map_backend_network_output_error(crucible::BackendNetworkOutputCodecError::ResourceLimit {

@@ -19,15 +19,32 @@ impl SchedulerNetworkCheckpoint {
     /// duplicated or out of order, a collection exceeds its hard bound, or one
     /// of the complete device-owned link snapshots is invalid.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, SchedulerNetworkCheckpointCodecError> {
+        self.canonical_bytes_with_limit(
+            u64::try_from(HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES).unwrap_or(u64::MAX),
+        )
+    }
+
+    /// Encodes the scheduler network continuation under an authored byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerNetworkCheckpointCodecError`] under the same
+    /// conditions as [`Self::canonical_bytes`], and when the representation or
+    /// a nested link snapshot exceeds `maximum`.
+    pub fn canonical_bytes_with_limit(
+        &self,
+        maximum: u64,
+    ) -> Result<Vec<u8>, SchedulerNetworkCheckpointCodecError> {
         validate_scheduler_network_checkpoint(self)?;
-        let encoded_length = scheduler_network_encoded_length(self)?;
+        let configured = scheduler_network_configured(maximum);
+        let encoded_length = scheduler_network_encoded_length(self, configured)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(encoded_length).map_err(|_| {
-            scheduler_network_resource(
+            scheduler_network_aggregate_resource(
                 "scheduler network checkpoint bytes",
                 0,
                 encoded_length,
-                HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES,
+                configured,
             )
         })?;
         bytes.extend_from_slice(SCHEDULER_NETWORK_CHECKPOINT_MAGIC);
@@ -38,7 +55,13 @@ impl SchedulerNetworkCheckpoint {
                 NetworkLinkDirection::EndpointAToEndpointB => 1,
                 NetworkLinkDirection::EndpointBToEndpointA => 2,
             });
-            write_scheduler_network_blob(&mut bytes, &link.state.canonical_bytes()?)?;
+            write_scheduler_network_blob(
+                &mut bytes,
+                &link
+                    .state
+                    .canonical_bytes_with_limit(u64::try_from(configured).unwrap_or(u64::MAX))
+                    .map_err(map_link_snapshot_error)?,
+            )?;
         }
         write_scheduler_network_count(&mut bytes, self.rng_positions.len(), "RNG positions")?;
         for (link, position) in &self.rng_positions {
@@ -65,12 +88,30 @@ impl SchedulerNetworkCheckpoint {
     pub fn from_canonical_bytes(
         bytes: &[u8],
     ) -> Result<Self, SchedulerNetworkCheckpointCodecError> {
-        if bytes.len() > HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES {
-            return Err(scheduler_network_resource(
+        Self::from_canonical_bytes_with_limit(
+            bytes,
+            u64::try_from(HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES).unwrap_or(u64::MAX),
+        )
+    }
+
+    /// Decodes a scheduler network continuation under an authored byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerNetworkCheckpointCodecError`] under the same
+    /// conditions as [`Self::from_canonical_bytes`], and before decoding when
+    /// `bytes` exceeds `maximum`.
+    pub fn from_canonical_bytes_with_limit(
+        bytes: &[u8],
+        maximum: u64,
+    ) -> Result<Self, SchedulerNetworkCheckpointCodecError> {
+        let configured = scheduler_network_configured(maximum);
+        if bytes.len() > configured {
+            return Err(scheduler_network_aggregate_resource(
                 "scheduler network checkpoint bytes",
                 0,
                 bytes.len(),
-                HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES,
+                configured,
             ));
         }
         let mut reader = SchedulerNetworkCheckpointReader::new(bytes)?;
@@ -95,8 +136,11 @@ impl SchedulerNetworkCheckpoint {
                     ));
                 }
             };
-            let state =
-                crucible_device::LinkSnapshot::from_canonical_bytes(reader.blob("link snapshot")?)?;
+            let state = crucible_device::LinkSnapshot::from_canonical_bytes_with_limit(
+                reader.blob("link snapshot")?,
+                u64::try_from(configured).unwrap_or(u64::MAX),
+            )
+            .map_err(map_link_snapshot_error)?;
             links.push(SchedulerNetworkLinkCheckpoint {
                 link,
                 direction,
@@ -128,7 +172,7 @@ impl SchedulerNetworkCheckpoint {
             signal_fault_wakeup_nanos,
         };
         validate_scheduler_network_checkpoint(&checkpoint)?;
-        if checkpoint.canonical_bytes()?.as_slice() != bytes {
+        if checkpoint.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
             return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
         }
         Ok(checkpoint)
@@ -176,26 +220,30 @@ pub enum SchedulerNetworkCheckpointCodecError {
 
 fn scheduler_network_encoded_length(
     checkpoint: &SchedulerNetworkCheckpoint,
+    configured: usize,
 ) -> Result<usize, SchedulerNetworkCheckpointCodecError> {
     let mut length = SCHEDULER_NETWORK_CHECKPOINT_MAGIC.len();
-    scheduler_network_add_length(&mut length, size_of::<u32>())?;
+    scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
     for link in &checkpoint.links {
-        scheduler_network_add_length(&mut length, size_of::<u32>())?;
-        scheduler_network_add_length(&mut length, link.link.name.len())?;
-        scheduler_network_add_length(&mut length, size_of::<u8>())?;
-        let state = link.state.canonical_bytes()?;
-        scheduler_network_add_length(&mut length, size_of::<u32>())?;
-        scheduler_network_add_length(&mut length, state.len())?;
+        scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
+        scheduler_network_add_length(&mut length, link.link.name.len(), configured)?;
+        scheduler_network_add_length(&mut length, size_of::<u8>(), configured)?;
+        let state_length = link
+            .state
+            .canonical_length_with_limit(u64::try_from(configured).unwrap_or(u64::MAX))
+            .map_err(map_link_snapshot_error)?;
+        scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
+        scheduler_network_add_length(&mut length, state_length, configured)?;
     }
-    scheduler_network_add_length(&mut length, size_of::<u32>())?;
+    scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
     for link in checkpoint.rng_positions.keys() {
-        scheduler_network_add_length(&mut length, size_of::<u32>())?;
-        scheduler_network_add_length(&mut length, link.name.len())?;
-        scheduler_network_add_length(&mut length, size_of::<u64>())?;
+        scheduler_network_add_length(&mut length, size_of::<u32>(), configured)?;
+        scheduler_network_add_length(&mut length, link.name.len(), configured)?;
+        scheduler_network_add_length(&mut length, size_of::<u64>(), configured)?;
     }
-    scheduler_network_add_length(&mut length, size_of::<u8>())?;
+    scheduler_network_add_length(&mut length, size_of::<u8>(), configured)?;
     if checkpoint.signal_fault_wakeup_nanos.is_some() {
-        scheduler_network_add_length(&mut length, size_of::<u64>())?;
+        scheduler_network_add_length(&mut length, size_of::<u64>(), configured)?;
     }
     Ok(length)
 }
@@ -203,28 +251,34 @@ fn scheduler_network_encoded_length(
 fn scheduler_network_add_length(
     current: &mut usize,
     requested: usize,
+    configured: usize,
 ) -> Result<(), SchedulerNetworkCheckpointCodecError> {
     let total = current.checked_add(requested).ok_or_else(|| {
-        scheduler_network_resource(
+        scheduler_network_aggregate_resource(
             "scheduler network checkpoint bytes",
             *current,
             requested,
-            HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES,
+            configured,
         )
     })?;
-    if total > HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES {
-        return Err(scheduler_network_resource(
+    if total > configured || total > HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES {
+        return Err(scheduler_network_aggregate_resource(
             "scheduler network checkpoint bytes",
             *current,
             requested,
-            HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES,
+            configured,
         ));
     }
     *current = total;
     Ok(())
 }
 
-fn scheduler_network_resource(
+fn scheduler_network_configured(maximum: u64) -> usize {
+    let hard = u64::try_from(HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES).unwrap_or(u64::MAX);
+    usize::try_from(maximum.min(hard)).unwrap_or(usize::MAX)
+}
+
+fn scheduler_network_aggregate_resource(
     field: &'static str,
     current: usize,
     requested: usize,
@@ -235,7 +289,43 @@ fn scheduler_network_resource(
         current: u64::try_from(current).unwrap_or(u64::MAX),
         requested: u64::try_from(requested).unwrap_or(u64::MAX),
         configured: u64::try_from(configured).unwrap_or(u64::MAX),
-        hard: u64::try_from(configured).unwrap_or(u64::MAX),
+        hard: u64::try_from(HARD_SCHEDULER_NETWORK_CHECKPOINT_BYTES).unwrap_or(u64::MAX),
+    }
+}
+
+fn scheduler_network_resource(
+    field: &'static str,
+    current: usize,
+    requested: usize,
+    hard: usize,
+) -> SchedulerNetworkCheckpointCodecError {
+    SchedulerNetworkCheckpointCodecError::ResourceLimit {
+        field,
+        current: u64::try_from(current).unwrap_or(u64::MAX),
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        configured: u64::try_from(hard).unwrap_or(u64::MAX),
+        hard: u64::try_from(hard).unwrap_or(u64::MAX),
+    }
+}
+
+fn map_link_snapshot_error(
+    error: crucible_device::LinkSnapshotCodecError,
+) -> SchedulerNetworkCheckpointCodecError {
+    match error {
+        crucible_device::LinkSnapshotCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        } => SchedulerNetworkCheckpointCodecError::ResourceLimit {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        },
+        error => SchedulerNetworkCheckpointCodecError::Link(error),
     }
 }
 
@@ -262,7 +352,6 @@ fn validate_scheduler_network_checkpoint(
         {
             return Err(SchedulerNetworkCheckpointCodecError::Noncanonical);
         }
-        let _ = link.state.canonical_bytes()?;
         previous = Some((&link.link, link.direction));
     }
     if checkpoint

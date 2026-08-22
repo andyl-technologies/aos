@@ -6,6 +6,8 @@ use crate::{
     BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
 };
 
+#[path = "tests/network_checkpoint.rs"]
+mod network_checkpoint;
 #[path = "tests/ordering.rs"]
 mod ordering;
 #[path = "tests/production_backend.rs"]
@@ -115,23 +117,6 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
             },
             String::from("127.0.0.1:9000"),
         )]
-    );
-}
-
-#[test]
-fn scheduler_network_checkpoint_rejects_declared_link_count_before_allocation() {
-    let mut bytes = b"crucible.scheduler-network.v1\0".to_vec();
-    bytes.extend_from_slice(&65_537_u32.to_le_bytes());
-
-    assert_eq!(
-        SchedulerNetworkCheckpoint::from_canonical_bytes(&bytes),
-        Err(SchedulerNetworkCheckpointCodecError::ResourceLimit {
-            field: "directed links",
-            current: 0,
-            requested: 65_537,
-            configured: 65_536,
-            hard: 65_536,
-        })
     );
 }
 

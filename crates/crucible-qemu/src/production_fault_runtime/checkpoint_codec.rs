@@ -366,7 +366,7 @@ fn encode_network(
         scheduler: bounded_checkpoint_bytes(
             checkpoint
                 .scheduler
-                .canonical_bytes()
+                .canonical_bytes_with_limit(maximum)
                 .map_err(map_scheduler_network_error)?,
         )?,
         committed_frontier_ticks: checkpoint.committed_frontier.ticks,
@@ -395,8 +395,11 @@ fn decode_network(
 
     Ok(ProductionNetworkStateCheckpoint {
         identity: wire.identity,
-        scheduler: SchedulerNetworkCheckpoint::from_canonical_bytes(wire.scheduler.as_slice())
-            .map_err(map_scheduler_network_error)?,
+        scheduler: SchedulerNetworkCheckpoint::from_canonical_bytes_with_limit(
+            wire.scheduler.as_slice(),
+            maximum,
+        )
+        .map_err(map_scheduler_network_error)?,
         committed_frontier: crucible::VirtualTime {
             ticks: wire.committed_frontier_ticks,
         },
