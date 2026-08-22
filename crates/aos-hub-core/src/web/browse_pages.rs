@@ -2630,8 +2630,8 @@ mod tests {
         assert!(default.contains("class=\"image-filter-fields\""));
         assert!(default.contains("class=\"image-filter-actions\""));
         assert!(default.contains("class=\"image-summary\""));
-        assert!(default.contains("class=\"image-checksum\""));
-        assert!(default.contains("data-copy-target=\"image-sha-0\""));
+        assert!(default.contains("class=\"hash-control\""));
+        assert!(default.contains("data-copy-value=\"0123456789abcdef\""));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
 
@@ -2994,7 +2994,7 @@ mod tests {
             pack_present: false,
         }];
         let html = releases_page(&registry(), None, &releases, 1, Instant::now(), &anon());
-        assert!(html.contains("<code>abc</code>"));
+        assert!(html.contains("<code aria-label=\"abc\">abc</code>"));
     }
 
     #[tokio::test]

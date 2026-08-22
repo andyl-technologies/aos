@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(
             snake_case_json(serde_json::json!({
                 "nextPageToken": "next",
-                "storageBindings": [{ "resourceVersion": "7" }],
+                "bindings": [{ "resourceVersion": "7" }],
             })),
             serde_json::json!({
                 "next_page_token": "next",

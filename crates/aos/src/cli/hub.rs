@@ -3099,11 +3099,11 @@ mod tests {
     }
 
     #[test]
-    fn binding_replaces_the_legacy_binding_command() {
+    fn binding_replaces_the_legacy_storage_binding_command() {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "list",
             "--hub",
             "https://aos.example",
@@ -3123,7 +3123,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "binding",
+                "storage-binding",
                 "list",
                 "--hub",
                 "https://aos.example",
@@ -3139,7 +3139,7 @@ mod tests {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "create",
             "--hub",
             "https://aos.example",
@@ -3175,7 +3175,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "storage-binding",
+                "binding",
                 "list",
                 "--hub",
                 "https://aos.example",
@@ -3254,7 +3254,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "network-boundary",
+                "network-policy",
                 "revision",
                 "activate",
                 "--hub",
@@ -3268,7 +3268,7 @@ mod tests {
         let parsed = parse_cli([
             "aos",
             "hub",
-            "network-boundary",
+            "network-policy",
             "revision",
             "activate",
             "--hub",

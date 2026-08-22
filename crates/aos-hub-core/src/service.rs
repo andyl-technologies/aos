@@ -6852,7 +6852,7 @@ impl RpcService {
             .as_ref()
             .map(|revision| revision.binding_id.as_str())
             .filter(|id| !id.is_empty())
-            .ok_or_else(|| RpcError::invalid("storageBindingId is required"))?;
+            .ok_or_else(|| RpcError::invalid("bindingId is required"))?;
         let binding = self
             .db
             .binding_by_stable_id(binding_stable_id)
@@ -14038,7 +14038,7 @@ impl RpcService {
         stable_id: &str,
     ) -> Result<i64, RpcError> {
         if stable_id.is_empty() {
-            return Err(RpcError::invalid("storageBindingId is required"));
+            return Err(RpcError::invalid("bindingId is required"));
         }
         let binding = match org_id {
             Some(id) => self
