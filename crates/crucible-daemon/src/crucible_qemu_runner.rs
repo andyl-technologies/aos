@@ -16,7 +16,7 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CrucibleAttemptExecution, CrucibleExecutionOutcome,
     CrucibleExecutionRunner, CrucibleMaterializationTier, CrucibleResolvedAttemptStart,
-    ExecutionCancellation,
+    ExecutionCancellation, QemuExactCheckpointRealization,
 };
 
 /// Cancellation-aware checkpoint reads used by one campaign realization.
@@ -89,13 +89,42 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
     /// terminal resource error after the admitted quantum budget is exhausted.
     fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError>;
 
+    /// Restores one durable attempt checkpoint under this session's guard.
+    ///
+    /// `initial` is the configuration realized before a branch selection. A
+    /// branch attempt also supplies `post_selection`; a checkpoint may name
+    /// either exact boundary depending on whether the sticky pause request won
+    /// before or after selection application. Implementations must authenticate
+    /// the complete `checkpoint` root, stream and authenticate its VMState into
+    /// pinned staging, and launch only through this session's resource guard.
+    /// They must establish source-bound replay-oracle evidence before
+    /// production admission or reject the root. They must never substitute an
+    /// ordinary exact-cache or thin-replay start. The returned binding must
+    /// name the same immutable `checkpoint`; the runner checks it before
+    /// modeled guest work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the root is unavailable or
+    /// corrupt, names any other configuration, cannot be materialized, or
+    /// guarded restore fails.
+    fn resume_exact_checkpoint(
+        &mut self,
+        checkpoint: ExactCheckpointId,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+    ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError>;
+
     /// Applies a branch selection when present and runs to the attempt stop.
     ///
-    /// The realized runtime denotes [`CrucibleResolvedAttemptStart::Discover`]
-    /// or the exact branch parent. The session retains the live backend instead
-    /// of handing modeled code a detached [`crucible::RuntimeState`]. It applies
-    /// the typed selection, enforces the operational context, and constructs
-    /// the complete immutable observation candidate.
+    /// The realized runtime denotes [`CrucibleResolvedAttemptStart::Discover`],
+    /// the exact branch parent, or a resumed branch's post-selection boundary.
+    /// The session retains the live backend instead of handing modeled code a
+    /// detached [`crucible::RuntimeState`]. It applies the typed selection only
+    /// when the realized configuration is the branch parent; a post-selection
+    /// resume must continue without applying the edge twice. It enforces the
+    /// operational context and constructs the complete immutable observation
+    /// candidate.
     ///
     /// # Errors
     ///
@@ -212,12 +241,6 @@ pub enum QemuExactThinRunnerError<E> {
     /// Work was canceled before QEMU realization began.
     #[error("campaign attempt was canceled before QEMU realization")]
     Canceled,
-    /// Exact operational resume has not yet been composed with this runner.
-    #[error("campaign attempt requires exact-checkpoint resume from {checkpoint}")]
-    ResumeNotIntegrated {
-        /// Exact root that must be restored instead of running from the start.
-        checkpoint: ExactCheckpointId,
-    },
     /// Exact restore and thin replay could not realize the starting configuration.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
@@ -243,28 +266,30 @@ where
                 QemuExactThinRunnerError::Canceled,
             ));
         }
-        if let Some(checkpoint) = context.resume_checkpoint() {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuExactThinRunnerError::ResumeNotIntegrated { checkpoint },
-            ));
-        }
-        let configuration = match input.start() {
-            CrucibleResolvedAttemptStart::Discover { configuration } => configuration,
-            CrucibleResolvedAttemptStart::Branch { parent, .. } => parent,
-        };
+        let (configuration, post_selection) = attempt_resume_configurations(input);
         let mut session = self
             .sessions
             .begin_attempt(context)
             .map_err(classify_realization_failure)?;
         let result = if session.resource_limits() == context.resources() {
-            run_in_session(
-                &mut self.store,
-                &mut session,
-                input,
-                context,
-                configuration,
-                self.policy,
-            )
+            if let Some(checkpoint) = context.resume_checkpoint() {
+                resume_in_session(
+                    &mut session,
+                    input,
+                    checkpoint,
+                    configuration,
+                    post_selection,
+                )
+            } else {
+                run_in_session(
+                    &mut self.store,
+                    &mut session,
+                    input,
+                    context,
+                    configuration,
+                    self.policy,
+                )
+            }
         } else {
             Err(AttemptWorkerFailure::Terminal(
                 QemuExactThinRunnerError::Realization(QemuVmRealizationError::Executor {
@@ -276,6 +301,17 @@ where
             ))
         };
         finish_attempt_session(session, result)
+    }
+}
+
+fn attempt_resume_configurations(
+    input: &CrucibleAttemptExecution,
+) -> (&Configuration, Option<&Configuration>) {
+    match input.start() {
+        CrucibleResolvedAttemptStart::Discover { configuration } => (configuration, None),
+        CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } => (parent, Some(selected)),
     }
 }
 
@@ -332,6 +368,70 @@ where
         .run_attempt(input, realization)
         .map_err(map_driver_failure)?;
     Ok(CrucibleExecutionOutcome::new(product, materialization))
+}
+
+fn resume_in_session<E>(
+    session: &mut E,
+    input: &CrucibleAttemptExecution,
+    checkpoint: ExactCheckpointId,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<QemuExactThinRunnerError<E::Error>>>
+where
+    E: QemuCrucibleAttemptSession,
+{
+    session
+        .check_operational_boundary()
+        .map_err(classify_realization_failure)?;
+    let resumed = session
+        .resume_exact_checkpoint(checkpoint, initial, post_selection)
+        .map_err(classify_realization_failure)?;
+    validate_resumed_realization(&resumed, checkpoint, initial, post_selection)
+        .map_err(classify_realization_failure)?;
+    session
+        .check_operational_boundary()
+        .map_err(classify_realization_failure)?;
+    let product = session
+        .run_attempt(input, resumed.into_realization())
+        .map_err(map_driver_failure)?;
+    Ok(CrucibleExecutionOutcome::new(
+        product,
+        CrucibleMaterializationTier::ExactRestore,
+    ))
+}
+
+fn validate_resumed_realization(
+    resumed: &QemuExactCheckpointRealization,
+    expected_checkpoint: ExactCheckpointId,
+    initial: &Configuration,
+    post_selection: Option<&Configuration>,
+) -> Result<(), QemuVmRealizationError> {
+    let realization = resumed.realization();
+    let configuration_is_allowed = &realization.configuration == initial
+        || post_selection.is_some_and(|selected| &realization.configuration == selected);
+    let checkpoint_matches = match &realization.branch {
+        QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint } => {
+            checkpoint.configuration == realization.configuration.id()
+                && checkpoint.id == realization.configuration.id()
+                && checkpoint.kind == crucible::CheckpointKind::Fat
+        }
+        QemuVmRealizationKind::AncestorReplay { .. }
+        | QemuVmRealizationKind::BakedGenesisLoad { .. } => false,
+    };
+    if resumed.checkpoint() != expected_checkpoint
+        || realization.operation != crucible_qemu::QemuVmRealizationOperation::Resume
+        || !configuration_is_allowed
+        || !checkpoint_matches
+        || realization.runtime.configuration != realization.configuration.id()
+    {
+        return Err(QemuVmRealizationError::Executor {
+            operation: "validate exact-checkpoint resumed realization",
+            message: String::from(
+                "resumed realization does not match the exact attempt checkpoint basis",
+            ),
+        });
+    }
+    Ok(())
 }
 
 struct CancellableRealizationStore<'a, S> {
@@ -406,9 +506,7 @@ fn classify_realization_failure<E>(
         ) => AttemptWorkerFailure::Retryable(error),
         QemuExactThinRunnerError::Realization(QemuVmRealizationError::Canceled { .. })
         | QemuExactThinRunnerError::Canceled => AttemptWorkerFailure::Canceled(error),
-        QemuExactThinRunnerError::Realization(_)
-        | QemuExactThinRunnerError::ResumeNotIntegrated { .. }
-        | QemuExactThinRunnerError::Driver(_) => {
+        QemuExactThinRunnerError::Realization(_) | QemuExactThinRunnerError::Driver(_) => {
             AttemptWorkerFailure::Terminal(error)
         }
     }
@@ -432,11 +530,21 @@ fn map_driver_failure<E>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
+    #![allow(clippy::expect_used)]
+
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
+    use crucible::{
+        Checkpoint, CheckpointKind, ContentHash, RuntimeState, ScenarioDef, SchedulerState,
+        VirtualTime,
+    };
     use crucible_qemu::{
         QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
         QemuLoadvmRealizationAdmission, QemuVmReplayRequest,
@@ -496,6 +604,15 @@ mod tests {
 
         fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
             Ok(())
+        }
+
+        fn resume_exact_checkpoint(
+            &mut self,
+            _checkpoint: ExactCheckpointId,
+            _initial: &Configuration,
+            _post_selection: Option<&Configuration>,
+        ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError> {
+            unreachable!("finish-only test session does not resume QEMU")
         }
 
         fn run_attempt(
@@ -619,5 +736,131 @@ mod tests {
             ))
         ));
         assert_eq!(finishes.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn resumed_realization_must_match_an_exact_legal_attempt_boundary() {
+        let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.qemu-runner-resume",
+            "initial",
+        ));
+        let selected = crucible::step(
+            &initial,
+            crucible::Decision::RngDraw(crucible::RngDecision {
+                stream: crucible::RngStreamId::from_name("resume-edge"),
+                value: 5,
+            }),
+        );
+        let root = exact_checkpoint_id(b"valid-resume-root");
+        let valid = QemuExactCheckpointRealization::new(
+            root,
+            resumed_realization(&selected, &selected, Some(&initial)),
+        );
+
+        assert!(validate_resumed_realization(&valid, root, &initial, Some(&selected)).is_ok());
+        assert!(validate_resumed_realization(&valid, root, &selected, None).is_ok());
+
+        let foreign_root = exact_checkpoint_id(b"foreign-resume-root");
+        assert!(
+            validate_resumed_realization(&valid, foreign_root, &initial, Some(&selected)).is_err()
+        );
+
+        let foreign = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.qemu-runner-resume",
+            "foreign",
+        ));
+        assert!(validate_resumed_realization(&valid, root, &foreign, None).is_err());
+
+        let mut wrong_operation = valid.realization().clone();
+        wrong_operation.operation = crucible_qemu::QemuVmRealizationOperation::Instantiate;
+        let wrong_operation = QemuExactCheckpointRealization::new(root, wrong_operation);
+        assert!(
+            validate_resumed_realization(&wrong_operation, root, &initial, Some(&selected))
+                .is_err()
+        );
+
+        let wrong_checkpoint = QemuExactCheckpointRealization::new(
+            root,
+            resumed_realization(&selected, &initial, None),
+        );
+        assert!(
+            validate_resumed_realization(&wrong_checkpoint, root, &initial, Some(&selected))
+                .is_err()
+        );
+
+        let mut wrong_checkpoint_identity = valid.realization().clone();
+        let QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint } =
+            &mut wrong_checkpoint_identity.branch
+        else {
+            unreachable!("resume fixture is exact")
+        };
+        checkpoint.id = initial.id();
+        let wrong_checkpoint_identity =
+            QemuExactCheckpointRealization::new(root, wrong_checkpoint_identity);
+        assert!(
+            validate_resumed_realization(
+                &wrong_checkpoint_identity,
+                root,
+                &initial,
+                Some(&selected),
+            )
+            .is_err()
+        );
+
+        let mut wrong_runtime = resumed_realization(&selected, &selected, Some(&initial));
+        wrong_runtime.runtime.configuration = initial.id();
+        let wrong_runtime = QemuExactCheckpointRealization::new(root, wrong_runtime);
+        assert!(
+            validate_resumed_realization(&wrong_runtime, root, &initial, Some(&selected)).is_err()
+        );
+
+        let mut thin = valid.into_realization();
+        thin.branch = QemuVmRealizationKind::AncestorReplay {
+            ancestor_configuration: initial.id(),
+            replayed_decisions: 1,
+        };
+        let thin = QemuExactCheckpointRealization::new(root, thin);
+        assert!(validate_resumed_realization(&thin, root, &initial, Some(&selected)).is_err());
+    }
+
+    fn exact_checkpoint_id(material: &[u8]) -> ExactCheckpointId {
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::ExactManifest,
+            2,
+            material,
+        ))
+        .expect("exact checkpoint root")
+    }
+
+    fn resumed_realization(
+        configuration: &Configuration,
+        checkpoint_configuration: &Configuration,
+        checkpoint_parent: Option<&Configuration>,
+    ) -> QemuVmRealization {
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            checkpoint_configuration,
+            checkpoint_parent,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .expect("resume checkpoint");
+        QemuVmRealization {
+            operation: crucible_qemu::QemuVmRealizationOperation::Resume,
+            configuration: configuration.clone(),
+            runtime: RuntimeState {
+                id: ContentHash::from_canonical_material(
+                    "crucible.test.qemu-runner-resume",
+                    "runtime",
+                ),
+                configuration: configuration.id(),
+                node_blobs: BTreeMap::new(),
+                node_icounts: BTreeMap::new(),
+                scheduler: SchedulerState::from_schedule(&configuration.schedule),
+                event_log: Default::default(),
+            },
+            branch: QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint },
+        }
     }
 }

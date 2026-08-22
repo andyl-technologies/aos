@@ -10,7 +10,7 @@ use crucible::{
     AdvanceOutcome, BackendError, BackendInput, Configuration, EventLog, EventLogOffset,
     ExecutionFingerprint, ExecutionHorizon, Icount,
 };
-use crucible_campaign::{AttemptResourceLimits, ObservationCandidate};
+use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ObservationCandidate};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLiveAttemptBackend,
     QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeChild,
@@ -162,6 +162,47 @@ pub trait QemuAttemptResourceGuardFactory {
     ) -> Result<Self::Guard, QemuVmRealizationError>;
 }
 
+/// Exact immutable root and live realization produced by attempt resume.
+///
+/// The runner compares [`Self::checkpoint`] with the durable execution origin
+/// before modeled guest work. Carrying the root explicitly prevents a session
+/// from substituting another VMState root that happens to share the same
+/// checkpoint metadata.
+#[must_use = "resumed QEMU realization must be validated or the session finished"]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuExactCheckpointRealization {
+    checkpoint: ExactCheckpointId,
+    realization: QemuVmRealization,
+}
+
+impl QemuExactCheckpointRealization {
+    /// Binds an authenticated immutable root to the realization restored from it.
+    pub const fn new(checkpoint: ExactCheckpointId, realization: QemuVmRealization) -> Self {
+        Self {
+            checkpoint,
+            realization,
+        }
+    }
+
+    /// Returns the immutable exact-checkpoint root used for restore.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the live realization restored from the exact root.
+    #[must_use]
+    pub const fn realization(&self) -> &QemuVmRealization {
+        &self.realization
+    }
+
+    /// Consumes the binding into the live realization.
+    #[must_use]
+    pub fn into_realization(self) -> QemuVmRealization {
+        self.realization
+    }
+}
+
 /// Modeled stop or exact checkpoint boundary returned by a live driver.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QemuLiveAttemptResult {
@@ -234,6 +275,11 @@ pub trait QemuLiveAttemptDriver {
     type Error;
 
     /// Drives the live backend to the attempt stop and constructs its result.
+    ///
+    /// For a branch attempt, `realization.configuration` determines whether the
+    /// canonical selection is still pending: a branch-parent realization must
+    /// apply it exactly once, while a post-selection resume must not apply it
+    /// again. Any other realized configuration is an invariant failure.
     ///
     /// [`QemuLiveAttemptBackend::event_log`] exposes the read-only unified log
     /// updated by every completed live quantum. The session drains once more
@@ -349,6 +395,29 @@ pub trait QemuGuardedLiveRealizationExecutor<G>: QemuVmLiveRealizationExecutor
 where
     G: QemuAttemptResourceGuard,
 {
+    /// Authenticates, materializes, and resumes one exact attempt root.
+    ///
+    /// The implementation owns immutable checkpoint-store access and pinned
+    /// run-directory authority. It must derive load admission inside the QEMU
+    /// boundary and use only `guard` for process launch. The restored snapshot
+    /// configuration must equal `initial` or `post_selection`. A raw `NotRun`
+    /// root must first receive source-bound replay-oracle validation or fail;
+    /// materialization by itself does not grant production resume admission.
+    /// The returned binding must echo the exact authenticated `checkpoint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] for an unavailable or corrupt root,
+    /// a configuration mismatch, interrupted materialization, or guarded
+    /// launch/restore failure.
+    fn resume_exact_checkpoint_guarded(
+        &mut self,
+        guard: &mut G,
+        checkpoint: ExactCheckpointId,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+    ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError>;
+
     /// Loads an exact admitted snapshot under `guard`.
     ///
     /// # Errors
@@ -660,6 +729,26 @@ where
 
     fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
         self.guard.check_operational_boundary()
+    }
+
+    fn resume_exact_checkpoint(
+        &mut self,
+        checkpoint: ExactCheckpointId,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+    ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self.executor.resume_exact_checkpoint_guarded(
+            &mut self.guard,
+            checkpoint,
+            initial,
+            post_selection,
+        );
+        if result.is_err() {
+            self.realization_cleanup_required = true;
+        }
+        self.guard.check_operational_boundary()?;
+        result
     }
 
     fn run_attempt(

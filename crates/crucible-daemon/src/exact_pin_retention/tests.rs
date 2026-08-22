@@ -1139,6 +1139,115 @@ fn selected_checkpoint_materializes_authenticated_vmstate_for_exact_restore() {
 }
 
 #[test]
+fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
+    let fixture = fixture("attempt-resume-boundary");
+    let parent = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "attempt-resume-parent",
+    ));
+    let selected = crucible::step(
+        &parent,
+        crucible::Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId::from_name("attempt-resume-selection"),
+            value: 17,
+        }),
+    );
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &selected,
+        Some(&parent),
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("post-selection checkpoint");
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("post-selection QEMU snapshot");
+    let prepared = fixture
+        .checkpoints
+        .prepare(&snapshot, BlobHandle::from_bytes(vec![0x6b; 4096]))
+        .expect("prepare post-selection checkpoint");
+    let checkpoint = fixture
+        .checkpoints
+        .publish(&prepared)
+        .expect("publish post-selection checkpoint")
+        .root();
+    let foreign = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "foreign-attempt-boundary",
+    ));
+    let command = materialization_command();
+    let temp = tempfile::tempdir().expect("attempt resume workspace");
+
+    let accepted_directory = temp.path().join("accepted");
+    std::fs::create_dir(&accepted_directory).expect("accepted run directory");
+    let accepted_vmstate = accepted_directory.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&accepted_vmstate, b"provisioned").expect("provision accepted VMState");
+    let mut accepted = QemuPreparedRunDirectory::open_for_materialization(
+        &command,
+        &accepted_directory,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
+    .expect("pin accepted materialization destination");
+
+    let materialized = crate::materialize_attempt_exact_checkpoint(
+        &fixture.checkpoints,
+        checkpoint,
+        &parent,
+        Some(&selected),
+        &mut accepted,
+        &crate::ExecutionCancellation::default(),
+    )
+    .expect("materialize exact post-selection checkpoint");
+    assert_eq!(materialized.checkpoint(), checkpoint);
+    assert_eq!(
+        materialized.snapshot().checkpoint().configuration,
+        selected.id()
+    );
+    accepted
+        .require_exact_vmstate(materialized.vmstate_binding())
+        .expect("exact operational root binding");
+    assert_eq!(
+        std::fs::read(&accepted_vmstate).expect("materialized attempt VMState"),
+        vec![0x6b; 4096]
+    );
+
+    let rejected_directory = temp.path().join("rejected");
+    std::fs::create_dir(&rejected_directory).expect("rejected run directory");
+    let rejected_vmstate = rejected_directory.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&rejected_vmstate, b"provisioned").expect("provision rejected VMState");
+    let mut rejected = QemuPreparedRunDirectory::open_for_materialization(
+        &command,
+        &rejected_directory,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
+    .expect("pin rejected materialization destination");
+
+    assert!(matches!(
+        crate::materialize_attempt_exact_checkpoint(
+            &fixture.checkpoints,
+            checkpoint,
+            &foreign,
+            None,
+            &mut rejected,
+            &crate::ExecutionCancellation::default(),
+        ),
+        Err(crate::ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
+            checkpoint,
+            configuration,
+        }) if checkpoint == materialized.checkpoint() && configuration == selected.id()
+    ));
+    assert_eq!(
+        std::fs::read(rejected_vmstate).expect("unchanged rejected VMState"),
+        b"provisioned"
+    );
+}
+
+#[test]
 fn exact_restore_binding_distinguishes_same_metadata_with_different_vmstate() {
     let backend = Arc::new(TestDurableBackend::new());
     let fixture = fixture_with_backend("root-binding", backend);

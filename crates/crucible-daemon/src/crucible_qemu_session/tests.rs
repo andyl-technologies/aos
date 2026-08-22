@@ -19,7 +19,10 @@ use crucible::{
 };
 use crucible_campaign::ExecutionRetentionIntent;
 use crucible_cas::content_store::BlobHandle;
-use crucible_qemu::{QemuLiveBackendShutdown, QemuRealizedNodeBackend};
+use crucible_qemu::{
+    QemuLiveBackendShutdown, QemuRealizedNodeBackend, QemuVmRealizationKind,
+    QemuVmRealizationOperation,
+};
 
 use super::*;
 
@@ -120,6 +123,10 @@ struct FakeExecutor {
     guarded_error: bool,
     failed_realization_reap_error: bool,
     capture_error: bool,
+    resume_checkpoint: Option<ExactCheckpointId>,
+    resume_initial: Option<ContentHash>,
+    resume_post_selection: Option<ContentHash>,
+    resume_realization: Option<QemuVmRealization>,
 }
 
 impl QemuVmRealizationExecutor for FakeExecutor {
@@ -239,6 +246,31 @@ impl QemuLiveAttemptBackend for FakeExecutor {
 }
 
 impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
+    fn resume_exact_checkpoint_guarded(
+        &mut self,
+        guard: &mut TrackingGuard,
+        checkpoint: ExactCheckpointId,
+        initial: &Configuration,
+        post_selection: Option<&Configuration>,
+    ) -> Result<QemuExactCheckpointRealization, QemuVmRealizationError> {
+        self.counters.resumes.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(Some(checkpoint), self.resume_checkpoint);
+        assert_eq!(Some(initial.id()), self.resume_initial);
+        assert_eq!(
+            post_selection.map(Configuration::id),
+            self.resume_post_selection
+        );
+        guard.check_operational_boundary()?;
+        self.active = true;
+        self.resume_realization
+            .clone()
+            .map(|realization| QemuExactCheckpointRealization::new(checkpoint, realization))
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "resume fake exact attempt checkpoint",
+                message: String::from("no exact resume fixture was installed"),
+            })
+    }
+
     fn load_exact_snapshot_guarded(
         &mut self,
         _guard: &mut TrackingGuard,
@@ -352,6 +384,7 @@ struct TestCounters {
     guarded_calls: Arc<AtomicUsize>,
     failed_reaps: Arc<AtomicUsize>,
     captures: Arc<AtomicUsize>,
+    resumes: Arc<AtomicUsize>,
     checks: Arc<AtomicUsize>,
     quanta: Arc<AtomicUsize>,
 }
@@ -862,6 +895,96 @@ fn exact_checkpoint_capture_remains_guarded_until_explicit_finish() {
 }
 
 #[test]
+fn exact_attempt_resume_is_delegated_under_the_same_guard_and_basis() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, driver, guard_factory) = factory.into_parts();
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "resume-initial",
+    ));
+    let selected = crucible::step(
+        &initial,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("resume-selection"),
+            value: 11,
+        }),
+    );
+    let checkpoint =
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::ExactManifest,
+            2,
+            b"live-session-exact-resume-root",
+        ))
+        .expect("exact resume root");
+    executor.resume_checkpoint = Some(checkpoint);
+    executor.resume_initial = Some(initial.id());
+    executor.resume_post_selection = Some(selected.id());
+    executor.resume_realization = Some(resume_realization(&selected, Some(&initial)));
+    let mut factory = QemuLiveAttemptSessionFactory::new(executor, driver, guard_factory);
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact resume session");
+
+    let realization = session
+        .resume_exact_checkpoint(checkpoint, &initial, Some(&selected))
+        .expect("resume exact operational checkpoint");
+
+    assert_eq!(realization.checkpoint(), checkpoint);
+    assert_eq!(
+        realization.realization().operation,
+        QemuVmRealizationOperation::Resume
+    );
+    assert_eq!(realization.realization().configuration, selected);
+    assert_eq!(counters.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), 3);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    session.finish().expect("finish resumed QEMU session");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_exact_attempt_resume_reaps_before_releasing_the_guard() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let factory = session_factory(resources, counters.clone(), SessionBehavior::default());
+    let (mut executor, driver, guard_factory) = factory.into_parts();
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "resume-failure",
+    ));
+    let checkpoint =
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::ExactManifest,
+            2,
+            b"live-session-failed-exact-resume-root",
+        ))
+        .expect("failed exact resume root");
+    executor.resume_checkpoint = Some(checkpoint);
+    executor.resume_initial = Some(initial.id());
+    let mut factory = QemuLiveAttemptSessionFactory::new(executor, driver, guard_factory);
+    let context = execution_context(resources);
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin failed exact resume session");
+
+    assert!(matches!(
+        session.resume_exact_checkpoint(checkpoint, &initial, None),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    session
+        .finish()
+        .expect("reap failed exact resume and release guard");
+
+    assert_eq!(counters.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.failed_reaps.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn failed_exact_checkpoint_capture_shuts_down_before_releasing_the_guard() {
     let resources = resource_limits(1);
     let counters = TestCounters::default();
@@ -923,6 +1046,10 @@ fn session_factory(
             guarded_error: behavior.guarded_error,
             failed_realization_reap_error: behavior.failed_realization_reap_error,
             capture_error: behavior.capture_error,
+            resume_checkpoint: None,
+            resume_initial: None,
+            resume_post_selection: None,
+            resume_realization: None,
         },
         UnusedDriver,
         TrackingGuardFactory {
@@ -965,6 +1092,37 @@ fn replay_fixture() -> (RuntimeState, QemuVmReplayRequest) {
         event_log: Default::default(),
     };
     (runtime, QemuVmReplayRequest { from, to, decision })
+}
+
+fn resume_realization(
+    configuration: &Configuration,
+    parent: Option<&Configuration>,
+) -> QemuVmRealization {
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        parent,
+        crucible::VirtualTime::default(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("resume checkpoint");
+    QemuVmRealization {
+        operation: QemuVmRealizationOperation::Resume,
+        configuration: configuration.clone(),
+        runtime: RuntimeState {
+            id: ContentHash::from_canonical_material(
+                "crucible.test.live-session",
+                "resumed-runtime",
+            ),
+            configuration: configuration.id(),
+            node_blobs: BTreeMap::new(),
+            node_icounts: BTreeMap::new(),
+            scheduler: SchedulerState::from_schedule(&configuration.schedule),
+            event_log: Default::default(),
+        },
+        branch: QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint },
+    }
 }
 
 fn resource_limits(vcpus: u32) -> AttemptResourceLimits {

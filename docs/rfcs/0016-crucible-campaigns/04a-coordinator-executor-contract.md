@@ -1327,9 +1327,22 @@ wired through the durable supervisor, bounded worker pool, strict loopback, and
 campaign driver. The durable attempt record retains the exact resume request
 basis and input checkpoint through every later phase, and the worker receives
 that checkpoint only as operational context. A worker MUST restore that exact
-authenticated root or fail before guest work; the current QEMU runner fails
-closed until exact-root materialization is composed with its guarded live
-session.
+authenticated root or fail before guest work. The QEMU runner now routes a
+resumed execution only through the guarded session's exact-root operation,
+never consults the ordinary exact-cache/thin-replay store for that execution,
+accepts only the attempt's pre-selection or post-selection configuration, and
+requires the session's returned binding to echo the same immutable root ID. It
+rejects a mismatched root, non-resume operation, or non-exact realization
+before modeled guest work. For a branch, the live driver applies the selection
+exactly once when
+resuming the pre-selection parent and skips that application when resuming the
+post-selection boundary; a resumed attempt cannot traverse the edge twice. The
+checkpoint store and pinned run-directory transaction implement the
+complete-root, streamed-VMState materialization primitive for that operation.
+Concrete composition of replay-oracle validation/promotion, run-directory
+ownership, the guarded real-node launcher, and the production process guard
+remains required before the full QEMU flight is complete; a raw `NotRun` root
+is not admitted merely because it materialized successfully.
 Incompatibility, backpressure, unavailable input, and authorization are normal
 protocol outcomes rather than transport errors. A coordinator-facing
 `ExecutorClient` wraps both direct and future RPC services and rejects a
@@ -1873,12 +1886,16 @@ worker result and publication APIs use linear captured, prepared, staged, and
 published tokens, so a storage or compare-exchange error never requires
 rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
-reservation until the executor reports durable pause. On resume, the daemon
-loads the selected exact-checkpoint root under the exact-pin inventory fence,
-releases that fence, reauthenticates the recorded pin fact against the current
-semantic projection, and streams the VMState child through a pinned
-run-directory transaction. The destination becomes unlaunchable before its
-first truncate, accepts no more than the declared/admitted bytes, and becomes
+reservation until the executor reports durable pause. Attempt resume takes the
+exact root retained in that execution's durable paused origin, authenticates
+the complete immutable root, and requires its configuration to equal either
+the attempt's pre-selection boundary or its post-selection boundary before any
+destination write. Exact-pin hibernation instead loads the selected root under
+the exact-pin inventory fence, releases that fence, and reauthenticates the
+recorded pin fact against the current semantic projection. Both operations
+stream the VMState child through the same pinned run-directory transaction. The
+destination becomes unlaunchable before its first truncate, accepts no more
+than the declared/admitted bytes, and becomes
 eligible for exact restore only after authenticated EOF, exact length, file
 sync, retained-inode validation, and binding to the aggregate snapshot
 metadata plus VMState child through the selected `ExactCheckpointId` root.
@@ -1891,14 +1908,17 @@ contract, and production replay admission rejects missing or mismatched oracle
 evidence before invoking it. The durable owner now authenticates the exact
 selected raw root, runs the fat/thin comparison, promotes only a source-bound
 match into a new root that reuses the VMState child, and durably replaces the
-selection. The comparison session owns one process/resource guard, uses
+selection. A freshly paused attempt root likewise remains ineligible for
+production resume while its replay-oracle state is `NotRun`; the concrete
+attempt-resume owner must source-bind equivalent validation or reject it rather
+than falling back. The comparison session owns one process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
 before replacement, and finishes before promotion writes. Any realization or
 cleanup failure quarantines the guard and leaves the raw root selected. The
 nondroppable child/cgroup/watcher worker now exists crate-internally; concrete
-failed-launch/active-node handoff into it and the complete pause/restart/resume
-flight remain mandatory before the full campaign/QEMU gate may claim
-completion.
+failed-launch/active-node handoff into it, raw paused-root validation/promotion,
+and the complete pause/restart/resume flight remain mandatory before the full
+campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits
