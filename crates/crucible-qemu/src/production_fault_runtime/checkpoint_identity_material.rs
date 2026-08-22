@@ -8,6 +8,92 @@ pub(super) struct BoundedCheckpointIdentityMaterial {
     resource_limits: FaultResourceLimits,
 }
 
+pub(super) struct BoundedObservationIdentityMaterial {
+    bytes: Vec<u8>,
+    resource_limits: FaultResourceLimits,
+}
+
+impl BoundedObservationIdentityMaterial {
+    pub(super) fn new(resource_limits: FaultResourceLimits) -> Self {
+        Self {
+            bytes: Vec::new(),
+            resource_limits,
+        }
+    }
+
+    pub(super) fn append(&mut self, value: &[u8]) -> Result<(), ProductionFaultRuntimeError> {
+        self.reserve(value.len())?;
+        self.bytes.extend_from_slice(value);
+        Ok(())
+    }
+
+    pub(super) fn push(&mut self, value: u8) -> Result<(), ProductionFaultRuntimeError> {
+        self.reserve(1)?;
+        self.bytes.push(value);
+        Ok(())
+    }
+
+    pub(super) fn append_length_prefixed(
+        &mut self,
+        value: &[u8],
+    ) -> Result<(), ProductionFaultRuntimeError> {
+        let requested = value.len().checked_add(size_of::<u64>()).ok_or(
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            },
+        )?;
+        self.reserve(requested)?;
+        let length =
+            u64::try_from(value.len()).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            })?;
+        self.bytes.extend_from_slice(&length.to_be_bytes());
+        self.bytes.extend_from_slice(value);
+        Ok(())
+    }
+
+    pub(super) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn reserve(&mut self, requested: usize) -> Result<(), ProductionFaultRuntimeError> {
+        let current = u64::try_from(self.bytes.len()).map_err(|_| {
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            }
+        })?;
+        let requested_u64 =
+            u64::try_from(requested).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: u64::MAX,
+            })?;
+        self.resource_limits
+            .reserve("event_log_bytes", current, requested_u64)?;
+        self.bytes.try_reserve_exact(requested).map_err(|_| {
+            observation_allocation_error(current, requested_u64, self.resource_limits)
+        })?;
+        Ok(())
+    }
+}
+
+fn observation_allocation_error(
+    current: u64,
+    requested: u64,
+    limits: FaultResourceLimits,
+) -> ProductionFaultRuntimeError {
+    FaultResourceLimitError::Exceeded {
+        field: "event_log_bytes",
+        current,
+        requested,
+        configured: limits.event_log_bytes,
+        hard: FaultResourceLimits::compiled_maximum().event_log_bytes,
+    }
+    .into()
+}
+
 impl BoundedCheckpointIdentityMaterial {
     pub(super) fn new(resource_limits: FaultResourceLimits) -> Self {
         Self {

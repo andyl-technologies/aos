@@ -141,7 +141,7 @@ pub(super) fn extend_observation_usage(
     mut total_bytes: u64,
 ) -> Result<(u64, u64), ProductionFaultRuntimeError> {
     for observation in observations {
-        let material = observation_identity_material(observation)?;
+        let material = observation_identity_material(observation, resource_limits)?;
         resource_limits.reserve("event_records", records, 1)?;
         records = records
             .checked_add(1)
@@ -214,6 +214,7 @@ pub(super) fn extend_pending_qemu_event_usage(
 
 pub(super) fn observation_identity_material(
     observation: &FaultObservation,
+    resource_limits: FaultResourceLimits,
 ) -> Result<Vec<u8>, ProductionFaultRuntimeError> {
     if observation.semantic_version != crucible::model::FAULT_RUNTIME_STATE_VERSION
         || observation.evidence == ContentHash::default()
@@ -232,54 +233,40 @@ pub(super) fn observation_identity_material(
     {
         return Err(FaultExecutionError::CheckpointPresence.into());
     }
-    let mut material = Vec::new();
-    material.extend_from_slice(&observation.semantic_version.to_be_bytes());
-    append_length_prefixed(&mut material, observation.kind.as_str().as_bytes())?;
-    material.extend_from_slice(&observation.coordinate.virtual_nanos.to_be_bytes());
+    let mut material = BoundedObservationIdentityMaterial::new(resource_limits);
+    material.append(&observation.semantic_version.to_be_bytes())?;
+    material.append_length_prefixed(observation.kind.as_str().as_bytes())?;
+    material.append(&observation.coordinate.virtual_nanos.to_be_bytes())?;
     match observation.coordinate.retired_instructions {
         Some(retired) => {
-            material.push(1);
-            material.extend_from_slice(&retired.to_be_bytes());
+            material.push(1)?;
+            material.append(&retired.to_be_bytes())?;
         }
-        None => material.push(0),
+        None => material.push(0)?,
     }
     match &observation.binding {
         Some(binding) => {
-            material.push(1);
-            append_length_prefixed(&mut material, binding.as_str().as_bytes())?;
+            material.push(1)?;
+            material.append_length_prefixed(binding.as_str().as_bytes())?;
         }
-        None => material.push(0),
+        None => material.push(0)?,
     }
     match &observation.target {
         Some(target) => {
-            material.push(1);
-            append_length_prefixed(&mut material, target.canonical_material().as_bytes())?;
+            material.push(1)?;
+            material.append_length_prefixed(target.canonical_material().as_bytes())?;
         }
-        None => material.push(0),
+        None => material.push(0)?,
     }
     match observation.opportunity {
         Some(opportunity) => {
-            material.push(1);
-            material.extend_from_slice(&opportunity.bytes);
+            material.push(1)?;
+            material.append(&opportunity.bytes)?;
         }
-        None => material.push(0),
+        None => material.push(0)?,
     }
-    material.extend_from_slice(&observation.evidence.bytes);
-    Ok(material)
-}
-
-pub(super) fn append_length_prefixed(
-    output: &mut Vec<u8>,
-    value: &[u8],
-) -> Result<(), ProductionFaultRuntimeError> {
-    let length =
-        u64::try_from(value.len()).map_err(|_| FaultResourceLimitError::Representation {
-            field: "event_log_bytes",
-            value: u64::MAX,
-        })?;
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
+    material.append(&observation.evidence.bytes)?;
+    Ok(material.into_bytes())
 }
 
 // crucible-lint: allow rust-allow -- aggregate identity receives every independently owned checkpoint component explicitly.
@@ -361,7 +348,14 @@ pub(super) fn production_checkpoint_identity(
         material.append(&event.evidence.bytes)?;
     }
     for observation in pending_qemu_observations {
-        material.append_length_prefixed(&observation_identity_material(observation)?)?;
+        let mut observation_limits = resource_limits;
+        observation_limits.event_log_bytes = observation_limits
+            .event_log_bytes
+            .min(material.remaining_after_length_prefix()?);
+        material.append_length_prefixed(&observation_identity_material(
+            observation,
+            observation_limits,
+        )?)?;
     }
     for (node, events) in pending_qemu_events {
         material.append(node.name.as_bytes())?;

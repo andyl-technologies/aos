@@ -10,6 +10,59 @@ use super::{
 use crate::checkpoint::bounded_cbor::BoundedCborError;
 use crate::production_fault_runtime::ProductionFaultRuntimeError;
 
+pub(super) struct CheckpointConstructionBudget {
+    configured: u64,
+    current: u64,
+}
+
+impl CheckpointConstructionBudget {
+    pub(super) fn new(maximum: u64) -> Self {
+        Self {
+            configured: maximum.min(MAX_BYTES),
+            current: 0,
+        }
+    }
+
+    pub(super) fn remaining(&self) -> u64 {
+        self.configured.saturating_sub(self.current)
+    }
+
+    pub(super) fn admit(
+        &mut self,
+        requested: usize,
+    ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+        let requested = u64::try_from(requested).map_err(|_| {
+            resource_limit(
+                "production fault checkpoint",
+                self.current,
+                u64::MAX,
+                self.configured,
+                MAX_BYTES,
+            )
+        })?;
+        let total = self.current.checked_add(requested).ok_or_else(|| {
+            resource_limit(
+                "production fault checkpoint",
+                self.current,
+                requested,
+                self.configured,
+                MAX_BYTES,
+            )
+        })?;
+        if total > self.configured {
+            return Err(resource_limit(
+                "production fault checkpoint",
+                self.current,
+                requested,
+                self.configured,
+                MAX_BYTES,
+            ));
+        }
+        self.current = total;
+        Ok(())
+    }
+}
+
 pub(super) fn map_bounded_cbor_error(
     error: BoundedCborError,
 ) -> ProductionFaultRuntimeCheckpointCodecError {

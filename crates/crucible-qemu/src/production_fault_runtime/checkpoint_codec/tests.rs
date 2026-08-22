@@ -55,6 +55,22 @@ fn empty_network(adapter_state: Vec<u8>) -> ProductionNetworkStateCheckpoint {
     )
 }
 
+fn pending_network_output(payload: Vec<u8>) -> BackendNetworkOutput {
+    BackendNetworkOutput {
+        source: NodeId {
+            name: String::from("sender-a"),
+        },
+        destination: NodeId {
+            name: String::from("receiver-b"),
+        },
+        emit_icount: crucible::Icount { retired: 17 },
+        sequence: 19,
+        payload,
+        route: None,
+        fault_continuation: crucible::BackendNetworkFaultContinuation::default(),
+    }
+}
+
 #[test]
 fn complete_production_checkpoint_round_trips_canonically() {
     let plan = FaultSignalPlan::empty();
@@ -209,7 +225,8 @@ fn scheduler_network_resource_coordinates_cross_production_envelope() {
 #[test]
 fn production_network_codec_propagates_authored_limit_into_scheduler() {
     let network = empty_network(Vec::new());
-    let error = match encode_network(&network, 1) {
+    let mut budget = CheckpointConstructionBudget::new(1);
+    let error = match encode_network(&network, &mut budget) {
         Ok(_) => panic!("scheduler state should exceed the authored limit"),
         Err(error) => error,
     };
@@ -223,6 +240,42 @@ fn production_network_codec_propagates_authored_limit_into_scheduler() {
             configured: 1,
             hard: 68_719_476_736,
         } if current.saturating_add(requested) > 1
+    ));
+}
+
+#[test]
+fn production_network_children_share_one_construction_budget() {
+    let output = pending_network_output(vec![7; 256]);
+    let output_bytes = output
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("pending output should encode: {error}"));
+    let mut network = empty_network(Vec::new());
+    let scheduler_bytes = network
+        .scheduler
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("scheduler should encode: {error}"));
+    network.pending_outputs = vec![output.clone(), output];
+    let maximum = u64::try_from(
+        scheduler_bytes
+            .len()
+            .saturating_add(output_bytes.len().saturating_mul(2))
+            .saturating_sub(1),
+    )
+    .unwrap_or_else(|_| panic!("test budget should fit u64"));
+    let mut budget = CheckpointConstructionBudget::new(maximum);
+    let error = match encode_network(&network, &mut budget) {
+        Ok(_) => panic!("the second pending output should exceed the shared budget"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
+            field: "encoded frame",
+            configured,
+            hard: 16_777_216,
+            ..
+        } if configured == u64::try_from(output_bytes.len() - 1).unwrap_or(u64::MAX)
     ));
 }
 
