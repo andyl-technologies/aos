@@ -265,6 +265,8 @@ in
               || fail "watchdog target did not report progress"
             bounded_preemption_start \
               "$TMPDIR/watchdog.log" "$TMPDIR/watchdog.events" "ready pid="
+            wait_for_pattern '^stop iteration=1 ' "$TMPDIR/watchdog.log" \
+              || fail "watchdog fixture never stopped target"
             if bounded_preemption_finish "$TMPDIR/watchdog.log"; then
               fail "watchdog-expired adversary unexpectedly completed"
             fi
