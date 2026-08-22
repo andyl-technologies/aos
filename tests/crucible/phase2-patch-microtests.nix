@@ -11,6 +11,13 @@
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   defaultNix = builtins.readFile ./default.nix;
+  qemuPatchStackRepository = import ./_qemu-patch-stack-repository.nix {
+    inherit pkgs lib qemuPackage;
+  };
+  qemuDropOneRepository = import ./_qemu-drop-one-repository.nix {
+    inherit pkgs lib qemuPackage;
+    patchStackRepository = qemuPatchStackRepository;
+  };
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
@@ -24,6 +31,7 @@
   };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
+    patchStackRepository = qemuPatchStackRepository;
   };
   qemuPatchPrefixBuilds = import ./phase2-qemu-patch-prefix-builds.nix {
     inherit pkgs lib qemuPackage;
@@ -36,6 +44,8 @@
   qemuPatchDropOne = import ./phase2-qemu-patch-drop-one.nix {
     inherit pkgs lib qemuPackage;
     attrPath = "${attrPath}.dropOne";
+    patchStackRepository = qemuPatchStackRepository;
+    dropOneRepository = qemuDropOneRepository;
   };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
@@ -1264,12 +1274,19 @@ in
             grep -q '^gate=gate:patch-microtests$' "$out/patch-drop-one.result"
             grep -q '^every_patch_has_exactly_one_drop_one_method=true$' "$out/patch-drop-one.result"
             grep -q '^clean_conflict_split_recomputed_live=true$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_source_extractions=1$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_full_tree_staging_passes=1$' "$out/patch-drop-one.result"
+            grep -q '^shared_patch_stack_preserves_ignored_vendored_subprojects=true$' "$out/patch-drop-one.result"
+            grep -q '^all_drop_one_branches_computed_in_one_repository=true$' "$out/patch-drop-one.result"
+            grep -q '^successful_variants_materialize_prepared_refs=true$' "$out/patch-drop-one.result"
+            grep -q '^conflict_variants_skip_source_checkout=true$' "$out/patch-drop-one.result"
             grep -q '^drop_one_composition_count=0$' "$out/patch-drop-one.result"
             grep -q '^structural_fallback_count=0$' "$out/patch-drop-one.result"
             cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
             grep -q '^PASS$' "$out/patch-regeneration.result"
             grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
             grep -q '^patch_regeneration_from_tracked_stack=true$' "$out/patch-regeneration.result"
+            grep -q '^shared_patch_stack_repository=true$' "$out/patch-regeneration.result"
             grep -q '^regenerated_patch_bytes_match_committed=true$' "$out/patch-regeneration.result"
             grep -q '^patch_branch_bundle_verified=true$' "$out/patch-regeneration.result"
             grep -q '^patch_branch_commit_hashes_match_manifest=true$' "$out/patch-regeneration.result"
