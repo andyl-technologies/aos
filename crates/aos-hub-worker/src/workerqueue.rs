@@ -42,6 +42,25 @@ impl WorkerQueue {
             env.queue(crate::handlers::bindings::QUEUE)?,
         ))
     }
+
+    /// Enqueues already-versioned envelopes without replacing their identities.
+    ///
+    /// Maintenance fan-out uses this after deriving deterministic child
+    /// identities from its dispatcher, making retry after a successful batch
+    /// send harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any Cloudflare batch cannot be accepted.
+    pub async fn enqueue_envelopes(&self, envelopes: &[JobEnvelope]) -> anyhow::Result<()> {
+        for chunk in envelopes.chunks(100) {
+            self.queue
+                .send_batch(chunk.iter().cloned())
+                .await
+                .map_err(|err| anyhow!("queue send_batch: {err}"))?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -67,10 +86,7 @@ impl Queue for WorkerQueue {
                 .cloned()
                 .map(JobEnvelope::new)
                 .collect::<Vec<_>>();
-            self.queue
-                .send_batch(envelopes)
-                .await
-                .map_err(|err| anyhow!("queue send_batch: {err}"))?;
+            self.enqueue_envelopes(&envelopes).await?;
         }
         Ok(())
     }

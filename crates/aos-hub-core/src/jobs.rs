@@ -35,8 +35,14 @@ use crate::backend::BackendBounds;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Job {
+    /// Fans one periodic maintenance tick out into bounded resource jobs.
+    DispatchMaintenance,
     /// Runs a bounded pass of durable topology-probe operations.
     RunTopologyProbes,
+    /// Recovers one bounded page of expired cache writes and tombstones.
+    RecoverCacheWrites,
+    /// Runs one bounded page of due cache physical-deletion work.
+    RunCacheGc,
     /// Regenerate a registry's machine surface (NAR/narinfo pointers) after a
     /// publish.
     RegenerateSurface {
@@ -51,6 +57,11 @@ pub enum Job {
     Reindex {
         /// The registry to re-index.
         registry_id: i64,
+    },
+    /// Reconciles one binary cache's provider inventory.
+    RescanCache {
+        /// The binary cache to reconcile.
+        cache_id: i64,
     },
     /// Clears one registry's rebuildable derived index before an operator-led
     /// full re-index. Publication state and stored surface objects are retained.
@@ -220,10 +231,14 @@ impl JobEnvelope {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match &self.job {
+            Job::DispatchMaintenance => "dispatch_maintenance",
             Job::RunTopologyProbes => "run_topology_probes",
+            Job::RecoverCacheWrites => "recover_cache_writes",
+            Job::RunCacheGc => "run_cache_gc",
             Job::RegenerateSurface { .. } => "regenerate_surface",
             Job::RebuildDirectory => "rebuild_directory",
             Job::Reindex { .. } => "reindex",
+            Job::RescanCache { .. } => "rescan_cache",
             Job::ResetIndex { .. } => "reset_index",
             Job::RefreshPublicationObject { .. } => "refresh_publication_object",
             Job::DeliverWebhook { .. } => "deliver_webhook",
