@@ -27,31 +27,40 @@ use crucible_shmem::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::checkpoint::bounded_cbor::{BoundedMap, BoundedSet};
 use crate::fault_action_sink::CommittedQemuActionEvidence;
 use crate::{ProductionFaultActionSink, QemuNodeSet};
+
+const MAX_QEMU_CHECKPOINT_NODES: u64 = 16_384;
+const MAX_QEMU_CHECKPOINT_ACTIONS: u64 = 1_073_741_824;
+
+type QemuNodeMap<V> = BoundedMap<NodeId, V, MAX_QEMU_CHECKPOINT_NODES>;
+type QemuActionMap<V> = BoundedMap<ContentHash, V, MAX_QEMU_CHECKPOINT_ACTIONS>;
+type QemuActionSet = BoundedSet<ContentHash, MAX_QEMU_CHECKPOINT_ACTIONS>;
+type PendingQemuEventMap = QemuNodeMap<Vec<DequeuedFaultEvent>>;
 
 mod checkpoint_codec;
 pub use checkpoint_codec::ProductionFaultRuntimeCheckpointCodecError;
 
 /// Complete resumable state for the production fault runtime.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ProductionFaultRuntimeCheckpoint {
     /// Signal evaluator, binding, canonical adapter, replay, and search state.
     runtime: Option<FaultRuntimeCheckpoint>,
     /// Committed host network and storage adapter state.
     host: HostFaultActionState,
     /// Execution fingerprints of the exact QEMU snapshots paired with this state.
-    qemu_fingerprints: BTreeMap<NodeId, ContentHash>,
+    qemu_fingerprints: QemuNodeMap<ContentHash>,
     /// Per-node fault-command continuation paired with the QEMU snapshots.
-    qemu_fault_sequences: BTreeMap<NodeId, u64>,
+    qemu_fault_sequences: QemuNodeMap<u64>,
     /// Per-node fault-event continuation paired with the QEMU snapshots.
-    qemu_fault_event_sequences: BTreeMap<NodeId, u64>,
+    qemu_fault_event_sequences: QemuNodeMap<u64>,
     /// Issued QEMU actions needed to authenticate asynchronous occurrence events.
-    qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
+    qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
     /// Authenticated APPLY results that bind occurrences to exact commands.
-    qemu_action_commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
+    qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
     /// Issued persistent rules that remain installed in QEMU.
-    qemu_active_rule_ids: BTreeSet<ContentHash>,
+    qemu_active_rule_ids: QemuActionSet,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
     /// Referenced event occurrences retained for device recovery subscriptions.
@@ -59,7 +68,7 @@ pub struct ProductionFaultRuntimeCheckpoint {
     /// Drained QEMU occurrences awaiting a successfully committed boundary.
     pending_qemu_observations: Vec<FaultObservation>,
     /// Raw drained QEMU events retained until validation succeeds atomically.
-    pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    pending_qemu_events: PendingQemuEventMap,
     /// Aggregate identity binding every continuation component to the plan.
     identity: ContentHash,
 }
@@ -217,7 +226,6 @@ pub struct QemuNodeLifecycleDecision {
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
-#[derive(Clone)]
 pub struct ProductionFaultRuntime {
     plan_id: ContentHash,
     resource_limits: FaultResourceLimits,
@@ -225,11 +233,11 @@ pub struct ProductionFaultRuntime {
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
     emitted_events: Vec<ReferencedSignalEvent>,
-    qemu_issued_actions: BTreeMap<ContentHash, ResolvedBindingAction>,
-    qemu_action_commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
-    qemu_active_rule_ids: BTreeSet<ContentHash>,
+    qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
+    qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
+    qemu_active_rule_ids: QemuActionSet,
     pending_qemu_observations: Vec<FaultObservation>,
-    pending_qemu_events: BTreeMap<NodeId, Vec<DequeuedFaultEvent>>,
+    pending_qemu_events: PendingQemuEventMap,
     pending_node_lifecycle: Vec<QemuNodeLifecycleDecision>,
     pending_node_boot: BTreeSet<NodeId>,
     pending_search_choices: Vec<(FaultCoordinate, Vec<BindingSearchChoice>)>,

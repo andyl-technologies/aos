@@ -3,6 +3,24 @@
 use super::*;
 use std::io::Read;
 
+pub(super) fn clone_fault_checkpoint_lifecycle(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+) -> Result<ProductionFaultRuntimeCheckpoint, LifecycleApiError> {
+    checkpoint
+        .try_clone()
+        .map_err(|error| loop_factory_error(format!("clone production fault checkpoint: {error}")))
+}
+
+pub(super) fn clone_fault_checkpoint_scheduler(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
+    checkpoint
+        .try_clone()
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("clone production fault checkpoint: {error}"),
+        })
+}
+
 pub(super) const fn production_guest_architecture(
     architecture: crucible::VmArchitecture,
 ) -> ProductionGuestArchitecture {

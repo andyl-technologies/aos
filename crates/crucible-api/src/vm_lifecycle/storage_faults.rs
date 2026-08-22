@@ -2624,7 +2624,8 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
             .runtime
             .lock()
             .map_err(|_| storage_error("begin coordinated 9p transaction", "runtime is poisoned"))?
-            .clone();
+            .try_clone()
+            .map_err(|error| storage_error("clone coordinated 9p runtime", error))?;
         let cursor_before = *self
             .cursor
             .lock()
@@ -2634,7 +2635,6 @@ impl QemuNinepFaultCoordinator for ProductionNinepFaultCoordinator {
             .lock()
             .map_err(|_| storage_error("begin coordinated 9p transaction", "journal is poisoned"))?
             .clone();
-
         let mut shared_commit_started = false;
         let error = match self.service_ninep_io_transaction(
             servicer,

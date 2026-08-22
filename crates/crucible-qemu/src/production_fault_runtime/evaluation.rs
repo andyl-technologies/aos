@@ -90,10 +90,29 @@ impl ProductionFaultRuntime {
         let drain_result = nodes.drain_fault_events(&mut drained);
         for (node, mut events) in drained {
             if !events.is_empty() {
-                self.pending_qemu_events
-                    .entry(node)
-                    .or_default()
-                    .append(&mut events);
+                if let Some(pending) = self.pending_qemu_events.get_mut(&node) {
+                    pending.append(&mut events);
+                } else {
+                    self.resource_limits.reserve(
+                        "nodes",
+                        u64::try_from(self.pending_qemu_events.len()).map_err(|_| {
+                            FaultResourceLimitError::Representation {
+                                field: "nodes",
+                                value: u64::MAX,
+                            }
+                        })?,
+                        1,
+                    )?;
+                    self.pending_qemu_events
+                        .try_insert(node, events)
+                        .map_err(|_| {
+                            runtime_collection_allocation(
+                                "nodes",
+                                self.pending_qemu_events.len(),
+                                self.resource_limits,
+                            )
+                        })?;
+                }
             }
         }
         drain_result?;
@@ -209,7 +228,7 @@ impl ProductionFaultRuntime {
             &[],
             &self.pending_qemu_observations,
             &observations,
-            &BTreeMap::new(),
+            &PendingQemuEventMap::new(),
             self.resource_limits,
         )?;
         self.pending_node_lifecycle
@@ -249,7 +268,14 @@ impl ProductionFaultRuntime {
                     self.resource_limits.reserve("event_records", retained, 1)?;
                     if self
                         .qemu_issued_actions
-                        .insert(identity, action.clone())
+                        .try_insert(identity, action.clone())
+                        .map_err(|_| {
+                            runtime_collection_allocation(
+                                "event_records",
+                                self.qemu_issued_actions.len(),
+                                self.resource_limits,
+                            )
+                        })?
                         .is_some()
                     {
                         return Err(BackendError::Rejected {
@@ -260,7 +286,18 @@ impl ProductionFaultRuntime {
                         }
                         .into());
                     }
-                    if self.qemu_action_commits.insert(identity, commit).is_some() {
+                    if self
+                        .qemu_action_commits
+                        .try_insert(identity, commit)
+                        .map_err(|_| {
+                            runtime_collection_allocation(
+                                "event_records",
+                                self.qemu_action_commits.len(),
+                                self.resource_limits,
+                            )
+                        })?
+                        .is_some()
+                    {
                         return Err(BackendError::Rejected {
                             message: format!(
                                 "QEMU action identity {} has more than one APPLY result",
@@ -279,7 +316,15 @@ impl ProductionFaultRuntime {
                                         || active.phase != action.phase
                                 })
                         });
-                        self.qemu_active_rule_ids.insert(identity);
+                        self.qemu_active_rule_ids
+                            .try_insert(identity)
+                            .map_err(|_| {
+                                runtime_collection_allocation(
+                                    "event_records",
+                                    self.qemu_active_rule_ids.len(),
+                                    self.resource_limits,
+                                )
+                            })?;
                     }
                 }
                 BindingActionKind::RemovePersistent => {
@@ -441,4 +486,22 @@ impl ProductionFaultRuntime {
         }
         Ok(())
     }
+}
+
+fn runtime_collection_allocation(
+    field: &'static str,
+    current: usize,
+    limits: FaultResourceLimits,
+) -> ProductionFaultRuntimeError {
+    let current = u64::try_from(current).unwrap_or(u64::MAX);
+    FaultResourceLimitError::Exceeded {
+        field,
+        current,
+        requested: 1,
+        configured: limits.configured(field).unwrap_or(0),
+        hard: FaultResourceLimits::compiled_maximum()
+            .configured(field)
+            .unwrap_or(0),
+    }
+    .into()
 }

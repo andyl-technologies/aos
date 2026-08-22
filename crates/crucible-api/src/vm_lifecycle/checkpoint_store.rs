@@ -473,7 +473,7 @@ pub(super) fn load_exact_checkpoint_set(
                 length: target.vmstate.length,
                 chunks: target.vmstate.chunks.clone(),
             },
-            fault_checkpoint: fault_checkpoint.clone(),
+            fault_checkpoint: clone_fault_checkpoint_lifecycle(&fault_checkpoint)?,
             manifest_identity: target.manifest_identity,
         };
         budget.reserve_identity_once(

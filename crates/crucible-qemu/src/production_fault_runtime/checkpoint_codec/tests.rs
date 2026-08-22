@@ -10,16 +10,16 @@ fn empty_checkpoint(
     let mut checkpoint = ProductionFaultRuntimeCheckpoint {
         runtime: None,
         host: HostFaultActionState::default(),
-        qemu_fingerprints: BTreeMap::new(),
-        qemu_fault_sequences: BTreeMap::new(),
-        qemu_fault_event_sequences: BTreeMap::new(),
-        qemu_issued_actions: BTreeMap::new(),
-        qemu_action_commits: BTreeMap::new(),
-        qemu_active_rule_ids: BTreeSet::new(),
+        qemu_fingerprints: QemuNodeMap::new(),
+        qemu_fault_sequences: QemuNodeMap::new(),
+        qemu_fault_event_sequences: QemuNodeMap::new(),
+        qemu_issued_actions: QemuActionMap::new(),
+        qemu_action_commits: QemuActionMap::new(),
+        qemu_active_rule_ids: QemuActionSet::new(),
         network_state,
         emitted_events: Vec::new(),
         pending_qemu_observations: Vec::new(),
-        pending_qemu_events: BTreeMap::new(),
+        pending_qemu_events: PendingQemuEventMap::new(),
         identity: ContentHash::from_bytes(b"uninitialized checkpoint identity"),
     };
     checkpoint.identity = production_checkpoint_identity(
@@ -103,7 +103,39 @@ fn authenticated_qemu_event(payload: Vec<u8>) -> DequeuedFaultEvent {
 fn complete_production_checkpoint_round_trips_canonically() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"empty checkpoint seed");
-    let checkpoint = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
+    let mut checkpoint = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    checkpoint
+        .qemu_fingerprints
+        .try_insert(node.clone(), ContentHash::from_bytes(b"fingerprint"))
+        .unwrap_or_else(|error| panic!("fingerprint fixture should allocate: {error}"));
+    checkpoint
+        .qemu_fault_sequences
+        .try_insert(node.clone(), 1)
+        .unwrap_or_else(|error| panic!("command sequence fixture should allocate: {error}"));
+    checkpoint
+        .qemu_fault_event_sequences
+        .try_insert(node, 1)
+        .unwrap_or_else(|error| panic!("event sequence fixture should allocate: {error}"));
+    checkpoint.identity = production_checkpoint_identity(
+        plan.id(),
+        plan.resource_limits(),
+        checkpoint.runtime.as_ref(),
+        &checkpoint.host,
+        &checkpoint.qemu_fingerprints,
+        &checkpoint.qemu_fault_sequences,
+        &checkpoint.qemu_fault_event_sequences,
+        &checkpoint.qemu_issued_actions,
+        &checkpoint.qemu_action_commits,
+        &checkpoint.qemu_active_rule_ids,
+        checkpoint.network_state.as_ref(),
+        &checkpoint.emitted_events,
+        &checkpoint.pending_qemu_observations,
+        &checkpoint.pending_qemu_events,
+    )
+    .unwrap_or_else(|error| panic!("nonempty checkpoint identity should encode: {error}"));
 
     let bytes = checkpoint
         .to_canonical_bytes()
@@ -141,7 +173,10 @@ fn qemu_event_record_is_admitted_before_output_allocation() {
     let node = NodeId {
         name: String::from("node-a"),
     };
-    let events = BTreeMap::from([(node, vec![event])]);
+    let mut events = PendingQemuEventMap::new();
+    events
+        .try_insert(node, vec![event])
+        .unwrap_or_else(|error| panic!("event map fixture should allocate: {error}"));
     let maximum = u64::try_from(encoded_length.saturating_sub(1))
         .unwrap_or_else(|_| panic!("event length should fit the aggregate limit"));
     let mut budget = CheckpointConstructionBudget::new(maximum);
@@ -162,8 +197,7 @@ fn qemu_event_record_is_admitted_before_output_allocation() {
 fn aggregate_identity_binds_network_adapter_bytes() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"network mutation seed");
-    let checkpoint = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
-    let mut mutated = checkpoint.clone();
+    let mut mutated = empty_checkpoint(&plan, Some(empty_network(b"adapter-v1".to_vec())));
     mutated
         .network_state
         .as_mut()

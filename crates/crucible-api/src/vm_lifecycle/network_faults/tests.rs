@@ -4,6 +4,9 @@ use std::sync::Arc;
 
 use super::*;
 
+#[path = "tests/support.rs"]
+mod support;
+use support::clone_fault_checkpoint;
 #[test]
 fn production_fault_cursor_sequences_only_within_one_coordinate() {
     let mut cursor = ProductionFaultEvaluationCursor::default();
@@ -24,7 +27,6 @@ fn production_fault_cursor_sequences_only_within_one_coordinate() {
     assert_eq!((third.same_coordinate, third.journal), (0, 2));
     assert_eq!((fourth.same_coordinate, fourth.journal), (1, 3));
 }
-
 #[test]
 fn production_journal_sequence_never_reuses_an_a_b_a_coordinate() {
     let mut cursor = ProductionFaultEvaluationCursor::default();
@@ -44,7 +46,6 @@ fn production_journal_sequence_never_reuses_an_a_b_a_coordinate() {
     assert_eq!(cursor.coordinate_sequence, 0);
     assert_eq!(cursor.journal_sequence, 3);
 }
-
 use crucible::model::{
     BindingActionCause, BindingMapping, BindingObservabilityPolicy, BindingSampling,
     BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EvaluatedSignal,
@@ -60,7 +61,6 @@ use crucible::{
     SchedulerLivenessScenario, Shift, SimInstant, VmArchitecture, WhiteBoxPolicy,
     WorldIoLayoutPolicy, WorldNode, deterministic_node_mac,
 };
-
 struct NoArtifacts;
 
 impl crucible::model::SignalArtifactProvider for NoArtifacts {
@@ -465,7 +465,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         down_plan(segment.clone()),
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
-        checkpoint.clone(),
+        clone_fault_checkpoint(&checkpoint),
         super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
@@ -528,7 +528,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             down_plan(segment),
             Some(Arc::new(NoArtifacts)),
             ContentHash::from_bytes(b"production-availability-drop"),
-            checkpoint.clone(),
+            clone_fault_checkpoint(&checkpoint),
             super::super::fault_implementation::test_host_manifests(),
             &mut nodes,
             world.fault_topology().clone(),
