@@ -3,10 +3,6 @@
 use std::sync::Arc;
 
 use super::*;
-
-#[path = "tests/support.rs"]
-mod support;
-use support::clone_fault_checkpoint;
 #[test]
 fn production_fault_cursor_sequences_only_within_one_coordinate() {
     let mut cursor = ProductionFaultEvaluationCursor::default();
@@ -465,7 +461,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         down_plan(segment.clone()),
         Some(Arc::new(NoArtifacts)),
         ContentHash::from_bytes(b"production-availability-drop"),
-        clone_fault_checkpoint(&checkpoint),
+        super::super::clone_fault_checkpoint_fixture(&checkpoint),
         super::super::fault_implementation::test_host_manifests(),
         &mut nodes,
         world.fault_topology().clone(),
@@ -528,7 +524,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             down_plan(segment),
             Some(Arc::new(NoArtifacts)),
             ContentHash::from_bytes(b"production-availability-drop"),
-            clone_fault_checkpoint(&checkpoint),
+            super::super::clone_fault_checkpoint_fixture(&checkpoint),
             super::super::fault_implementation::test_host_manifests(),
             &mut nodes,
             world.fault_topology().clone(),
