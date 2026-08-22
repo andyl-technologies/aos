@@ -75,7 +75,7 @@
     }
     {
       label = "independent watchdog resume";
-      needle = "kill -CONT \"$bsp_watchdog_target\"";
+      needle = "if kill -CONT \"$bsp_watchdog_target\"";
     }
     {
       label = "worker exit cleanup";
@@ -268,9 +268,9 @@ in
             if bounded_preemption_finish "$TMPDIR/watchdog.log"; then
               fail "watchdog-expired adversary unexpectedly completed"
             fi
-            grep -q '^watchdog-resume target=' "$TMPDIR/watchdog.log" \
+            grep -q '^watchdog-resume target=.* status=success$' "$TMPDIR/watchdog.log" \
               || fail "watchdog did not independently resume target"
-            wait_for_pattern 'continued=' "$TMPDIR/watchdog.events" \
+            wait_for_pattern 'continued=[1-9]' "$TMPDIR/watchdog.events" \
               || fail "target did not execute after watchdog resume"
             bounded_preemption_cleanup
             BOUNDED_PREEMPTION_PAUSE_SECONDS=0.015

@@ -154,9 +154,13 @@ bounded_preemption_start() {
         "$BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS" >> "$bsp_event_log"
       # Resume independently before asking the worker to exit. This remains
       # effective even if the worker is delayed or its EXIT trap regresses.
-      kill -CONT "$bsp_watchdog_target" 2>/dev/null || true
-      printf 'watchdog-resume target=%s\n' \
-        "$bsp_watchdog_target" >> "$bsp_event_log"
+      if kill -CONT "$bsp_watchdog_target" 2>/dev/null; then
+        printf 'watchdog-resume target=%s status=success\n' \
+          "$bsp_watchdog_target" >> "$bsp_event_log"
+      else
+        printf 'watchdog-resume target=%s status=failed\n' \
+          "$bsp_watchdog_target" >> "$bsp_event_log"
+      fi
       kill -TERM "$bsp_watchdog_worker" 2>/dev/null || true
     fi
   ) &
