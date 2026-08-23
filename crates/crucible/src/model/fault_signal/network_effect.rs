@@ -160,8 +160,7 @@ impl<'de> serde::Deserialize<'de> for NetworkServiceSegments {
     where
         D: serde::Deserializer<'de>,
     {
-        let segments =
-            <Vec<NetworkServiceSegment> as serde::Deserialize>::deserialize(deserializer)?;
+        let segments = super::fallible_decode::deserialize_vec(deserializer)?;
         Self::new(segments).map_err(serde::de::Error::custom)
     }
 }

@@ -16,6 +16,30 @@ pub(super) fn preflight_checkpoint_with_actions(
     precondition_digest: ContentHash,
     evidence_digest: ContentHash,
 ) -> Result<(), FaultRuntimeError> {
+    let _ = checkpoint_bytes_with_actions(
+        checkpoint,
+        actions,
+        coordinate,
+        same_coordinate_sequence,
+        opportunity,
+        derivation_fingerprint,
+        precondition_digest,
+        evidence_digest,
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checkpoint_bytes_with_actions(
+    checkpoint: &FaultRuntimeCheckpoint,
+    actions: &[ResolvedBindingAction],
+    coordinate: FaultCoordinate,
+    same_coordinate_sequence: u64,
+    opportunity: Option<&FaultOpportunity>,
+    derivation_fingerprint: ContentHash,
+    precondition_digest: ContentHash,
+    evidence_digest: ContentHash,
+) -> Result<Vec<u8>, FaultRuntimeError> {
     let work_items = u64::try_from(checkpoint.recorded_work_items.len())
         .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
     checkpoint
@@ -69,8 +93,7 @@ pub(super) fn preflight_checkpoint_with_actions(
         branch_parent: checkpoint.branch_parent,
         poisoned: checkpoint.poisoned,
     };
-    let _ = super::super::runtime::checkpoint_codec::encode(&wire, checkpoint.resource_limits)?;
-    Ok(())
+    super::super::runtime::checkpoint_codec::encode(&wire, checkpoint.resource_limits)
 }
 
 #[derive(Serialize)]
@@ -268,5 +291,74 @@ impl Serialize for CapacityRecord<'_> {
             evidence_digest: self.evidence_digest,
         }
         .serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    #[test]
+    fn borrowed_capacity_wire_matches_a_real_host_record_candidate() {
+        let plan = test_plan();
+        let seed = ContentHash::from_bytes(b"borrowed-capacity-wire-equivalence");
+        let coordinate = FaultCoordinate {
+            virtual_nanos: 0,
+            retired_instructions: None,
+        };
+        let mut runtime = FaultExecutionRuntime::new(
+            &plan,
+            &NoArtifacts,
+            SignalBoundarySnapshot::default(),
+            seed,
+            manifests(),
+        )
+        .unwrap_or_else(|error| panic!("runtime: {error}"));
+        let evaluation = runtime
+            .preview_boundary(coordinate, 0)
+            .unwrap_or_else(|error| panic!("preview: {error}"));
+        assert_eq!(evaluation.actions.len(), 1);
+        let checkpoint = runtime
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("checkpoint: {error}"));
+        let derivation = ContentHash::from_bytes(b"capacity-equivalence-derivation");
+        let precondition = ContentHash::from_bytes(b"capacity-equivalence-precondition");
+        let evidence = ContentHash::from_bytes(b"capacity-equivalence-evidence");
+        let borrowed = checkpoint_bytes_with_actions(
+            &checkpoint,
+            &evaluation.actions,
+            coordinate,
+            0,
+            None,
+            derivation,
+            precondition,
+            evidence,
+        )
+        .unwrap_or_else(|error| panic!("borrowed candidate: {error}"));
+
+        let records = evaluation
+            .actions
+            .iter()
+            .map(|action| {
+                ResolvedEffectRecord::from_committed_action(
+                    action,
+                    None,
+                    0,
+                    derivation,
+                    Some(precondition),
+                    evidence,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("records: {error}"));
+        let item = ResolvedReplayWorkItem::new(coordinate, 0, None, derivation, records)
+            .unwrap_or_else(|error| panic!("work item: {error}"));
+        let mut actual = checkpoint;
+        actual.recorded_work_items.push(item);
+        let actual = actual
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("actual candidate: {error}"));
+        assert_eq!(borrowed, actual);
     }
 }

@@ -169,6 +169,30 @@ in
             -p crucible \
             --lib resolved_effect_trace_preflights_authored_collection_counts \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib borrowed_capacity_wire_matches_a_real_host_record_candidate \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib nested_sequence_allocation_uses_the_authored_fat_checkpoint_coordinate \
+            -- --test-threads=1
 
           cargo test \
             --frozen \
