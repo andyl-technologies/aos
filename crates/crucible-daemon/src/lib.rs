@@ -248,6 +248,7 @@ pub use planner_process::{
 };
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
+    LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
     QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

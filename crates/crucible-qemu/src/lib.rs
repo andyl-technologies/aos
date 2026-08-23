@@ -24,8 +24,8 @@
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
 //! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
-//! the Linux post-setup node composition boundary; `linux_attempt_process`
-//! exposes the sealed process-only facade over private cgroup authority;
+//! the Linux post-setup node composition boundary; `linux_attempt_host`
+//! exposes the sealed combined cgroup/project-quota attempt owner;
 //! `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `unix_socket_path` keeps QEMU run-directory socket operations within the
@@ -60,10 +60,12 @@ mod host_worker_pool;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
+mod linux_attempt_host;
+#[cfg(target_os = "linux")]
 mod linux_attempt_process;
 #[cfg(target_os = "linux")]
-// The lifecycle-bound quota/run-directory owner is intentionally internal
-// until the daemon combines it with the process owner and quarantine worker.
+// The lifecycle-bound quota/run-directory owner remains behind the combined
+// public host-resource facade.
 #[allow(dead_code)]
 mod linux_attempt_storage;
 #[cfg(target_os = "linux")]
@@ -189,6 +191,10 @@ pub use launch::{
     QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
     probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+};
+#[cfg(target_os = "linux")]
+pub use linux_attempt_host::{
+    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner,
 };
 #[cfg(target_os = "linux")]
 pub use linux_attempt_process::{

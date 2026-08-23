@@ -8,10 +8,14 @@
 //! a cgroup from one attempt with a quota or run directory from another.
 
 use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crucible_campaign::AttemptResourceLimits;
-use crucible_qemu::{QemuChildProcessContract, QemuNodeChild, QemuVmRealizationError};
+use crucible_qemu::{
+    LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
+    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuNodeChild, QemuVmRealizationError,
+};
 
 use crate::executor_supervisor::{
     ExecutionCancellationHook, ExecutionCancellationHookRegistration,
@@ -112,6 +116,127 @@ pub trait QemuAttemptHostResourceFactory {
         &mut self,
         resources: AttemptResourceLimits,
     ) -> Result<Self::Owner, QemuVmRealizationError>;
+}
+
+/// Concrete Linux allocator for one indivisible QEMU process/storage owner.
+#[derive(Debug)]
+pub struct LinuxQemuAttemptHostResourceFactory {
+    host: LinuxQemuAttemptHostFactory,
+}
+
+impl LinuxQemuAttemptHostResourceFactory {
+    /// Opens and exclusively owns the configured cgroup and storage roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable executor error for invalid host policy and an
+    /// availability error for I/O or namespace contention.
+    pub fn open(config: LinuxQemuAttemptHostConfig) -> Result<Self, QemuVmRealizationError> {
+        LinuxQemuAttemptHostFactory::open(config).map(|host| Self { host })
+    }
+
+    /// Wraps an already-open exact Linux host allocator.
+    #[must_use]
+    pub const fn new(host: LinuxQemuAttemptHostFactory) -> Self {
+        Self { host }
+    }
+
+    /// Returns the retained exact Linux host allocator.
+    pub const fn host(&self) -> &LinuxQemuAttemptHostFactory {
+        &self.host
+    }
+
+    /// Returns mutable access to the retained exact Linux host allocator.
+    pub const fn host_mut(&mut self) -> &mut LinuxQemuAttemptHostFactory {
+        &mut self.host
+    }
+}
+
+/// Concrete Linux process/storage owner with its exact campaign resource basis.
+#[derive(Debug)]
+#[must_use = "finish the Linux QEMU host owner or transfer it to quarantine"]
+pub struct LinuxQemuAttemptHostResourceOwner {
+    resources: AttemptResourceLimits,
+    host: LinuxQemuAttemptHostOwner,
+}
+
+impl LinuxQemuAttemptHostResourceOwner {
+    /// Returns the exact pinned run-directory path for diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an executor error after the storage owner moved to quarantine.
+    pub fn run_directory(&self) -> Result<&Path, QemuVmRealizationError> {
+        self.host.run_directory()
+    }
+}
+
+impl QemuAttemptCancellationSignal for LinuxQemuAttemptCancellationSignal {
+    fn signal(&self) -> Result<(), QemuVmRealizationError> {
+        LinuxQemuAttemptCancellationSignal::signal(self)
+    }
+}
+
+impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
+    type Owner = LinuxQemuAttemptHostResourceOwner;
+
+    fn begin(
+        &mut self,
+        resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        let host = self.host.begin(
+            resources.maximum_vcpus(),
+            resources.maximum_resident_bytes(),
+            resources.maximum_disk_bytes(),
+        )?;
+        if host.resource_ceiling()
+            != (
+                resources.maximum_vcpus(),
+                resources.maximum_resident_bytes(),
+                resources.maximum_disk_bytes(),
+            )
+        {
+            let mut host = host;
+            host.quarantine();
+            return Err(QemuVmRealizationError::Executor {
+                operation: "install Linux QEMU host resources",
+                message: String::from("combined Linux owner returned a different resource basis"),
+            });
+        }
+        Ok(LinuxQemuAttemptHostResourceOwner { resources, host })
+    }
+}
+
+impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
+    type CancellationSignal = LinuxQemuAttemptCancellationSignal;
+
+    fn resource_limits(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        self.host.process_contract()
+    }
+
+    fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
+        self.host.cancellation_signal()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.host.check_operational_boundary()
+    }
+
+    fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
+        self.host.retain_failed_child(child);
+    }
+
+    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.host.finish()
+    }
+
+    fn quarantine(&mut self) {
+        self.host.quarantine();
+    }
 }
 
 /// Factory adding signal-driven cancellation and quantum accounting to a host owner.
