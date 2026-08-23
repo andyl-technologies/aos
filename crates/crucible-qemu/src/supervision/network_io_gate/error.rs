@@ -8,6 +8,7 @@ use super::QemuLiveNetworkIoServicerError;
 use crate::{
     LaunchProfileError, QemuHostPluginSetupError, QemuLaunchCommandError,
     QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QmpError,
+    bounded_scheduler_preemption::BoundedSchedulerPreemptionError,
 };
 
 /// Failure produced by the live network-I/O certification.
@@ -62,6 +63,12 @@ pub enum QemuLiveNetworkIoGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("live network plugin setup acknowledgement was not ready")]
     SetupAckNotReady,
+    /// The resource-bounded host-scheduling adversary failed.
+    #[error("live network bounded scheduler preemption failed")]
+    SchedulerPreemption {
+        /// Typed signal, watchdog, or wall-bound failure.
+        source: BoundedSchedulerPreemptionError,
+    },
     /// The network router mapping or ring operation failed.
     #[error("live network servicer failed")]
     NetworkServicer {

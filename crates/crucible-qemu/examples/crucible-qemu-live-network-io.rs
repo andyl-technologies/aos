@@ -6,7 +6,7 @@
 //! ```text
 //! CRUCIBLE_NETWORK_IO_BUSY_CEILING
 //! CRUCIBLE_NETWORK_IO_TIMEOUT_SECS
-//! CRUCIBLE_NETWORK_IO_SECOND_RUN_LOAD
+//! CRUCIBLE_NETWORK_IO_SECOND_RUN_SCHEDULER_PREEMPTION
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -58,7 +58,10 @@ fn run() -> Result<(), String> {
                 "CRUCIBLE_NETWORK_IO_TIMEOUT_SECS",
                 120,
             )?))
-            .with_second_run_host_load(env_flag("CRUCIBLE_NETWORK_IO_SECOND_RUN_LOAD", true)?);
+            .with_second_run_scheduler_preemption(env_flag(
+                "CRUCIBLE_NETWORK_IO_SECOND_RUN_SCHEDULER_PREEMPTION",
+                true,
+            )?);
     let config = match env_opt_u64("CRUCIBLE_NETWORK_IO_BUSY_CEILING")? {
         Some(ceiling) => config.with_busy_ceiling_icount(ceiling),
         None => config,
@@ -124,8 +127,8 @@ fn run() -> Result<(), String> {
         report.retained_frame_first_retry_icount
     );
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
     println!(
         "hostile_probe_emit_icount={}",
@@ -144,7 +147,22 @@ fn run() -> Result<(), String> {
         report.acknowledgement_offset_equal
     );
     println!("determinism_scope=router-delivery-and-frame-order");
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "host_adversary={}",
+        if report.host_scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
+    println!(
+        "host_scheduler_preemption_count={}",
+        report.host_scheduler_preemption_count
+    );
+    println!(
+        "host_scheduler_preemption_requested_milliseconds={}",
+        report.host_scheduler_preemption_requested_milliseconds
+    );
     println!("delayed_reply_applied={}", report.delayed_reply_applied);
     println!("orderly_child_exit={}", report.orderly_child_exit);
     Ok(())

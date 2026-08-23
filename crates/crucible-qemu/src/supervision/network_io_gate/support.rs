@@ -2,7 +2,6 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -13,9 +12,9 @@ use crucible::{
 
 use super::{
     DRIVE_POLL_INTERVAL, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, GATE_DOMAIN, GATE_NODE,
-    HOST_LOAD_WORKERS, LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD,
-    LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome,
-    QMP_PRIMER_WAKE_INTERVAL, QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
+    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
+    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL,
+    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
 };
 use crate::{
     CrucibleShmemNetworkDevice, QemuHostPluginSetup, QemuLaunchArtifact, QemuNodeChild,
@@ -208,45 +207,6 @@ pub(super) fn node_id(name: &str) -> NodeId {
 
 pub(super) fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
-}
-
-pub(super) struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    pub(super) fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator = 0_u64;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
 }
 
 pub(super) struct GateSendAuthorizer;
