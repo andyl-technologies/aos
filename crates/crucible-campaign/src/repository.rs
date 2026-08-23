@@ -263,18 +263,92 @@ pub struct ObservationResult {
     pub replayed: bool,
 }
 
+/// Self-contained immutable records for one dynamically discovered choice.
+///
+/// Carrying all three values lets the executor hand off a new producer contract
+/// without receiving a general-purpose repository publication capability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChoiceDiscovery {
+    declaration: Arc<SelectableDeclaration>,
+    domain: Arc<ChoiceDomain>,
+    opportunity: ChoiceOpportunity,
+}
+
+impl ChoiceDiscovery {
+    /// Builds one self-contained choice discovery record set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the opportunity does not bind the
+    /// exact declaration and domain.
+    pub fn new(
+        declaration: SelectableDeclaration,
+        domain: ChoiceDomain,
+        opportunity: ChoiceOpportunity,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::from_shared(Arc::new(declaration), Arc::new(domain), opportunity)
+    }
+
+    /// Builds one discovery by sharing immutable declaration and domain values.
+    ///
+    /// This form avoids copying large records when many opportunities share one
+    /// producer contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the opportunity does not bind the
+    /// exact declaration and domain.
+    pub fn from_shared(
+        declaration: Arc<SelectableDeclaration>,
+        domain: Arc<ChoiceDomain>,
+        opportunity: ChoiceOpportunity,
+    ) -> Result<Self, CampaignCodecError> {
+        opportunity.validate_references(&declaration, &domain)?;
+        Ok(Self {
+            declaration,
+            domain,
+            opportunity,
+        })
+    }
+
+    /// Returns the reusable selectable declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &SelectableDeclaration {
+        self.declaration.as_ref()
+    }
+
+    /// Returns the exact offered domain.
+    #[must_use]
+    pub fn domain(&self) -> &ChoiceDomain {
+        self.domain.as_ref()
+    }
+
+    /// Returns the dynamic opportunity.
+    #[must_use]
+    pub const fn opportunity(&self) -> &ChoiceOpportunity {
+        &self.opportunity
+    }
+}
+
+/// Maximum aggregate canonical bytes for unique choice records in one candidate.
+pub const MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES: usize = 128 * 1024 * 1024;
+/// Maximum number of choice discoveries carried by one candidate.
+pub const MAX_OBSERVATION_CHOICE_DISCOVERIES: usize = crate::observation::MAX_DISCOVERED_CHOICES;
+
 /// Complete immutable executor result published before campaign admission.
 ///
 /// The bundle keeps the child configuration and modeled evidence values beside
-/// the observation that names them. A repository validates the complete bundle
-/// and every already-published evidence dependency before writing any member.
+/// the observation that names them. Newly discovered choices carry their exact
+/// declaration and domain so a dynamic producer never needs ambient immutable
+/// publication authority. A repository validates the complete bundle and every
+/// already-published evidence dependency before writing any member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservationCandidate {
     child: ConfigurationArtifact,
     measurements: MeasurementSet,
     properties: PropertyVerdictSet,
     coverage: CoverageProjection,
-    discovered_choices: Vec<ChoiceOpportunity>,
+    discovered_choices: Vec<ChoiceDiscovery>,
     observation: Observation,
 }
 
@@ -283,29 +357,90 @@ impl ObservationCandidate {
     ///
     /// # Errors
     ///
-    /// Returns an error when discovered opportunity bodies exceed the
-    /// observation schema bound, contain duplicate IDs, or do not exactly
-    /// match the observation's discovered-choice set.
+    /// Returns an error when discovered records exceed the observation count or
+    /// aggregate-byte bound, contain duplicate opportunity IDs, disagree with
+    /// one another, or do not exactly match the observation's choice set.
     pub fn new(
         child: ConfigurationArtifact,
         measurements: MeasurementSet,
         properties: PropertyVerdictSet,
         coverage: CoverageProjection,
-        discovered_choices: Vec<ChoiceOpportunity>,
+        discovered_choices: Vec<ChoiceDiscovery>,
         observation: Observation,
     ) -> Result<Self, CampaignCodecError> {
-        if discovered_choices.len() > crate::observation::MAX_DISCOVERED_CHOICES {
+        if discovered_choices.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate has too many discovered choices",
             });
         }
-        let discovered_ids = discovered_choices
-            .iter()
-            .map(ChoiceOpportunity::id)
-            .collect::<Result<BTreeSet<_>, _>>()?;
-        if discovered_ids.len() != discovered_choices.len()
-            || &discovered_ids != observation.discovered_choices()
-        {
+        let mut discovered_ids = BTreeSet::new();
+        let mut shared_declarations: BTreeMap<SelectableId, Arc<SelectableDeclaration>> =
+            BTreeMap::new();
+        let mut shared_domains: BTreeMap<ChoiceDomainId, Arc<ChoiceDomain>> = BTreeMap::new();
+        let mut charged_records = BTreeSet::new();
+        let mut charged_bytes = 0usize;
+        let mut discovered_choices = discovered_choices;
+        for discovery in &mut discovered_choices {
+            discovery
+                .opportunity
+                .validate_references(&discovery.declaration, &discovery.domain)?;
+            let opportunity = discovery.opportunity.id()?;
+            if !discovered_ids.insert(opportunity) {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "observation candidate contains duplicate choice opportunities",
+                });
+            }
+            let declaration = discovery.declaration.id()?;
+            if let Some(existing) = shared_declarations.get(&declaration) {
+                if existing.as_ref() != discovery.declaration.as_ref() {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "choice declaration ID has conflicting canonical bodies",
+                    });
+                }
+                discovery.declaration = Arc::clone(existing);
+            } else {
+                shared_declarations.insert(declaration, Arc::clone(&discovery.declaration));
+            }
+            let domain = discovery.domain.id()?;
+            if let Some(existing) = shared_domains.get(&domain) {
+                if existing.as_ref() != discovery.domain.as_ref() {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "choice domain ID has conflicting canonical bodies",
+                    });
+                }
+                discovery.domain = Arc::clone(existing);
+            } else {
+                shared_domains.insert(domain, Arc::clone(&discovery.domain));
+            }
+            for (id, bytes) in [
+                (
+                    declaration.content_id(),
+                    discovery.declaration.canonical_bytes().len(),
+                ),
+                (
+                    domain.content_id(),
+                    discovery.domain.canonical_bytes().len(),
+                ),
+                (
+                    opportunity.content_id(),
+                    crate::codec::encode(&discovery.opportunity).len(),
+                ),
+            ] {
+                if charged_records.insert(id) {
+                    charged_bytes = charged_bytes.checked_add(bytes).ok_or(
+                        CampaignCodecError::LimitExceeded {
+                            limit: "observation-choice-discovery-bytes",
+                        },
+                    )?;
+                    if charged_bytes > MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
+                        return Err(CampaignCodecError::LimitExceeded {
+                            limit: "observation-choice-discovery-bytes",
+                        });
+                    }
+                }
+            }
+        }
+        if &discovered_ids != observation.discovered_choices() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate choice bodies differ from observation IDs",
             });
@@ -344,9 +479,10 @@ impl ObservationCandidate {
         &self.coverage
     }
 
-    /// Returns exact opportunity bodies discovered by the execution.
+    /// Returns exact declaration/domain/opportunity records discovered by the
+    /// execution.
     #[must_use]
-    pub fn discovered_choices(&self) -> &[ChoiceOpportunity] {
+    pub fn discovered_choices(&self) -> &[ChoiceDiscovery] {
         &self.discovered_choices
     }
 

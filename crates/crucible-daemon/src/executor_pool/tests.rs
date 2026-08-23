@@ -1115,7 +1115,10 @@ fn campaign_attempt_fixture(
         measurements,
         properties,
         coverage,
-        vec![opportunity],
+        vec![
+            crucible_campaign::ChoiceDiscovery::new(declaration, domain, opportunity)
+                .expect("choice discovery"),
+        ],
         observation,
     )
     .expect("observation candidate");

@@ -61,12 +61,16 @@ impl CampaignRepository {
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
         let coverage = self.put_coverage_projection(candidate.coverage())?;
-        for choice in candidate.discovered_choices() {
-            self.put_envelope(ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::ChoiceOpportunity,
-                crate::object::content_children(choice.content_children())?,
-                crate::codec::encode(choice),
-            )?)?;
+        for discovery in candidate.discovered_choices() {
+            let domain = self.publish_choice_domain(discovery.domain())?;
+            let declaration = self.publish_selectable(discovery.declaration())?;
+            let opportunity = self.publish_choice_opportunity(discovery.opportunity())?;
+            if domain != discovery.domain().id()?
+                || declaration != discovery.declaration().id()?
+                || opportunity != discovery.opportunity().id()?
+            {
+                return Err(integrity("observation-choice-publication-id-mismatch"));
+            }
         }
         let observation = self.put_observation(candidate.observation())?;
 
@@ -966,8 +970,9 @@ impl CampaignRepository {
         }
 
         let mut choice_bodies = BTreeMap::new();
-        for choice in candidate.discovered_choices() {
-            if choice_bodies.insert(choice.id()?, choice).is_some() {
+        for discovery in candidate.discovered_choices() {
+            let choice = discovery.opportunity();
+            if choice_bodies.insert(choice.id()?, discovery).is_some() {
                 return Err(integrity("observation-candidate-choice-bundle-mismatch"));
             }
         }
@@ -977,13 +982,13 @@ impl CampaignRepository {
             return Err(integrity("observation-candidate-choice-bundle-mismatch"));
         }
         let mut choice_cache = ChoiceValidationCache::default();
-        for choice in choice_bodies.values() {
-            let envelope = ObjectEnvelope::for_record(
-                crate::CampaignRecordKind::ChoiceOpportunity,
-                crate::object::content_children(choice.content_children())?,
-                crate::codec::encode(*choice),
-            )?;
-            self.validate_opportunity_references_cached(&envelope, &mut choice_cache)?;
+        let mut virtual_choice_records = BTreeSet::new();
+        for discovery in choice_bodies.values() {
+            let choice = discovery.opportunity();
+            choice.validate_references(discovery.declaration(), discovery.domain())?;
+            virtual_choice_records.insert(discovery.declaration().id()?.content_id());
+            virtual_choice_records.insert(discovery.domain().id()?.content_id());
+            virtual_choice_records.insert(choice.id()?.content_id());
             if choice.scenario() != child.scenario() {
                 return Err(integrity("observation-choice-scenario-mismatch"));
             }
@@ -1006,10 +1011,10 @@ impl CampaignRepository {
         }
 
         // The final observation closure contains five fixed not-yet-published
-        // records plus every newly discovered opportunity body.
-        // records. Traverse every already-published dependency in one shared
-        // walk so independently valid evidence trees cannot exceed the global
-        // closure bound only after writes begin.
+        // records plus every unique discovered declaration, domain, and
+        // opportunity. Traverse every already-published dependency in one
+        // shared walk so independently valid evidence trees cannot exceed the
+        // global closure bound only after writes begin.
         let roots = std::iter::once(observation.attempt().content_id())
             .chain(child.content_children().into_iter().map(|(_, id)| id))
             .chain(
@@ -1032,21 +1037,13 @@ impl CampaignRepository {
                     .content_children()
                     .into_iter()
                     .map(|(_, id)| id),
-            )
-            .chain(
-                candidate
-                    .discovered_choices()
-                    .iter()
-                    .flat_map(ChoiceOpportunity::content_children)
-                    .map(|(_, id)| id),
             );
         let dependency_objects = self.verify_campaign_closures_anchored_cached(
             roots,
             &BTreeSet::new(),
             &mut choice_cache,
         )?;
-        let virtual_records = candidate
-            .discovered_choices()
+        let virtual_records = virtual_choice_records
             .len()
             .checked_add(5)
             .ok_or_else(|| integrity("campaign-closure-object-limit"))?;

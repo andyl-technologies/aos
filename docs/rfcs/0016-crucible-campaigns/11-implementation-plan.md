@@ -731,11 +731,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   frame tests. The repository candidate handoff and generic worker driver now
   use non-cloneable dispatch and phase tokens, keep semantic model input free
   of assignment and daemon identities, preflight the complete candidate before
-  writes, persist a lineage-qualified `publishing` root before immutable
-  publication, stream publishing/completed roots to GC, recover exact expected
-  results across restart, keep cancellation resources charged until worker
-  exit, and reconcile publication without holding the supervisor actor or
-  rerunning the guest. Snapshot incorporation remains coordinator-only. A
+  writes, and carry each newly discovered declaration, domain, and opportunity
+  through a self-contained handoff bounded to 65,530 discoveries and 128 MiB
+  of unique canonical choice records. The narrow executor store publishes that
+  validated immutable bundle without gaining repository or mutable-ref
+  authority. The supervisor persists a lineage-qualified `publishing` root
+  before immutable publication, streams publishing/completed roots to GC,
+  recovers exact expected results across restart, keeps cancellation resources
+  charged until worker exit, and reconciles publication without holding the
+  supervisor actor or rerunning the guest. Snapshot incorporation remains
+  coordinator-only. A
   strict Crucible execution adapter now decodes versioned scenario/schedule
   payloads, re-derives semantic IDs before runner invocation, and exposes a
   typed runner boundary for operational hot/exact/thin selection. Branch input

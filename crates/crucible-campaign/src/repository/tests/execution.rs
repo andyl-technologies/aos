@@ -4,12 +4,12 @@ use super::*;
 use crate::{
     CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
-    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExecutorClient,
-    ExactCheckpointId, ExecutorControlService, ExecutorResumeService, ExecutorService,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
+    ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
     ExecutorStatusService, FindingKind, FindingSignature, FindingTarget,
-    GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ResumeAttemptExecutionDisposition,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse,
 };
 
 struct CompletingExecutor {
@@ -836,11 +836,7 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
         observation
             .discovered_choices()
             .iter()
-            .map(|id| {
-                repository
-                    .load_choice_opportunity(*id)
-                    .expect("candidate discovered choice")
-            })
+            .map(|id| choice_discovery_fixture(&repository, *id))
             .collect(),
         observation.clone(),
     )
@@ -1081,32 +1077,78 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
 }
 
 #[test]
-fn executor_candidate_publishes_a_fresh_next_choice_body() {
+fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, basis) =
         admitted_observation_fixture(&repository, &lineage, &policy, "fresh-candidate-choice");
-    let prior_id = *basis.discovered_choices().first().expect("fixture choice");
-    let prior = repository
-        .load_choice_opportunity(prior_id)
-        .expect("load fixture choice");
-    let declaration = repository
-        .load_selectable(prior.declaration())
-        .expect("load declaration");
-    let domain = repository
-        .load_choice_domain(prior.domain())
-        .expect("load domain");
+    let alternative = AlternativeId::from_hash(CampaignHash::derive(
+        "test-fresh-candidate-alternative",
+        b"new",
+    ));
+    let domain = ChoiceDomain::Discrete(
+        DiscreteDomain::new(
+            1,
+            BTreeMap::from([(
+                alternative,
+                DiscreteAlternative::new(alternative, "new", None).expect("fresh alternative"),
+            )]),
+        )
+        .expect("fresh domain"),
+    );
+    let declaration = SelectableDeclaration::new(
+        "product.test.fresh-candidate-choice",
+        ChoiceSource::Workload {
+            producer: "fresh-candidate-producer".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Discrete(alternative),
+        ChoiceClassContext::new(BTreeSet::new()).expect("fresh choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("fresh declaration");
     let fresh = ChoiceOpportunity::new(
         lineage.scenario(),
         &declaration,
         &domain,
-        prior.coordinate(),
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test-fresh-candidate-scheduler", b"new"),
+            producer: CampaignHash::derive("test-fresh-candidate-producer", b"new"),
+        },
         "fresh-executor-discovery",
-        prior.model_prior(),
+        None,
     )
     .expect("fresh opportunity");
     let fresh_id = fresh.id().expect("fresh opportunity id");
+    let second = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test-fresh-candidate-scheduler", b"second"),
+            producer: CampaignHash::derive("test-fresh-candidate-producer", b"new"),
+        },
+        "second-fresh-executor-discovery",
+        None,
+    )
+    .expect("second fresh opportunity");
+    let second_id = second.id().expect("second fresh opportunity id");
+    let declaration_id = declaration.id().expect("fresh declaration id");
+    let domain_id = domain.id().expect("fresh domain id");
+    assert!(matches!(
+        repository.load_selectable(declaration_id),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert!(matches!(
+        repository.load_choice_domain(domain_id),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
     assert!(matches!(
         repository.load_choice_opportunity(fresh_id),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert!(matches!(
+        repository.load_choice_opportunity(second_id),
         Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
     ));
 
@@ -1119,7 +1161,7 @@ fn executor_candidate_publishes_a_fresh_next_choice_body() {
         basis.measurements(),
         basis.properties(),
         basis.coverage(),
-        BTreeSet::from([fresh_id]),
+        BTreeSet::from([fresh_id, second_id]),
     )
     .expect("fresh-choice observation");
     let candidate = ObservationCandidate::new(
@@ -1135,19 +1177,50 @@ fn executor_candidate_publishes_a_fresh_next_choice_body() {
         repository
             .load_coverage_projection(observation.coverage())
             .expect("candidate coverage"),
-        vec![fresh.clone()],
+        vec![
+            ChoiceDiscovery::new(declaration.clone(), domain.clone(), fresh.clone())
+                .expect("fresh choice discovery"),
+            ChoiceDiscovery::new(declaration, domain, second.clone())
+                .expect("second fresh choice discovery"),
+        ],
         observation,
     )
     .expect("fresh candidate");
+    assert!(Arc::ptr_eq(
+        &candidate.discovered_choices()[0].declaration,
+        &candidate.discovered_choices()[1].declaration,
+    ));
+    assert!(Arc::ptr_eq(
+        &candidate.discovered_choices()[0].domain,
+        &candidate.discovered_choices()[1].domain,
+    ));
 
     repository
         .publish_observation_candidate(&candidate)
         .expect("publish candidate and fresh choice");
     assert_eq!(
         repository
+            .load_selectable(declaration_id)
+            .expect("load published declaration"),
+        *candidate.discovered_choices()[0].declaration()
+    );
+    assert_eq!(
+        repository
+            .load_choice_domain(domain_id)
+            .expect("load published domain"),
+        *candidate.discovered_choices()[0].domain()
+    );
+    assert_eq!(
+        repository
             .load_choice_opportunity(fresh_id)
             .expect("load published fresh choice"),
         fresh
+    );
+    assert_eq!(
+        repository
+            .load_choice_opportunity(second_id)
+            .expect("load second published fresh choice"),
+        second
     );
     let published = repository
         .publish_observation(
@@ -1163,9 +1236,11 @@ fn executor_candidate_publishes_a_fresh_next_choice_body() {
     let (page, _, _) = repository
         .scan_choice_page(head.snapshot().roots().graph, None, 16)
         .expect("choice index page");
-    assert!(page.entries().iter().any(|(key, value)| {
-        *key == choice_index_order_key(fresh_id) && *value == fresh_id.content_id()
-    }));
+    for opportunity in [fresh_id, second_id] {
+        assert!(page.entries().iter().any(|(key, value)| {
+            *key == choice_index_order_key(opportunity) && *value == opportunity.content_id()
+        }));
+    }
 }
 
 #[test]
@@ -1202,11 +1277,7 @@ fn invalid_executor_candidate_is_rejected_before_any_bundle_write() {
         observation
             .discovered_choices()
             .iter()
-            .map(|id| {
-                repository
-                    .load_choice_opportunity(*id)
-                    .expect("candidate discovered choice")
-            })
+            .map(|id| choice_discovery_fixture(&repository, *id))
             .collect(),
         observation,
     )
@@ -1556,8 +1627,14 @@ fn campaign_executor_driver_resumes_the_exact_paused_root() {
     let resumed = &service.resume_requests[0];
     assert_eq!(resumed.prior_execution(), prior_execution);
     assert_eq!(resumed.checkpoint(), checkpoint);
-    assert_eq!(resumed.execution_basis_digest(), service.submit_requests[0].execution_basis_digest());
-    assert_ne!(resumed.assignment(), service.submit_requests[0].assignment());
+    assert_eq!(
+        resumed.execution_basis_digest(),
+        service.submit_requests[0].execution_basis_digest()
+    );
+    assert_ne!(
+        resumed.assignment(),
+        service.submit_requests[0].assignment()
+    );
 }
 
 #[test]
