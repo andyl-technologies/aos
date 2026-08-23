@@ -1933,23 +1933,37 @@ its group, optional watcher, and retained children to the nondroppable worker.
 Startup, watcher, and removal failures return or retain their authority for
 retry, and an unrecoverable worker-start failure leaks it fail-closed.
 
-The process-local cancellation incarnation supports both lock-free boundary
-polling and a bounded blocking wait. Cancellation wakes every waiter, and a
+The process-local cancellation incarnation supports lock-free boundary polling,
+a bounded blocking wait, and exactly one registered attempt-resource callback.
+Cancellation invokes that callback synchronously after making the process-local
+state sticky; registration after cancellation invokes it before returning.
+Registration and cancellation may race, so the callback is idempotent. A
 poisoned wait primitive is interpreted as cancellation rather than leaving a
 process guard dormant. The attempt-process owner can duplicate a narrow signal
 that only publishes the sticky eventfd transition and terminal watcher state;
 it cannot change limits, inspect membership, or release the cgroup. Once that
 signal fires, the owner refuses to lend its child contract even while the
-watcher is still killing and reaping existing members. The concrete daemon
-guard must still own and join the relay from the exact cancellation incarnation
-to this narrow signal.
+watcher is still killing and reaping existing members.
+
+The daemon now provides the concrete composition around one indivisible host-
+resource owner. That owner MUST jointly bind the sealed child contract and the
+aggregate writable quota for VMState, overlays, logs, and every other child-
+mutable artifact; callers cannot pair separate process and quota authorities.
+The wrapper verifies the owner's exact admitted resource basis, registers its
+independent sticky signal with the exact cancellation incarnation, and charges
+one checked quantum before guest progress. Normal finish unregisters the signal
+and releases the host owner only after reap. Any failed reap transfers the same
+process and filesystem authority to quarantine, and dropping a live wrapper
+performs that transfer. A pre-canceled or mismatched installation is rolled back
+before the factory returns an error.
 
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
-guard, but the concrete guard must still compose that handoff and active-node
-failure handoff into the nondroppable cgroup owner. Aggregate filesystem quota,
-concrete guard composition of the execution-quantum counter, exclusive
-run-directory namespace ownership through QEMU artifact open, and that final
+guard, and the daemon guard now composes cancellation, quantum accounting, and
+all-or-quarantine cleanup around a host owner. The Linux host owner still must
+bind that interface to the nondroppable cgroup owner, a real aggregate
+filesystem quota, exclusive run-directory namespace ownership through QEMU
+artifact open, and active-node failure handoff. That Linux adapter and final
 session wiring remain mandatory before the guarded path may launch a campaign
 QEMU. Until then the cgroup and quarantine authorities remain crate-internal.
 

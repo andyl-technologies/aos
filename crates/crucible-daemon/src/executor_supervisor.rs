@@ -7,6 +7,7 @@
 //! campaign mutable-ref capability is accepted here.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -279,11 +280,49 @@ impl QueuedAttempt {
     }
 }
 
-#[derive(Debug, Default)]
+/// One attempt-resource callback installed on an execution cancellation signal.
+pub(crate) trait ExecutionCancellationHook: fmt::Debug + Send + Sync {
+    /// Makes cancellation sticky at the process/resource boundary.
+    fn signal(&self);
+}
+
+#[derive(Default)]
 struct ExecutionCancellationState {
     canceled: AtomicBool,
     wait_lock: Mutex<()>,
     changed: Condvar,
+    hook: Mutex<Option<Arc<dyn ExecutionCancellationHook>>>,
+}
+
+impl fmt::Debug for ExecutionCancellationState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutionCancellationState")
+            .field("canceled", &self.canceled.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+/// Linear registration removing one exact cancellation callback on drop.
+#[derive(Debug)]
+pub(crate) struct ExecutionCancellationHookRegistration {
+    state: Arc<ExecutionCancellationState>,
+    hook: Arc<dyn ExecutionCancellationHook>,
+}
+
+impl Drop for ExecutionCancellationHookRegistration {
+    fn drop(&mut self) {
+        let mut installed = match self.state.hook.lock() {
+            Ok(installed) => installed,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if installed
+            .as_ref()
+            .is_some_and(|hook| Arc::ptr_eq(hook, &self.hook))
+        {
+            *installed = None;
+        }
+    }
 }
 
 /// Cloneable process-local cancellation signal for one execution incarnation.
@@ -313,6 +352,48 @@ impl ExecutionCancellation {
     fn cancel(&self) {
         self.state.canceled.store(true, Ordering::Release);
         self.state.changed.notify_all();
+        let hook = match self.state.hook.lock() {
+            Ok(installed) => installed.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some(hook) = hook {
+            hook.signal();
+        }
+    }
+
+    /// Installs the one resource callback for this execution incarnation.
+    ///
+    /// A cancellation that won before registration invokes `hook` before this
+    /// method returns. The callback must be idempotent because cancellation can
+    /// race registration and invoke it from both paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another resource callback is already installed or
+    /// synchronization state is poisoned.
+    pub(crate) fn register_hook(
+        &self,
+        hook: Arc<dyn ExecutionCancellationHook>,
+    ) -> Result<ExecutionCancellationHookRegistration, &'static str> {
+        let canceled = {
+            let mut installed = self
+                .state
+                .hook
+                .lock()
+                .map_err(|_| "execution cancellation hook state is poisoned")?;
+            if installed.is_some() {
+                return Err("execution cancellation already has a resource hook");
+            }
+            *installed = Some(Arc::clone(&hook));
+            self.is_canceled()
+        };
+        if canceled {
+            hook.signal();
+        }
+        Ok(ExecutionCancellationHookRegistration {
+            state: Arc::clone(&self.state),
+            hook,
+        })
     }
 
     /// Waits up to `timeout` for cancellation to become visible.
