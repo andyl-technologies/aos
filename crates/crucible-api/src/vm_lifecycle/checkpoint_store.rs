@@ -1656,6 +1656,90 @@ pub(super) fn materialize_checkpoint_artifact(
     sync_directory(parent).map_err(|error| loop_factory_error(error.to_string()))
 }
 
+pub(super) fn stream_checkpoint_artifact(
+    artifact: &ProductionCheckpointArtifact,
+    destination: &mut impl Write,
+    role: &str,
+) -> Result<(), LifecycleApiError> {
+    match &artifact.source {
+        ProductionCheckpointArtifactSource::File(source) => {
+            let reader = File::open(source).map_err(|error| {
+                loop_factory_error(format!(
+                    "open exact checkpoint {role} {}: {error}",
+                    source.display()
+                ))
+            })?;
+            copy_authenticated(reader, destination, artifact.length, artifact.identity).map_err(
+                |error| {
+                    loop_factory_error(format!(
+                        "stream exact checkpoint {role} {}: {error}",
+                        source.display()
+                    ))
+                },
+            )
+        }
+        ProductionCheckpointArtifactSource::ChunkStore(directory) => {
+            let reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
+            copy_authenticated(reader, destination, artifact.length, artifact.identity).map_err(
+                |error| {
+                    loop_factory_error(format!(
+                        "stream chunked exact checkpoint {role} from {}: {error}",
+                        directory.display()
+                    ))
+                },
+            )
+        }
+    }
+}
+
+fn copy_authenticated(
+    mut source: impl Read,
+    destination: &mut impl Write,
+    expected_length: u64,
+    expected_identity: ContentHash,
+) -> Result<(), std::io::Error> {
+    let mut buffer = vec![0_u8; SPARSE_COPY_BUFFER_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    let mut copied = 0_u64;
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let read_u64 = u64::try_from(read).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint copy length is not representable",
+            )
+        })?;
+        copied = copied.checked_add(read_u64).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint copy length overflowed",
+            )
+        })?;
+        if copied > expected_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint artifact exceeds its declared length",
+            ));
+        }
+        let bytes = &buffer[..read];
+        hasher.update(bytes);
+        destination.write_all(bytes)?;
+    }
+    let observed = ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    };
+    if copied != expected_length || observed != expected_identity {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "checkpoint artifact failed length or content authentication",
+        ));
+    }
+    Ok(())
+}
+
 fn copy_sparse_authenticated(
     mut source: impl Read,
     destination: &mut File,
@@ -2268,6 +2352,14 @@ mod tests {
             length: manifest.length,
             chunks: manifest.chunks.clone(),
         };
+        let mut streamed = Vec::new();
+        ProductionVmNodeCheckpointArtifact {
+            artifact: &chunked,
+            role: "test",
+        }
+        .stream_into(&mut streamed)
+        .expect("stream authenticated chunked artifact");
+        assert_eq!(streamed, bytes);
         materialize_checkpoint_artifact(&chunked, &restored, "test")
             .expect("materialize chunked artifact");
         assert_eq!(fs::read(&restored).expect("read restored artifact"), bytes);
@@ -2275,6 +2367,15 @@ mod tests {
         let first_chunk = object_path(&object_directory, manifest.chunks[0]);
         fs::write(&first_chunk, vec![0; ARTIFACT_CHUNK_BYTES])
             .expect("corrupt first checkpoint chunk");
+        let mut rejected_stream = Vec::new();
+        assert!(
+            ProductionVmNodeCheckpointArtifact {
+                artifact: &chunked,
+                role: "corrupt test",
+            }
+            .stream_into(&mut rejected_stream)
+            .is_err()
+        );
         fs::remove_file(&restored).expect("remove prior materialization");
         assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
         assert!(!restored.exists());

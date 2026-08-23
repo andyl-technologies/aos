@@ -446,8 +446,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   `qemu-img` overlay creation, authenticated restore-artifact materialization,
   and replacement cloning behind the launcher before process spawn; the
   lifecycle rejects fresh/exact preparation-kind mismatches before invoking
-  it. Each launch now returns a linear lease bound to the exact scheduler node
-  and positive process generation. Active and staged replacement leases remain disjoint; old leases
+  it. Exact preparation now lends the complete per-node checkpoint-manifest
+  identity and fixed-memory authenticated artifact streams, so the future Linux
+  launcher can write the retained VMState through its pinned linear transaction
+  instead of replacing the inode by path. Each launch now returns a linear lease
+  bound to the exact scheduler node and positive process generation. Active and
+  staged replacement leases remain disjoint; old leases
   release only after reap attestation, staged leases become active only with
   backend commit, and abort reaps before lease finish. A lease-release failure
   latches quarantine and prevents later aggregate release. Explicit shutdown reaps

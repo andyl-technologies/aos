@@ -2082,7 +2082,13 @@ spawns the child. The lifecycle itself no longer creates a generation
 directory, invokes `qemu-img`, copies exact artifacts, or clones replacement
 artifacts before the authority sees the request. A fresh process request cannot
 be paired with exact/replacement preparation, and an exact process request
-cannot be paired with fresh preparation. The lifecycle therefore has neither a
+cannot be paired with fresh preparation. Exact preparation carries the complete
+authenticated per-node checkpoint-manifest identity, not only snapshot
+metadata, and lends each retained artifact through a fixed-memory streaming
+reader that checks its declared length and content identity. A guarded launcher
+can therefore stream VMState into its already-pinned linear destination and bind
+that inode to the complete checkpoint root without replacing or reopening it.
+The lifecycle therefore has neither a
 pre-spawn writable-storage bypass nor a later direct-spawn bypass around the
 attempt guard. Every successful launch returns the live node together with a
 linear lease naming the exact scheduler `NodeId` and positive process
