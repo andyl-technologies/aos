@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use crucible_campaign::{ExecutorCapabilityService, ExecutorControlService, ExecutorResumeService};
 
+use crate::campaign_endpoint::{LocalEndpointGuard, ManagedExecutorLoopbackListener};
 use crate::{
     DEFAULT_EXECUTOR_REQUESTS_PER_CONNECTION, LoopbackExecutorServerError,
     LoopbackExecutorTimeouts, MAX_EXECUTOR_REQUESTS_PER_CONNECTION,
@@ -250,6 +251,7 @@ impl ExecutorLoopbackServerReport {
 /// Fixed-worker authenticated local executor listener.
 pub struct ExecutorLoopbackServer<S> {
     listener: UnixListener,
+    _endpoint_guard: Option<LocalEndpointGuard>,
     service: S,
     peer: UnixPeerExecutorIdentity,
     config: ExecutorLoopbackServerConfig,
@@ -281,9 +283,40 @@ where
         peer: UnixPeerExecutorIdentity,
         config: ExecutorLoopbackServerConfig,
     ) -> Result<Self, ExecutorLoopbackListenerError> {
+        Self::new_inner(listener, None, service, peer, config)
+    }
+
+    /// Consumes a managed endpoint and retains its namespace through shutdown.
+    ///
+    /// The listener is dropped before its endpoint guard, so exact-inode
+    /// cleanup occurs only after acceptance has stopped and every connection
+    /// worker has joined.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorLoopbackListenerError::Io`] when the managed listener
+    /// cannot be switched to bounded nonblocking acceptance.
+    pub fn from_managed_listener(
+        listener: ManagedExecutorLoopbackListener,
+        service: S,
+        peer: UnixPeerExecutorIdentity,
+        config: ExecutorLoopbackServerConfig,
+    ) -> Result<Self, ExecutorLoopbackListenerError> {
+        let (listener, guard) = listener.into_parts();
+        Self::new_inner(listener, Some(guard), service, peer, config)
+    }
+
+    fn new_inner(
+        listener: UnixListener,
+        endpoint_guard: Option<LocalEndpointGuard>,
+        service: S,
+        peer: UnixPeerExecutorIdentity,
+        config: ExecutorLoopbackServerConfig,
+    ) -> Result<Self, ExecutorLoopbackListenerError> {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
+            _endpoint_guard: endpoint_guard,
             service,
             peer,
             config,
@@ -543,7 +576,6 @@ fn connection_worker_loop<S>(
             .map_err(ConnectionFailure::Exchange),
             Err(()) => Err(ConnectionFailure::Peer),
         };
-        drop(active);
         match result {
             Ok(()) if state.stopped.load(Ordering::Acquire) => {}
             Ok(()) => increment(&state.completed_connections),
@@ -558,6 +590,7 @@ fn connection_worker_loop<S>(
                 increment(&state.service_failures);
             }
         }
+        drop(active);
     }
 }
 

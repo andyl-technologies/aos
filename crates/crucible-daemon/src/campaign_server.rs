@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crucible_campaign::{CampaignPrincipalAuthorizer, CampaignRepository};
 
-use crate::campaign_endpoint::{CampaignEndpointGuard, ManagedCampaignLoopbackListener};
+use crate::campaign_endpoint::{LocalEndpointGuard, ManagedCampaignLoopbackListener};
 use crate::campaign_loopback::{
     DEFAULT_CAMPAIGN_REQUESTS_PER_CONNECTION, LoopbackCampaignServerError,
     LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,
@@ -216,7 +216,7 @@ impl CampaignLoopbackServerReport {
 /// Fixed-worker authenticated local campaign listener.
 pub struct CampaignLoopbackServer<R: ?Sized, A: ?Sized> {
     listener: UnixListener,
-    _endpoint_guard: Option<CampaignEndpointGuard>,
+    _endpoint_guard: Option<LocalEndpointGuard>,
     repository: Arc<CampaignRepository>,
     principal_resolver: Arc<R>,
     authorizer: Arc<A>,
@@ -288,7 +288,7 @@ where
 
     fn new_inner(
         listener: UnixListener,
-        endpoint_guard: Option<CampaignEndpointGuard>,
+        endpoint_guard: Option<LocalEndpointGuard>,
         repository: Arc<CampaignRepository>,
         principal_resolver: Arc<R>,
         authorizer: Arc<A>,
@@ -566,7 +566,6 @@ fn connection_worker_loop<R, A>(
             config.exchange_timeouts,
             config.maximum_requests_per_connection,
         );
-        drop(active);
         match result {
             Ok(()) if state.stopped.load(Ordering::Acquire) => {}
             Ok(()) => increment(&state.completed_connections),
@@ -580,6 +579,7 @@ fn connection_worker_loop<R, A>(
             }
             Err(LoopbackCampaignServerError::Protocol(_)) => {}
         }
+        drop(active);
     }
 }
 
