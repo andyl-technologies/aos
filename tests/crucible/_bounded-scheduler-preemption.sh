@@ -2,15 +2,16 @@
 #
 # The old fixture ran three `yes` processes for the whole guest execution,
 # consuming three host cores per derivation.  This fixture instead interrupts
-# QEMU itself six times.  Each configured stop is 15 ms and stops are separated
-# by 25 ms sleeps: 90 ms of requested stopped time and about 240 ms nominal
-# worker lifetime. A separate sleeping watchdog terminates the worker and
+# QEMU itself six times. The first stop follows the guest-progress marker
+# immediately; later stops are separated by 1 ms sleeps. Each configured stop
+# is 15 ms: 90 ms of requested stopped time and about 95 ms nominal worker
+# lifetime. A separate sleeping watchdog terminates the worker and
 # resumes QEMU after two seconds. No helper generates synthetic CPU load, and
 # existing outer `timeout` processes bound each QEMU run's wall-clock duration.
 
 BOUNDED_PREEMPTION_COUNT=6
 BOUNDED_PREEMPTION_PAUSE_SECONDS=0.015
-BOUNDED_PREEMPTION_INTERVAL_SECONDS=0.025
+BOUNDED_PREEMPTION_INTERVAL_SECONDS=0.001
 BOUNDED_PREEMPTION_WALL_TIMEOUT_SECONDS=2
 BOUNDED_PREEMPTION_PID=""
 BOUNDED_PREEMPTION_WATCHDOG_PID=""
@@ -131,10 +132,23 @@ bounded_preemption_start() {
     trap 'exit 130' INT
 
     while [ "$bsp_worker_iteration" -lt "$BOUNDED_PREEMPTION_COUNT" ]; do
-      sleep "$BOUNDED_PREEMPTION_INTERVAL_SECONDS"
+      if [ "$bsp_worker_iteration" -ne 0 ]; then
+        sleep "$BOUNDED_PREEMPTION_INTERVAL_SECONDS"
+      fi
       kill -STOP "$bsp_worker_target" 2>/dev/null || exit 70
+      bsp_stop_attempt=0
+      while ! grep -q '^State:.*[Tt]' "/proc/$bsp_worker_target/status" 2>/dev/null; do
+        if ! kill -0 "$bsp_worker_target" 2>/dev/null; then
+          exit 72
+        fi
+        if [ "$bsp_stop_attempt" -ge 100 ]; then
+          exit 73
+        fi
+        sleep 0.001
+        bsp_stop_attempt=$((bsp_stop_attempt + 1))
+      done
       bsp_worker_iteration=$((bsp_worker_iteration + 1))
-      printf 'stop iteration=%s target=%s\n' \
+      printf 'stop iteration=%s target=%s state=stopped\n' \
         "$bsp_worker_iteration" "$bsp_worker_target" >> "$bsp_event_log"
       sleep "$BOUNDED_PREEMPTION_PAUSE_SECONDS"
       kill -CONT "$bsp_worker_target" 2>/dev/null || exit 71

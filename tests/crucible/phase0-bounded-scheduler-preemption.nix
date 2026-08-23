@@ -55,7 +55,7 @@
     }
     {
       label = "sleep between perturbations";
-      needle = "BOUNDED_PREEMPTION_INTERVAL_SECONDS=0.025";
+      needle = "BOUNDED_PREEMPTION_INTERVAL_SECONDS=0.001";
     }
     {
       label = "independent wall timeout";
@@ -68,6 +68,10 @@
     {
       label = "actual target stop";
       needle = "kill -STOP \"$bsp_worker_target\"";
+    }
+    {
+      label = "observed stopped process state";
+      needle = "state=stopped";
     }
     {
       label = "unconditional target resume";
@@ -344,7 +348,7 @@ in
               echo interruption_cleanup=resumed-and-reaped
               echo watchdog_expiry_cleanup=independent-resume-and-reap
               echo requested_stopped_milliseconds=90
-              echo nominal_worker_wall_milliseconds=240
+              echo nominal_worker_wall_milliseconds=95
               echo worker_wall_timeout_seconds=2
               echo synthetic_busy_workers=0
             } > "$out/result"
