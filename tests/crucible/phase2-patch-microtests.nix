@@ -306,16 +306,24 @@
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           grep -q '^+            !rr_crucible_sim_single_vcpu() &&' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
-          grep -q '^+            guest_pause_yield &&' \
+          grep -q '^+            guest_pause_yield) {' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
-          grep -q '^+            r == EXCP_INTERRUPT &&' \
+          grep -q '^+             \* Commit the helper-authenticated PAUSE transition before any' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
-          grep -q '^+            cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug &&' \
+          grep -q '^+            if (owner == cpu->cpu_index) {' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
-          grep -q '^+            icount_crucible_rr_current_vcpu() == cpu->cpu_index &&' \
+          grep -q '^+            } else if (cursor != 0) {' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
-          grep -q '^+            icount_crucible_rr_yield_cpu(cpu);' \
+          grep -q '^+                icount_crucible_rr_yield_cpu(cpu);' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          ! grep -q '^+.*cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+
+          pause_yield_line=$(grep -n '^+                icount_crucible_rr_yield_cpu(cpu);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch" | cut -d: -f1)
+          first_callback_line=$(grep -n 'crucible_sim_shmem_publish_current_icount' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch" | head -1 | cut -d: -f1)
+          test "$pause_yield_line" -lt "$first_callback_line"
 
           cat > "$out/result" <<'RESULT'
           PASS

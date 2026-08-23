@@ -41,7 +41,7 @@ index 219cadef1..f08eb93d9 100644
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 90840e631..3053e0318 100644
+index 90840e631..eabcd6fc5 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -471,6 +471,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
@@ -52,7 +52,7 @@ index 90840e631..3053e0318 100644
          int r;
          uint64_t service_before;
          uint64_t service_after;
-@@ -606,6 +607,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -606,9 +607,43 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              icount_prepare_for_run(cpu, *cpu_budget);
          }
          r = tcg_cpu_exec(cpu);
@@ -66,31 +66,37 @@ index 90840e631..3053e0318 100644
          if (icount_enabled()) {
              icount_process_data(cpu);
          }
-@@ -658,6 +666,23 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
-             return true;
-         }
- 
-+        /*
-+         * The x86 PAUSE helper marks its own EXCP_INTERRUPT return. Honor that
-+         * guest-authored yield before loop-local CPU selection so a partial
-+         * serialized turn cannot starve another vCPU waiting on the released
-+         * lock. Generic EXCP_INTERRUPT returns and host kicks do not carry the
-+         * marker and cannot enter this path.
-+         */
 +        if (rr_crucible_sim_mode() &&
 +            !rr_crucible_sim_single_vcpu() &&
-+            guest_pause_yield &&
-+            r == EXCP_INTERRUPT &&
-+            cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug &&
-+            icount_crucible_rr_current_vcpu() == cpu->cpu_index &&
-+            cpu_can_run(cpu) && cpu_work_list_empty(cpu)) {
-+            icount_crucible_rr_yield_cpu(cpu);
-+        }
++            guest_pause_yield) {
++            uint64_t owner;
++            uint64_t cursor;
 +
-         if (!rr_crucible_sim_single_vcpu() &&
-             icount_crucible_rr_cursor_position() == 0 &&
-             qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
-@@ -1116,10 +1141,23 @@ static void *rr_cpu_thread_fn(void *arg)
++            /*
++             * Commit the helper-authenticated PAUSE transition before any
++             * plugin callback, fault dispatch, vmstop, or preemption path can
++             * return from this batch. Host work arriving at the same boundary
++             * is serviced only after the guest-authored canonical handoff is
++             * durable. A PAUSE that exactly exhausts the ordinary quantum has
++             * already selected the next owner and must not hand off twice.
++             */
++            bql_lock();
++            owner = icount_crucible_rr_current_vcpu();
++            cursor = icount_crucible_rr_cursor_position();
++            if (owner == cpu->cpu_index) {
++                icount_crucible_rr_yield_cpu(cpu);
++            } else if (cursor != 0) {
++                error_report("crucible guest PAUSE owner mismatch: "
++                             "owner=%" PRIu64 " yielded-vcpu=%d cursor=%" PRIu64,
++                             owner, cpu->cpu_index, cursor);
++                abort();
++            }
++            bql_unlock();
++        }
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_shmem_dispatch_registered()) {
+             crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
+@@ -1116,10 +1151,23 @@ static void *rr_cpu_thread_fn(void *arg)
                  suggested_cpu = first_cpu;
              }
              cpu = icount_crucible_rr_select_cpu(suggested_cpu);

@@ -1,4 +1,4 @@
-//! Runs the live guest-clock and accelerator hardware workload.
+//! Runs the live guest-clock, memory, and accelerator hardware workload.
 //!
 //! This gate launches the production patched QEMU process, Rust control plugin,
 //! scheduler-facing [`crucible_qemu::QemuNode`], shared-memory host runtime, and
@@ -23,15 +23,17 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use crucible::model::{
     AcceleratorJobSelector, AcceleratorResultMutation, BindingEventParent, BindingMapping,
-    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, ClockMonotonicityPolicy,
-    ClockMutation, ClockOverdueTimerPolicy, ContentHash, EFFECT_SEMANTIC_VERSION, EffectLifetime,
-    EffectRequest, EffectSpecification, FaultAdapter, FaultBinding, FaultCoordinate, FaultObjectId,
-    FaultObservationKind, FaultOperation, FaultOpportunity, FaultPhase, FaultResourceLimits,
-    FaultSignalPlan, FaultTargetKind, HexBytes, HostFaultAdapterManifests, NodeEffectSpecification,
-    NodeOccurrencePolicy, OperationSet, OpportunityFilter, OpportunityPayload, ResolvedFaultTarget,
-    ResolvedTargetSet, SignalBoundarySnapshot, SignalCoordinate, SignalDomain, SignalId,
-    SignalNode, SignalNodeKind, SignalPoint, SignalProgram, SignalResourceLimits, SignalShape,
-    SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
+    BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy, ByteRange,
+    ClockMonotonicityPolicy, ClockMutation, ClockOverdueTimerPolicy, ContentHash,
+    EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EffectSpecification, FaultAdapter,
+    FaultBinding, FaultCoordinate, FaultObjectId, FaultObservationKind, FaultOperation,
+    FaultOpportunity, FaultPhase, FaultResourceLimits, FaultSignalPlan, FaultTargetKind, HexBytes,
+    HostFaultAdapterManifests, MemoryAddressSpace, MemoryMutationAtomicity, MemoryMutationKind,
+    NodeEffectSpecification, NodeOccurrencePolicy, OperationSet, OpportunityFilter,
+    OpportunityPayload, ResolvedFaultTarget, ResolvedTargetSet, SignalBoundarySnapshot,
+    SignalCoordinate, SignalDomain, SignalId, SignalNode, SignalNodeKind, SignalPoint,
+    SignalProgram, SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit,
+    SignalValue, SignalValueType, TargetSelector,
 };
 #[cfg(target_os = "linux")]
 use crucible::{
@@ -113,6 +115,9 @@ fn run() -> Result<(), String> {
         .current_icount()
         .map_err(|error| format!("read live hardware guest boundary: {error}"))?
         .retired;
+    let pre_fault_fingerprint = node
+        .execution_fingerprint()
+        .map_err(|error| format!("capture pre-fault execution fingerprint: {error}"))?;
     let mut nodes = QemuNodeSet::new();
     if nodes.insert(node_id.clone(), node).is_some() {
         return Err(String::from("live hardware node identity collided"));
@@ -140,11 +145,49 @@ fn run() -> Result<(), String> {
     let boundary = runtime
         .evaluate_boundary(fault_coordinate, 0, &mut nodes)
         .map_err(|error| format!("apply guest-clock signal boundary: {error}"))?;
-    if boundary.actions.len() != 1 {
+    if boundary.actions.len() != 2 {
         return Err(format!(
-            "guest-clock signal boundary produced {} actions instead of one",
+            "same-coordinate hardware signal boundary produced {} actions instead of two",
             boundary.actions.len()
         ));
+    }
+    let clock_action_count = boundary
+        .actions
+        .iter()
+        .filter(|action| action.binding.as_str() == "guest-clock-offset-binding")
+        .count();
+    let memory_action_count = boundary
+        .actions
+        .iter()
+        .filter(|action| action.binding.as_str() == "fingerprint-memory-binding")
+        .count();
+    if clock_action_count != 1 || memory_action_count != 1 {
+        return Err(format!(
+            "same-coordinate hardware actions were clock={clock_action_count}, memory={memory_action_count}"
+        ));
+    }
+    let mut node = nodes
+        .take(&node_id)
+        .ok_or_else(|| String::from("clock-fault node disappeared"))?;
+    let post_fault_icount = node
+        .current_icount()
+        .map_err(|error| format!("read post-fault execution coordinate: {error}"))?
+        .retired;
+    let post_fault_fingerprint = node
+        .execution_fingerprint()
+        .map_err(|error| format!("capture post-fault execution fingerprint: {error}"))?;
+    if post_fault_icount != initial_icount {
+        return Err(format!(
+            "same-boundary clock fault advanced icount from {initial_icount} to {post_fault_icount}"
+        ));
+    }
+    if post_fault_fingerprint == pre_fault_fingerprint {
+        return Err(String::from(
+            "same-icount guest-RAM mutation retained the pre-fault execution fingerprint",
+        ));
+    }
+    if nodes.insert(node_id.clone(), node).is_some() {
+        return Err(String::from("clock-fault node identity collided"));
     }
     let accelerator_opportunity = FaultOpportunity::new(
         accelerator_target()?,
@@ -371,7 +414,11 @@ fn run() -> Result<(), String> {
     println!("accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table");
     println!("accelerator_mutation=tpu-result-42-to-43");
     println!("host_adapter=qemu-live-accelerator-servicer");
-    println!("clock_signal_actions={}", boundary.actions.len());
+    println!("boundary_signal_actions={}", boundary.actions.len());
+    println!("clock_signal_actions={clock_action_count}");
+    println!("memory_signal_actions={memory_action_count}");
+    println!("same_icount_fault_fingerprint_changed=true");
+    println!("same_icount_fault_fingerprint_icount={initial_icount}");
     println!("accelerator_signal_actions={}", opportunity.actions.len());
     println!("clock_occurrences={clock_occurrences}");
     println!("accelerator_occurrences={accelerator_occurrences}");
@@ -436,7 +483,7 @@ fn fault_hardware_plan() -> Result<FaultSignalPlan, String> {
     };
     let clock_binding = FaultBinding::new(
         object_id("guest-clock-offset-binding")?,
-        vec![clock_output],
+        vec![clock_output.clone()],
         BindingSampling::AtEvent(BindingEventParent::VirtualTime),
         BindingMapping::ImpulseOnEvent,
         TargetSelector::Exact(target_set(clock_target)?),
@@ -460,6 +507,46 @@ fn fault_hardware_plan() -> Result<FaultSignalPlan, String> {
         &clock_program,
     )
     .map_err(|error| format!("clock binding: {error}"))?;
+
+    // 0x9ffff is the last writable conventional-RAM byte below the PC ROM
+    // aperture. Linux has completed firmware handoff before this boundary, so
+    // flipping one bit is inert to the workload while necessarily changing the
+    // execution fingerprint's writable-RAM digest.
+    let memory_range =
+        ByteRange::new(0x9ffff, 1).map_err(|error| format!("fingerprint memory range: {error}"))?;
+    let memory_binding = FaultBinding::new(
+        object_id("fingerprint-memory-binding")?,
+        vec![clock_output],
+        BindingSampling::AtEvent(BindingEventParent::VirtualTime),
+        BindingMapping::ImpulseOnEvent,
+        TargetSelector::Exact(target_set(ResolvedFaultTarget::MemoryRange {
+            node: object_id("fault-hardware-node")?,
+            address_space: object_id("gpa")?,
+            guest_address: memory_range.start(),
+            vcpu: None,
+            length_bytes: memory_range.length(),
+        })?),
+        [FaultPhase::Boundary].into_iter().collect(),
+        EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Impulse,
+            EffectSpecification::Node(NodeEffectSpecification::MemoryMutation {
+                address_space: MemoryAddressSpace::GuestPhysical,
+                range: memory_range,
+                mutation: MemoryMutationKind::BitFlip {
+                    mask: HexBytes::parse("01", 1)
+                        .map_err(|error| format!("fingerprint memory mask: {error}"))?,
+                },
+                atomicity: MemoryMutationAtomicity::AllOrNothing,
+            }),
+        )
+        .map_err(|error| format!("fingerprint memory effect: {error}"))?,
+        None,
+        BindingSearchPolicy::Fixed,
+        BindingObservabilityPolicy::default(),
+        &clock_program,
+    )
+    .map_err(|error| format!("fingerprint memory binding: {error}"))?;
 
     let accelerator_binding = FaultBinding::new(
         object_id("tpu-result-transform-binding")?,
@@ -502,7 +589,7 @@ fn fault_hardware_plan() -> Result<FaultSignalPlan, String> {
 
     FaultSignalPlan::new(
         vec![clock_program],
-        vec![clock_binding, accelerator_binding],
+        vec![clock_binding, memory_binding, accelerator_binding],
         FaultResourceLimits::default(),
     )
     .map_err(|error| format!("fault hardware plan: {error}"))
