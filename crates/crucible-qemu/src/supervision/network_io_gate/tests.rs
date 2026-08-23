@@ -1,7 +1,28 @@
 //! Unit tests for deterministic network-I/O projections.
 
+use super::drive::discovery_quantum_report_ready;
 use super::*;
 use crate::LiveNetworkTxObservation;
+use crucible_shmem::STATUS_RUNNING;
+
+#[test]
+fn idle_discovery_boundaries_are_polled_before_reissue_or_completion() {
+    assert!(discovery_quantum_report_ready(
+        STATUS_IDLE,
+        8_000_001,
+        PROBE_DISCOVERY_CEILING_ICOUNT,
+    ));
+    assert!(discovery_quantum_report_ready(
+        STATUS_IDLE,
+        PROBE_DISCOVERY_CEILING_ICOUNT,
+        PROBE_DISCOVERY_CEILING_ICOUNT,
+    ));
+    assert!(!discovery_quantum_report_ready(
+        STATUS_RUNNING,
+        8_000_001,
+        PROBE_DISCOVERY_CEILING_ICOUNT,
+    ));
+}
 
 #[test]
 fn deterministic_projection_anchors_the_network_trajectory_at_the_probe() {
@@ -51,5 +72,6 @@ fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {
         backpressure_retry_icount: Some(4_000_001),
         delayed_reply_applied: false,
         orderly_child_exit: true,
+        scheduler_preemption: None,
     }
 }

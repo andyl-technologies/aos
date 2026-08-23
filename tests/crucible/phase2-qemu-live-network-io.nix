@@ -10,7 +10,7 @@
   # post-quantum control acknowledgement; this bound never participates in
   # guest scheduling or trace state, and successful runs return immediately.
   networkTimeoutSecs ? "600",
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -38,7 +38,7 @@ in
     GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
     CRUCIBLE_NETWORK_IO_BUSY_CEILING = busyCeiling;
     CRUCIBLE_NETWORK_IO_TIMEOUT_SECS = networkTimeoutSecs;
-    CRUCIBLE_NETWORK_IO_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_NETWORK_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     TASK_IDS = builtins.concatStringsSep "," taskIds;
     OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
     ATTR_PATH = attrPath;
@@ -107,7 +107,12 @@ in
           run_dir="$TMPDIR/live-network-io-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-network-io.result"
-          timeout -k 15 590 \
+          # Three real-QEMU runs cover reference, bounded preemption, and a
+          # fresh-process retained-frame restore. The last must honor every
+          # canonical 4M-icount retry boundary through guest boot, so the whole
+          # gate receives a fixed wall bound independent of its per-operation
+          # 600-second liveness budget.
+          timeout -k 15 1190 \
             "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-network-io" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
@@ -136,13 +141,15 @@ in
           grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
           grep -Fxq 'retained_frame_durable_envelope_restored=true' "$report"
           grep -Fxq 'retained_frame_first_retry_icount=4000001' "$report"
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"
           grep -Eq '^hostile_acknowledgement_offset_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^acknowledgement_offset_equal=(true|false)$' "$report"
           grep -Fxq 'determinism_scope=router-delivery-and-frame-order' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
+          grep -Fxq 'host_scheduler_preemption_count=6' "$report"
+          grep -Fxq 'host_scheduler_preemption_requested_milliseconds=90' "$report"
           grep -Fxq 'delayed_reply_applied=false' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
 
@@ -183,7 +190,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,guest-ack,frame-order-scheduler-preemption-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"
