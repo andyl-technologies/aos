@@ -123,14 +123,7 @@ pkgs.mkDerivation {
 
         int main(void) {
           int fd = socket(AF_PACKET, SOCK_RAW, htons(CRUCIBLE_ETHERTYPE));
-          if (fd < 0 || bring_up(fd, "eth0") != 0) {
-            park_forever();
-          }
-
-          struct ifreq index_request;
-          memset(&index_request, 0, sizeof(index_request));
-          strncpy(index_request.ifr_name, "eth0", IFNAMSIZ - 1);
-          if (ioctl(fd, SIOCGIFINDEX, &index_request) != 0) {
+          if (fd < 0) {
             park_forever();
           }
 
@@ -138,8 +131,27 @@ pkgs.mkDerivation {
           memset(&address, 0, sizeof(address));
           address.sll_family = AF_PACKET;
           address.sll_protocol = htons(CRUCIBLE_ETHERTYPE);
-          address.sll_ifindex = index_request.ifr_ifindex;
+          address.sll_ifindex = 0;
           if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            park_forever();
+          }
+
+          /*
+           * Bind the certifying packet socket to the EtherType on all
+           * interfaces before IFF_UP enables the virtio receive queue. Linux
+           * permits ifindex zero for packet-socket binding even while eth0 is
+           * down. Once QEMU can accept the host's exact retained retry,
+           * userspace already owns the protocol, so the kernel cannot discard
+           * the canary in the interval between IFF_UP and a device bind.
+           */
+          if (bring_up(fd, "eth0") != 0) {
+            park_forever();
+          }
+
+          struct ifreq index_request;
+          memset(&index_request, 0, sizeof(index_request));
+          strncpy(index_request.ifr_name, "eth0", IFNAMSIZ - 1);
+          if (ioctl(fd, SIOCGIFINDEX, &index_request) != 0) {
             park_forever();
           }
           uint8_t guest_mac[6];

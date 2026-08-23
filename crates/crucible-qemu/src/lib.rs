@@ -44,6 +44,7 @@
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
+mod bounded_scheduler_preemption;
 mod checkpoint;
 mod console_observation;
 mod coverage;
@@ -122,6 +123,7 @@ pub use block_realization_gate::{
     BlockRealizationGateConfig, BlockRealizationGateError, BlockRealizationReport,
     run_block_realization_gate,
 };
+pub use bounded_scheduler_preemption::BoundedSchedulerPreemptionError;
 pub use checkpoint::{
     QemuHostIoCheckpoint, QemuHostIoCheckpointCodecError, QemuLive9pIoServicerCheckpoint,
     QemuLiveBlockIoServicerCheckpoint, QemuNetworkTransportCheckpoint,

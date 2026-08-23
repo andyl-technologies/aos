@@ -2,8 +2,18 @@
 
 use super::*;
 
+#[derive(Clone, Copy)]
+struct BackpressureProbe {
+    key: FrameDeliveryKey,
+    delivery_attempts: u32,
+    last_attempt_icount: u64,
+}
+
+#[path = "drive/prime.rs"]
+mod prime;
 #[path = "drive/retry.rs"]
 mod retry;
+use prime::{prime_guest_off_boot_barrier, wait_for_prime_ceiling};
 use retry::observe_exact_backpressure_retry;
 
 pub(super) fn run_once(
@@ -100,12 +110,23 @@ pub(super) fn run_once(
         });
     }
 
-    // Apply hostile load to the network workload itself, after both runs have
-    // completed identical launch, plugin setup, and boot-barrier priming.
-    // Otherwise host scheduling noise during control-plane setup can move the
-    // workload's origin even though every modeled network interval is exact.
-    let host_load =
-        HostLoad::start_if(matches!(role, RunRole::Hostile) && config.second_run_host_load);
+    // Interrupt the actual QEMU process only after both runs have completed
+    // identical launch, plugin setup, and guest execution past the boot
+    // barrier. Six short stop/continue pairs are sufficient to prove that the
+    // modeled network trajectory does not depend on uninterrupted host
+    // scheduling; unlike CPU burners, the adversary has zero synthetic CPU
+    // consumption and a two-second independent resume watchdog.
+    let scheduler_preemption =
+        if matches!(role, RunRole::Hostile) && config.second_run_scheduler_preemption {
+            Some(
+                crate::bounded_scheduler_preemption::apply_bounded_scheduler_preemption(
+                    child.process_id(),
+                )
+                .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?,
+            )
+        } else {
+            None
+        };
     let DriveExchangeOutcome {
         acknowledgement_icount,
         backpressure_acknowledgement_icount,
@@ -130,7 +151,6 @@ pub(super) fn run_once(
     drop(hot_path);
     drop(setup);
     drop(child);
-    drop(host_load);
 
     Ok(NetworkIoRunOutcome {
         snapshot,
@@ -143,141 +163,8 @@ pub(super) fn run_once(
         backpressure_retry_icount,
         delayed_reply_applied,
         orderly_child_exit,
+        scheduler_preemption,
     })
-}
-
-fn prime_guest_off_boot_barrier(
-    hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &mut QemuLiveNetworkIoServicer,
-    setup: &QemuHostPluginSetup,
-    child: &mut QemuNodeChild,
-    timeout: Duration,
-) -> Result<BackpressureProbe, QemuLiveNetworkIoGateError> {
-    let backpressure_payload = QemuLiveNetworkIoServicer::boot_backpressure_probe();
-    QemuShmemHotPathChannel::deliver_frame_at(
-        hot_path,
-        BackendInput {
-            node: node_id(GATE_NODE),
-            payload: backpressure_payload.clone(),
-        },
-        Icount {
-            retired: BACKPRESSURE_PROBE_CEILING_ICOUNT,
-        },
-    )
-    .map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("publish exact backpressure frame", source)
-    })?;
-    let published = QemuShmemHotPathChannel::checkpoint_network_transport(hot_path)
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("inspect pending frame", source))?;
-    let backpressure_probe = published
-        .inbound
-        .frames
-        .iter()
-        .find(|frame| {
-            frame.delivery_icount == BACKPRESSURE_PROBE_CEILING_ICOUNT
-                && frame
-                    .payload()
-                    .is_ok_and(|payload| payload == backpressure_payload)
-                && frame
-                    .delivery_state()
-                    .is_ok_and(|state| state == FrameDeliveryState::Pending)
-        })
-        .map(crucible_shmem::SnapshotFrameEntry::delivery_key)
-        .ok_or_else(|| QemuLiveNetworkIoGateError::BootBackpressureNotRetained {
-            evidence: format!(
-                "canonical pending publication missing: {:?}",
-                published.inbound.frames
-            ),
-        })?;
-    servicer
-        .observe_router_publication(backpressure_probe)
-        .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-    let backpressure_pending = QemuShmemHotPathChannel::start_quantum(
-        hot_path,
-        crucible::ExecutionHorizon {
-            icount: Icount {
-                retired: BACKPRESSURE_PROBE_CEILING_ICOUNT,
-            },
-        },
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::drive("start backpressure quantum", source))?;
-    setup
-        .signal_plugin_wake()
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("wake backpressure quantum", source))?;
-    wait_for_prime_ceiling(servicer, child, timeout, BACKPRESSURE_PROBE_CEILING_ICOUNT)?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, backpressure_pending).map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("finish backpressure quantum", source)
-    })?;
-    let checkpoint = QemuShmemHotPathChannel::checkpoint_network_transport(hot_path)
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("inspect retained frame", source))?;
-    let retained = checkpoint
-        .inbound
-        .frames
-        .first()
-        .filter(|frame| frame.delivery_key() == backpressure_probe)
-        .filter(|frame| {
-            frame
-                .delivery_state()
-                .is_ok_and(|state| state == FrameDeliveryState::Retained)
-                && frame.delivery_attempts() > 0
-                && frame.last_delivery_attempt_icount() == BACKPRESSURE_PROBE_CEILING_ICOUNT
-        });
-    let Some(retained) = retained else {
-        return Err(QemuLiveNetworkIoGateError::BootBackpressureNotRetained {
-            evidence: format!("{:?}", checkpoint.inbound.frames),
-        });
-    };
-    let retained = BackpressureProbe {
-        key: backpressure_probe,
-        delivery_attempts: retained.delivery_attempts(),
-        last_attempt_icount: retained.last_delivery_attempt_icount(),
-    };
-
-    let pending = QemuShmemHotPathChannel::start_quantum(
-        hot_path,
-        crucible::ExecutionHorizon {
-            icount: Icount {
-                retired: PRIME_CEILING_ICOUNT,
-            },
-        },
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::drive("start priming quantum", source))?;
-    setup
-        .signal_plugin_wake()
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("wake priming quantum", source))?;
-    wait_for_prime_ceiling(servicer, child, timeout, PRIME_CEILING_ICOUNT)?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("finish priming quantum", source))?;
-    Ok(retained)
-}
-
-fn wait_for_prime_ceiling(
-    servicer: &QemuLiveNetworkIoServicer,
-    child: &mut QemuNodeChild,
-    timeout: Duration,
-    ceiling: u64,
-) -> Result<(), QemuLiveNetworkIoGateError> {
-    for _ in 0..bounded_drive_polls(timeout) {
-        let snapshot = servicer
-            .vm_node_snapshot()
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if snapshot.current_icount >= ceiling {
-            return Ok(());
-        }
-        if child
-            .try_wait_natural_exit()
-            .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
-            .is_some()
-        {
-            break;
-        }
-        thread::park_timeout(DRIVE_POLL_INTERVAL);
-    }
-    let evidence = servicer.vm_node_snapshot().map_or_else(
-        |error| format!("node_snapshot_error={error}"),
-        |snapshot| format!("{snapshot:?}"),
-    );
-    Err(QemuLiveNetworkIoGateError::PrimeDidNotReach { ceiling, evidence })
 }
 
 #[derive(Clone, Copy)]
@@ -286,13 +173,6 @@ struct DriveExchangeOptions {
     timeout: Duration,
     reply_wall_delay: Duration,
     backpressure_probe: BackpressureProbe,
-}
-
-#[derive(Clone, Copy)]
-struct BackpressureProbe {
-    key: FrameDeliveryKey,
-    delivery_attempts: u32,
-    last_attempt_icount: u64,
 }
 
 struct DriveExchangeOutcome {
@@ -323,15 +203,19 @@ fn drive_exchange(
         timeout,
         backpressure_probe,
     )?);
-    let discovery_pending = QemuShmemHotPathChannel::start_quantum(
-        hot_path,
-        crucible::ExecutionHorizon {
-            icount: Icount {
-                retired: PROBE_DISCOVERY_CEILING_ICOUNT,
+    let mut discovery_pending = Some(
+        QemuShmemHotPathChannel::start_quantum(
+            hot_path,
+            crucible::ExecutionHorizon {
+                icount: Icount {
+                    retired: PROBE_DISCOVERY_CEILING_ICOUNT,
+                },
             },
-        },
-    )
-    .map_err(|source| QemuLiveNetworkIoGateError::drive("start probe-discovery quantum", source))?;
+        )
+        .map_err(|source| {
+            QemuLiveNetworkIoGateError::drive("start probe-discovery quantum", source)
+        })?,
+    );
     let mut acknowledgement_icount = None;
     let mut backpressure_acknowledgement_icount = None;
     let mut delay_applied = false;
@@ -375,6 +259,85 @@ fn drive_exchange(
             discovery_complete = true;
             break;
         }
+        if discovery_quantum_report_ready(
+            node_snapshot.status,
+            node_snapshot.current_icount,
+            PROBE_DISCOVERY_CEILING_ICOUNT,
+        ) {
+            let completed = discovery_pending.as_mut().ok_or_else(|| {
+                QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
+                    evidence: String::from("probe-discovery quantum token was already consumed"),
+                }
+            })?;
+            let completion = match QemuShmemHotPathChannel::poll_quantum(hot_path, completed) {
+                Ok(completion) => completion,
+                Err(source) if source.retryable => continue,
+                Err(source) => {
+                    return Err(QemuLiveNetworkIoGateError::drive(
+                        "poll retained-retry discovery quantum",
+                        source,
+                    ));
+                }
+            };
+            let should_delay = !delay_applied && !reply_wall_delay.is_zero();
+            let mut delayed_completion = false;
+            let completion_step = servicer
+                .service_completed_frames_with_before_reply(completion.emitted_frames, || {
+                    if should_delay {
+                        thread::park_timeout(reply_wall_delay);
+                        delayed_completion = true;
+                    }
+                })
+                .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
+            if completion_step.reply_enqueued && delayed_completion {
+                delay_applied = true;
+            }
+            let completed_snapshot = servicer.snapshot();
+            if backpressure_acknowledgement_icount.is_none() {
+                backpressure_acknowledgement_icount = completed_snapshot
+                    .tx_frames
+                    .iter()
+                    .find(|frame| {
+                        frame
+                            .payload
+                            .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
+                            .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+                    })
+                    .map(|frame| frame.emit_icount);
+            }
+            if completed_snapshot.reply_delivery_icount.is_some()
+                && backpressure_acknowledgement_icount.is_some()
+                && node_snapshot.idle_wake_icount > PROBE_DISCOVERY_CEILING_ICOUNT
+            {
+                discovery_complete = true;
+                break;
+            }
+            if node_snapshot.idle_wake_icount > PROBE_DISCOVERY_CEILING_ICOUNT {
+                return Err(QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
+                    evidence: format!(
+                        "completed probe-discovery quantum without required guest frames: network={completed_snapshot:?}; node={node_snapshot:?}"
+                    ),
+                });
+            }
+            drop(discovery_pending.take());
+            discovery_pending = Some(
+                QemuShmemHotPathChannel::start_quantum(
+                    hot_path,
+                    crucible::ExecutionHorizon {
+                        icount: Icount {
+                            retired: PROBE_DISCOVERY_CEILING_ICOUNT,
+                        },
+                    },
+                )
+                .map_err(|source| {
+                    QemuLiveNetworkIoGateError::drive(
+                        "reissue retained-retry discovery quantum",
+                        source,
+                    )
+                })?,
+            );
+            continue;
+        }
         if let Some(status) = child
             .try_wait_natural_exit()
             .map_err(|source| QemuLiveNetworkIoGateError::ChildWait { source })?
@@ -394,6 +357,10 @@ fn drive_exchange(
             evidence: format!("network={:?}; node={node_evidence}", servicer.snapshot()),
         });
     }
+    let discovery_pending =
+        discovery_pending.ok_or_else(|| QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
+            evidence: String::from("probe-discovery quantum token is absent at completion"),
+        })?;
     QemuShmemHotPathChannel::finish_quantum(hot_path, discovery_pending).map_err(|source| {
         QemuLiveNetworkIoGateError::drive("finish probe-discovery quantum", source)
     })?;
@@ -511,4 +478,12 @@ fn drive_exchange(
         backpressure_retry_icount,
         delayed_reply_applied: delay_applied,
     })
+}
+
+pub(super) fn discovery_quantum_report_ready(
+    status: u8,
+    current_icount: u64,
+    discovery_ceiling: u64,
+) -> bool {
+    status == STATUS_IDLE && current_icount <= discovery_ceiling
 }
