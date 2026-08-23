@@ -68,6 +68,19 @@ in
           vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
 
+          retry_test_list="$TMPDIR/host-worker-retry.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --test host_worker_pool \
+            -- \
+            --list > "$retry_test_list"
+          grep -Fxq \
+            'qemu_host_worker_allows_the_complete_network_retry_budget: test' \
+            "$retry_test_list"
           cargo test \
             --frozen \
             --offline \

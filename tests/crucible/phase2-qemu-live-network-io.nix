@@ -113,6 +113,7 @@ in
             exited_target_fails_after_pending_work_release \
             first_stop_rejects_an_already_completed_quantum \
             signal_failure_is_reported_and_joined \
+            stop_observation_honors_timeout_without_a_state_change \
             watchdog_expiry_directly_resumes_stopped_target; do
             grep -Fxq \
               "bounded_scheduler_preemption::tests::$test_name: test" \
@@ -128,6 +129,9 @@ in
             bounded_scheduler_preemption::tests:: \
             -- \
             --test-threads=1
+          grep -Fxq \
+            'supervision::network_io_gate::tests::certification_rejects_ack_before_router_delivery_or_with_wrong_mac: test' \
+            "$scheduler_test_list"
           cargo test \
             --frozen \
             --offline \

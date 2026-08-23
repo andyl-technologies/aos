@@ -128,6 +128,8 @@ pub(super) fn certify_run(
             .checked_add(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
     {
         Some("retained backpressure retry missed its canonical deadline")
+    } else if outcome.completion_owned_frames == 0 {
+        Some("no guest TX batch crossed the completion-owned transfer path")
     } else if require_delay && !outcome.delayed_reply_applied {
         Some("hostile-host leg did not delay physical reply publication")
     } else if !outcome.orderly_child_exit {
