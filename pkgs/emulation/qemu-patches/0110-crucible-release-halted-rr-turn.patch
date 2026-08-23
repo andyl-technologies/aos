@@ -1,0 +1,159 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 219cadef1..f08eb93d9 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -284,6 +284,37 @@ static void icount_crucible_rr_account(CPUState *cpu, uint64_t executed)
+     timers_state.crucible_rr_selection_pending = true;
+ }
+ 
++void icount_crucible_rr_yield_cpu(CPUState *cpu)
++{
++    CPUState *next;
++
++    if (!cpu || icount_crucible_rr_switch_quantum() == 0) {
++        return;
++    }
++    if (!timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
++        error_report("crucible RR yield owner mismatch: owner=%" PRIu64
++                     " yielded-vcpu=%d",
++                     timers_state.crucible_rr_current_vcpu, cpu->cpu_index);
++        abort();
++    }
++
++    /*
++     * A guest PAUSE is an explicit deterministic scheduler yield.  Commit the
++     * early handoff as canonical cursor state rather than retaining a partial
++     * turn: retaining it lets a lock owner reacquire before a waiting vCPU can
++     * run and can starve firmware or guest spin locks forever.
++     */
++    next = CPU_NEXT(cpu);
++    if (!next) {
++        next = first_cpu;
++    }
++    g_assert(next);
++    timers_state.crucible_rr_current_vcpu = next->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_selection_pending = true;
++}
++
+ /*
+  * Update the global shared timer_state.qemu_icount to take into
+  * account executed instructions. This is done by the TCG vCPU
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 90840e631..47ec494bc 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -658,6 +658,22 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             return true;
+         }
+ 
++        /*
++         * x86 PAUSE exits TCG as EXCP_INTERRUPT without setting an asynchronous
++         * exit request.  Honor that guest-authored yield before loop-local CPU
++         * selection so a partial serialized turn cannot starve another vCPU
++         * waiting on the released lock.  Host kicks retain exit_request and do
++         * not enter this path.
++         */
++        if (rr_crucible_sim_mode() &&
++            !rr_crucible_sim_single_vcpu() &&
++            r == EXCP_INTERRUPT &&
++            cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug &&
++            icount_crucible_rr_current_vcpu() == cpu->cpu_index &&
++            cpu_can_run(cpu) && cpu_work_list_empty(cpu)) {
++            icount_crucible_rr_yield_cpu(cpu);
++        }
++
+         if (!rr_crucible_sim_single_vcpu() &&
+             icount_crucible_rr_cursor_position() == 0 &&
+             qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
+@@ -1116,10 +1132,23 @@ static void *rr_cpu_thread_fn(void *arg)
+                 suggested_cpu = first_cpu;
+             }
+             cpu = icount_crucible_rr_select_cpu(suggested_cpu);
+-            if (cpu == executed_cpu &&
+-                icount_crucible_rr_cursor_position() != 0) {
+-                partial_rr_turn = true;
+-                break;
++            if (cpu == executed_cpu) {
++                /*
++                 * A HLT can end a vCPU's runnable slice before its serialized
++                 * RR turn is exhausted.  If no other vCPU is runnable, leave
++                 * the execution loop so the all-halted callback can publish
++                 * the canonical idle boundary.  Re-entering solely to retain
++                 * the partial cursor would repeatedly execute the halted CPU
++                 * without retiring another instruction.
++                 */
++                if (rr_crucible_sim_vcpu_is_halted(cpu)) {
++                    cpu = NULL;
++                    break;
++                }
++                if (icount_crucible_rr_cursor_position() != 0) {
++                    partial_rr_turn = true;
++                    break;
++                }
+             }
+             if (wrapped) {
+                 cpu = NULL;
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 84ff4dc3c..9a95b3a52 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -86,6 +86,7 @@ void icount_crucible_rr_snapshot_resume_prepare(void);
+ void icount_crucible_rr_initialize_genesis(CPUState *cpu);
+ uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+ CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
++void icount_crucible_rr_yield_cpu(CPUState *cpu);
+ 
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+diff --git a/plugins/api.c b/plugins/api.c
+index 9f13b2bc4..61022499c 100644
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -510,6 +510,8 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+ {
+     uint64_t owner = qemu_plugin_crucible_rr_current_vcpu();
++    uint64_t serialized_owner = icount_crucible_rr_current_vcpu();
++    uint64_t cursor_position = icount_crucible_rr_cursor_position();
+     bool allowed;
+ 
+     /*
+@@ -517,23 +519,32 @@ static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
+      * owner. Any exact callback that holds the BQL has quiesced every vCPU
+      * register file, including the one-shot post-snapshot reselection boundary
+      * where the serialized owner is intentionally invalid and `current_cpu`
+-     * retains the preceding vCPU.
++     * retains the preceding vCPU. An exact completed-turn handoff is similarly
++     * quiescent: the committed cursor is zero at the next serialized owner while
++     * `current_cpu` still names the vCPU whose turn just finished. Single-threaded
++     * RR excludes concurrent execution during that synchronous callback.
+      * Terminal state capture separately stops the VM and holds the BQL. Refuse
+      * every concurrent, stale, or unowned context.
+      */
+     allowed = (qemu_plugin_crucible_single_threaded_rr() &&
+                qemu_plugin_crucible_exact_boundary_active() &&
+                ((current_cpu && owner != UINT64_MAX &&
+-                 current_cpu->cpu_index == owner) || bql_locked())) ||
++                 current_cpu->cpu_index == owner) ||
++                (current_cpu && owner == UINT64_MAX &&
++                 serialized_owner != UINT64_MAX &&
++                 current_cpu->cpu_index != serialized_owner &&
++                 cursor_position == 0) || bql_locked())) ||
+         (bql_locked() && !runstate_is_running());
+     if (!allowed) {
+         error_report("Crucible register capture rejected: "
+                      "single_rr=%d exact=%d bql=%d "
+-                     "running=%d current_cpu=%d rr_owner=%" PRIu64,
++                     "running=%d current_cpu=%d rr_owner=%" PRIu64
++                     " serialized_owner=%" PRIu64 " cursor=%" PRIu64,
+                      qemu_plugin_crucible_single_threaded_rr(),
+                      qemu_plugin_crucible_exact_boundary_active(),
+                      bql_locked(), runstate_is_running(),
+-                     current_cpu ? current_cpu->cpu_index : -1, owner);
++                     current_cpu ? current_cpu->cpu_index : -1, owner,
++                     serialized_owner, cursor_position);
+     }
+     return allowed;
+ }

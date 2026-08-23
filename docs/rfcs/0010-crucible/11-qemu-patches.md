@@ -1520,6 +1520,40 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   not advance guest time, synthesize a result, or affect ordinary QEMU modes.
 - **Risk:** F.
 
+### crucible-release-halted-rr-turn — publish idle inside a partial RR turn
+
+- **Patch:** `0110-crucible-release-halted-rr-turn.patch`.
+- **Enforces:** [DET-1], [PLUG-24], [QEMU-43].
+- **Mechanism:** after a vCPU executes `HLT`, the RR selector first looks for a
+  different runnable vCPU. If none exists and it returns the halted cursor
+  owner, the execution loop leaves the partial turn and enters the ordinary
+  all-vCPU-idle path. The serialized cursor position is retained for the next
+  runnable slice; it no longer causes QEMU to call `tcg_cpu_exec()` repeatedly
+  on a halted CPU that cannot retire another instruction. The exact halted
+  callback may capture cross-vCPU registers at an exact completed-turn handoff
+  only when the committed cursor is zero at the next serialized owner and
+  `current_cpu` still names the vCPU whose turn just finished; other owner
+  mismatches remain rejected. A multi-vCPU guest `PAUSE` that returns without a
+  host exit request commits the RFC-authorized early handoff at cursor zero;
+  this prevents the lock owner from reacquiring a released firmware or guest
+  spin lock before a waiting vCPU can run. Ordinary accounting remains the sole
+  handoff when the `PAUSE` coincides with a completed quantum, and single-vCPU
+  cursor behavior is unchanged.
+- **Micro-test:** the diskless live quantum guests deliberately reach their
+  final `HLT` at a nonzero RR cursor position. The one-vCPU and four-vCPU gates
+  require QEMU to publish the all-halted boundary, complete the exact timer
+  idle jump, and reproduce the result under bounded scheduler preemption. The
+  four-vCPU gate first passes SeaBIOS's `PAUSE`-based AP-startup rendezvous, so
+  it also proves the canonical guest-yield handoff on a production boot path.
+  Structural checks require the halted-owner escape before the partial-turn
+  continuation.
+- **Inertness:** both branches are inside precise sim mode's RR loop. The idle
+  branch requires the selected cursor owner to be halted with no pending work;
+  the yield branch requires multiple vCPUs, a still-partial owner-matched turn,
+  and no host exit request, stop, unplug, or queued CPU work. Every ordinary
+  QEMU accelerator retains its prior behavior.
+- **Risk:** D.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
