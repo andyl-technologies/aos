@@ -11,8 +11,8 @@ pub struct QemuAsyncDriverRuntimeError {
     pub operation: &'static str,
     /// Deterministic failure detail.
     pub message: String,
-    /// Exact PREPARE result allocation that failed, when applicable.
-    pub fault_result_storage_requested: Option<u64>,
+    /// Exact PREPARE result allocation or admission that failed, when applicable.
+    pub fault_result_storage: Option<(u32, u32)>,
 }
 
 impl QemuAsyncDriverRuntimeError {
@@ -22,17 +22,22 @@ impl QemuAsyncDriverRuntimeError {
         Self {
             operation,
             message: message.into(),
-            fault_result_storage_requested: None,
+            fault_result_storage: None,
         }
     }
 
     /// Creates an exact PREPARE result allocation failure.
     #[must_use]
-    pub fn fault_result_storage(requested: usize) -> Self {
+    pub fn fault_result_storage(requested: usize, configured: usize) -> Self {
         Self {
             operation: "reserve fault preparation result",
-            message: format!("cannot reserve exact published result length {requested}"),
-            fault_result_storage_requested: Some(u64::try_from(requested).unwrap_or(u64::MAX)),
+            message: format!(
+                "cannot admit or reserve published result length {requested} against limit {configured}"
+            ),
+            fault_result_storage: Some((
+                u32::try_from(requested).unwrap_or(u32::MAX),
+                u32::try_from(configured).unwrap_or(u32::MAX),
+            )),
         }
     }
 }

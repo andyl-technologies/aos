@@ -1268,8 +1268,12 @@ impl QemuNode {
         payload: &[u8],
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         if header.command_flags & FAULT_COMMAND_FLAG_PREPARE_ONLY != 0 {
-            return self
-                .apply_fault_command_at_current_boundary_with_storage(header, payload, None);
+            return self.apply_fault_command_at_current_boundary_with_storage(
+                header,
+                payload,
+                None,
+                HARD_FAULT_PAYLOAD_BYTES as usize,
+            );
         }
         // Compatibility APPLY callers have not staged a result buffer. Admit
         // the ABI hard ceiling before publication; production adapters use the
@@ -1278,17 +1282,20 @@ impl QemuNode {
         let requested =
             usize::try_from(requested_u64).map_err(|_| QemuNodeError::FaultResultStorage {
                 requested: requested_u64,
+                configured: requested_u64,
             })?;
         let mut result_buffer = Vec::new();
         result_buffer.try_reserve_exact(requested).map_err(|_| {
             QemuNodeError::FaultResultStorage {
                 requested: requested_u64,
+                configured: requested_u64,
             }
         })?;
         self.apply_fault_command_at_current_boundary_with_storage(
             header,
             payload,
             Some(result_buffer),
+            0,
         )
     }
 
@@ -1309,6 +1316,21 @@ impl QemuNode {
             header,
             payload,
             Some(result_buffer),
+            0,
+        )
+    }
+
+    pub(crate) fn apply_fault_preparation_at_current_boundary(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+        maximum_payload_bytes: usize,
+    ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        self.apply_fault_command_at_current_boundary_with_storage(
+            header,
+            payload,
+            None,
+            maximum_payload_bytes,
         )
     }
 
@@ -1317,6 +1339,7 @@ impl QemuNode {
         header: FaultCommandHeaderV1,
         payload: &[u8],
         result_buffer: Option<Vec<u8>>,
+        maximum_preparation_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
         let before = self.current_icount()?;
         if header.target_icount != before.retired {
@@ -1364,14 +1387,18 @@ impl QemuNode {
             Some(result_buffer) => self
                 .host_io_runtime
                 .await_fault_result(self.async_policy.advance_completion_timeout, result_buffer),
-            None => self
-                .host_io_runtime
-                .await_fault_preparation_result(self.async_policy.advance_completion_timeout),
+            None => self.host_io_runtime.await_fault_preparation_result(
+                self.async_policy.advance_completion_timeout,
+                maximum_preparation_payload_bytes,
+            ),
         }
         .map_err(|source| {
-            source.fault_result_storage_requested.map_or_else(
+            source.fault_result_storage.map_or_else(
                 || QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source)),
-                |requested| QemuNodeError::FaultResultStorage { requested },
+                |(requested, configured)| QemuNodeError::FaultResultStorage {
+                    requested: u64::from(requested),
+                    configured: u64::from(configured),
+                },
             )
         })?;
         let after = self.current_icount()?;

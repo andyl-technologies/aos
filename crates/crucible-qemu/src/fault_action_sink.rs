@@ -42,7 +42,7 @@ use evidence::*;
 use memory_payload::{memory_batch, memory_batch_evidence_matches, prepare_memory_action_payload};
 pub(crate) use result_validation::validate_typed_node_result;
 use result_validation::{
-    copy_fault_result_storage, reserve_fault_result_storage, stage_apply_commands,
+    map_preparation_result_error, reserve_fault_result_storage, stage_apply_commands,
     validate_typed_node_result_decoded,
 };
 
@@ -489,16 +489,27 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 [0; 32],
                 &preparation_payload,
             )?;
+            let maximum_evidence = usize::try_from(self.resource_limits.effect_payload_bytes)
+                .map_err(|_source| {
+                    FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+                        FaultResourceLimitError::Exceeded {
+                            field: "effect_payload_bytes",
+                            current: 0,
+                            requested: self.resource_limits.effect_payload_bytes,
+                            configured: self.resource_limits.effect_payload_bytes,
+                            hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
+                        },
+                    ))
+                })?;
             let preparation_result = self
                 .nodes
-                .apply_fault_command_at_current_boundary(
+                .apply_fault_preparation_at_current_boundary(
                     &prepared.node,
                     preparation_header,
                     &preparation_payload,
+                    maximum_evidence,
                 )
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
-                })?;
+                .map_err(map_preparation_result_error)?;
             let DequeuedFaultResult::Valid {
                 header: preparation_header,
                 payload: preparation_evidence,
@@ -508,8 +519,6 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     FaultRuntimeError::IncompleteAdapterState,
                 ));
             };
-            let preparation_evidence =
-                copy_fault_result_storage(self.resource_limits, &preparation_evidence)?;
             verify_qemu_evidence_hash(&preparation_header, &preparation_evidence)?;
             if preparation_header.status != FaultResultStatus::Prepared {
                 let evidence = result_evidence_hash(&preparation_header, &preparation_evidence);
