@@ -87,6 +87,39 @@ impl CampaignRuntimeWake {
     }
 }
 
+/// Cloneable completion signal for one campaign runtime incarnation.
+///
+/// This signal carries no driver or repository capability. It exists so a
+/// daemon service owner can stop sibling listeners when the runtime exits,
+/// including after a driver error or caught thread unwind.
+#[derive(Clone, Debug)]
+pub struct CampaignRuntimeCompletion {
+    shared: Arc<CampaignRuntimeShared>,
+}
+
+impl CampaignRuntimeCompletion {
+    /// Returns whether the runtime thread has finished.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.shared.finished.load(Ordering::Acquire)
+    }
+
+    /// Blocks until the runtime thread finishes or synchronization is poisoned.
+    ///
+    /// Poison is treated as terminal completion so a sibling service fails
+    /// closed instead of waiting indefinitely for a broken runtime owner.
+    pub fn wait(&self) {
+        let Ok(wait) = self.shared.wait.lock() else {
+            return;
+        };
+        drop(
+            self.shared
+                .changed
+                .wait_while(wait, |_| !self.shared.finished.load(Ordering::Acquire)),
+        );
+    }
+}
+
 /// Fixed configuration for one campaign runtime thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignRuntimeConfig {
@@ -207,7 +240,10 @@ where
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name(String::from("crucible-campaign-runtime"))
-            .spawn(move || campaign_runtime_loop(driver, worker_shared, config.poll_interval()))
+            .spawn(move || {
+                let _completion = CampaignRuntimeCompletionGuard(Arc::clone(&worker_shared));
+                campaign_runtime_loop(driver, worker_shared, config.poll_interval())
+            })
             .map_err(|source| CampaignRuntimeStartError::Spawn { source })?;
         Ok(Self {
             wake: CampaignRuntimeWake { shared },
@@ -219,6 +255,14 @@ where
     #[must_use]
     pub fn wake_handle(&self) -> CampaignRuntimeWake {
         self.wake.clone()
+    }
+
+    /// Returns a capability-free signal for terminal runtime completion.
+    #[must_use]
+    pub fn completion_handle(&self) -> CampaignRuntimeCompletion {
+        CampaignRuntimeCompletion {
+            shared: Arc::clone(&self.wake.shared),
+        }
     }
 
     /// Requests sticky shutdown and interrupts any quiescent wait.
@@ -235,6 +279,12 @@ where
     /// runtime escaped through an invariant panic.
     pub fn shutdown_and_join(
         mut self,
+    ) -> Result<CampaignRuntimeReport, CampaignRuntimeJoinError<D::Error>> {
+        self.shutdown_and_join_in_place()
+    }
+
+    pub(crate) fn shutdown_and_join_in_place(
+        &mut self,
     ) -> Result<CampaignRuntimeReport, CampaignRuntimeJoinError<D::Error>> {
         self.request_shutdown();
         let worker = self
@@ -285,6 +335,7 @@ pub enum CampaignRuntimeJoinError<E> {
 #[derive(Debug, Default)]
 struct CampaignRuntimeShared {
     shutdown: AtomicBool,
+    finished: AtomicBool,
     generation: AtomicU64,
     wait: Mutex<()>,
     changed: Condvar,
@@ -309,6 +360,27 @@ impl CampaignRuntimeShared {
                 self.changed.notify_all();
             }
         }
+    }
+
+    fn finish(&self) {
+        match self.wait.lock() {
+            Ok(_wait) => {
+                self.finished.store(true, Ordering::Release);
+                self.changed.notify_all();
+            }
+            Err(_) => {
+                self.finished.store(true, Ordering::Release);
+                self.changed.notify_all();
+            }
+        }
+    }
+}
+
+struct CampaignRuntimeCompletionGuard(Arc<CampaignRuntimeShared>);
+
+impl Drop for CampaignRuntimeCompletionGuard {
+    fn drop(&mut self) {
+        self.0.finish();
     }
 }
 

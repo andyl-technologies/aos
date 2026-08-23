@@ -273,8 +273,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   It continues immediately only after an outcome that can make another bounded
   transition, inserts an interruptible 1 ms fairness pause after at most 256
   immediate operations, reports terminal component failures to its join owner,
-  and does not add a second modeled-work queue. Process-level campaign enumeration,
-  configuration, and service-failure coupling remain open.
+  and does not add a second modeled-work queue. The daemon bootstrap now
+  attaches one explicitly named existing campaign to the packaged canonical
+  planner and one authenticated local executor. It negotiates executor
+  description/lineage/resources before planner-basis publication, starts only
+  after the CampaignService endpoint is acquired, and couples runtime failure
+  or process shutdown to listener shutdown and worker join. Campaign
+  enumeration, dynamic attachment, multiple simultaneous campaign runtimes,
+  and richer operational tuning remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -538,10 +544,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   a parent-owned supervisor measures deterministic page fuel, enforces a
   finite wall deadline and sticky cancellation, drains bounded pipes, and
   kills and reaps the authority-free worker before returning. The generic
-  daemon-owned long-lived coordinator runtime is implemented; attaching its
-  packaged planner configuration to process startup remains open, together with
-  richer owner-built reward/novelty/finding projections and complete fixed-
-  point PUCT ranking. The first `CampaignService`
+  daemon-owned long-lived coordinator runtime is implemented. Process startup
+  can now attach that runtime to one explicitly named existing campaign with
+  the packaged planner and one authenticated local executor; automatic
+  campaign discovery, dynamic/multiple attachment, richer owner-built
+  reward/novelty/finding projections, and complete fixed-point PUCT ranking
+  remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,
@@ -663,12 +671,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   mutation, holds one exact-owner state-root lock across private directory blob
   and ref backends, excludes a second socket incarnation, and reopens that state
   after restart. The existing `crucible serve` process exposes the socket,
-  state, policy, and octal-mode profile as all-or-none flags and couples
-  CampaignService failure and SIGINT/SIGTERM to lifecycle-server shutdown and
-  worker join. Process read-only mode also denies every campaign mutation after
-  policy resolution. Structured diagnostic routing and richer
-  richer creation/attach porcelain remain open; message framing or listener
-  construction alone is not authentication.
+  state, policy, and octal-mode profile as all-or-none flags. Optional paired
+  runtime-name/executor-socket flags attach the packaged planner to one existing
+  campaign only after exact-owner socket and `SO_PEERCRED` authentication plus
+  executor-description negotiation. CampaignService/runtime failure and
+  SIGINT/SIGTERM trigger shared shutdown and worker join. Process read-only mode
+  also denies every campaign mutation after policy resolution. Structured
+  diagnostic routing and richer creation/attach porcelain remain open; message
+  framing or listener construction alone is not authentication.
   Checked
   request/response acceptance now retains the
   exact canonical request in a content-addressed envelope (32-MiB and 65,529

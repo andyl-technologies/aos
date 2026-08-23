@@ -1329,6 +1329,26 @@ struct ServeArgs {
         conflicts_with = "read_only"
     )]
     campaign_import_manifest: Vec<PathBuf>,
+    /// Attach the packaged planner and one local executor to an existing campaign.
+    #[arg(
+        long,
+        value_name = "name",
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket"
+        ],
+        conflicts_with = "read_only"
+    )]
+    campaign_runtime: Option<String>,
+    /// Connect the attached campaign runtime to this owner-only Unix socket.
+    #[arg(
+        long,
+        value_name = "path",
+        requires = "campaign_runtime",
+        conflicts_with = "read_only"
+    )]
+    campaign_executor_socket: Option<PathBuf>,
     /// Set the managed campaign socket's Unix permission bits in octal.
     #[arg(
         long,

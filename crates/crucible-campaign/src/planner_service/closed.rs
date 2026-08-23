@@ -17,6 +17,42 @@ const ENGINE_PROTOCOL_VERSION: u32 = 1;
 const STATE_FORMAT: &str = "canonical-frontier-planner";
 const STATE_FORMAT_VERSION: u32 = 1;
 const STATE_SCHEMA_VERSION: u32 = 1;
+const POLICY_ARTIFACT_ABI_VERSION: u32 = 1;
+const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v1";
+
+/// Complete deterministic repository basis for the built-in planner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalFrontierPlannerBasis {
+    engine: PlannerEngine,
+    artifact: PolicyArtifact,
+    initial_state: PlannerState,
+}
+
+impl CanonicalFrontierPlannerBasis {
+    /// Returns the exact built-in engine descriptor.
+    #[must_use]
+    pub const fn engine(&self) -> &PlannerEngine {
+        &self.engine
+    }
+
+    /// Returns the exact built-in policy-artifact descriptor.
+    #[must_use]
+    pub const fn artifact(&self) -> &PolicyArtifact {
+        &self.artifact
+    }
+
+    /// Returns the empty portable state for the built-in engine.
+    #[must_use]
+    pub const fn initial_state(&self) -> &PlannerState {
+        &self.initial_state
+    }
+
+    /// Consumes the basis into its driver-owned values.
+    #[must_use]
+    pub fn into_parts(self) -> (PlannerEngine, PolicyArtifact, PlannerState) {
+        (self.engine, self.artifact, self.initial_state)
+    }
+}
 
 /// Closed deterministic planner for coordinator-authenticated candidate offers.
 #[derive(Clone, Copy, Debug, Default)]
@@ -47,6 +83,46 @@ impl CanonicalFrontierPlanner {
     pub fn initial_state() -> Result<PlannerState, CampaignCodecError> {
         let engine = Self::descriptor()?.id()?;
         Self::encode_state(engine, &CanonicalFrontierPlannerState::empty())
+    }
+
+    /// Builds the exact repository basis for the packaged built-in planner.
+    ///
+    /// The dependency lock is a fixed opaque content identity for this closed
+    /// implementation. Repository publication places that leaf before the
+    /// child-bearing artifact descriptor becomes reachable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if a descriptor, identity, or initial
+    /// state unexpectedly violates its canonical contract.
+    pub fn basis() -> Result<CanonicalFrontierPlannerBasis, CampaignCodecError> {
+        let engine = Self::descriptor()?;
+        let engine_id = engine.id()?;
+        let artifact = PolicyArtifact::new(
+            engine_id,
+            POLICY_ARTIFACT_ABI_VERSION,
+            Self::dependency_lock_id(),
+            BTreeSet::new(),
+            BTreeMap::new(),
+        )?;
+        let initial_state = Self::initial_state()?;
+        Ok(CanonicalFrontierPlannerBasis {
+            engine,
+            artifact,
+            initial_state,
+        })
+    }
+
+    pub(crate) fn dependency_lock_id() -> ContentId {
+        ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::Trace,
+            1,
+            POLICY_DEPENDENCY_LOCK_BYTES,
+        )
+    }
+
+    pub(crate) const fn dependency_lock_bytes() -> &'static [u8] {
+        POLICY_DEPENDENCY_LOCK_BYTES
     }
 
     fn encode_state(

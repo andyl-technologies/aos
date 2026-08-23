@@ -1627,9 +1627,11 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_policy",
                 "campaign_component_authority",
                 "campaign_import_manifest",
+                "campaign_runtime",
+                "campaign_executor_socket",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and one local executor to an existing campaign\ncampaign_executor_socket=Connect the attached campaign runtime to this owner-only Unix socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2359,6 +2361,100 @@ pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
         ])
         .is_err()
     );
+
+    for argv in [
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-runtime",
+            "attached",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-runtime",
+            "attached",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "runtime attachment must require its complete writable profile"
+        );
+    }
+
+    let invalid_campaign = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "bad:name",
+        "--campaign-executor-socket",
+        "/tmp/executor.sock",
+    ]);
+    let Commands::Serve(args) = &invalid_campaign.command else {
+        panic!("expected serve command");
+    };
+    assert!(matches!(
+        validate_serve_invocation(args),
+        Err(CliError::Usage(_))
+    ));
+}
+
+#[test]
+pub(super) fn cli_campaign_executor_socket_requires_exact_owner_mode_and_identity() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::net::UnixListener;
+
+    let directory = tempfile::tempdir().expect("executor socket directory");
+    let socket = directory.path().join("executor.sock");
+    let listener = UnixListener::bind(&socket).expect("executor listener");
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+        .expect("owner-only executor socket");
+    let stream = connect_campaign_executor(&socket).expect("authenticated executor socket");
+    drop(stream);
+
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660))
+        .expect("broaden executor socket mode");
+    assert!(connect_campaign_executor(&socket).is_err());
+    drop(listener);
+
+    let target = directory.path().join("target.sock");
+    let _target_listener = UnixListener::bind(&target).expect("target listener");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+        .expect("owner-only target socket");
+    let redirected = directory.path().join("redirected.sock");
+    symlink(&target, &redirected).expect("executor socket symlink");
+    assert!(connect_campaign_executor(&redirected).is_err());
+
+    let regular = directory.path().join("not-a-socket");
+    fs::write(&regular, b"not a socket").expect("regular file");
+    fs::set_permissions(&regular, fs::Permissions::from_mode(0o600))
+        .expect("owner-only regular file");
+    assert!(connect_campaign_executor(&regular).is_err());
 }
 
 #[test]

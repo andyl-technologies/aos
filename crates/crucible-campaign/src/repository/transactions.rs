@@ -42,6 +42,44 @@ impl CampaignRepository {
         Ok(repository)
     }
 
+    /// Publishes and authenticates the deterministic built-in planner basis.
+    ///
+    /// The opaque dependency-lock leaf is placed before the policy artifact
+    /// that names it. Every object has one fixed content identity, so retrying
+    /// after an interrupted immutable publication is idempotent and cannot
+    /// create an unbounded family of debris.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec, store, or integrity error if the closed basis cannot be
+    /// derived, placed, or authenticated as one complete repository closure.
+    pub fn publish_canonical_frontier_planner_basis(
+        &self,
+    ) -> Result<crate::CanonicalFrontierPlannerBasis, CampaignRepositoryError> {
+        let basis = CanonicalFrontierPlanner::basis()?;
+        let dependency = CanonicalFrontierPlanner::dependency_lock_id();
+        self.blobs.put_if_absent(
+            dependency,
+            &BlobHandle::from_bytes(CanonicalFrontierPlanner::dependency_lock_bytes().to_vec()),
+        )?;
+
+        let engine = self.put_planner_engine(basis.engine())?;
+        let artifact = self.put_policy_artifact(basis.artifact())?;
+        let state = self.put_planner_state(basis.initial_state())?;
+        if engine != basis.engine().id()?.content_id()
+            || artifact != basis.artifact().id()?.content_id()
+            || state != basis.initial_state().id()?.content_id()
+        {
+            return Err(integrity("canonical-planner-basis-publication-mismatch"));
+        }
+        self.verify_campaign_closures_anchored_cached(
+            [artifact, state],
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+        )?;
+        Ok(basis)
+    }
+
     /// Creates a campaign with a canonical genesis snapshot.
     ///
     /// # Errors
