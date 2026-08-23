@@ -345,11 +345,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   process-local cancellation incarnation now supports a bounded blocking wait,
   wakes all guards on cancellation, and fails closed after synchronization
   poison. The process owner can lend a narrow sticky-event signal and refuses
-  child-contract access after it fires. Concrete guard ownership of that relay,
-  composition of failed-child and active-node handoff into the cgroup owner,
-  aggregate filesystem quota, execution-quantum counter composition, exclusive
-  run-directory namespace ownership through artifact open, the modeled attempt
-  driver, and concrete session wiring remain open. Real-node
+  child-contract access after it fires. The daemon now registers exactly one
+  synchronous idempotent resource callback on that incarnation and composes it
+  with exact quantum accounting plus an indivisible process/filesystem host
+  owner. Exact-limit mismatch and pre-cancellation roll back before admission;
+  failed reap and live-owner drop transfer the complete host authority to
+  quarantine. Linux composition of failed-child and active-node handoff into
+  the cgroup owner, aggregate filesystem quota, exclusive run-directory
+  namespace ownership through artifact open, the modeled attempt driver, and
+  concrete session wiring remain open. Real-node
   exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
@@ -676,7 +680,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   above immutable ceilings, and unsupported locality. The local supervisor
   facade refuses startup unless advertised ceilings exactly equal enforced
   slots, CPU, memory, disk, and execution-quanta limits. The concrete host
-  resource guard's quantum-counter composition, modeled driver, the versioned
+  resource guard's Linux cgroup/quota owner, modeled driver, the versioned
   paused-restore reset of the plugin coverage novelty bitmap/ring plus host
   consumer state, coverage-aware live advancement and canonical coverage
   projection, hot-fork realization,
