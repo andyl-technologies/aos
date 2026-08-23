@@ -45,6 +45,23 @@ fn typed_node_application_evidence_excludes_replay_authorization() {
         typed_node_application_evidence_hash(&baseline, 73),
         typed_node_application_evidence_hash(&baseline, 74)
     );
+
+    let mut legacy_material = [0_u8; 152];
+    legacy_material[0..2].copy_from_slice(&(baseline.command_kind as u16).to_le_bytes());
+    legacy_material[2..4].copy_from_slice(&(baseline.operation as u16).to_le_bytes());
+    legacy_material[4..6].copy_from_slice(&(baseline.target_kind as u16).to_le_bytes());
+    legacy_material[6..8].copy_from_slice(&baseline.model_phase.to_le_bytes());
+    legacy_material[8..16].copy_from_slice(&baseline.generation.to_le_bytes());
+    legacy_material[16..24].copy_from_slice(&baseline.prior_generation.to_le_bytes());
+    legacy_material[24..56].copy_from_slice(&baseline.target_hash);
+    legacy_material[56..88].copy_from_slice(&baseline.schema_hash);
+    legacy_material[88..120].copy_from_slice(&baseline.before_sha256);
+    legacy_material[120..152].copy_from_slice(&baseline.after_sha256);
+    let legacy = ContentHash::from_canonical_hex_bytes(
+        "crucible.qemu-node-application-evidence.v1",
+        &legacy_material,
+    );
+    assert_ne!(typed_node_application_evidence_hash(&baseline, 73), legacy);
 }
 
 #[test]
