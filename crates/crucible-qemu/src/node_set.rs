@@ -562,6 +562,22 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    pub(crate) fn apply_fault_command_at_current_boundary_with_result_buffer(
+        &mut self,
+        node: &NodeId,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+        result_buffer: Vec<u8>,
+    ) -> Result<DequeuedFaultResult, BackendError> {
+        self.node_mut(node)?
+            .apply_fault_command_at_current_boundary_with_result_buffer(
+                header,
+                payload,
+                result_buffer,
+            )
+            .map_err(BackendError::from)
+    }
+
     /// Reads one live node's authoritative fault-command coordinate.
     ///
     /// # Errors

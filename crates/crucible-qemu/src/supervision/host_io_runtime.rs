@@ -31,7 +31,7 @@ use std::time::Duration;
 use crucible::model::ContentHash;
 use crucible_shmem::{
     DequeuedFaultResult, MappedSetupRegion, STATUS_DONE, STATUS_IDLE, authorize_advance_ceiling,
-    dequeue_fault_result, mmap_setup_region,
+    mmap_setup_region,
 };
 
 use super::accelerator_io_servicer::QemuLiveAcceleratorServicer;
@@ -641,52 +641,6 @@ impl QemuLiveHostIoRuntime {
                     ),
                 )
             ),
-        ))
-    }
-
-    /// Polls the dedicated lossless result ring while repeatedly waking QEMU.
-    fn poll_fault_result(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "await fault result",
-                "fault-result timeout is zero",
-            ));
-        }
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
-        for attempt in 0..attempts {
-            self.signal_wake()?;
-            let transport = self
-                .region
-                .fault_result_transport_mut(self.vm_slot)
-                .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
-                        "map fault-result transport",
-                        source.to_string(),
-                    )
-                })?;
-            let result = dequeue_fault_result(
-                transport.ring,
-                transport.slots,
-                transport.arena_header,
-                transport.arena,
-                transport.arena_region_offset,
-            )
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault result", source.to_string())
-            })?;
-            if let Some(result) = result {
-                return Ok(result);
-            }
-            if attempt + 1 < attempts {
-                thread::sleep(self.poll_interval);
-            }
-        }
-        Err(QemuAsyncDriverRuntimeError::new(
-            "await fault result",
-            format!("no result was published within {timeout:?}"),
         ))
     }
 
@@ -1514,14 +1468,16 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     fn await_fault_result(
         &mut self,
         timeout: Duration,
+        payload_buffer: Vec<u8>,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        self.poll_fault_result(timeout)
+        self.poll_fault_result(timeout, payload_buffer)
     }
 }
 
 mod error;
 pub use error::QemuLiveHostIoRuntimeError;
 use error::map_slot_error;
+mod fault_result;
 
 #[cfg(test)]
 #[path = "host_io_runtime_tests.rs"]

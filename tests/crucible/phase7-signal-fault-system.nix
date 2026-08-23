@@ -97,6 +97,15 @@ in
             -p crucible-qemu \
             --lib \
             -- --list > "$qemu_lib_tests"
+          shmem_lib_tests="$TMPDIR/crucible-shmem-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-shmem \
+            --lib \
+            -- --list > "$shmem_lib_tests"
 
           run_exact_crucible_test() {
             test_name="$1"
@@ -120,6 +129,19 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
+              --lib "$test_name" \
+              -- --exact --test-threads=1
+          }
+
+          run_exact_shmem_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$shmem_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
               --lib "$test_name" \
               -- --exact --test-threads=1
           }
@@ -208,6 +230,10 @@ in
             fault_action_sink::tests::staged_qemu_results_and_evidence_use_reserved_storage
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::qemu_action_ledger_retains_impulses_and_removed_rules_for_events
+          run_exact_shmem_test \
+            fault_command::tests::result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer
 
           cargo test \
             --frozen \

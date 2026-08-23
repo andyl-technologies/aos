@@ -2,6 +2,10 @@
 
 use super::*;
 
+#[path = "transport/buffered_result.rs"]
+mod buffered_result;
+pub use buffered_result::*;
+
 /// One command removed from the transport after its arena reservation is freed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DequeuedFaultCommand {

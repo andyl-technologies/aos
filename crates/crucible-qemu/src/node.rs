@@ -1266,6 +1266,22 @@ impl QemuNode {
         header: FaultCommandHeaderV1,
         payload: &[u8],
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        self.apply_fault_command_at_current_boundary_with_result_buffer(header, payload, Vec::new())
+    }
+
+    /// Applies one admitted command using result storage reserved by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] under the same conditions as
+    /// [`Self::apply_fault_command_at_current_boundary`], and when the supplied
+    /// result buffer is smaller than the published evidence.
+    pub(crate) fn apply_fault_command_at_current_boundary_with_result_buffer(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+        result_buffer: Vec<u8>,
+    ) -> Result<DequeuedFaultResult, QemuNodeError> {
         let before = self.current_icount()?;
         if header.target_icount != before.retired {
             return Err(QemuNodeError::fault_command(format!(
@@ -1310,7 +1326,7 @@ impl QemuNode {
             })?;
         let result = self
             .host_io_runtime
-            .await_fault_result(self.async_policy.advance_completion_timeout)
+            .await_fault_result(self.async_policy.advance_completion_timeout, result_buffer)
             .map_err(|source| {
                 QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
             })?;

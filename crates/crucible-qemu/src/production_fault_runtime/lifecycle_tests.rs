@@ -173,8 +173,16 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
 
     let impulse = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let staged_impulse = runtime
+        .stage_qemu_action_ledger(std::slice::from_ref(&impulse))
+        .unwrap_or_else(|error| panic!("impulse ledger storage should stage: {error}"));
+    assert_eq!(runtime.qemu_issued_actions.len(), 0);
+    assert_eq!(runtime.qemu_action_commits.len(), 0);
+    assert_eq!(runtime.qemu_active_rule_ids.len(), 0);
+    assert!(runtime.qemu_issued_actions.capacity() >= 1);
+    assert!(runtime.qemu_action_commits.capacity() >= 1);
     runtime
-        .update_qemu_action_ledger(std::slice::from_ref(&impulse), committed(&impulse, 1))
+        .commit_staged_qemu_action_ledger(staged_impulse, committed(&impulse, 1))
         .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));
     assert_eq!(
         runtime.qemu_issued_actions.get(&impulse.id()),
@@ -185,8 +193,13 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
     persistent.kind = BindingActionKind::UpsertPersistent;
     persistent.binding = object_id("node-hang");
     persistent.transition_sequence = 2;
+    let staged_persistent = runtime
+        .stage_qemu_action_ledger(std::slice::from_ref(&persistent))
+        .unwrap_or_else(|error| panic!("persistent ledger storage should stage: {error}"));
+    assert_eq!(runtime.qemu_active_rule_ids.len(), 0);
+    assert!(runtime.qemu_active_rule_ids.capacity() >= 1);
     runtime
-        .update_qemu_action_ledger(std::slice::from_ref(&persistent), committed(&persistent, 2))
+        .commit_staged_qemu_action_ledger(staged_persistent, committed(&persistent, 2))
         .unwrap_or_else(|error| panic!("persistent rule should enter issued ledger: {error}"));
 
     let mut remove = persistent.clone();
