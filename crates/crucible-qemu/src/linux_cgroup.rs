@@ -1019,7 +1019,11 @@ impl LinuxQemuCgroupRoot {
     ///
     /// Every conforming supervisor that can mutate the delegated namespace
     /// must acquire this advisory lock. The operator must not grant a separate
-    /// non-cooperating writer access to the same root.
+    /// non-cooperating writer access to the same root. A process forked while
+    /// an owner was live can retain the close-on-exec descriptor until it
+    /// reaches `exec`; a replacement supervisor may therefore observe a short,
+    /// fail-closed [`LinuxQemuCgroupError::NamespaceLocked`] transition after
+    /// the prior owner drops its final Rust authority.
     ///
     /// # Errors
     ///
@@ -2111,7 +2115,18 @@ mod tests {
             Err(LinuxQemuCgroupError::NamespaceLocked { .. })
         ));
         drop(cleanup);
-        lock_namespace(&contender, directory.path())?;
+        for attempt in 0..5_000 {
+            match lock_namespace(&contender, directory.path()) {
+                Ok(()) => break,
+                Err(LinuxQemuCgroupError::NamespaceLocked { .. }) if attempt < 4_999 => {
+                    // A concurrently forked test child can retain the
+                    // close-on-exec duplicate briefly. That is a safe lock
+                    // handoff, not another namespace owner.
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(source) => return Err(source),
+            }
+        }
         assert!(directory.path().join("attempt").is_dir());
         Ok(())
     }

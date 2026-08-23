@@ -293,8 +293,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   cancellation and reap supervision. Root, configured-group, and failed-setup
   cleanup owners retain one exclusive delegated-namespace lock and pinned
   parent/child identities; setup and release errors return the remaining
-  authority instead of dropping it. Process membership is fixed-memory and
-  bounded to 65,536 tasks. The authority derives PID/start-time/executable
+  authority instead of dropping it. A concurrently forked child may retain the
+  close-on-exec lock description until `exec`, so replacement acquisition
+  remains fail closed and retries the transient handoff within its startup
+  deadline. Process membership is fixed-memory and bounded to 65,536 tasks.
+  The authority derives PID/start-time/executable
   identity from its owned direct child and checks that exact process generation
   on both sides of the scan. It then retains the nonduplicable direct-child wait
   handle in a must-reap authority that rechecks identity before force-kill and
