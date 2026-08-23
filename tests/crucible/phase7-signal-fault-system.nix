@@ -161,6 +161,14 @@ in
             -p crucible \
             --lib resolved_effect_trace_rejects_unversioned_and_future_envelopes \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib resolved_effect_trace_preflights_authored_collection_counts \
+            -- --test-threads=1
 
           cargo test \
             --frozen \

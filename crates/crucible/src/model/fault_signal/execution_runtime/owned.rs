@@ -280,43 +280,20 @@ impl OwnedFaultExecutionRuntime {
             }
             None => runtime.preview_boundary(coordinate, same_coordinate_sequence)?,
         };
-        let mut candidate = runtime.checkpoint()?;
+        let candidate = runtime.checkpoint()?;
         let derivation = ContentHash::from_bytes(b"checkpoint-capacity-preflight-derivation");
         let precondition = ContentHash::from_bytes(b"checkpoint-capacity-preflight-before");
         let evidence = ContentHash::from_bytes(b"checkpoint-capacity-preflight-evidence");
-        let mut records = Vec::with_capacity(evaluation.actions.len());
-        for action in &evaluation.actions {
-            let mut capacity_action = action.clone();
-            if capacity_action.effect.kind().descriptor().adapter == FaultAdapter::Node
-                && capacity_action.coordinate.retired_instructions.is_none()
-            {
-                // Preview cannot sample live QEMU. The capacity probe uses the
-                // widest concrete icount encoding so its synthetic node record
-                // remains valid and conservatively sizes the later live record.
-                capacity_action.coordinate.retired_instructions = Some(u64::MAX);
-            }
-            records.push(
-                ResolvedEffectRecord::from_committed_action(
-                    &capacity_action,
-                    opportunity,
-                    same_coordinate_sequence,
-                    derivation,
-                    Some(precondition),
-                    evidence,
-                )
-                .map_err(FaultRuntimeError::Contract)?,
-            );
-        }
-        candidate
-            .recorded_work_items
-            .push(ResolvedReplayWorkItem::new(
-                coordinate,
-                same_coordinate_sequence,
-                opportunity,
-                derivation,
-                records,
-            )?);
-        let _ = candidate.canonical_bytes()?;
+        super::capacity_preflight::preflight_checkpoint_with_actions(
+            &candidate,
+            &evaluation.actions,
+            coordinate,
+            same_coordinate_sequence,
+            opportunity,
+            derivation,
+            precondition,
+            evidence,
+        )?;
         Ok(())
     }
 
