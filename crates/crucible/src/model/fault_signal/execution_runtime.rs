@@ -403,6 +403,7 @@ impl<'a> FaultExecutionRuntime<'a> {
     }
 }
 
+mod capacity_preflight;
 mod owned;
 
 pub use owned::OwnedFaultExecutionRuntime;

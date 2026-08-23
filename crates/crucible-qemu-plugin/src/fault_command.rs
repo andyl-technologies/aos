@@ -1380,24 +1380,6 @@ extern "C" fn test_register_bindings_seal() -> c_int {
 }
 
 #[cfg(test)]
-fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultResult {
-    QemuFaultResult {
-        command_kind: command.command_kind,
-        status: FaultResultStatus::Applied as u16,
-        phase: command.phase,
-        reserved: 0,
-        semantic_version: command.semantic_version,
-        capability_version: 1,
-        command_sequence: command.command_sequence,
-        observed_icount: command.target_icount,
-        applied_icount: command.target_icount,
-        before_hash: [0; 32],
-        after_hash: [0; 32],
-        evidence_hash: [0; 32],
-    }
-}
-
-#[cfg(test)]
 thread_local! {
     static TEST_CAPABILITY_RESULT_PENDING: std::cell::Cell<Option<QemuFaultCommand>> =
         const { std::cell::Cell::new(None) };
@@ -2025,11 +2007,15 @@ mod clock_evidence;
 mod event_envelope;
 mod instruction_evidence;
 mod lifecycle_evidence;
+#[cfg(test)]
+mod test_support;
 use accelerator_evidence::*;
 use clock_evidence::*;
 use event_envelope::*;
 use instruction_evidence::*;
 use lifecycle_evidence::*;
+#[cfg(test)]
+use test_support::test_result_for_command;
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {

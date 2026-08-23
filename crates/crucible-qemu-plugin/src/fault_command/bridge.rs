@@ -1,6 +1,10 @@
 //! Live command/result/event bridge operations.
 
 use super::*;
+
+mod initialization;
+use initialization::initialization_stage;
+
 impl FaultCommandBridge {
     /// Retains correlation until QEMU publishes a terminal command result.
     pub(super) fn retain_prepared_correlation(&mut self, result: &QemuFaultResult) -> bool {
@@ -1293,14 +1297,4 @@ impl FaultCommandBridge {
         };
         self.results.enqueue(header, payload)
     }
-}
-
-fn initialization_stage<T>(
-    stage: &'static str,
-    result: Result<T, FaultCommandBridgeError>,
-) -> Result<T, FaultCommandBridgeError> {
-    result.map_err(|source| FaultCommandBridgeError::InitializationStage {
-        stage,
-        source: Box::new(source),
-    })
 }
