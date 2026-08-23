@@ -39,7 +39,7 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
             ));
         }
         self.values
-            .try_reserve(additional)
+            .try_reserve_exact(additional)
             .map_err(|_| collection_resource("bounded CBOR set", current, requested, MAX))
     }
 
