@@ -396,6 +396,7 @@ pub trait QemuHostIoRuntime: Send {
     fn await_fault_result(
         &mut self,
         _timeout: Duration,
+        _payload_buffer: Vec<u8>,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result",

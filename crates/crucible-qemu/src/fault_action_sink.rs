@@ -31,21 +31,22 @@ use std::collections::BTreeMap;
 
 #[path = "fault_action_sink/evidence.rs"]
 mod evidence;
+#[path = "fault_action_sink/memory_payload.rs"]
+mod memory_payload;
 #[path = "fault_action_sink/node_payload.rs"]
 mod node_payload;
+#[path = "fault_action_sink/result_validation.rs"]
+mod result_validation;
 use evidence::*;
+use memory_payload::prepare_memory_action_payload;
+pub(crate) use result_validation::validate_typed_node_result;
+use result_validation::validate_typed_node_result_decoded;
 
 #[derive(Clone)]
 struct PreparedMemoryAction {
     action: ResolvedBindingAction,
     node: NodeId,
     coordinate: u64,
-    payload: MemoryMutationPayloadV1,
-}
-
-struct MemoryActionPayload {
-    action: ResolvedBindingAction,
-    node: NodeId,
     payload: MemoryMutationPayloadV1,
 }
 
@@ -76,8 +77,17 @@ struct PreparedTypedNodeAction {
 struct AuthorizedQemuNodeBatch {
     prepared: PreparedQemuNodeBatch,
     preparation: MemoryMutationBatchEvidenceV1,
-    preparation_evidence: Vec<u8>,
+    preparation_evidence_sha256: [u8; 32],
+    preparation_evidence_len: usize,
+    result_buffer: Vec<u8>,
     mutation_payload: Vec<u8>,
+}
+
+struct AuthorizedTypedNodeAction {
+    prepared: PreparedTypedNodeAction,
+    preparation: NodeFaultEvidenceV1,
+    request: NodeFaultPayloadV1,
+    result_buffer: Vec<u8>,
 }
 
 /// Authenticated APPLY-result identity retained for occurrence correlation.
@@ -229,101 +239,6 @@ impl<'a> QemuFaultActionSink<'a> {
             payload,
         })
     }
-}
-
-fn prepare_memory_action_payload(
-    action: &ResolvedBindingAction,
-    resource_limits: FaultResourceLimits,
-) -> Result<MemoryActionPayload, FaultRuntimeError> {
-    if action.kind != BindingActionKind::Apply || action.phase != FaultPhase::Boundary {
-        return Err(FaultRuntimeError::AdapterActionMismatch);
-    }
-    let ResolvedFaultTarget::MemoryRange {
-        node,
-        address_space,
-        guest_address,
-        vcpu,
-        length_bytes,
-    } = &action.target
-    else {
-        return Err(FaultRuntimeError::AdapterActionMismatch);
-    };
-    let EffectSpecification::Node(NodeEffectSpecification::MemoryMutation {
-        address_space: requested_address_space,
-        range,
-        mutation,
-        atomicity,
-    }) = action.effect.specification()
-    else {
-        return Err(FaultRuntimeError::AdapterActionMismatch);
-    };
-    let target_address_space = match (address_space.as_str(), vcpu) {
-        ("gpa", None) => MemoryAddressSpace::GuestPhysical,
-        ("gva", Some(_)) => MemoryAddressSpace::GuestVirtual,
-        _ => return Err(FaultRuntimeError::AdapterActionMismatch),
-    };
-    if target_address_space != *requested_address_space
-        || *atomicity != ModelMemoryMutationAtomicity::AllOrNothing
-        || range.start() != *guest_address
-        || range.length() != *length_bytes
-    {
-        return Err(FaultRuntimeError::AdapterActionMismatch);
-    }
-    resource_limits
-        .reserve("memory_mutation_bytes_per_effect", 0, *length_bytes)
-        .map_err(FaultRuntimeError::ResourceLimit)?;
-    let length = usize::try_from(*length_bytes)
-        .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
-    let (transform, mask, values) = match mutation {
-        MemoryMutationKind::BitFlip { mask } => {
-            let pattern = mask.decode();
-            let mut expanded = Vec::new();
-            expanded.try_reserve_exact(length).map_err(|_| {
-                FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
-                    field: "memory_mutation_bytes_per_effect",
-                    current: 0,
-                    requested: *length_bytes,
-                    configured: resource_limits.memory_mutation_bytes_per_effect,
-                    hard: FaultResourceLimits::compiled_maximum().memory_mutation_bytes_per_effect,
-                })
-            })?;
-            expanded.extend(pattern.iter().copied().cycle().take(length));
-            (MemoryMutationTransformKind::BitFlip, expanded, Vec::new())
-        }
-        MemoryMutationKind::Replace { bytes } => (
-            MemoryMutationTransformKind::Replace,
-            vec![0xff; length],
-            bytes.decode(),
-        ),
-    };
-    let (address_space, vcpu_index) = match target_address_space {
-        MemoryAddressSpace::GuestPhysical => (
-            MemoryMutationAddressSpace::GuestPhysical,
-            MEMORY_MUTATION_NO_VCPU,
-        ),
-        MemoryAddressSpace::GuestVirtual => (
-            MemoryMutationAddressSpace::GuestVirtual,
-            (*vcpu).ok_or(FaultRuntimeError::AdapterActionMismatch)?,
-        ),
-    };
-    let payload = MemoryMutationPayloadV1 {
-        address_space,
-        transform,
-        atomicity: MemoryMutationAtomicity::AllOrNothing,
-        vcpu_index,
-        address: *guest_address,
-        mask,
-        values,
-        expected_translation_sha256: [0; 32],
-    };
-    let node = NodeId {
-        name: node.as_str().to_owned(),
-    };
-    Ok(MemoryActionPayload {
-        action: action.clone(),
-        node,
-        payload,
-    })
 }
 
 fn qemu_execution_coordinate(
@@ -635,7 +550,9 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             authorized.push(AuthorizedQemuNodeBatch {
                 prepared,
                 preparation,
-                preparation_evidence,
+                preparation_evidence_sha256: Sha256::digest(&preparation_evidence).into(),
+                preparation_evidence_len: preparation_evidence.len(),
+                result_buffer: preparation_evidence,
                 mutation_payload,
             });
         }
@@ -655,6 +572,9 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 ))
             })?;
         for prepared in typed_actions {
+            let request = NodeFaultPayloadV1::decode(&prepared.payload).map_err(|_source| {
+                FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
+            })?;
             let coordinate = prepared.coordinate;
             let sequence = self
                 .nodes
@@ -677,8 +597,12 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
                 })?;
-            let evidence =
-                validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Prepared)?;
+            let (evidence, result_buffer) = validate_typed_node_result_decoded(
+                &request,
+                &prepared.payload,
+                result,
+                FaultResultStatus::Prepared,
+            )?;
             if evidence.before_sha256 != evidence.after_sha256 {
                 return Err(FaultActionCommitError::Fatal(
                     FaultRuntimeError::IncompleteAdapterState,
@@ -700,7 +624,12 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     })?),
                 )));
             }
-            authorized_typed.push((prepared, evidence));
+            authorized_typed.push(AuthorizedTypedNodeAction {
+                prepared,
+                preparation: evidence,
+                request,
+                result_buffer,
+            });
         }
 
         let mut applied = false;
@@ -708,7 +637,9 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             let AuthorizedQemuNodeBatch {
                 prepared,
                 preparation,
-                preparation_evidence,
+                preparation_evidence_sha256,
+                preparation_evidence_len,
+                result_buffer,
                 mutation_payload,
             } = authorized;
             let mutation_sequence = self
@@ -735,10 +666,11 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             )?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary(
+                .apply_fault_command_at_current_boundary_with_result_buffer(
                     &prepared.node,
                     mutation_header,
                     &mutation_payload,
+                    result_buffer,
                 )
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
@@ -773,7 +705,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     != preparation.after_sha256().map_err(|_source| {
                         FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
                     })?
-                || result_payload != preparation_evidence
+                || result_payload.len() != preparation_evidence_len
+                || <[u8; 32]>::from(Sha256::digest(&result_payload)) != preparation_evidence_sha256
                 || !memory_batch_evidence_matches(&preparation, &prepared)
             {
                 return Err(FaultActionCommitError::Fatal(
@@ -802,7 +735,13 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 )?;
             }
         }
-        for (prepared, preparation) in authorized_typed {
+        for authorized in authorized_typed {
+            let AuthorizedTypedNodeAction {
+                prepared,
+                preparation,
+                request,
+                result_buffer,
+            } = authorized;
             let coordinate = prepared.coordinate;
             let sequence = self
                 .nodes
@@ -821,12 +760,21 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             )?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary(&prepared.node, header, &prepared.payload)
+                .apply_fault_command_at_current_boundary_with_result_buffer(
+                    &prepared.node,
+                    header,
+                    &prepared.payload,
+                    result_buffer,
+                )
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
                 })?;
-            let evidence =
-                validate_typed_node_result(&prepared.payload, result, FaultResultStatus::Applied)?;
+            let (evidence, _result_buffer) = validate_typed_node_result_decoded(
+                &request,
+                &prepared.payload,
+                result,
+                FaultResultStatus::Applied,
+            )?;
             let evidence_hash = typed_node_application_evidence_hash(&evidence, coordinate);
             let action = prepared.action.id();
             retain_committed_evidence(
@@ -857,52 +805,6 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             results,
         })
     }
-}
-
-pub(crate) fn validate_typed_node_result(
-    request_payload: &[u8],
-    result: DequeuedFaultResult,
-    expected_status: FaultResultStatus,
-) -> Result<NodeFaultEvidenceV1, FaultActionCommitError> {
-    let DequeuedFaultResult::Valid {
-        header,
-        payload: evidence_bytes,
-    } = result
-    else {
-        return Err(FaultActionCommitError::Fatal(
-            FaultRuntimeError::IncompleteAdapterState,
-        ));
-    };
-    verify_qemu_evidence_hash(&header, &evidence_bytes)?;
-    if header.status != expected_status {
-        return Err(FaultActionCommitError::Fatal(
-            FaultRuntimeError::AdapterActionMismatch,
-        ));
-    }
-    let request = NodeFaultPayloadV1::decode(request_payload).map_err(|_source| {
-        FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-    })?;
-    let evidence = NodeFaultEvidenceV1::decode(&evidence_bytes).map_err(|_source| {
-        FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
-    })?;
-    let request_sha256: [u8; 32] = Sha256::digest(request_payload).into();
-    if evidence.command_kind != request.command_kind
-        || evidence.operation != request.operation
-        || evidence.target_kind != request.target_kind
-        || evidence.model_phase != request.model_phase
-        || evidence.generation != request.generation
-        || evidence.action_hash != request.action_hash
-        || evidence.target_hash != request.target_hash
-        || evidence.schema_hash != request.schema_hash
-        || evidence.request_sha256 != request_sha256
-        || header.before_hash != evidence.before_sha256
-        || header.after_hash != evidence.after_sha256
-    {
-        return Err(FaultActionCommitError::Fatal(
-            FaultRuntimeError::IncompleteAdapterState,
-        ));
-    }
-    Ok(evidence)
 }
 
 // crucible-lint: allow rust-allow -- the command header authenticates each independent memory action field.
