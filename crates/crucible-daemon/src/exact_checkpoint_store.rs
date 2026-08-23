@@ -1,26 +1,33 @@
 //! Durable content-addressed publication of exact QEMU checkpoints.
 //!
-//! An exact checkpoint is one small child-bearing root plus two immutable
-//! children:
+//! A current exact checkpoint is one small child-bearing root plus three
+//! immutable children:
 //!
 //! ```text
-//! ExactCheckpointRootV2
+//! ExactCheckpointRootV3
 //!   snapshot-metadata -> DeviceStateV2(QemuVmSnapshotV1)
+//!   scheduler-continuation -> DeviceStateV3(SingleSchedulerCheckpointV2)
 //!   qemu-vmstate      -> DeviceStateV1(opaque qcow2 VMState bytes)
 //! ```
 //!
-//! The metadata child binds the scheduler checkpoint and every Apache-owned
-//! continuation. The VMState child remains opaque and streams through
-//! [`BlobHandle`] without a RAM-sized staging allocation. The generic root
-//! makes both children visible to storage closure walkers and is published
-//! only after durable placement of both children.
+//! The metadata child binds the projected scheduler checkpoint. The scheduler
+//! child retains every Apache-owned continuation needed for canonical resume.
+//! The VMState child remains opaque and streams through [`BlobHandle`] without
+//! a RAM-sized staging allocation. The generic root makes all three children
+//! visible to storage closure walkers and is published only after durable
+//! placement of every child. Legacy version-two roots remain readable for
+//! migration and replay-oracle operations, but lack the scheduler child and
+//! cannot resume a campaign attempt.
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::Write;
 use std::sync::Arc;
 
-use crucible::ContentHash;
+use crucible::{
+    ContentHash, MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, SingleSchedulerCheckpoint,
+    SingleSchedulerCheckpointError,
+};
 pub use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_cas::content_store::{
@@ -36,7 +43,8 @@ use thiserror::Error;
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
 /// Content-ID and envelope version of the exact-checkpoint root.
-pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 2;
+pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 3;
+const LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 2;
 /// Content-ID version of canonical [`QemuVmSnapshot`] metadata bytes.
 ///
 /// Version 1 of the `DeviceState` namespace is reserved for opaque QEMU
@@ -45,10 +53,14 @@ pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 2;
 pub const QEMU_VM_SNAPSHOT_METADATA_SCHEMA_VERSION: u32 = 2;
 /// Content-ID version of opaque QEMU VMState bytes.
 pub const QEMU_VMSTATE_SCHEMA_VERSION: u32 = 1;
+/// Content-ID version of a complete canonical scheduler continuation.
+pub const SCHEDULER_CONTINUATION_SCHEMA_VERSION: u32 = 3;
 
 const SNAPSHOT_METADATA_ROLE: &str = "snapshot-metadata";
 const QEMU_VMSTATE_ROLE: &str = "qemu-vmstate";
-const ROOT_BODY_BYTES: usize = 80;
+const SCHEDULER_CONTINUATION_ROLE: &str = "scheduler-continuation";
+const LEGACY_ROOT_BODY_BYTES: usize = 80;
+const ROOT_BODY_BYTES: usize = 88;
 const MAX_ROOT_BYTES: u64 = 4 * 1024;
 
 /// A fully authenticated exact-checkpoint publication prepared without writes.
@@ -57,6 +69,8 @@ pub struct PreparedExactCheckpoint {
     root_source: BlobHandle,
     metadata_id: ContentId,
     metadata_source: BlobHandle,
+    scheduler_id: Option<ContentId>,
+    scheduler_source: Option<BlobHandle>,
     vmstate_id: ContentId,
     vmstate_source: BlobHandle,
     snapshot_identity: ContentHash,
@@ -109,6 +123,7 @@ impl fmt::Debug for PreparedExactCheckpoint {
             .debug_struct("PreparedExactCheckpoint")
             .field("root", &self.root)
             .field("metadata_id", &self.metadata_id)
+            .field("scheduler_id", &self.scheduler_id)
             .field("vmstate_id", &self.vmstate_id)
             .field("snapshot_identity", &self.snapshot_identity)
             .field("configuration", &self.configuration)
@@ -160,6 +175,7 @@ impl PreparedExactCheckpoint {
 pub struct ExactCheckpointPublication {
     root: ExactCheckpointId,
     metadata: ContentId,
+    scheduler: Option<ContentId>,
     vmstate: ContentId,
 }
 
@@ -176,6 +192,12 @@ impl ExactCheckpointPublication {
         self.metadata
     }
 
+    /// Returns the complete scheduler-continuation identity, when retained.
+    #[must_use]
+    pub const fn scheduler(self) -> Option<ContentId> {
+        self.scheduler
+    }
+
     /// Returns the durably placed opaque VMState identity.
     #[must_use]
     pub const fn vmstate(self) -> ContentId {
@@ -187,6 +209,8 @@ impl ExactCheckpointPublication {
 pub struct LoadedExactCheckpoint {
     root: ExactCheckpointId,
     snapshot: QemuVmSnapshot,
+    scheduler_id: Option<ContentId>,
+    scheduler: Option<SingleSchedulerCheckpoint>,
     vmstate_id: ContentId,
     vmstate: BlobHandle,
 }
@@ -199,6 +223,7 @@ pub struct LoadedExactCheckpoint {
 /// without retaining QEMU resource ownership.
 pub struct CapturedExactCheckpoint {
     snapshot: QemuVmSnapshot,
+    scheduler: Option<SingleSchedulerCheckpoint>,
     vmstate: BlobHandle,
 }
 
@@ -208,16 +233,55 @@ impl fmt::Debug for CapturedExactCheckpoint {
             .debug_struct("CapturedExactCheckpoint")
             .field("snapshot", &self.snapshot.id())
             .field("configuration", &self.snapshot.checkpoint().configuration)
+            .field("has_scheduler_continuation", &self.scheduler.is_some())
             .field("vmstate_bytes", &self.vmstate.logical_length())
             .finish()
     }
 }
 
 impl CapturedExactCheckpoint {
-    /// Binds authenticated QEMU/Apache continuation metadata to opaque VMState.
+    /// Binds legacy QEMU metadata to opaque VMState without a scheduler continuation.
+    ///
+    /// The resulting version-two root remains loadable for migration and
+    /// replay-oracle operations but cannot resume a campaign attempt. New live
+    /// capture paths use [`Self::new_with_scheduler`].
     #[must_use]
     pub const fn new(snapshot: QemuVmSnapshot, vmstate: BlobHandle) -> Self {
-        Self { snapshot, vmstate }
+        Self {
+            snapshot,
+            scheduler: None,
+            vmstate,
+        }
+    }
+
+    /// Binds a complete scheduler continuation to QEMU and Apache capture state.
+    ///
+    /// The caller must already have validated the continuation against the
+    /// authenticated scenario. Store preparation additionally checks every
+    /// projection available in the materialized checkpoint before publishing
+    /// the version-three exact root.
+    #[must_use]
+    pub const fn new_with_scheduler(
+        snapshot: QemuVmSnapshot,
+        scheduler: SingleSchedulerCheckpoint,
+        vmstate: BlobHandle,
+    ) -> Self {
+        Self {
+            snapshot,
+            scheduler: Some(scheduler),
+            vmstate,
+        }
+    }
+
+    /// Attaches the complete scheduler continuation captured at this boundary.
+    ///
+    /// Store preparation validates the scheduler's scenario, frontier,
+    /// projected state, and event-log offset against the retained QEMU
+    /// checkpoint before any immutable write.
+    #[must_use]
+    pub fn with_scheduler(mut self, scheduler: SingleSchedulerCheckpoint) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Returns the captured scheduler and Apache continuation metadata.
@@ -226,20 +290,41 @@ impl CapturedExactCheckpoint {
         &self.snapshot
     }
 
+    /// Returns the complete modeled scheduler continuation, when retained.
+    #[must_use]
+    pub const fn scheduler(&self) -> Option<&SingleSchedulerCheckpoint> {
+        self.scheduler.as_ref()
+    }
+
     /// Returns the declared opaque VMState byte length.
     #[must_use]
     pub fn vmstate_bytes(&self) -> u64 {
         self.vmstate.logical_length()
     }
 
+    #[cfg(test)]
     pub(crate) fn vmstate_source(&self) -> BlobHandle {
         self.vmstate.clone()
     }
 
+    pub(crate) fn reopenable_copy(&self) -> Self {
+        Self {
+            snapshot: self.snapshot.clone(),
+            scheduler: self.scheduler.clone(),
+            vmstate: self.vmstate.clone(),
+        }
+    }
+
     /// Consumes the capture into its metadata and reopenable VMState source.
     #[must_use]
-    pub fn into_parts(self) -> (QemuVmSnapshot, BlobHandle) {
-        (self.snapshot, self.vmstate)
+    pub fn into_parts(
+        self,
+    ) -> (
+        QemuVmSnapshot,
+        Option<SingleSchedulerCheckpoint>,
+        BlobHandle,
+    ) {
+        (self.snapshot, self.scheduler, self.vmstate)
     }
 }
 
@@ -254,6 +339,18 @@ impl LoadedExactCheckpoint {
     #[must_use]
     pub const fn snapshot(&self) -> &QemuVmSnapshot {
         &self.snapshot
+    }
+
+    /// Returns the complete scheduler continuation, when this is a v3 root.
+    #[must_use]
+    pub const fn scheduler(&self) -> Option<&SingleSchedulerCheckpoint> {
+        self.scheduler.as_ref()
+    }
+
+    /// Returns the scheduler-continuation child identity, when present.
+    #[must_use]
+    pub const fn scheduler_id(&self) -> Option<ContentId> {
+        self.scheduler_id
     }
 
     /// Returns the opaque VMState child identity.
@@ -285,7 +382,14 @@ impl LoadedExactCheckpoint {
         check: QemuReplayOracleCheck,
     ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
         let snapshot = check.promote(&self.snapshot)?;
-        Ok(CapturedExactCheckpoint::new(snapshot, self.vmstate.clone()))
+        Ok(match &self.scheduler {
+            Some(scheduler) => CapturedExactCheckpoint::new_with_scheduler(
+                snapshot,
+                scheduler.clone(),
+                self.vmstate.clone(),
+            ),
+            None => CapturedExactCheckpoint::new(snapshot, self.vmstate.clone()),
+        })
     }
 
     /// Copies and authenticates the complete opaque VMState stream.
@@ -349,10 +453,13 @@ impl ExactCheckpointStore {
         self.maximum_vmstate_bytes
     }
 
-    /// Authenticates and prepares one exact checkpoint without store writes.
+    /// Authenticates and prepares one legacy exact checkpoint without writes.
     ///
     /// The VMState source is streamed once to derive its content identity. It
-    /// must remain reopenable and byte-stable until publication completes.
+    /// must remain reopenable and byte-stable until publication completes. The
+    /// resulting version-two root has no complete scheduler continuation and
+    /// cannot resume a campaign attempt. New live captures use
+    /// [`Self::prepare_capture`] with a scheduler continuation.
     ///
     /// # Errors
     ///
@@ -362,6 +469,15 @@ impl ExactCheckpointStore {
     pub fn prepare(
         &self,
         snapshot: &QemuVmSnapshot,
+        vmstate: BlobHandle,
+    ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
+        self.prepare_parts(snapshot, None, vmstate)
+    }
+
+    fn prepare_parts(
+        &self,
+        snapshot: &QemuVmSnapshot,
+        scheduler: Option<&SingleSchedulerCheckpoint>,
         vmstate: BlobHandle,
     ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
         validate_vmstate_length(vmstate.logical_length(), self.maximum_vmstate_bytes)?;
@@ -384,6 +500,28 @@ impl ExactCheckpointStore {
             QEMU_VMSTATE_SCHEMA_VERSION,
             &vmstate,
         )?;
+        let (scheduler_id, scheduler_source, scheduler_bytes) = match scheduler {
+            Some(scheduler) => {
+                validate_scheduler_checkpoint_basis(snapshot.checkpoint(), scheduler)?;
+                let bytes = scheduler.canonical_bytes()?;
+                let length = bytes.len() as u64;
+                let maximum = MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES as u64;
+                if length > maximum {
+                    return Err(ExactCheckpointStoreError::ArtifactLimit {
+                        artifact: SCHEDULER_CONTINUATION_ROLE,
+                        length,
+                        maximum,
+                    });
+                }
+                let id = ContentId::for_bytes(
+                    ObjectKind::DeviceState,
+                    SCHEDULER_CONTINUATION_SCHEMA_VERSION,
+                    &bytes,
+                );
+                (Some(id), Some(BlobHandle::from_bytes(bytes)), Some(length))
+            }
+            None => (None, None, None),
+        };
 
         let snapshot_identity = snapshot.id();
         let configuration = snapshot.checkpoint().configuration;
@@ -391,18 +529,26 @@ impl ExactCheckpointStore {
             snapshot_identity,
             configuration,
             metadata_bytes.len() as u64,
+            scheduler_bytes,
             vmstate.logical_length(),
         );
-        let children = BTreeSet::from([
+        let mut children = BTreeSet::from([
             ContentChild::new(SNAPSHOT_METADATA_ROLE, metadata_id)?,
             ContentChild::new(QEMU_VMSTATE_ROLE, vmstate_id)?,
         ]);
-        let root_envelope = ContentEnvelope::new(
-            EXACT_CHECKPOINT_ROOT_SCHEMA,
-            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
-            children,
-            body,
-        )?;
+        if let Some(scheduler_id) = scheduler_id {
+            children.insert(ContentChild::new(
+                SCHEDULER_CONTINUATION_ROLE,
+                scheduler_id,
+            )?);
+        }
+        let schema_version = if scheduler_id.is_some() {
+            EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+        } else {
+            LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+        };
+        let root_envelope =
+            ContentEnvelope::new(EXACT_CHECKPOINT_ROOT_SCHEMA, schema_version, children, body)?;
         let root_bytes = root_envelope.canonical_bytes();
         let root = ExactCheckpointId::try_from(root_envelope.content_id(ObjectKind::ExactManifest))
             .map_err(|_| invalid_root("root identity"))?;
@@ -412,6 +558,8 @@ impl ExactCheckpointStore {
             root_source: BlobHandle::from_bytes(root_bytes),
             metadata_id,
             metadata_source: BlobHandle::from_bytes(metadata_bytes),
+            scheduler_id,
+            scheduler_source,
             vmstate_id,
             vmstate_source: vmstate,
             snapshot_identity,
@@ -429,8 +577,8 @@ impl ExactCheckpointStore {
         &self,
         capture: CapturedExactCheckpoint,
     ) -> Result<PreparedExactCheckpoint, ExactCheckpointStoreError> {
-        let (snapshot, vmstate) = capture.into_parts();
-        self.prepare(&snapshot, vmstate)
+        let (snapshot, scheduler, vmstate) = capture.into_parts();
+        self.prepare_parts(&snapshot, scheduler.as_ref(), vmstate)
     }
 
     /// Prepares a source-bound replay-oracle promotion without store writes.
@@ -488,9 +636,11 @@ impl ExactCheckpointStore {
         }
         let source = self.load(source)?;
         let promoted = self.load(promoted)?;
-        if source.vmstate_id() != promoted.vmstate_id() {
+        if source.vmstate_id() != promoted.vmstate_id()
+            || source.scheduler_id() != promoted.scheduler_id()
+        {
             return Err(ExactCheckpointStoreError::InvalidRoot {
-                reason: "replay-oracle promotion changed VMState identity",
+                reason: "replay-oracle promotion changed continuation identity",
             }
             .into());
         }
@@ -509,7 +659,7 @@ impl ExactCheckpointStore {
     ///
     /// Returns a store error, an invalid-placement error, or a local byte-limit
     /// error. A successful result proves at least one durable placement for all
-    /// three logical objects.
+    /// prepared logical objects.
     pub fn publish(
         &self,
         prepared: &PreparedExactCheckpoint,
@@ -524,6 +674,15 @@ impl ExactCheckpointStore {
             prepared.metadata_id,
             prepared.metadata_source.logical_length(),
         )?;
+        if let (Some(scheduler_id), Some(scheduler_source)) =
+            (prepared.scheduler_id, prepared.scheduler_source.as_ref())
+        {
+            require_durable_receipt(
+                self.backend.put_if_absent(scheduler_id, scheduler_source)?,
+                scheduler_id,
+                scheduler_source.logical_length(),
+            )?;
+        }
         require_durable_receipt(
             self.backend
                 .put_if_absent(prepared.vmstate_id, &prepared.vmstate_source)?,
@@ -540,6 +699,7 @@ impl ExactCheckpointStore {
         Ok(ExactCheckpointPublication {
             root: prepared.root,
             metadata: prepared.metadata_id,
+            scheduler: prepared.scheduler_id,
             vmstate: prepared.vmstate_id,
         })
     }
@@ -571,15 +731,21 @@ impl ExactCheckpointStore {
         let root_bytes = root_handle.read_all(MAX_ROOT_BYTES)?;
         let envelope = ContentEnvelope::from_canonical_bytes(&root_bytes)?;
         if envelope.schema_name() != EXACT_CHECKPOINT_ROOT_SCHEMA
-            || envelope.schema_version() != EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+            || !matches!(
+                envelope.schema_version(),
+                LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION | EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+            )
         {
             return Err(invalid_root("incompatible root schema"));
         }
         if envelope.content_id(ObjectKind::ExactManifest) != root.content_id() {
             return Err(invalid_root("root content identity mismatch"));
         }
-        let (metadata_id, vmstate_id) = decode_children(&envelope)?;
-        let body = decode_root_body(envelope.body())?;
+        let (metadata_id, scheduler_id, vmstate_id) = decode_children(&envelope)?;
+        let body = decode_root_body(envelope.schema_version(), envelope.body())?;
+        if scheduler_id.is_some() != body.scheduler_bytes.is_some() {
+            return Err(invalid_root("scheduler child/body presence mismatch"));
+        }
 
         let metadata = self.backend.read(metadata_id, None)?;
         if metadata.logical_length() != body.metadata_bytes
@@ -595,6 +761,22 @@ impl ExactCheckpointStore {
             return Err(invalid_root("snapshot semantic basis mismatch"));
         }
 
+        let scheduler = match (scheduler_id, body.scheduler_bytes) {
+            (Some(scheduler_id), Some(expected_bytes)) => {
+                let source = self.backend.read(scheduler_id, None)?;
+                let maximum = MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES as u64;
+                if source.logical_length() != expected_bytes || source.logical_length() > maximum {
+                    return Err(invalid_root("scheduler continuation length mismatch"));
+                }
+                let bytes = source.read_all(maximum)?;
+                let scheduler = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)?;
+                validate_scheduler_checkpoint_basis(snapshot.checkpoint(), &scheduler)?;
+                Some(scheduler)
+            }
+            (None, None) => None,
+            _ => return Err(invalid_root("scheduler continuation is incomplete")),
+        };
+
         let vmstate = self.backend.read(vmstate_id, None)?;
         validate_vmstate_length(vmstate.logical_length(), self.maximum_vmstate_bytes)?;
         if vmstate.logical_length() != body.vmstate_bytes {
@@ -604,6 +786,8 @@ impl ExactCheckpointStore {
         Ok(LoadedExactCheckpoint {
             root,
             snapshot,
+            scheduler_id,
+            scheduler,
             vmstate_id,
             vmstate,
         })
@@ -666,6 +850,9 @@ pub enum ExactCheckpointStoreError {
     /// QEMU snapshot metadata failed canonical authentication.
     #[error(transparent)]
     Snapshot(#[from] QemuVmSnapshotCodecError),
+    /// The complete modeled scheduler continuation failed authentication.
+    #[error(transparent)]
+    Scheduler(#[from] SingleSchedulerCheckpointError),
 }
 
 impl ExactCheckpointStoreError {
@@ -690,6 +877,7 @@ struct RootBody {
     snapshot_identity: ContentHash,
     configuration: ContentHash,
     metadata_bytes: u64,
+    scheduler_bytes: Option<u64>,
     vmstate_bytes: u64,
 }
 
@@ -697,20 +885,36 @@ fn encode_root_body(
     snapshot_identity: ContentHash,
     configuration: ContentHash,
     metadata_bytes: u64,
+    scheduler_bytes: Option<u64>,
     vmstate_bytes: u64,
 ) -> Vec<u8> {
-    let mut body = Vec::with_capacity(ROOT_BODY_BYTES);
+    let mut body = Vec::with_capacity(if scheduler_bytes.is_some() {
+        ROOT_BODY_BYTES
+    } else {
+        LEGACY_ROOT_BODY_BYTES
+    });
     body.extend_from_slice(&snapshot_identity.bytes);
     body.extend_from_slice(&configuration.bytes);
     body.extend_from_slice(&metadata_bytes.to_be_bytes());
+    if let Some(scheduler_bytes) = scheduler_bytes {
+        body.extend_from_slice(&scheduler_bytes.to_be_bytes());
+    }
     body.extend_from_slice(&vmstate_bytes.to_be_bytes());
     body
 }
 
-fn decode_root_body(bytes: &[u8]) -> Result<RootBody, ExactCheckpointStoreError> {
-    let bytes: &[u8; ROOT_BODY_BYTES] = bytes
-        .try_into()
-        .map_err(|_| invalid_root("root body length mismatch"))?;
+fn decode_root_body(
+    schema_version: u32,
+    bytes: &[u8],
+) -> Result<RootBody, ExactCheckpointStoreError> {
+    let expected = match schema_version {
+        LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => LEGACY_ROOT_BODY_BYTES,
+        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION => ROOT_BODY_BYTES,
+        _ => return Err(invalid_root("root schema version is unsupported")),
+    };
+    if bytes.len() != expected {
+        return Err(invalid_root("root body length mismatch"));
+    }
     let mut snapshot_identity = [0_u8; 32];
     snapshot_identity.copy_from_slice(&bytes[..32]);
     let mut configuration = [0_u8; 32];
@@ -720,8 +924,19 @@ fn decode_root_body(bytes: &[u8]) -> Result<RootBody, ExactCheckpointStoreError>
             .try_into()
             .map_err(|_| invalid_root("metadata length encoding is invalid"))?,
     );
+    let (scheduler_bytes, vmstate_offset) =
+        if schema_version == EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+            (
+                Some(u64::from_be_bytes(bytes[72..80].try_into().map_err(
+                    |_| invalid_root("scheduler length encoding is invalid"),
+                )?)),
+                80,
+            )
+        } else {
+            (None, 72)
+        };
     let vmstate_bytes = u64::from_be_bytes(
-        bytes[72..80]
+        bytes[vmstate_offset..vmstate_offset + 8]
             .try_into()
             .map_err(|_| invalid_root("VMState length encoding is invalid"))?,
     );
@@ -733,21 +948,29 @@ fn decode_root_body(bytes: &[u8]) -> Result<RootBody, ExactCheckpointStoreError>
             bytes: configuration,
         },
         metadata_bytes,
+        scheduler_bytes,
         vmstate_bytes,
     })
 }
 
 fn decode_children(
     envelope: &ContentEnvelope,
-) -> Result<(ContentId, ContentId), ExactCheckpointStoreError> {
-    if envelope.children().len() != 2 {
-        return Err(invalid_root("root must contain exactly two children"));
+) -> Result<(ContentId, Option<ContentId>, ContentId), ExactCheckpointStoreError> {
+    let expected = if envelope.schema_version() == EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION {
+        3
+    } else {
+        2
+    };
+    if envelope.children().len() != expected {
+        return Err(invalid_root("root contains the wrong child count"));
     }
     let mut metadata = None;
+    let mut scheduler = None;
     let mut vmstate = None;
     for child in envelope.children() {
         match child.role() {
             SNAPSHOT_METADATA_ROLE => metadata = Some(child.id()),
+            SCHEDULER_CONTINUATION_ROLE => scheduler = Some(child.id()),
             QEMU_VMSTATE_ROLE => vmstate = Some(child.id()),
             _ => return Err(invalid_root("root contains an unknown child role")),
         }
@@ -766,7 +989,15 @@ fn decode_children(
         QEMU_VMSTATE_SCHEMA_VERSION,
         "VMState child",
     )?;
-    Ok((metadata, vmstate))
+    if let Some(scheduler) = scheduler {
+        require_id_kind(
+            scheduler,
+            ObjectKind::DeviceState,
+            SCHEDULER_CONTINUATION_SCHEMA_VERSION,
+            "scheduler continuation child",
+        )?;
+    }
+    Ok((metadata, scheduler, vmstate))
 }
 
 fn require_id_kind(
@@ -777,6 +1008,38 @@ fn require_id_kind(
 ) -> Result<(), ExactCheckpointStoreError> {
     if id.kind() != kind || id.schema_version() != version {
         return Err(invalid_root(role));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scheduler_checkpoint_basis(
+    checkpoint: &crucible::Checkpoint,
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<(), ExactCheckpointStoreError> {
+    let Some(materialized) = checkpoint.state.as_ref() else {
+        return Err(invalid_root(
+            "scheduler continuation requires materialized checkpoint state",
+        ));
+    };
+    let scheduler_event_segments = scheduler
+        .event_log_segment_dependencies()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if scheduler.scenario() != checkpoint.scenario_ref
+        || scheduler.frontier() != checkpoint.virtual_time
+        || scheduler.scheduler_state()? != materialized.scheduler
+        || scheduler.future_decision_rng_state() != &materialized.decision_rng
+        || scheduler.event_log_offset() != materialized.event_log
+        || scheduler_event_segments.len() != materialized.event_log_segments.len()
+        || !scheduler_event_segments
+            .iter()
+            .copied()
+            .eq(materialized.event_log_segments.iter().copied())
+    {
+        return Err(invalid_root(
+            "scheduler continuation does not match checkpoint projections",
+        ));
     }
     Ok(())
 }

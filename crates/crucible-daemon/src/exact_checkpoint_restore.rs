@@ -10,7 +10,7 @@
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-use crucible::{Configuration, ContentHash};
+use crucible::{Configuration, ContentHash, SingleSchedulerCheckpoint};
 use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuFailedLaunchChildSource,
@@ -116,6 +116,7 @@ pub struct MaterializedAttemptCheckpoint {
     checkpoint: ExactCheckpointId,
     vmstate_binding: QemuVmStateBinding,
     snapshot: QemuVmSnapshot,
+    scheduler: SingleSchedulerCheckpoint,
 }
 
 /// Attempt-owned guarded executor for one exact fat/thin replay comparison.
@@ -353,6 +354,12 @@ impl MaterializedAttemptCheckpoint {
         &self.snapshot
     }
 
+    /// Returns the complete scheduler continuation bound to this root.
+    #[must_use]
+    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        &self.scheduler
+    }
+
     /// Consumes the materialization into its authenticated snapshot metadata.
     #[must_use]
     pub fn into_snapshot(self) -> QemuVmSnapshot {
@@ -443,16 +450,33 @@ pub fn materialize_attempt_exact_checkpoint(
     let loaded = checkpoints.load(checkpoint)?;
     check_cancellation(cancellation)?;
 
-    let configuration = loaded.snapshot().checkpoint().configuration;
-    let configuration_is_allowed = configuration == initial.id()
-        || post_selection.is_some_and(|selected| configuration == selected.id());
-    if !configuration_is_allowed {
+    let configuration_id = loaded.snapshot().checkpoint().configuration;
+    let configuration = if configuration_id == initial.id() {
+        initial
+    } else if post_selection.is_some_and(|selected| configuration_id == selected.id()) {
+        post_selection.ok_or(
+            ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
+                checkpoint,
+                configuration: configuration_id,
+            },
+        )?
+    } else {
         return Err(
             ExactCheckpointRestoreError::CheckpointConfigurationMismatch {
                 checkpoint,
-                configuration,
+                configuration: configuration_id,
             },
         );
+    };
+    let scheduler = loaded
+        .scheduler()
+        .ok_or(ExactCheckpointRestoreError::MissingSchedulerContinuation { checkpoint })?;
+    if scheduler
+        .configuration_for(&configuration.def)
+        .map_err(|_| ExactCheckpointRestoreError::SchedulerConfigurationMismatch { checkpoint })?
+        != *configuration
+    {
+        return Err(ExactCheckpointRestoreError::SchedulerConfigurationMismatch { checkpoint });
     }
 
     let (vmstate_binding, snapshot) =
@@ -461,6 +485,7 @@ pub fn materialize_attempt_exact_checkpoint(
         checkpoint,
         vmstate_binding,
         snapshot,
+        scheduler: scheduler.clone(),
     })
 }
 
@@ -520,6 +545,7 @@ where
     Ok(QemuExactCheckpointRealization::new(
         materialized.checkpoint(),
         realization,
+        materialized.scheduler().clone(),
     ))
 }
 
@@ -631,6 +657,18 @@ pub enum ExactCheckpointRestoreError {
         checkpoint: ExactCheckpointId,
         /// Configuration committed by the checkpoint metadata.
         configuration: ContentHash,
+    },
+    /// A legacy exact root lacks the complete modeled scheduler continuation.
+    #[error("exact checkpoint {checkpoint} has no complete scheduler continuation")]
+    MissingSchedulerContinuation {
+        /// Legacy exact root that cannot resume campaign execution.
+        checkpoint: ExactCheckpointId,
+    },
+    /// The scheduler continuation reconstructs another configuration.
+    #[error("exact checkpoint {checkpoint} scheduler continuation names another configuration")]
+    SchedulerConfigurationMismatch {
+        /// Exact root whose scheduler continuation failed configuration binding.
+        checkpoint: ExactCheckpointId,
     },
     /// Semantic pin or selection-journal authentication failed.
     #[error(transparent)]

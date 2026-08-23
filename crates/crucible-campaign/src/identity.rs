@@ -372,9 +372,9 @@ content_object_id!(
 content_object_id!(
     ExactCheckpointId,
     ObjectKind::ExactManifest,
-    2,
+    [2, 3],
     "crucible.executor.exact-checkpoint-root",
-    "Identifies one complete, durable exact-checkpoint closure."
+    "Identifies one durable exact-checkpoint closure; current roots carry complete campaign continuation state."
 );
 
 impl TryFrom<ContentId> for ExactCheckpointId {

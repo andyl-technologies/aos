@@ -1086,10 +1086,7 @@ fn prepare_pending_checkpoint_result<W>(
             },
         });
     }
-    let checkpoint = match checkpoints.prepare_capture(CapturedExactCheckpoint::new(
-        pending.capture.snapshot().clone(),
-        pending.capture.vmstate_source(),
-    )) {
+    let checkpoint = match checkpoints.prepare_capture(pending.capture.reopenable_copy()) {
         Ok(checkpoint) => checkpoint,
         Err(source) => {
             return Err(AttemptResultPreparationError::Checkpoint {

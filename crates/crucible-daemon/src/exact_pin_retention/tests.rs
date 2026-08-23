@@ -16,7 +16,8 @@ use crucible::model::{
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, Configuration,
     ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, RuntimeState,
-    ScenarioDef, SingleScheduler, World,
+    ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler,
+    SingleSchedulerCheckpoint, World,
 };
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy,
@@ -748,7 +749,35 @@ fn concrete_exact_resume_executor_materializes_the_root_before_replay_admission(
         )
         .expect("pin exact resume run directory"),
     );
-    let checkpoint = fixture.checkpoint;
+    let scheduler = attempt_scheduler_checkpoint(&configuration, Vec::new());
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        scheduler.frontier(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("exact resume checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("exact resume QEMU snapshot");
+    let checkpoint = fixture
+        .checkpoints
+        .prepare_capture(crate::CapturedExactCheckpoint::new_with_scheduler(
+            snapshot,
+            scheduler,
+            BlobHandle::from_bytes(vec![0x5a; 4096]),
+        ))
+        .and_then(|prepared| fixture.checkpoints.publish(&prepared))
+        .expect("publish complete resume root")
+        .root();
     let mut executor = crate::QemuExactResumeLiveRealizationExecutor::new(
         fixture.checkpoints,
         command,
@@ -1281,27 +1310,41 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
         "crucible.test.exact-pin-materialization",
         "attempt-resume-parent",
     ));
-    let selected = crucible::step(
-        &parent,
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("attempt-resume-selection"),
-            value: 17,
-        }),
-    );
+    let decision = crucible::Decision::Override(crucible::OverrideDecision {
+        point: crucible::SchedulingPoint {
+            key: String::from("attempt-resume-selection"),
+        },
+        choice: crucible::ChoiceTag {
+            name: String::from("selected"),
+        },
+    });
+    let selected = crucible::step(&parent, decision.clone());
+    let scheduler = attempt_scheduler_checkpoint(&parent, vec![decision]);
     let checkpoint = Checkpoint::from_recorded_configuration(
         &selected,
         Some(&parent),
-        crucible::VirtualTime::default(),
+        scheduler.frontier(),
         BTreeMap::new(),
         CheckpointKind::Fat,
         BTreeMap::new(),
     )
-    .expect("post-selection checkpoint");
+    .expect("post-selection checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
     let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("post-selection QEMU snapshot");
     let prepared = fixture
         .checkpoints
-        .prepare(&snapshot, BlobHandle::from_bytes(vec![0x6b; 4096]))
+        .prepare_capture(crate::CapturedExactCheckpoint::new_with_scheduler(
+            snapshot,
+            scheduler.clone(),
+            BlobHandle::from_bytes(vec![0x6b; 4096]),
+        ))
         .expect("prepare post-selection checkpoint");
     let checkpoint = fixture
         .checkpoints
@@ -1340,12 +1383,50 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
         materialized.snapshot().checkpoint().configuration,
         selected.id()
     );
+    assert_eq!(materialized.scheduler(), &scheduler);
     accepted
         .require_exact_vmstate(materialized.vmstate_binding())
         .expect("exact operational root binding");
     assert_eq!(
         std::fs::read(&accepted_vmstate).expect("materialized attempt VMState"),
         vec![0x6b; 4096]
+    );
+
+    let legacy = fixture
+        .checkpoints
+        .prepare(
+            materialized.snapshot(),
+            BlobHandle::from_bytes(vec![0x6c; 4096]),
+        )
+        .and_then(|prepared| fixture.checkpoints.publish(&prepared))
+        .expect("publish legacy root")
+        .root();
+    let legacy_directory = temp.path().join("legacy");
+    std::fs::create_dir(&legacy_directory).expect("legacy run directory");
+    let legacy_vmstate = legacy_directory.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&legacy_vmstate, b"provisioned").expect("provision legacy VMState");
+    let mut legacy_destination = QemuPreparedRunDirectory::open_for_materialization(
+        &command,
+        &legacy_directory,
+        &materialization_process_contract(),
+    )
+    .expect("pin legacy materialization destination");
+    assert!(matches!(
+        crate::materialize_attempt_exact_checkpoint(
+            &fixture.checkpoints,
+            legacy,
+            &parent,
+            Some(&selected),
+            &mut legacy_destination,
+            &crate::ExecutionCancellation::default(),
+        ),
+        Err(crate::ExactCheckpointRestoreError::MissingSchedulerContinuation {
+            checkpoint
+        }) if checkpoint == legacy
+    ));
+    assert_eq!(
+        std::fs::read(legacy_vmstate).expect("unchanged legacy VMState"),
+        b"provisioned"
     );
 
     let rejected_directory = temp.path().join("rejected");
@@ -1377,6 +1458,26 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
         std::fs::read(rejected_vmstate).expect("unchanged rejected VMState"),
         b"provisioned"
     );
+}
+
+fn attempt_scheduler_checkpoint(
+    configuration: &Configuration,
+    decisions: Vec<crucible::Decision>,
+) -> SingleSchedulerCheckpoint {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "attempt-resume",
+        Shift::new(0).expect("zero shift"),
+        1,
+        SimInstant { nanos: 1 },
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_scenario_def(configuration.def.clone());
+    let mut scheduler = SingleScheduler::new(scenario).expect("build attempt scheduler");
+    scheduler
+        .append_branch_prefix_overrides(decisions)
+        .expect("append attempt branch prefix");
+    scheduler.checkpoint().expect("capture attempt scheduler")
 }
 
 #[test]

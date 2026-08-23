@@ -381,6 +381,8 @@ fn map_materialization_error(error: ExactCheckpointRestoreError) -> QemuVmRealiz
         },
         ExactCheckpointRestoreError::Spawn(error) => map_spawn_error(error),
         ExactCheckpointRestoreError::CheckpointConfigurationMismatch { .. }
+        | ExactCheckpointRestoreError::MissingSchedulerContinuation { .. }
+        | ExactCheckpointRestoreError::SchedulerConfigurationMismatch { .. }
         | ExactCheckpointRestoreError::MissingSelection { .. }
         | ExactCheckpointRestoreError::Selection(_) => QemuVmRealizationError::InvalidCheckpoint {
             role: "attempt exact resume",

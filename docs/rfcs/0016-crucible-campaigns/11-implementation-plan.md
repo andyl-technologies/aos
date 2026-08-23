@@ -446,11 +446,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   that source into the linear captured-checkpoint token, records the successful
   capture as its backend reap attestation, and releases only the still-installed
   host guard during finalization. Modeled driver and production worker/factory
-  selection remain open. The daemon now
-  prepares and durably
-  publishes
-  a registered exact-checkpoint root over canonical snapshot metadata and a
-  bounded, streamed opaque VMState child, with no writes during preparation and
+  selection remain open. The daemon now prepares and durably publishes a
+  registered version-three exact-checkpoint root over canonical snapshot
+  metadata, the complete scheduler continuation, and a bounded, streamed
+  opaque VMState child, with no writes during preparation and
   children-before-root durable receipts. The executor now persists
   checkpoint-requested, checkpoint-publishing, paused, and raw-root
   checkpoint-promoting ledger states, stages
@@ -465,8 +464,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact root retained by the durable execution origin and accepts only the
   attempt's pre-selection or post-selection configuration. Both stream opaque
   VMState through a length-bounded pinned-file transaction and record a root
-  binding over metadata plus VMState only after authenticated EOF and file
-  sync; interruption leaves guarded launch fail-closed. A guarded-only
+  binding over metadata, scheduler continuation, and VMState only after
+  authenticated EOF and file sync; interruption leaves guarded launch
+  fail-closed. Legacy version-two roots remain readable but cannot resume a
+  campaign attempt. A guarded-only
   exact-root launcher now consumes that
   pinned authority, rechecks the selected snapshot and checkpoint identities,
   and uses the sealed child-process contract for pre-`exec` containment. The
@@ -513,9 +514,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   input root. The QEMU attempt runner now bypasses ordinary exact-cache and
   thin-replay lookup for resumed work, delegates the retained root to the
   guarded live session, requires the returned immutable root ID to match, and
-  rejects a non-resume, foreign-configuration, or non-exact realization before
-  modeled guest execution. The complete-root attempt materializer and session
-  trait handoff are implemented. Guarded raw-root replay-oracle validation,
+  rejects a non-resume, foreign-configuration, non-exact realization, missing
+  scheduler continuation, or mismatched scheduler configuration, frontier,
+  state, future decision-RNG cursor, event-log offset, or retained segment set
+  before modeled guest execution. The complete
+  scheduler continuation now survives capture, immutable publication, restart
+  materialization, and the typed session-to-driver handoff. The complete-root
+  attempt materializer and session trait handoff are implemented. Guarded
+  raw-root replay-oracle validation,
   source-bound no-write preparation, linear source/replacement root staging
   and publication, version-5 ledger persistence, restart reauthentication,
   explicit incomplete-promotion revert, and the final paused-root CAS are
