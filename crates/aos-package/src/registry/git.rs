@@ -2468,11 +2468,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extract_packages_reads_updated_blob_from_sha256_fetch_pack() {
+    async fn extract_packages_verifies_sha256_full_pack_with_loose_floor() {
         let tmp = tempfile::TempDir::new().unwrap();
         let work_dir = tmp.path().join("work");
-        let origin_dir = tmp.path().join("origin.git");
         let cache_dir = tmp.path().join("cache.git");
+        let pack_dir = tmp.path().join("packs");
         let output_dir = tmp.path().join("extracted");
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
@@ -2517,55 +2517,39 @@ mod tests {
         tokio::fs::write(&package_path, expected).await.unwrap();
         let expected_commit = commit_all(&work_dir, "publish test-2").await;
 
-        assert!(
-            git(tmp.path())
-                .args([
-                    "init",
-                    "--bare",
-                    "--object-format=sha256",
-                    &origin_dir.to_string_lossy(),
-                ])
-                .output()
-                .await
-                .unwrap()
-                .status
-                .success()
-        );
-        assert!(
-            git(&work_dir)
-                .args(["push", &origin_dir.to_string_lossy(), "stable"])
-                .output()
-                .await
-                .unwrap()
-                .status
-                .success()
-        );
-        assert!(
-            git(&origin_dir)
-                .args(["gc", "--aggressive", "--prune=now"])
-                .output()
-                .await
-                .unwrap()
-                .status
-                .success()
-        );
-
-        ensure_repo(&cache_dir, &origin_dir.to_string_lossy())
+        let pack = crate::registry::pack::full_pack(&work_dir, &expected_commit, &pack_dir)
             .await
             .unwrap();
-        repo::fetch(
-            &cache_dir,
-            &origin_dir.to_string_lossy(),
-            &["+refs/heads/stable:refs/remotes/origin/stable".to_string()],
-        )
-        .await
-        .unwrap();
-        let fetched_commit = repo::rev_parse_commit(&cache_dir, "refs/remotes/origin/stable")
+        ensure_repo(&cache_dir, "unused").await.unwrap();
+        crate::registry::pack::index_pack(&cache_dir, &pack)
             .await
             .unwrap();
-        assert_eq!(fetched_commit, expected_commit);
 
-        extract_packages(&cache_dir, &fetched_commit, &output_dir)
+        // AOS dumb-HTTP origins retain every object loose. The consumer's
+        // graph walk must identify any packed object that libgit2 reconstructed
+        // under the wrong SHA-256 identity and replace it from that floor.
+        let source_objects = repo::objects_dir(&work_dir).unwrap();
+        let cache_objects = repo::objects_dir(&cache_dir).unwrap();
+        loop {
+            let missing =
+                repo::missing_objects_blocking(&cache_dir, std::slice::from_ref(&expected_commit))
+                    .unwrap();
+            if missing.is_empty() {
+                break;
+            }
+            for oid in missing {
+                let relative = Path::new(&oid[..2]).join(&oid[2..]);
+                let target = cache_objects.join(&relative);
+                tokio::fs::create_dir_all(target.parent().unwrap())
+                    .await
+                    .unwrap();
+                tokio::fs::copy(source_objects.join(relative), target)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        extract_packages(&cache_dir, &expected_commit, &output_dir)
             .await
             .unwrap();
         assert_eq!(
