@@ -39,7 +39,6 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
 ) -> Result<QemuLiveRetainedNetworkSnapshotReport, QemuLiveNodeStepGateError> {
     const CAPTURE_ICOUNT: u64 = 1;
     const DRIVE_INCREMENT: u64 = 100_000_000;
-    const MAX_DRIVE_STEPS: usize = 128;
 
     if frame_payload.is_empty()
         || guest_ack_payload
@@ -268,7 +267,28 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
 
     let mut guest_acknowledgement_seen = false;
     let mut retained_frame_consumed = false;
-    for _ in 0..MAX_DRIVE_STEPS {
+    let remaining_retry_steps =
+        u64::from(crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS.saturating_sub(restored_attempts));
+    let retry_capacity_ceiling = restored_last_attempt_icount.saturating_add(
+        remaining_retry_steps.saturating_mul(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT),
+    );
+    if completion_ceiling > retry_capacity_ceiling {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "retained completion ceiling {completion_ceiling} exceeds retry capacity {retry_capacity_ceiling}"
+            ),
+        });
+    }
+    // Every retained retry is an intentional quantum boundary, even when the
+    // requested target is much farther ahead. Derive the loop bound from the
+    // canonical retry interval instead of imposing a 128-step test limit that
+    // could stop before a real guest finishes booting.
+    let max_drive_steps = completion_ceiling
+        .saturating_sub(first_retry_icount)
+        .checked_div(crucible_shmem::FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT)
+        .unwrap_or(0)
+        .saturating_add(2);
+    for _ in 0..max_drive_steps {
         let current = restored
             .current_icount()
             .map_err(|error| {

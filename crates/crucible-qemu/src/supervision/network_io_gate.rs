@@ -4,11 +4,11 @@
 //! The patched QEMU TX callback forwards the exact bytes to the loaded plugin,
 //! the host router schedules one reply at a fixed icount offset, and the plugin
 //! injects it directly while retaining canonical ownership on backpressure. The guest proves receipt by
-//! emitting an acknowledgement frame. A hostile-host rerun adds CPU load; the
-//! router latency plus protocol frame bytes, order, and sequence must remain
-//! identical. Raw probe and acknowledgement stamps remain visible separately
-//! because whole-guest trajectory belongs to the independent loaded-QEMU
-//! determinism gates.
+//! emitting an acknowledgement frame. A hostile-host rerun applies six bounded
+//! scheduler preemptions directly to QEMU; the router latency plus protocol
+//! frame bytes, order, and sequence must remain identical. Raw probe and
+//! acknowledgement stamps remain visible separately because whole-guest
+//! trajectory belongs to the independent loaded-QEMU determinism gates.
 
 use std::fs;
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use std::time::Duration;
 
 pub use self::error::QemuLiveNetworkIoGateError;
 use self::support::{
-    GateSendAuthorizer, HostLoad, acknowledgement_offset_icount, bounded_drive_polls, certify_run,
+    GateSendAuthorizer, acknowledgement_offset_icount, bounded_drive_polls, certify_run,
     connect_qmp_priming_main_loop, deterministic_projection, node_id, path_text, probe_emit_icount,
     reap_child, vm_launch_config,
 };
@@ -49,7 +49,6 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 64;
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-network-io-qmp.sock";
 const GATE_MEMORY_MIB: u32 = 128;
-const HOST_LOAD_WORKERS: usize = 4;
 const DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const BACKPRESSURE_PROBE_CEILING_ICOUNT: u64 = 1;
 const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
@@ -69,7 +68,7 @@ pub struct QemuLiveNetworkIoGateConfig {
     kernel_cmdline: Option<String>,
     busy_ceiling_icount: u64,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
 }
 
 impl QemuLiveNetworkIoGateConfig {
@@ -93,7 +92,7 @@ impl QemuLiveNetworkIoGateConfig {
             kernel_cmdline: None,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
             completion_timeout: Duration::from_secs(60),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
         }
     }
 
@@ -118,10 +117,10 @@ impl QemuLiveNetworkIoGateConfig {
         self
     }
 
-    /// Enables or disables host CPU load on the hostile-host rerun.
+    /// Enables or disables bounded QEMU scheduler preemption on the hostile rerun.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, enabled: bool) -> Self {
-        self.second_run_host_load = enabled;
+    pub const fn with_second_run_scheduler_preemption(mut self, enabled: bool) -> Self {
+        self.second_run_scheduler_preemption = enabled;
         self
     }
 }
@@ -147,8 +146,8 @@ pub struct QemuLiveNetworkIoReport {
     pub retained_frame_durable_envelope_restored: bool,
     /// Exact first retry coordinate observed after fresh-process restore.
     pub retained_frame_first_retry_icount: u64,
-    /// Whether the hostile-host run reproduced the reference observations.
-    pub deterministic_under_host_load: bool,
+    /// Whether the scheduler-preempted run reproduced the reference observations.
+    pub deterministic_under_scheduler_preemption: bool,
     /// Absolute probe stamp from the hostile-host run.
     pub hostile_probe_emit_icount: Option<u64>,
     /// Whether the diagnostic absolute probe origins matched.
@@ -160,8 +159,12 @@ pub struct QemuLiveNetworkIoReport {
     pub hostile_acknowledgement_offset_icount: Option<u64>,
     /// Whether the diagnostic guest acknowledgement offsets matched.
     pub acknowledgement_offset_equal: bool,
-    /// Whether CPU load was active during the second run.
-    pub host_load_applied: bool,
+    /// Whether bounded scheduler preemption targeted QEMU during the second run.
+    pub host_scheduler_preemption_applied: bool,
+    /// Number of bounded stop/continue perturbations applied to QEMU.
+    pub host_scheduler_preemption_count: u32,
+    /// Total configured stopped time across the bounded perturbations.
+    pub host_scheduler_preemption_requested_milliseconds: u64,
     /// Whether a diagnostic wall delay was applied before reply publication.
     ///
     /// The certifying path leaves this false: network RX is not device-frozen,
@@ -184,9 +187,11 @@ struct NetworkIoRunOutcome {
     backpressure_retry_icount: Option<u64>,
     delayed_reply_applied: bool,
     orderly_child_exit: bool,
+    scheduler_preemption:
+        Option<crate::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
 }
 
-/// Runs the reference and hostile-host loaded-QEMU network certifications.
+/// Runs reference and scheduler-preempted loaded-QEMU network certifications.
 ///
 /// # Errors
 ///
@@ -251,13 +256,19 @@ pub fn run_qemu_live_network_io_gate(
             && retained_report.retained_frame_consumed,
         retained_frame_durable_envelope_restored: retained_report.durable_envelope_round_trip,
         retained_frame_first_retry_icount: retained_report.first_retry_icount,
-        deterministic_under_host_load: true,
+        deterministic_under_scheduler_preemption: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,
         hostile_acknowledgement_offset_icount,
         acknowledgement_offset_equal: reference_acknowledgement_offset_icount
             == hostile_acknowledgement_offset_icount,
-        host_load_applied: config.second_run_host_load,
+        host_scheduler_preemption_applied: hostile.scheduler_preemption.is_some(),
+        host_scheduler_preemption_count: hostile
+            .scheduler_preemption
+            .map_or(0, |report| report.perturbations),
+        host_scheduler_preemption_requested_milliseconds: hostile
+            .scheduler_preemption
+            .map_or(0, |report| report.requested_stopped_milliseconds),
         delayed_reply_applied: hostile.delayed_reply_applied,
         orderly_child_exit: reference.orderly_child_exit && hostile.orderly_child_exit,
     })
