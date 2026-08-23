@@ -91,8 +91,10 @@ pub enum LiveVcpuTimeCallbackError {
     #[error("fingerprint sampling requested but QEMU is missing the fingerprint helper exports")]
     FingerprintCapabilityUnavailable,
     /// Capturing a boundary fingerprint sample failed.
-    #[error("boundary fingerprint sampling failed: {source}")]
+    #[error("{boundary} fingerprint sampling failed: {source}")]
     FingerprintSample {
+        /// Callback boundary that requested the sample.
+        boundary: &'static str,
         /// Underlying plugin fingerprint sampler error.
         source: FingerprintSamplerError,
     },

@@ -843,10 +843,11 @@ impl LiveVcpuTimeCallbackState {
     /// Binds the resolved fingerprint sampler and this VM's shared-memory slot.
     ///
     /// Called only when the launch enabled `fingerprint=on`; afterwards each
-    /// reached-icount publish captures a black-box fingerprint sample and queues
-    /// its detached preimages to a dedicated digest worker. `slot` is the per-node
-    /// [`FingerprintSampleSlot`] retained by the same setup mapping owner as the
-    /// node slot and directed rings.
+    /// host-visible quantum boundary captures a black-box fingerprint sample and
+    /// queues its detached preimages to a dedicated digest worker. This includes
+    /// exact scheduler ceilings and explicitly requested main-loop control
+    /// boundaries. `slot` is the per-node [`FingerprintSampleSlot`] retained by
+    /// the same setup mapping owner as the node slot and directed rings.
     pub(super) fn attach_fingerprint(
         mut self,
         sampling: PluginFingerprintSampling,
@@ -873,12 +874,12 @@ impl LiveVcpuTimeCallbackState {
     /// Captures and queues a black-box fingerprint sample stamped at `icount`.
     ///
     /// A no-op unless the launch enabled `fingerprint=on`. Callers invoke it only
-    /// when the published icount equals the host-set scheduler ceiling — the
-    /// host's ceiling is the sample request, so the dirty-tracked immutable copy
-    /// runs once per host-driven quantum boundary rather than on every
-    /// intermediate progress publish. Ordinary quantum SHA-256 work runs after
-    /// this callback returns, allowing the guest to resume. A stopped checkpoint
-    /// control boundary instead waits for ordered digest publication before its
+    /// at a host-visible quantum boundary: either the exact host-set ceiling or
+    /// an explicitly requested main-loop control boundary. The dirty-tracked
+    /// immutable copy therefore runs once per completed host quantum rather than
+    /// on every intermediate progress publication. Ordinary quantum SHA-256 work
+    /// runs after this callback returns, allowing the guest to resume. A control
+    /// boundary instead waits for ordered digest publication before its
     /// acknowledgement, so a same-icount resample cannot be confused with the
     /// preceding quantum sample. The vCPU count is
     /// `self.vcpu_count` — the install-time
@@ -895,10 +896,19 @@ impl LiveVcpuTimeCallbackState {
         &self,
         icount: u64,
         wait_for_publication: bool,
+        cross_vcpu_quiesced: bool,
+        boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
             return Ok(());
         };
+        if !cross_vcpu_quiesced && self.try_halted_vcpus()?.all_halted() {
+            // All-halted publications can arrive through several vCPU-thread
+            // callbacks after the serialized RR owner has been released. QEMU
+            // deliberately rejects cross-vCPU register reads there. Defer the
+            // sample until the host requests a BQL-held control boundary.
+            return Ok(());
+        }
         if fingerprint.capture_submitted.load(Ordering::Acquire)
             && fingerprint.last_capture_icount.load(Ordering::Acquire) == icount
         {
@@ -907,7 +917,7 @@ impl LiveVcpuTimeCallbackState {
         let captured = fingerprint
             .sampling
             .capture(icount, self.vcpu_count, fingerprint.synchronous_oracle)
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { source })?;
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { boundary, source })?;
         if wait_for_publication {
             fingerprint.worker.submit_and_wait(captured)?;
         } else {
@@ -972,7 +982,11 @@ impl LiveVcpuTimeCallbackState {
         if self.idle_advance_is_pending() {
             return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
         }
-        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
+        // The all-halted callback still runs on the last vCPU thread. With no
+        // serialized RR owner, cross-vCPU register capture is intentionally
+        // forbidden there; the host requests a BQL-held control boundary after
+        // accepting the paused quantum and samples that exact coordinate.
+        self.publish_current_icount_for_boundary(raw_icount, true, false, "vcpu-idle")?;
         let current_icount = self.last_icount.load(Ordering::Acquire);
         let next_inbound_delivery_icount = if let Some(network) = self.network.as_ref() {
             let inbound = network.inbound.inbound();
@@ -1166,7 +1180,11 @@ impl LiveVcpuTimeCallbackState {
             return Ok(());
         }
         self.all_halted_idle_handled.store(false, Ordering::Release);
-        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-resume")?;
+        // A resume from the all-halted idle path precedes RR-owner selection,
+        // so cross-vCPU capture is no safer here than in the matching idle
+        // callback. Publish progress now and let the host's BQL-held terminal
+        // boundary own the fingerprint.
+        self.publish_current_icount_for_boundary(raw_icount, true, false, "vcpu-resume")?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
         Ok(())
     }
@@ -1177,7 +1195,9 @@ impl LiveVcpuTimeCallbackState {
         // a host acquire-load of the odd successor orders every boundary field.
         // Halt tracking and idle publication remain owned by the real
         // idle/resume callbacks.
-        if let Some(fingerprint) = self.fingerprint.as_ref() {
+        let boundary_requested =
+            PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
+        if boundary_requested && let Some(fingerprint) = self.fingerprint.as_ref() {
             // A checkpoint control wake can revisit an icount already sampled
             // by the preceding scheduler quantum. Replace that sample with the
             // exact stopped-state capture before acknowledging the boundary.
@@ -1189,6 +1209,17 @@ impl LiveVcpuTimeCallbackState {
             self.publish_pause_for_boundary(raw_icount, true, true, true, "control-boundary")?;
         if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            if boundary_requested {
+                // The main-loop callback holds the BQL after every vCPU has
+                // quiesced, making cross-vCPU register capture safe even when
+                // the serialized RR owner is intentionally absent at idle.
+                self.publish_fingerprint_sample(
+                    current_icount,
+                    true,
+                    true,
+                    "requested-control-boundary",
+                )?;
+            }
             PluginShmemOrdering::publish_control_boundary(
                 self.slot.get(),
                 current_icount,
@@ -1214,13 +1245,14 @@ impl LiveVcpuTimeCallbackState {
 
     #[cfg(test)]
     fn publish_current_icount(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.publish_current_icount_for_boundary(raw_icount, true, "progress-publication")
+        self.publish_current_icount_for_boundary(raw_icount, true, true, "progress-publication")
     }
 
     fn publish_current_icount_for_boundary(
         &self,
         raw_icount: u64,
         checkpoint_handoff: bool,
+        sample_exact_ceiling: bool,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(
@@ -1275,8 +1307,8 @@ impl LiveVcpuTimeCallbackState {
         // how many intermediate progress publishes the busy advance emitted, so
         // the guest-RAM SHA-256 runs once per host-read boundary rather than on
         // every publish.
-        if current_icount == ceiling_icount {
-            self.publish_fingerprint_sample(current_icount, false)?;
+        if sample_exact_ceiling && current_icount == ceiling_icount {
+            self.publish_fingerprint_sample(current_icount, false, false, boundary)?;
         }
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
@@ -1351,6 +1383,8 @@ impl LiveVcpuTimeCallbackState {
                     self.publish_fingerprint_sample(
                         current_icount,
                         wait_for_fingerprint_publication,
+                        control_boundary_dispatch,
+                        boundary,
                     )?;
                 }
                 PluginShmemOrdering::publish_pause_quiesced(
@@ -1510,15 +1544,16 @@ impl LiveVcpuTimeCallbackState {
             });
         }
 
-        // QEMU RX injection and fingerprint capture may synchronously invoke
-        // another plugin callback. Keep the pending token armed, but release its
-        // mutex and every mutable ring view before crossing those boundaries.
+        // QEMU RX injection may synchronously invoke another plugin callback.
+        // Keep the pending token armed, but release its mutex and every mutable
+        // ring view before crossing that boundary.
         let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
         self.inject_due_network_inbound(target_icount, passed_delivery_floor_icount)?;
 
-        if target_icount == ceiling_icount {
-            self.publish_fingerprint_sample(target_icount, false)?;
-        }
+        // Time-advance completion can run without the BQL and with no serialized
+        // RR owner. Even when it lands exactly on the ceiling, cross-vCPU
+        // fingerprint capture is unsafe here. The host requests a BQL-held
+        // control boundary after accepting the completed quantum.
 
         // Reacquire after callback-capable work so TX emitted by the guest while
         // RX was flushed joins the same deterministic idle-completion batch.
@@ -2182,7 +2217,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
         return;
     };
     if let Err(error) =
-        state.publish_current_icount_for_boundary(current_icount, true, "sim-publication")
+        state.publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
     {
         abort_live_callback(error);
     }

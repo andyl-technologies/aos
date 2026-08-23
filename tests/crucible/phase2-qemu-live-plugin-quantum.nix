@@ -186,6 +186,7 @@ in
           grep -Eq '^idle_icount_span=[1-9][0-9]*$' "$report"
           grep -Eq '^idle_wall_micros=[0-9]+$' "$report"
           grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"
+          grep -Eq '^execution_fingerprint=[0-9a-f]{64}$' "$report"
           onset=$(sed -n 's/^idle_onset_icount=//p' "$report")
           terminal=$(sed -n 's/^terminal_icount=//p' "$report")
           test "$terminal" -gt "$onset"
