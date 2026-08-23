@@ -660,10 +660,7 @@ fn clear_project_quota(
     path: &Path,
     project_id: u32,
 ) -> Result<(), LinuxProjectQuotaError> {
-    let mut quota = IfDqblk {
-        dqb_valid: libc::QIF_LIMITS,
-        ..IfDqblk::default()
-    };
+    let mut quota = cleared_project_quota();
     quota_syscall(
         filesystem,
         quota_command(libc::Q_SETQUOTA),
@@ -672,6 +669,16 @@ fn clear_project_quota(
         "clear ext4 project quota",
         path,
     )
+}
+
+fn cleared_project_quota() -> IfDqblk {
+    IfDqblk {
+        // Reaching a soft limit can leave grace timers behind even after all
+        // charged content is removed. Clear them with the limits so the exact
+        // project ID becomes reusable under the allocator's zero-state rule.
+        dqb_valid: libc::QIF_LIMITS | libc::QIF_TIMES,
+        ..IfDqblk::default()
+    }
 }
 
 fn sync_project_quota(filesystem: &OwnedFd, path: &Path) -> Result<(), LinuxProjectQuotaError> {
@@ -875,6 +882,18 @@ mod tests {
         assert_eq!(quota.dqb_ihardlimit, 32);
         assert_eq!(quota.dqb_isoftlimit, 32);
         assert_eq!(quota.dqb_valid, libc::QIF_LIMITS);
+    }
+
+    #[test]
+    fn quota_release_clears_limits_and_reuse_blocking_grace_timers() {
+        let cleared = cleared_project_quota();
+        assert_eq!(cleared.dqb_bhardlimit, 0);
+        assert_eq!(cleared.dqb_bsoftlimit, 0);
+        assert_eq!(cleared.dqb_ihardlimit, 0);
+        assert_eq!(cleared.dqb_isoftlimit, 0);
+        assert_eq!(cleared.dqb_btime, 0);
+        assert_eq!(cleared.dqb_itime, 0);
+        assert_eq!(cleared.dqb_valid, libc::QIF_LIMITS | libc::QIF_TIMES);
     }
 
     #[test]
