@@ -1476,8 +1476,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     fn await_fault_preparation_result(
         &mut self,
         timeout: Duration,
+        maximum_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        self.poll_fault_preparation_result(timeout)
+        self.poll_fault_preparation_result(timeout, maximum_payload_bytes)
     }
 }
 
