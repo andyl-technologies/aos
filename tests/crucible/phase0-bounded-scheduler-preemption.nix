@@ -180,7 +180,7 @@
       }
       {
         label = "kernel-observed QEMU stop";
-        needle = "WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT";
+        needle = "| WaitIdOptions::NOHANG";
       }
       {
         label = "unconditional QEMU resume";
