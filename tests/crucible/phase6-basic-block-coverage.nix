@@ -79,7 +79,10 @@
       inherit lib;
       entry = ../../crates/crucible-qemu/src/node.rs;
     })
-    (builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
   ];
   qemuAsyncDriver = import ./_rust-module-source.nix {
     inherit lib;

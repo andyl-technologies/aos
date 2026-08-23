@@ -14,7 +14,10 @@
     entry = ../../crates/crucible/src/event_catalog.rs;
   };
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
-  triggerTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  triggerTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
