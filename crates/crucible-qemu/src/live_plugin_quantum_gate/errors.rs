@@ -104,13 +104,15 @@ pub enum LivePluginQuantumGateError {
     },
     /// A quantum did not publish a boundary before the host bound expired.
     #[error(
-        "quantum did not reach a boundary at ceiling {ceiling_icount} within {timeout:?}; last icount was {last_icount}"
+        "quantum did not reach a boundary at ceiling {ceiling_icount} within {timeout:?}; last snapshot was {last_snapshot:?}, next deadline was {last_deadline_icount:?}"
     )]
     QuantumTimeout {
         /// Ceiling the quantum was advancing toward.
         ceiling_icount: u64,
-        /// Last observed node icount.
-        last_icount: u64,
+        /// Last coherent shared-memory node snapshot.
+        last_snapshot: crucible_shmem::NodeSlotSnapshot,
+        /// Last published next-deadline coordinate, when one was armed.
+        last_deadline_icount: Option<u64>,
         /// Host-side diagnostic timeout.
         timeout: Duration,
     },

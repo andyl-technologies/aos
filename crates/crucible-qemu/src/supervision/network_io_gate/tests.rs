@@ -60,6 +60,13 @@ fn certification_rejects_ack_before_router_delivery_or_with_wrong_mac() {
         certify_run("wrong-ack-destination", &wrong_destination, false),
         Err(QemuLiveNetworkIoGateError::CertificationFailed { .. })
     ));
+
+    let mut no_completion_owned_frame = outcome_at(2_000_000);
+    no_completion_owned_frame.completion_owned_frames = 0;
+    assert!(matches!(
+        certify_run("no-completion-owned-frame", &no_completion_owned_frame, false),
+        Err(QemuLiveNetworkIoGateError::CertificationFailed { .. })
+    ));
 }
 
 fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {

@@ -7,6 +7,7 @@
 //! budget. An independent watchdog resumes QEMU after two wall-clock seconds
 //! if the controller is descheduled during a stopped interval.
 
+use std::os::fd::AsFd;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
@@ -15,7 +16,9 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
+use rustix::process::{
+    Pid, PidfdFlags, Signal, WaitId, WaitIdOptions, pidfd_open, pidfd_send_signal, waitid,
+};
 use thiserror::Error;
 
 use crate::async_driver::QemuAsyncNodeStepTarget;
@@ -111,6 +114,19 @@ pub enum BoundedSchedulerPreemptionError {
         #[source]
         source: rustix::io::Errno,
     },
+    /// The kernel could not observe the authenticated process's stop state.
+    #[error("bounded scheduler preemption could not observe the QEMU stop state")]
+    StopObservation {
+        /// Typed kernel wait failure.
+        #[source]
+        source: rustix::io::Errno,
+    },
+    /// QEMU exited before the requested stop became observable.
+    #[error("bounded scheduler preemption target exited before entering the stopped state")]
+    TargetExitedBeforeStop,
+    /// The stop notification disappeared while QEMU remained held stopped.
+    #[error("bounded scheduler preemption lost the observed QEMU stop notification")]
+    StopObservationLost,
     /// The independent resume watchdog could not be created.
     #[error("bounded scheduler preemption could not start its resume watchdog")]
     WatchdogSpawn {
@@ -429,6 +445,36 @@ fn signal_pidfd(
         .map_err(|source| BoundedSchedulerPreemptionError::PidfdSignal { source })
 }
 
+/// Waits until the kernel reports that the exact pidfd target entered a
+/// process-wide job-control stop.
+///
+/// The first wait leaves the state change waitable so an exit is never reaped
+/// by the adversary. Once a stop is proven, the second nonblocking wait consumes
+/// only that stop notification; QEMU remains held until the paired `SIGCONT`.
+fn observe_pidfd_stopped(
+    pidfd: &std::os::fd::OwnedFd,
+) -> Result<(), BoundedSchedulerPreemptionError> {
+    let status = waitid(
+        WaitId::PidFd(pidfd.as_fd()),
+        WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .map_err(|source| BoundedSchedulerPreemptionError::StopObservation { source })?
+    .ok_or(BoundedSchedulerPreemptionError::StopObservationLost)?;
+    if !status.stopped() {
+        return Err(BoundedSchedulerPreemptionError::TargetExitedBeforeStop);
+    }
+
+    let consumed = waitid(
+        WaitId::PidFd(pidfd.as_fd()),
+        WaitIdOptions::STOPPED | WaitIdOptions::NOHANG,
+    )
+    .map_err(|source| BoundedSchedulerPreemptionError::StopObservation { source })?;
+    if !consumed.is_some_and(|status| status.stopped()) {
+        return Err(BoundedSchedulerPreemptionError::StopObservationLost);
+    }
+    Ok(())
+}
+
 // crucible-lint: allow clippy-disallowed-method -- wall time bounds only this noncanonical test adversary.
 #[allow(clippy::disallowed_methods)]
 fn apply_bounded_scheduler_preemption_with_cancel(
@@ -464,9 +510,10 @@ fn apply_bounded_scheduler_preemption_with_cancel(
             if timed_out.load(Ordering::Acquire) {
                 return Err(BoundedSchedulerPreemptionError::WallTimeout);
             }
-            let stopped_at = Instant::now();
             let mut resume = ResumeGuard::new(Arc::clone(&pidfd));
             signal_pidfd(&pidfd, Signal::STOP)?;
+            observe_pidfd_stopped(&pidfd)?;
+            let stopped_at = Instant::now();
             if timed_out.load(Ordering::Acquire) {
                 return Err(BoundedSchedulerPreemptionError::WallTimeout);
             }
@@ -631,7 +678,9 @@ mod tests {
         let mut target = TestTarget::spawn()?;
         let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
             .ok_or("enabled adversary was not created")?;
-        adversary.observe_first_stop()?.confirm_pending(true)?;
+        let observation = adversary.observe_first_stop()?;
+        assert_eq!(process_state(target.pid())?, Some('T'));
+        observation.confirm_pending(true)?;
         let report = adversary.finish()?;
 
         assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);

@@ -128,6 +128,9 @@ in
             bounded_scheduler_preemption::tests:: \
             -- \
             --test-threads=1
+          grep -Fxq \
+            'supervision::network_io_gate::tests::certification_rejects_ack_before_router_delivery_or_with_wrong_mac: test' \
+            "$scheduler_test_list"
           cargo test \
             --frozen \
             --offline \

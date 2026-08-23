@@ -179,8 +179,8 @@
         needle = "pidfd_send_signal(pidfd";
       }
       {
-        label = "actual QEMU stop";
-        needle = "Signal::STOP";
+        label = "kernel-observed QEMU stop";
+        needle = "WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT";
       }
       {
         label = "unconditional QEMU resume";
