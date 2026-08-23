@@ -201,9 +201,13 @@ in
           run_exact_crucible_test \
             model::fault_signal::binding_runtime::tests::rollback::malformed_adapter_success_rolls_back_the_entire_boundary
           run_exact_crucible_test \
+            model::fault_signal::binding_runtime::tests::rollback::commit_reported_rollback_ambiguity_is_terminal_even_with_valid_rejection_evidence
+          run_exact_crucible_test \
             model::fault_signal::tests::allocation_free_vector_element_type_preserves_the_boxed_wire_shape
           run_exact_qemu_test \
             fault_action_sink::tests::staged_qemu_results_and_evidence_use_reserved_storage
+          run_exact_qemu_test \
+            fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
 
           cargo test \
             --frozen \
