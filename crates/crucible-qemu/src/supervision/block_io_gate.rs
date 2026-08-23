@@ -457,13 +457,6 @@ fn run_one_scenario(
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveBlockIoGateError::SetupAckNotReady);
     }
-    // Begin the bounded worker adjacent to the block workload; package and
-    // process setup must not consume the finite preemption budget.
-    let host_adversary = HostAdversary::start_if(
-        role.applies_scheduler_preemption() && config.second_run_scheduler_preemption,
-        child.process_id(),
-    )
-    .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     let mut console = config
         .transport_reset_probe
         .then(|| {
@@ -517,6 +510,11 @@ fn run_one_scenario(
     let mut completion_log = BlockCompletionLogState::default();
     let mut console_bytes = Vec::new();
     let mut transport_reset_injected = false;
+    let mut host_adversary = HostAdversary::start_if(
+        role.applies_scheduler_preemption() && config.second_run_scheduler_preemption,
+        child.process_id(),
+    )
+    .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     for quantum in 1..=MAX_BLOCK_IO_QUANTA {
         let ceiling = config.busy_ceiling_icount.saturating_mul(quantum);
         advance = drive_and_service(
@@ -539,6 +537,7 @@ fn run_one_scenario(
                 ceiling,
                 timeout: config.completion_timeout,
             },
+            &mut host_adversary,
         )?;
         if matches!(advance, BlockIoAdvanceOutcome::Failed { .. }) {
             break;
@@ -546,14 +545,11 @@ fn run_one_scenario(
     }
     drain_console(console.as_mut(), &mut console_bytes)?;
 
-    // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
-    // if it is still alive, so no QEMU is orphaned on an early return.
+    // Join the signal controller while this exact child is still authenticated
+    // and alive; teardown must never race a raw signal against PID reuse.
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
-    if let Some(host_adversary) = host_adversary {
-        host_adversary
-            .finish()
-            .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
-    }
     let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
     drop(hot_path);
@@ -613,6 +609,7 @@ fn drive_and_service(
     icount_shift: u8,
     device_size_bytes: u64,
     options: DriveOptions,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
@@ -623,6 +620,8 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLiveBlockIoGateError::drive("start block-io drive quantum", source))?;
+    HostAdversary::begin_if_present(host_adversary)
+        .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;

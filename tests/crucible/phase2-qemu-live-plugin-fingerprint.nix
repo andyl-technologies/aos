@@ -15,7 +15,7 @@
   taskIds ? ["T-QEMU-11" "T-DET-8" "T-TIME-8" "T-HARN-4" "T-HARN-6" "T-HARN-7" "T-GHC-15"],
   openTaskIds ? [],
   timeoutSecs ? "240",
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
   probeIcount ? "6000000",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -47,7 +47,7 @@ in
     # through the sampled targets before any idle park.
     GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
     CRUCIBLE_FP_TIMEOUT_SECS = timeoutSecs;
-    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     CRUCIBLE_FP_PROBE_ICOUNT = probeIcount;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;

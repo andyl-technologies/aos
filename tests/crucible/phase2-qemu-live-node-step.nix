@@ -22,7 +22,7 @@
   stepTimeoutSecs ? "240",
   # Run the whole scenario twice, the second run under bounded scheduler preemption, and require
   # byte-identical per-step accounting and execution fingerprint.
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -54,7 +54,7 @@ in
     CRUCIBLE_NODE_STEP_COUNT = stepCount;
     CRUCIBLE_NODE_STEP_BUSY_CAP = busyCap;
     CRUCIBLE_NODE_STEP_TIMEOUT_SECS = stepTimeoutSecs;
-    CRUCIBLE_NODE_STEP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_NODE_STEP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;

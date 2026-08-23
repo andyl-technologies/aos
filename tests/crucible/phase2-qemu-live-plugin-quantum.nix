@@ -23,7 +23,7 @@
   # Run the whole scenario twice, the second run under bounded scheduler preemption, and require
   # byte-identical idle observations — the boot-phase clock-ownership determinism
   # evidence for T-PLUG-4.
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
   smpVcpus ? "1",
   memoryMib ? "64",
   customGuestKernel ? null,
@@ -66,7 +66,7 @@ in
     CRUCIBLE_QUANTUM_IDLE_HORIZON_MARGIN = idleHorizonMargin;
     CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP = minIdleSpeedup;
     CRUCIBLE_QUANTUM_TIMEOUT_SECS = quantumTimeoutSecs;
-    CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     TASK_IDS = taskList;

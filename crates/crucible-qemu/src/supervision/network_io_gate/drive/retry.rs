@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn observe_exact_backpressure_retry(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &QemuLiveNetworkIoServicer,
+    servicer: &mut QemuLiveNetworkIoServicer,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
     timeout: Duration,
@@ -86,7 +86,7 @@ pub(super) fn observe_exact_backpressure_retry(
 
 fn advance_network_quantum_to(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &QemuLiveNetworkIoServicer,
+    servicer: &mut QemuLiveNetworkIoServicer,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
     timeout: Duration,
@@ -104,9 +104,7 @@ fn advance_network_quantum_to(
         .signal_plugin_wake()
         .map_err(|source| QemuLiveNetworkIoGateError::drive("wake exact retry quantum", source))?;
     wait_for_prime_ceiling(servicer, child, timeout, ceiling)?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, pending).map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("finish exact retry quantum", source)
-    })?;
+    finish_and_service_network_quantum(hot_path, servicer, pending, "finish exact retry quantum")?;
     let actual = servicer
         .vm_node_snapshot()
         .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?

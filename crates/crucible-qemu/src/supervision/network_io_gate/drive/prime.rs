@@ -61,9 +61,12 @@ pub(super) fn prime_guest_off_boot_barrier(
         .signal_plugin_wake()
         .map_err(|source| QemuLiveNetworkIoGateError::drive("wake backpressure quantum", source))?;
     wait_for_prime_ceiling(servicer, child, timeout, BACKPRESSURE_PROBE_CEILING_ICOUNT)?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, backpressure_pending).map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("finish backpressure quantum", source)
-    })?;
+    finish_and_service_network_quantum(
+        hot_path,
+        servicer,
+        backpressure_pending,
+        "finish backpressure quantum",
+    )?;
     let checkpoint = QemuShmemHotPathChannel::checkpoint_network_transport(hot_path)
         .map_err(|source| QemuLiveNetworkIoGateError::drive("inspect retained frame", source))?;
     let retained = checkpoint
@@ -102,8 +105,7 @@ pub(super) fn prime_guest_off_boot_barrier(
         .signal_plugin_wake()
         .map_err(|source| QemuLiveNetworkIoGateError::drive("wake priming quantum", source))?;
     wait_for_prime_ceiling(servicer, child, timeout, PRIME_CEILING_ICOUNT)?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
-        .map_err(|source| QemuLiveNetworkIoGateError::drive("finish priming quantum", source))?;
+    finish_and_service_network_quantum(hot_path, servicer, pending, "finish priming quantum")?;
     Ok(retained)
 }
 

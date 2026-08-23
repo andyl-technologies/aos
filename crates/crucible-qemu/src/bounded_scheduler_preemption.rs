@@ -61,6 +61,15 @@ pub enum BoundedSchedulerPreemptionError {
     /// The controller thread panicked.
     #[error("bounded scheduler preemption controller panicked")]
     ControllerPanicked,
+    /// The workload-pending barrier was released more than once.
+    #[error("bounded scheduler preemption was already released")]
+    AlreadyStarted,
+    /// The controller exited before the workload-pending barrier was released.
+    #[error("bounded scheduler preemption controller exited before release")]
+    ControllerExitedBeforeStart,
+    /// The caller tried to finish without proving that work was pending.
+    #[error("bounded scheduler preemption was never released over pending work")]
+    NotStarted,
     /// A signal could not be delivered to the authenticated QEMU child.
     #[error("bounded scheduler preemption could not signal QEMU")]
     Signal {
@@ -91,6 +100,7 @@ pub enum BoundedSchedulerPreemptionError {
 /// so early-return and error paths cannot leave QEMU stopped.
 pub(crate) struct BoundedSchedulerPreemption {
     cancel: Arc<AtomicBool>,
+    start: Option<mpsc::Sender<()>>,
     controller: Option<
         thread::JoinHandle<
             Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError>,
@@ -121,16 +131,71 @@ impl BoundedSchedulerPreemption {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let controller_cancel = Arc::clone(&cancel);
+        let (start_tx, start_rx) = mpsc::channel();
         let controller = thread::Builder::new()
             .name(String::from("crucible-qemu-scheduler-preemption"))
             .spawn(move || {
+                if start_rx.recv().is_err() {
+                    return Err(BoundedSchedulerPreemptionError::ControllerExitedBeforeStart);
+                }
                 apply_bounded_scheduler_preemption_with_cancel(pid, &controller_cancel, policy)
             })
             .map_err(|source| BoundedSchedulerPreemptionError::ControllerSpawn { source })?;
         Ok(Some(Self {
             cancel,
+            start: Some(start_tx),
             controller: Some(controller),
         }))
+    }
+
+    /// Releases the controller only after the caller has published real QEMU work.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the controller was already released or exited
+    /// before accepting the workload-pending signal.
+    pub(crate) fn begin(&mut self) -> Result<(), BoundedSchedulerPreemptionError> {
+        let start = self
+            .start
+            .take()
+            .ok_or(BoundedSchedulerPreemptionError::AlreadyStarted)?;
+        start
+            .send(())
+            .map_err(|_error| BoundedSchedulerPreemptionError::ControllerExitedBeforeStart)
+    }
+
+    /// Releases the controller once and reports whether this call owned release.
+    ///
+    /// This supports multi-quantum workloads whose first published quantum is
+    /// the synchronization point. Later quanta observe `false` without
+    /// re-running or extending the finite adversary budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the controller exits before accepting the
+    /// first workload-pending signal.
+    pub(crate) fn begin_once(&mut self) -> Result<bool, BoundedSchedulerPreemptionError> {
+        if self.start.is_none() {
+            return Ok(false);
+        }
+        self.begin()?;
+        Ok(true)
+    }
+
+    /// Releases an optional controller once work has been published.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the present controller exits before accepting
+    /// its first workload-pending signal.
+    pub(crate) fn begin_if_present(
+        adversary: &mut Option<Self>,
+    ) -> Result<bool, BoundedSchedulerPreemptionError> {
+        adversary
+            .as_mut()
+            .map(Self::begin_once)
+            .transpose()
+            .map(|release| release.unwrap_or(false))
     }
 
     /// Joins the controller and returns evidence for every configured perturbation.
@@ -142,6 +207,9 @@ impl BoundedSchedulerPreemption {
     pub(crate) fn finish(
         mut self,
     ) -> Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError> {
+        if self.start.is_some() {
+            return Err(BoundedSchedulerPreemptionError::NotStarted);
+        }
         let Some(controller) = self.controller.take() else {
             return Err(BoundedSchedulerPreemptionError::ControllerPanicked);
         };
@@ -149,11 +217,26 @@ impl BoundedSchedulerPreemption {
             .join()
             .map_err(|_panic| BoundedSchedulerPreemptionError::ControllerPanicked)?
     }
+
+    /// Finishes an optional controller before the authenticated child is reaped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed failures as [`Self::finish`] for a present
+    /// controller.
+    pub(crate) fn finish_if_present(
+        adversary: &mut Option<Self>,
+    ) -> Result<Option<BoundedSchedulerPreemptionReport>, BoundedSchedulerPreemptionError> {
+        adversary.take().map(Self::finish).transpose()
+    }
 }
 
 impl Drop for BoundedSchedulerPreemption {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
+        if let Some(start) = self.start.take() {
+            let _ = start.send(());
+        }
         if let Some(controller) = self.controller.take() {
             let _ = controller.join();
         }
@@ -383,8 +466,9 @@ mod tests {
     #[test]
     fn asynchronous_preemption_completes_while_target_runs() -> Result<(), Box<dyn Error>> {
         let mut target = TestTarget::spawn()?;
-        let adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
+        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
             .ok_or("enabled adversary was not created")?;
+        adversary.begin()?;
         let report = adversary.finish()?;
 
         assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);
@@ -428,8 +512,10 @@ mod tests {
             interval: Duration::ZERO,
             wall_timeout: Duration::from_secs(2),
         };
-        let adversary = BoundedSchedulerPreemption::start_with_policy(true, target.pid(), policy)?
-            .ok_or("enabled adversary was not created")?;
+        let mut adversary =
+            BoundedSchedulerPreemption::start_with_policy(true, target.pid(), policy)?
+                .ok_or("enabled adversary was not created")?;
+        adversary.begin()?;
         wait_for_state(target.pid(), 'T')?;
         drop(adversary);
 
@@ -440,8 +526,9 @@ mod tests {
 
     #[test]
     fn signal_failure_is_reported_and_joined() -> Result<(), Box<dyn Error>> {
-        let adversary = BoundedSchedulerPreemption::start_if(true, u32::MAX)?
+        let mut adversary = BoundedSchedulerPreemption::start_if(true, u32::MAX)?
             .ok_or("enabled adversary was not created")?;
+        adversary.begin()?;
         let error = adversary
             .finish()
             .err()
@@ -456,6 +543,41 @@ mod tests {
     #[test]
     fn disabled_adversary_spawns_no_controller() -> Result<(), Box<dyn Error>> {
         assert!(BoundedSchedulerPreemption::start_if(false, u32::MAX)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_waits_for_pending_work_release() -> Result<(), Box<dyn Error>> {
+        let mut target = TestTarget::spawn()?;
+        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
+            .ok_or("enabled adversary was not created")?;
+        thread::sleep(Duration::from_millis(25));
+        assert_ne!(process_state(target.pid())?, Some('T'));
+
+        adversary.begin()?;
+        let report = adversary.finish()?;
+        assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);
+        assert!(target.is_running()?);
+        Ok(())
+    }
+
+    #[test]
+    fn exited_target_fails_after_pending_work_release() -> Result<(), Box<dyn Error>> {
+        let mut target = TestTarget::spawn()?;
+        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
+            .ok_or("enabled adversary was not created")?;
+        target.child.kill()?;
+        let _status = target.child.wait()?;
+
+        adversary.begin()?;
+        let error = adversary
+            .finish()
+            .err()
+            .ok_or("exited target unexpectedly accepted scheduler preemption")?;
+        assert!(matches!(
+            error,
+            BoundedSchedulerPreemptionError::Signal { .. }
+        ));
         Ok(())
     }
 }

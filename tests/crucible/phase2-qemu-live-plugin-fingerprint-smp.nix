@@ -29,7 +29,7 @@
   taskIds ? ["T-TIME-9" "T-QEMU-16" "T-PLUG-24" "T-PLUG-26"],
   openTaskIds ? [],
   timeoutSecs ? "300",
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
   probeIcount ? "6000000",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -65,7 +65,7 @@ in
     # steadily through the sampled aggregate-icount targets before any idle park.
     GUEST_KERNEL_APPEND = "${s11Guest.kernelAppend} nohz=off";
     CRUCIBLE_FP_TIMEOUT_SECS = timeoutSecs;
-    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     CRUCIBLE_FP_PROBE_ICOUNT = probeIcount;
     CRUCIBLE_FP_SMP_VCPUS = smpVcpus;
     CRUCIBLE_FP_MEMORY_MIB = memoryMib;
