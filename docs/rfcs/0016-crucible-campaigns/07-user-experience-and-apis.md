@@ -144,7 +144,21 @@ message. A read-write local daemon accepts one or more
 manifest names dependency-ordered exact-owner scenario/schedule pairs and
 canonical generator bodies; the daemon verifies and imports them under the
 exclusive repository lock before it binds the CampaignService socket. It
-creates the first snapshot and named ref or exactly replays the
+may be checked first without a daemon or repository:
+
+```text
+crucible campaign validate-import MANIFEST [MANIFEST ...]
+```
+
+Offline validation applies the same exact-owner, path, per-file, aggregate
+entry, canonical-codec, scenario/configuration semantic-identity, and
+unresolved-selection checks as startup import. It additionally requires every
+generator dependency to occur earlier in the supplied manifest sequence, so
+the result is self-contained rather than depending on previously imported
+repository state. It streams one body at a time and reports the exact derived
+configuration and generator identities in every supported output format.
+The command intentionally takes neither `--socket` nor `--principal`.
+`create` then creates the first snapshot and named ref or exactly replays the
 authenticated genesis basis. `derive` similarly names one exact authenticated
 source snapshot and may activate an already imported compatible canonical
 policy. A runtime-capable local daemon also receives
@@ -169,8 +183,8 @@ reuse or a stale
 precondition remains visible. Every successful format includes campaign,
 operation, command ID, prior snapshot, new snapshot, and replay status. Create
 and derive report their exact lineage/policy or source basis, accepted snapshot,
-and replay status. Start's local resource attachment, standalone validation
-porcelain, and richer manifest authoring remain open.
+and replay status. Start's local resource attachment and richer manifest
+authoring remain open.
 
 Semantic alternatives use a separate command:
 

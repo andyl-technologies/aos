@@ -1,5 +1,8 @@
 //! Thin local client for authenticated lazy-campaign inspection and control.
 
+use super::cli_campaign_import::{
+    CampaignImportValidationReport, validate_campaign_import_manifests,
+};
 use super::*;
 
 #[path = "campaign/explain.rs"]
@@ -177,15 +180,31 @@ struct ParsedCampaignBranchBasis {
 }
 
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
-    let principal = CampaignPrincipal::new(args.principal.clone())
+    if let CampaignCommand::ValidateImport(validate) = &args.command {
+        let report = validate_campaign_import_manifests(&validate.manifests)?;
+        println!(
+            "{}",
+            render_campaign_import_validation(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
+
+    let socket = args
+        .socket
+        .as_ref()
+        .ok_or_else(|| usage_error("connected campaign commands require --socket <path>"))?;
+    let principal = args.principal.as_ref().ok_or_else(|| {
+        usage_error("connected campaign commands require --principal <principal>")
+    })?;
+    let principal = CampaignPrincipal::new(principal.clone())
         .map_err(|error| usage_error(format!("invalid campaign principal: {error}")))?;
     let prepared = prepare_campaign_command(&args.command, &principal)?;
-    let stream = UnixStream::connect(&args.socket).map_err(|error| {
+    let stream = UnixStream::connect(socket).map_err(|error| {
         CliError::Io(io::Error::new(
             error.kind(),
             format!(
                 "could not connect to campaign service at {}: {error}",
-                args.socket.display()
+                socket.display()
             ),
         ))
     })?;
@@ -193,6 +212,11 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         .map_err(|error| backend_error(format!("campaign transport setup failed: {error}")))?;
     let client = CampaignClient::new(service);
     let rendered = match &args.command {
+        CampaignCommand::ValidateImport(_) => {
+            return Err(backend_error(
+                "offline campaign import validation reached the connected dispatch path",
+            ));
+        }
         CampaignCommand::Create(_) | CampaignCommand::Derive(_) => {
             let prepared = prepared.ok_or_else(|| {
                 backend_error("campaign acceptance command was not prepared before connection")
@@ -270,6 +294,7 @@ fn prepare_campaign_command(
     principal: &CampaignPrincipal,
 ) -> Result<Option<PreparedCampaignCommand>, CliError> {
     match command {
+        CampaignCommand::ValidateImport(_) => Ok(None),
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
             let lineage = CampaignLineage::from_canonical_bytes(&read_campaign_record(
@@ -430,6 +455,60 @@ fn prepare_campaign_command(
                 usage_error(format!("invalid campaign snapshot precondition: {error}"))
             })?;
             Ok(None)
+        }
+    }
+}
+
+fn render_campaign_import_validation(
+    report: &CampaignImportValidationReport,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    match format {
+        OutputFormat::Jsonl => serde_json::to_string(report).map_err(|error| {
+            backend_error(format!("campaign import JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            backend_error(format!("campaign import JSON encoding failed: {error}"))
+        }),
+        OutputFormat::Table => {
+            let mut lines = vec![
+                format!("{:<16} {}", "manifests", report.manifest_count()),
+                format!("{:<16} {}", "configurations", report.configurations().len()),
+                format!("{:<16} {}", "generators", report.generators().len()),
+            ];
+            lines.extend(
+                report
+                    .configurations()
+                    .iter()
+                    .map(|id| format!("{:<16} {id}", "configuration")),
+            );
+            lines.extend(
+                report
+                    .generators()
+                    .iter()
+                    .map(|id| format!("{:<16} {id}", "generator")),
+            );
+            Ok(lines.join("\n"))
+        }
+        OutputFormat::Markdown => {
+            let mut lines = vec![
+                String::from("| Kind | Identity |"),
+                String::from("| --- | --- |"),
+                format!("| manifests | {} |", report.manifest_count()),
+            ];
+            lines.extend(
+                report
+                    .configurations()
+                    .iter()
+                    .map(|id| format!("| configuration | {id} |")),
+            );
+            lines.extend(
+                report
+                    .generators()
+                    .iter()
+                    .map(|id| format!("| generator | {id} |")),
+            );
+            Ok(lines.join("\n"))
         }
     }
 }
@@ -1190,7 +1269,8 @@ fn campaign_mutation_spec(
                 CampaignControlAction::ActivatePolicy(policy),
             ))
         }
-        CampaignCommand::Create(_)
+        CampaignCommand::ValidateImport(_)
+        | CampaignCommand::Create(_)
         | CampaignCommand::Derive(_)
         | CampaignCommand::Branch(_)
         | CampaignCommand::Status(_)
@@ -3026,6 +3106,36 @@ mod tests {
 
     #[test]
     fn campaign_status_and_watch_parse_under_the_nested_cli() {
+        let validate = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "validate-import",
+            "/tmp/campaign-import.toml",
+        ])
+        .expect("offline campaign import validation arguments");
+        assert!(matches!(
+            validate.command,
+            Commands::Campaign(CampaignArgs {
+                socket: None,
+                principal: None,
+                command: CampaignCommand::ValidateImport(CampaignValidateImportArgs {
+                    ref manifests,
+                }),
+            }) if manifests == &[PathBuf::from("/tmp/campaign-import.toml")]
+        ));
+
+        let missing_connection = Cli::try_parse_from(["crucible", "campaign", "status", "example"])
+            .expect("connected campaign arguments are checked before dispatch");
+        let Commands::Campaign(missing_connection_args) = &missing_connection.command else {
+            panic!("campaign command");
+        };
+        assert!(
+            run_campaign_invocation(&missing_connection, missing_connection_args)
+                .expect_err("connected command requires a socket")
+                .to_string()
+                .contains("require --socket")
+        );
+
         let status = Cli::try_parse_from([
             "crucible",
             "campaign",

@@ -667,7 +667,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   CampaignService failure and SIGINT/SIGTERM to lifecycle-server shutdown and
   worker join. Process read-only mode also denies every campaign mutation after
   policy resolution. Structured diagnostic routing and richer
-  creation/import/attach porcelain remain open; message framing or listener
+  richer creation/attach porcelain remain open; message framing or listener
   construction alone is not authentication.
   Checked
   request/response acceptance now retains the
@@ -943,8 +943,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   before publication. The initial repeatable daemon-startup import manifest now
   admits dependency-ordered compact scenario/schedule pairs and canonical
   generator bodies through the narrow verifier-backed importer before endpoint
-  bind. Rich manifest authoring, standalone validation porcelain, start
-  attachment, and selector resolution remain open.
+  bind. Offline `campaign validate-import` now applies the same strict file and
+  configuration checks, requires a self-contained dependency-ordered generator
+  set, streams one body at a time, and reports exact derived identities without
+  opening repository state. Rich manifest authoring, start attachment, and
+  selector resolution remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed

@@ -963,7 +963,10 @@ ApplyCommand, Pin, and SubmitBranch even if the policy file grants them.
 Repeatable pre-bind import manifests require the complete local campaign
 profile and conflict with `--read-only`; the prepared repository owner is
 consumed by endpoint binding, so this bootstrap API cannot retain import
-authority after serving begins.
+authority after serving begins. `crucible campaign validate-import` performs
+the same strict file and semantic checks without opening a socket or repository
+and requires a self-contained dependency-ordered generator set. It retains one
+body at a time plus bounded derived identities and emits no campaign content.
 
 Structured operational diagnostic routing remains open. The pre-bound
 constructor remains useful for embedded/test deployments, but constructing it

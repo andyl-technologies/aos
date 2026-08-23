@@ -6,9 +6,7 @@ use super::*;
 mod artifact_capture;
 pub(super) use artifact_capture::*;
 
-#[path = "verify_serve/campaign_import.rs"]
-mod campaign_import;
-use campaign_import::apply_campaign_import_manifests;
+use super::cli_campaign_import::apply_campaign_import_manifests;
 
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
