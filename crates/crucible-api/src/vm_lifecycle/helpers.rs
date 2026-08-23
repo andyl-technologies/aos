@@ -322,6 +322,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedLaunch {
         node: String,
+        generation: u64,
         router: String,
         crash_detector: String,
         exact: Option<(ContentHash, bool)>,
@@ -335,7 +336,7 @@ mod tests {
         fn launch(
             &mut self,
             request: ProductionVmNodeLaunchRequest<'_>,
-        ) -> Result<QemuNode, LifecycleApiError> {
+        ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
             let exact = match request.kind() {
                 ProductionVmNodeLaunchKind::Fresh => None,
                 ProductionVmNodeLaunchKind::Exact { snapshot, paused } => {
@@ -347,6 +348,7 @@ mod tests {
                 .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
                 .push(RecordedLaunch {
                     node: request.node_name().to_owned(),
+                    generation: request.generation(),
                     router: request.router_name().to_owned(),
                     crash_detector: request.crash_detector().to_owned(),
                     exact,
@@ -409,6 +411,9 @@ mod tests {
             "run-directory",
         );
         let snapshot = launch_snapshot("exact");
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
 
         for (crash_detector, kind) in [
             ("fresh", ProductionVmNodeLaunchKind::Fresh),
@@ -431,7 +436,8 @@ mod tests {
                 &mut launcher,
                 &profile,
                 Path::new("run-directory"),
-                "node-a",
+                &node,
+                7,
                 crash_detector,
                 kind,
             )
@@ -439,6 +445,19 @@ mod tests {
             .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
             assert!(error.to_string().contains("recording launcher rejects"));
         }
+
+        let zero_generation = launch_production_node_generation(
+            &mut launcher,
+            &profile,
+            Path::new("run-directory"),
+            &node,
+            0,
+            "invalid-generation",
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("zero process generation should fail before launch"));
+        assert!(zero_generation.to_string().contains("must be positive"));
 
         assert!(launcher.replay_candidate().is_err());
         assert_eq!(
@@ -448,18 +467,21 @@ mod tests {
             vec![
                 RecordedLaunch {
                     node: String::from("node-a"),
+                    generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("fresh"),
                     exact: None,
                 },
                 RecordedLaunch {
                     node: String::from("node-a"),
+                    generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("exact-running"),
                     exact: Some((snapshot.id(), false)),
                 },
                 RecordedLaunch {
                     node: String::from("node-a"),
+                    generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("exact-paused"),
                     exact: Some((snapshot.id(), true)),

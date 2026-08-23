@@ -8,7 +8,7 @@ struct PreparedTerminalReplacement {
     run_directory: PathBuf,
     launch: ProductionLiveNodeStepGateConfig,
     generation: u64,
-    replacement: Option<QemuNode>,
+    replacement: Option<ProductionVmNodeLaunch>,
     service_state: ProductionNodeServiceState,
 }
 
@@ -623,13 +623,23 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     message: format!("shutdown production debugger gateway: {error}"),
                 })
         });
+        let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
         let shutdown = self.inner.shutdown();
+        let lease_shutdown = if shutdown.is_ok() {
+            self.finish_all_reaped_node_leases()
+        } else {
+            Ok(())
+        };
         let launcher_shutdown =
-            self.node_launcher
-                .finish()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("finish production node-launch authority: {error}"),
-                });
+            if shutdown.is_ok() && lease_shutdown.is_ok() && !self.node_lease_cleanup_failed {
+                self.node_launcher
+                    .finish()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("finish production node-launch authority: {error}"),
+                    })
+            } else {
+                Ok(())
+            };
 
         let mut failures = Vec::new();
         if let Some(Err(error)) = gateway_shutdown {
@@ -642,6 +652,15 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 None
             }
         };
+        if let Err(error) = lease_shutdown {
+            failures.push(error);
+        } else if prior_node_lease_cleanup_failure {
+            failures.push(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production QEMU generation lease remains owned by quarantine",
+                ),
+            });
+        }
         if let Err(error) = launcher_shutdown {
             failures.push(error);
         }
@@ -798,6 +817,7 @@ impl ProductionVmLifecycleLoop {
             let identity = item
                 .replacement
                 .as_ref()
+                .map(ProductionVmNodeLaunch::node)
                 .map(QemuNode::process_identity)
                 .transpose()
                 .map_err(|error| SchedulerError::BoundaryViolation {
@@ -1231,8 +1251,8 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         let mut first_error = None;
         for item in prepared {
-            if let Some(mut replacement) = item.replacement.take()
-                && let Err(error) = replacement.force_quarantine_and_reap()
+            if let Some(replacement) = item.replacement.take()
+                && let Err(error) = replacement.quarantine_and_finish()
                 && first_error.is_none()
             {
                 first_error = Some(format!(
@@ -1244,6 +1264,23 @@ impl ProductionVmLifecycleLoop {
         first_error.map_or(Ok(()), |message| {
             Err(SchedulerError::BoundaryViolation { message })
         })
+    }
+
+    pub(super) fn finish_reaped_node_leases(
+        &mut self,
+        nodes: &[NodeId],
+    ) -> Result<(), SchedulerError> {
+        let result =
+            finish_reaped_node_lease_map(&self.node_generations, &mut self.node_leases, nodes);
+        if result.is_err() {
+            self.node_lease_cleanup_failed = true;
+        }
+        result
+    }
+
+    fn finish_all_reaped_node_leases(&mut self) -> Result<(), SchedulerError> {
+        let nodes = self.node_leases.keys().cloned().collect::<Vec<_>>();
+        self.finish_reaped_node_leases(&nodes)
     }
 
     fn configure_replacement_fault_coordinators(
@@ -1312,7 +1349,8 @@ impl ProductionVmLifecycleLoop {
                 self.node_launcher.as_mut(),
                 &prepared.launch,
                 &prepared.run_directory,
-                &node.name,
+                &node,
+                prepared.generation,
                 &crash_detector,
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &prepared.snapshot,
@@ -1323,7 +1361,8 @@ impl ProductionVmLifecycleLoop {
                 self.node_launcher.as_mut(),
                 &prepared.launch,
                 &prepared.run_directory,
-                &node.name,
+                &node,
+                prepared.generation,
                 &crash_detector,
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &prepared.snapshot,
@@ -1339,9 +1378,10 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             })?;
-            if let Err(error) = self.configure_replacement_fault_coordinators(&node, &mut launched)
+            if let Err(error) =
+                self.configure_replacement_fault_coordinators(&node, launched.node_mut())
             {
-                let containment = launched.force_quarantine_and_reap();
+                let containment = launched.quarantine_and_finish();
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "configure terminal lifecycle replacement for `{}`: {error}; process containment: {}",
@@ -1363,6 +1403,13 @@ impl ProductionVmLifecycleLoop {
         if prepared.is_empty() {
             return Ok(());
         }
+        if self.node_lease_cleanup_failed {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production QEMU generation lease remains owned by quarantine",
+                ),
+            });
+        }
         let activities = prepared
             .iter()
             .map(|item| {
@@ -1379,7 +1426,7 @@ impl ProductionVmLifecycleLoop {
             if let Some(binding) = self.block_bindings.get(&item.decision.node)
                 && let Some(replacement) = &item.replacement
             {
-                let handle = replacement.shared_block_device().ok_or_else(|| {
+                let handle = replacement.node().shared_block_device().ok_or_else(|| {
                     SchedulerError::BoundaryViolation {
                         message: format!(
                             "replacement QEMU node `{}` lost its block device before commit",
@@ -1407,14 +1454,26 @@ impl ProductionVmLifecycleLoop {
         self.inner
             .loop_impl_mut()
             .set_vm_node_activities(&activities)?;
+        let mut replacement_leases = BTreeMap::new();
         let replacement_values = prepared
             .iter_mut()
-            .map(|item| (item.decision.node.clone(), item.replacement.take()))
+            .map(|item| {
+                let replacement = item.replacement.take().map(|replacement| {
+                    let (node, lease) = replacement.into_parts();
+                    replacement_leases.insert(item.decision.node.clone(), lease);
+                    node
+                });
+                (item.decision.node.clone(), replacement)
+            })
             .collect();
         let retired = self
             .inner
             .backend_mut()
             .commit_terminal_replacements(plan, replacement_values);
+        // Backend ownership changes atomically, but the exact generation
+        // leases still have to move into the active map. Keep aggregate
+        // authority quarantined if any invariant fails during that handoff.
+        self.node_lease_cleanup_failed = true;
         debug_assert!(retired.iter().all(|(_, node)| node.child_reaped()));
         for (device, handle) in block_handles {
             block_devices.insert(device, handle);
@@ -1426,6 +1485,7 @@ impl ProductionVmLifecycleLoop {
             match item.service_state {
                 ProductionNodeServiceState::PermanentlyFailed => {
                     self.run_manifest.processes.remove(&node.name);
+                    self.node_leases.remove(&node);
                 }
                 ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
                     let identity = self
@@ -1443,6 +1503,23 @@ impl ProductionVmLifecycleLoop {
                     self.run_manifest
                         .processes
                         .insert(node.name.clone(), identity);
+                    let lease = replacement_leases.remove(&node).ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "committed replacement for `{}` lost its generation lease",
+                                node.name
+                            ),
+                        }
+                    })?;
+                    if self.node_leases.contains_key(&node) {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "committed replacement for `{}` retained an old generation lease",
+                                node.name
+                            ),
+                        });
+                    }
+                    self.node_leases.insert(node.clone(), lease);
                 }
             }
             self.run_manifest.staged_processes.remove(&node.name);
@@ -1459,6 +1536,7 @@ impl ProductionVmLifecycleLoop {
                 );
             }
         }
+        self.node_lease_cleanup_failed = false;
         self.persist_run_manifest()
     }
 
@@ -1923,6 +2001,13 @@ impl ProductionVmLifecycleLoop {
             && let Err(error) =
                 self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
         {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                &decisions,
+                &mut prepared,
+                error,
+            ));
+        }
+        if let Err(error) = self.finish_reaped_node_leases(&retiring) {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
                 &decisions,
                 &mut prepared,

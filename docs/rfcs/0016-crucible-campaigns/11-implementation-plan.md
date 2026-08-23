@@ -438,9 +438,15 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   modeled crash/restart replacement, and whole-world debugger replay; a replay
   must obtain an independent authority or fail closed. This removes the
   lifecycle's direct-spawn bypass seam while keeping the packaged ordinary
-  lifecycle behind an explicit default authority. Explicit shutdown reaps the
-  nodes before asking the authority to attest aggregate release, while failed
-  finish or abandonment transfers remaining authority to quarantine. The
+  lifecycle behind an explicit default authority. Each launch now returns a
+  linear lease bound to the exact scheduler node and positive process
+  generation. Active and staged replacement leases remain disjoint; old leases
+  release only after reap attestation, staged leases become active only with
+  backend commit, and abort reaps before lease finish. A lease-release failure
+  latches quarantine and prevents later aggregate release. Explicit shutdown reaps
+  the nodes, finishes every exact generation lease, and then asks the authority
+  to attest aggregate release, while failed finish or abandonment transfers
+  remaining authority to quarantine. The
   campaign worker's Linux implementation of that authority, fresh exact-cache,
   baked/thin image provisioning, the modeled attempt driver, and production
   worker/factory selection remain open. Real-node exact-
