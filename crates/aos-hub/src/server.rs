@@ -271,6 +271,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     if let Some(verifier) = &state.identity_domain_verifier {
         rpc_service = rpc_service.with_identity_domain_verifier(Arc::clone(verifier));
     }
+    if let Some(keyring) = &state.route_reservation_keyring {
+        rpc_service = rpc_service.with_route_reservation_keyring(Arc::clone(keyring));
+    }
     let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
     // own `Arc<RpcService>` state. It has no resource-slug delivery wildcard.
