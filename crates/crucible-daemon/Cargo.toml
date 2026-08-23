@@ -15,6 +15,7 @@ crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-cas = { workspace = true }
 crucible-qemu = { path = "../crucible-qemu" }
+crucible-shmem = { path = "../crucible-shmem" }
 rustix = { workspace = true, features = ["net"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -24,7 +25,6 @@ toml = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
-crucible-shmem = { path = "../crucible-shmem" }
 crucible-session = { path = "../crucible-session" }
 tempfile = { workspace = true }
 tokio = { workspace = true }
