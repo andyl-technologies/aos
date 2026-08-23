@@ -91,6 +91,11 @@
       }
     ];
   };
+  jwtSecret = pkgs.writeTextFile {
+    name = "native-hub-fleet-jwt-secret";
+    destination = "/value";
+    text = "native-hub-fleet-stable-jwt-secret-v1";
+  };
 
   # The qualification images intentionally carry operator and publishing
   # tooling that the slim production golden image omits. Keep the production
@@ -163,10 +168,12 @@
       aos.firewall.allowedTCP = [8420];
       systemd.services.aos-hub.serviceConfig = {
         LoadCredential = [
+          "jwt-secret:${jwtSecret}/value"
           "route-reservation-keys:${routeKeys}/value"
           "probe-signers:${probeSigners}/value"
         ];
         Environment = [
+          "HUB_JWT_SECRET_FILE=/run/credentials/aos-hub.service/jwt-secret"
           "HUB_ROUTE_RESERVATION_KEYS_FILE=/run/credentials/aos-hub.service/route-reservation-keys"
           "HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE=/run/credentials/aos-hub.service/probe-signers"
           "HUB_DNS_JSON_ENDPOINT=https://dns.google/resolve"
@@ -214,6 +221,6 @@ in {
     ;
 
   hubUrl = "http://hub:8420";
-  registryUrl = "http://hub:8420/acme/production/";
+  registryUrl = "http://192.168.50.11:8420/acme/production/";
   probePublicKey = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo";
 }
