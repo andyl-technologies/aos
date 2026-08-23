@@ -12,10 +12,12 @@
 //! A dirty root after restart is rejected rather than guessing whether an old
 //! attempt is safe to reclaim. Project IDs are recycled only after quota
 //! removal, authenticated directory removal, and parent-directory `fsync` all
-//! succeed. Dropping an unfinished owner intentionally leaks its pinned root
-//! lock and kernel authority; the future combined process/storage quarantine
-//! owner must consume the explicit retry errors instead.
+//! succeed. Bounded descriptor-relative cleanup removes attempt artifacts only
+//! after process reap. Dropping an unfinished owner intentionally leaks its
+//! pinned root lock and kernel authority; the future combined process/storage
+//! quarantine owner must consume the explicit retry errors instead.
 
+use std::ffi::CString;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
@@ -25,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rustix::fs::{
     AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, fchmod, fchown, flock, fstat, fsync,
-    mkdirat, open, openat, unlinkat,
+    mkdirat, open, openat, statat, unlinkat,
 };
 use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Gid, Uid, geteuid};
@@ -44,6 +46,7 @@ const MAX_ATTEMPT_NAMESPACE_BYTES: usize =
     MAX_RUN_DIRECTORY_NAME_BYTES - ATTEMPT_NAME_SEPARATOR_BYTES - ATTEMPT_COUNTER_HEX_BYTES;
 const MAX_PROJECT_ID_COUNT: u32 = 65_536;
 const MAX_QUOTACTL_PROJECT_ID: u32 = 0x7fff_ffff;
+const MAX_ATTEMPT_ARTIFACT_INODES: u64 = 65_536;
 const ROOT_SCAN_BUFFER_BYTES: usize = 4096;
 
 /// Validated configuration for one daemon-incarnation attempt-storage root.
@@ -114,6 +117,11 @@ impl LinuxQemuAttemptStorageConfig {
         }
         QemuChildCredentials::new(child_user_id, child_group_id)
             .map_err(|source| LinuxQemuAttemptStorageError::ChildCredentials { source })?;
+        if maximum_inodes > MAX_ATTEMPT_ARTIFACT_INODES {
+            return Err(invalid_config(
+                "attempt-storage inode ceiling exceeds the bounded cleanup profile",
+            ));
+        }
         LinuxProjectQuotaLimits::new(1024, maximum_inodes)
             .map_err(LinuxQemuAttemptStorageError::ProjectQuota)?;
 
@@ -280,6 +288,7 @@ impl LinuxQemuAttemptStorageFactory {
             quota: None,
             child_user_id: self.config.child_user_id,
             child_group_id: self.config.child_group_id,
+            maximum_inodes: limits.maximum_inodes(),
             removed: false,
             released: false,
         };
@@ -304,6 +313,7 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
     quota: Option<LinuxProjectQuotaReservation>,
     child_user_id: u32,
     child_group_id: u32,
+    maximum_inodes: u64,
     removed: bool,
     released: bool,
 }
@@ -361,6 +371,32 @@ impl LinuxQemuAttemptStorageOwner {
     /// fails. An exact retry resumes from the last completed phase.
     pub(crate) fn release(mut self) -> Result<(), LinuxQemuAttemptStorageReleaseError> {
         if let Err(source) = self.release_in_place() {
+            return Err(LinuxQemuAttemptStorageReleaseError {
+                owner: Box::new(self),
+                source,
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes bounded attempt artifacts, then releases quota and the directory.
+    ///
+    /// The caller must first attest that every process able to mutate this run
+    /// directory has been reaped. Cleanup never follows symlinks or crosses the
+    /// run directory's filesystem. Work, retained names, and nesting are all
+    /// bounded by the installed inode ceiling, while traversal keeps only the
+    /// current directory descriptor open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuAttemptStorageReleaseError`] with this complete owner
+    /// when traversal, removal, quota release, or durability fails. Already
+    /// removed entries make exact retry monotone.
+    pub(crate) fn cleanup_and_release(mut self) -> Result<(), LinuxQemuAttemptStorageReleaseError> {
+        let result = self
+            .cleanup_contents_in_place()
+            .and_then(|()| self.release_in_place());
+        if let Err(source) = result {
             return Err(LinuxQemuAttemptStorageReleaseError {
                 owner: Box::new(self),
                 source,
@@ -460,6 +496,20 @@ impl LinuxQemuAttemptStorageOwner {
         self.directory = None;
         self.parent_directory = None;
         Ok(())
+    }
+
+    fn cleanup_contents_in_place(&mut self) -> Result<(), LinuxQemuAttemptStorageError> {
+        if self.removed {
+            return Ok(());
+        }
+        self.pin_directory()?;
+        self.verify_named_directory()?;
+        let root = duplicate_fd(
+            self.directory()?,
+            "retain QEMU run directory for artifact cleanup",
+            &self.path,
+        )?;
+        cleanup_directory_contents(root, &self.path, self.maximum_inodes)
     }
 
     fn pin_directory(&mut self) -> Result<(), LinuxQemuAttemptStorageError> {
@@ -630,6 +680,14 @@ pub(crate) enum LinuxQemuAttemptStorageError {
     /// Project-ID ownership did not match the linear owner lifecycle.
     #[error("QEMU attempt-storage project-ID ownership is inconsistent")]
     ProjectIdOwnership,
+    /// Artifact cleanup exceeded a reviewed structural bound or invariant.
+    #[error("QEMU attempt artifact cleanup failed for {path}: {message}")]
+    CleanupBound {
+        /// Diagnostic run-directory path.
+        path: PathBuf,
+        /// Stable cleanup diagnostic.
+        message: &'static str,
+    },
     /// The child identity is not isolated from the supervisor credentials.
     #[error("QEMU attempt-storage child credentials are not isolated: {source}")]
     ChildCredentials {
@@ -744,6 +802,220 @@ impl Drop for ProjectIdLease {
             self.recycled = true;
         }
     }
+}
+
+#[derive(Debug)]
+struct CleanupDirectory {
+    name_in_parent: Option<CString>,
+    device: u64,
+    inode: u64,
+    children: Vec<CString>,
+}
+
+fn cleanup_directory_contents(
+    mut directory: OwnedFd,
+    path: &Path,
+    maximum_inodes: u64,
+) -> Result<(), LinuxQemuAttemptStorageError> {
+    let root_metadata =
+        fstat(&directory).map_err(|source| io_error("identify QEMU cleanup root", path, source))?;
+    let root_device = root_metadata.st_dev;
+    let mut observed_entries = 1_u64;
+    let mut stack = vec![scan_cleanup_directory(
+        &directory,
+        None,
+        path,
+        root_device,
+        maximum_inodes,
+        &mut observed_entries,
+    )?];
+
+    loop {
+        let Some(frame) = stack.last_mut() else {
+            return Err(LinuxQemuAttemptStorageError::CleanupBound {
+                path: path.to_owned(),
+                message: "artifact-cleanup traversal lost its root frame",
+            });
+        };
+        if let Some(child_name) = frame.children.pop() {
+            let child = openat(
+                &directory,
+                child_name.as_c_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(|source| io_error("open nested QEMU artifact directory", path, source))?;
+            let child_frame = scan_cleanup_directory(
+                &child,
+                Some(child_name),
+                path,
+                root_device,
+                maximum_inodes,
+                &mut observed_entries,
+            )?;
+            directory = child;
+            stack.push(child_frame);
+            continue;
+        }
+
+        fsync(&directory).map_err(|source| {
+            io_error("synchronize cleaned QEMU artifact directory", path, source)
+        })?;
+        if stack.len() == 1 {
+            return Ok(());
+        }
+        let child = stack
+            .pop()
+            .ok_or_else(|| LinuxQemuAttemptStorageError::CleanupBound {
+                path: path.to_owned(),
+                message: "artifact-cleanup traversal lost a child frame",
+            })?;
+        let child_name = child.name_in_parent.as_ref().ok_or_else(|| {
+            LinuxQemuAttemptStorageError::CleanupBound {
+                path: path.to_owned(),
+                message: "nested artifact directory omitted its parent name",
+            }
+        })?;
+        let parent = openat(
+            &directory,
+            "..",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| io_error("reopen QEMU artifact parent directory", path, source))?;
+        let parent_frame =
+            stack
+                .last()
+                .ok_or_else(|| LinuxQemuAttemptStorageError::CleanupBound {
+                    path: path.to_owned(),
+                    message: "nested artifact directory omitted its parent frame",
+                })?;
+        verify_cleanup_directory_identity(&parent, parent_frame.device, parent_frame.inode, path)?;
+        verify_cleanup_child_identity(&parent, child_name, &directory, path)?;
+        unlinkat(&parent, child_name.as_c_str(), AtFlags::REMOVEDIR)
+            .map_err(|source| io_error("remove nested QEMU artifact directory", path, source))?;
+        directory = parent;
+    }
+}
+
+fn scan_cleanup_directory(
+    directory: &OwnedFd,
+    name_in_parent: Option<CString>,
+    path: &Path,
+    root_device: u64,
+    maximum_inodes: u64,
+    observed_entries: &mut u64,
+) -> Result<CleanupDirectory, LinuxQemuAttemptStorageError> {
+    let directory_metadata = fstat(directory)
+        .map_err(|source| io_error("identify QEMU artifact directory", path, source))?;
+    if directory_metadata.st_dev != root_device {
+        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
+            path: path.to_owned(),
+        });
+    }
+    let scan = openat(
+        directory,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| io_error("open QEMU artifact directory for cleanup", path, source))?;
+    let mut buffer = [MaybeUninit::uninit(); ROOT_SCAN_BUFFER_BYTES];
+    let mut entries = RawDir::new(scan, &mut buffer);
+    let mut children = Vec::new();
+    while let Some(entry) = entries.next() {
+        let entry =
+            entry.map_err(|source| io_error("scan QEMU artifact directory", path, source))?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        *observed_entries = observed_entries.checked_add(1).ok_or_else(|| {
+            LinuxQemuAttemptStorageError::CleanupBound {
+                path: path.to_owned(),
+                message: "attempt artifact entry count overflowed",
+            }
+        })?;
+        if *observed_entries > maximum_inodes {
+            return Err(LinuxQemuAttemptStorageError::CleanupBound {
+                path: path.to_owned(),
+                message: "attempt artifacts exceed the cleanup-entry ceiling",
+            });
+        }
+        let metadata = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|source| io_error("inspect QEMU attempt artifact", path, source))?;
+        if metadata.st_dev != root_device {
+            return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
+                path: path.to_owned(),
+            });
+        }
+        if FileType::from_raw_mode(metadata.st_mode) == FileType::Directory {
+            children
+                .try_reserve(1)
+                .map_err(|_| LinuxQemuAttemptStorageError::CleanupBound {
+                    path: path.to_owned(),
+                    message: "attempt artifact cleanup cannot retain bounded child names",
+                })?;
+            children.push(name.to_owned());
+        } else {
+            unlinkat(directory, name, AtFlags::empty())
+                .map_err(|source| io_error("remove QEMU attempt artifact", path, source))?;
+        }
+    }
+    children.sort();
+    Ok(CleanupDirectory {
+        name_in_parent,
+        device: directory_metadata.st_dev,
+        inode: directory_metadata.st_ino,
+        children,
+    })
+}
+
+fn verify_cleanup_directory_identity(
+    directory: &OwnedFd,
+    expected_device: u64,
+    expected_inode: u64,
+    path: &Path,
+) -> Result<(), LinuxQemuAttemptStorageError> {
+    let actual = fstat(directory)
+        .map_err(|source| io_error("reauthenticate QEMU artifact directory", path, source))?;
+    if actual.st_dev != expected_device || actual.st_ino != expected_inode {
+        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
+            path: path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn verify_cleanup_child_identity(
+    parent: &OwnedFd,
+    name: &CString,
+    child: &OwnedFd,
+    path: &Path,
+) -> Result<(), LinuxQemuAttemptStorageError> {
+    let named = openat(
+        parent,
+        name.as_c_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| {
+        io_error(
+            "reauthenticate nested QEMU artifact directory",
+            path,
+            source,
+        )
+    })?;
+    let expected = fstat(child)
+        .map_err(|source| io_error("identify retained QEMU artifact directory", path, source))?;
+    let actual = fstat(&named)
+        .map_err(|source| io_error("identify named QEMU artifact directory", path, source))?;
+    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
+        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
+            path: path.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn valid_attempt_namespace(namespace: &str) -> bool {
@@ -939,6 +1211,18 @@ mod tests {
                 "/missing",
                 "daemon",
                 1,
+                1,
+                test_child_id(),
+                test_child_id(),
+                MAX_ATTEMPT_ARTIFACT_INODES + 1,
+            )
+            .is_err()
+        );
+        assert!(
+            LinuxQemuAttemptStorageConfig::new(
+                "/missing",
+                "daemon",
+                1,
                 MAX_PROJECT_ID_COUNT + 1,
                 1,
                 1,
@@ -975,6 +1259,135 @@ mod tests {
             )
             .is_err(),
             "the storage identity must differ from every supervisor identity"
+        );
+    }
+
+    #[test]
+    fn cleanup_is_descriptor_relative_and_does_not_follow_symlinks() {
+        let root = must_succeed(tempfile::tempdir(), "temporary cleanup root");
+        let outside = must_succeed(tempfile::NamedTempFile::new(), "external artifact");
+        must_succeed(
+            std::fs::write(root.path().join("artifact"), b"discard"),
+            "ordinary artifact",
+        );
+        must_succeed(
+            std::os::unix::fs::symlink(outside.path(), root.path().join("external")),
+            "external symlink",
+        );
+        must_succeed(
+            std::fs::create_dir(root.path().join("nested")),
+            "nested artifact directory",
+        );
+        must_succeed(
+            std::fs::write(root.path().join("nested/child"), b"discard"),
+            "nested artifact",
+        );
+        let directory = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "open cleanup root",
+        );
+
+        must_succeed(
+            cleanup_directory_contents(directory, root.path(), 5),
+            "bounded cleanup",
+        );
+
+        assert_eq!(
+            must_succeed(std::fs::read_dir(root.path()), "read cleaned root").count(),
+            0
+        );
+        assert!(outside.path().is_file(), "symlink target remains untouched");
+    }
+
+    #[test]
+    fn cleanup_depth_is_bounded_by_inodes_instead_of_open_descriptors() {
+        const DEPTH: usize = 300;
+
+        let root = must_succeed(tempfile::tempdir(), "temporary cleanup root");
+        let mut current = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "open cleanup root",
+        );
+        for _ in 0..DEPTH {
+            must_succeed(
+                mkdirat(&current, "nested", Mode::from_bits_truncate(0o700)),
+                "create deep artifact directory",
+            );
+            current = must_succeed(
+                openat(
+                    &current,
+                    "nested",
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                    Mode::empty(),
+                ),
+                "descend into deep artifact directory",
+            );
+        }
+        drop(current);
+        let directory = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "reopen cleanup root",
+        );
+
+        must_succeed(
+            cleanup_directory_contents(directory, root.path(), (DEPTH + 1) as u64),
+            "deep bounded cleanup",
+        );
+        assert_eq!(
+            must_succeed(std::fs::read_dir(root.path()), "read cleaned root").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn cleanup_entry_bound_fails_closed_and_allows_exact_retry() {
+        let root = must_succeed(tempfile::tempdir(), "temporary cleanup root");
+        must_succeed(std::fs::write(root.path().join("a"), b"a"), "artifact a");
+        must_succeed(std::fs::write(root.path().join("b"), b"b"), "artifact b");
+        let open_root = || {
+            must_succeed(
+                open(
+                    root.path(),
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                    Mode::empty(),
+                ),
+                "open cleanup root",
+            )
+        };
+
+        let error = must_fail(
+            cleanup_directory_contents(open_root(), root.path(), 2),
+            "cleanup over inode ceiling",
+        );
+        assert!(matches!(
+            error,
+            LinuxQemuAttemptStorageError::CleanupBound { .. }
+        ));
+        assert_eq!(
+            must_succeed(std::fs::read_dir(root.path()), "read partial cleanup").count(),
+            1,
+            "partial removal is monotone"
+        );
+
+        must_succeed(
+            cleanup_directory_contents(open_root(), root.path(), 2),
+            "retry remaining bounded cleanup",
+        );
+        assert_eq!(
+            must_succeed(std::fs::read_dir(root.path()), "read cleaned root").count(),
+            0
         );
     }
 

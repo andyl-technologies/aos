@@ -336,13 +336,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   ownership to the non-root QEMU identity that is distinct from every
   supervisor credential, and synchronizes the parent before exposure.
   Non-aligned byte ceilings round down to the kernel's 1,024-byte
-  quota unit. Normal release restores the empty directory, clears and
+  quota unit. After process reap, descriptor-relative cleanup removes at most
+  the configured ceiling of 65,536 named entries without following symlinks or
+  crossing filesystems, uses a constant number of open directory descriptors,
+  authenticates ascent and child identities, and synchronizes from leaves to
+  root. Normal release then restores the empty directory, clears and
   reauthenticates a zero-use quota record, removes the exact named inode,
-  synchronizes the root, and only then recycles the project ID. Partial create
-  and release failures retain the directory, shared root lock, quota, and ID
-  lease for exact retry; a dirty restart root and an unfinished drop both fail
-  closed. Bounded artifact removal, the nondroppable combined process/storage
-  quarantine owner, and a real ext4 enforcement VM gate remain open before this
+  synchronizes the root, and only then recycles the project ID. Partial create,
+  cleanup, and release failures retain the directory, shared root lock, cleanup
+  bound, quota, and ID lease for exact retry; a dirty restart root and an
+  unfinished drop both fail closed. The nondroppable combined process/storage
+  quarantine owner and a real ext4 enforcement VM gate remain open before this
   owner can be wired into guarded launch.
   A prepared run-directory authority now pins the directory and exact regular
   VMState inode without following final symlinks. Guarded spawn reauthenticates

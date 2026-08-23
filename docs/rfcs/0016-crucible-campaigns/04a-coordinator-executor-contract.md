@@ -1982,16 +1982,21 @@ the directory to the configured non-root QEMU user/group that is distinct from
 every supervisor credential, authenticates quota usage and ownership, and
 synchronizes the parent before exposure. A dirty root
 at daemon restart fails closed instead of silently reclaiming an old attempt.
-Release is ordered after process reap: the empty directory is restored to its
-original project attributes before the zero-use quota record is cleared,
-synchronized, and read back; the exact named inode is then removed and its
-parent synchronized before the project ID returns to the pool. Every partial
-create or release error retains the pinned directory, shared root-lock
-description, quota state, and project-ID lease for exact retry. Dropping an
-unfinished owner leaks that authority and keeps the ID reserved fail-closed.
-Recursive artifact cleanup, a nondroppable combined process/storage quarantine
-owner, and a real ext4 project-quota enforcement VM gate remain mandatory before
-this internal owner is wired into public guarded launch.
+Release is ordered after process reap. A descriptor-relative cleanup pass
+deletes at most the configured inode ceiling of named entries, capped at 65,536,
+without following symlinks or crossing the run-directory filesystem. It keeps
+only the current directory descriptor open, authenticates every ascent and
+named child identity, and synchronizes directories from the leaves upward.
+The resulting empty directory is restored to its original project attributes
+before the zero-use quota record is cleared, synchronized, and read back; the
+exact named inode is then removed and its parent synchronized before the
+project ID returns to the pool. Every partial create, cleanup, or release error
+retains the pinned directory, shared root-lock description, cleanup bound,
+quota state, and project-ID lease for monotone exact retry. Dropping an
+unfinished owner leaks that authority and keeps the ID reserved fail-closed. A
+nondroppable combined process/storage quarantine owner and a real ext4
+project-quota enforcement VM gate remain mandatory before this internal owner
+is wired into public guarded launch.
 
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
