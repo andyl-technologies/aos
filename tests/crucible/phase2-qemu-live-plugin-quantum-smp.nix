@@ -19,6 +19,7 @@
 
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   idlePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch;
+  haltedRrPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch;
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   quantumGate = builtins.readFile ./phase2-qemu-live-plugin-quantum.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -43,6 +44,32 @@
         needle = "qemu_plugin_maybe_fire_vcpu_idle_cb(cpu);";
       }
     ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch" haltedRrPatch [
+      {
+        label = "halted partial RR turn escape";
+        needle = "if (rr_crucible_sim_vcpu_is_halted(cpu))";
+      }
+      {
+        label = "all-halted callback handoff";
+        needle = "the canonical idle boundary";
+      }
+      {
+        label = "exact completed-turn register capture";
+        needle = "current_cpu && owner == UINT64_MAX";
+      }
+      {
+        label = "zero-cursor serialized handoff";
+        needle = "cursor_position == 0";
+      }
+      {
+        label = "guest PAUSE canonical handoff";
+        needle = "icount_crucible_rr_yield_cpu(cpu);";
+      }
+      {
+        label = "host kick excluded from guest yield";
+        needle = "cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug";
+      }
+    ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
       {
         label = "directed AP startup";
@@ -54,7 +81,15 @@
       }
       {
         label = "live PIT deadline";
-        needle = "guest_deadline=periodic-pit-channel-0";
+        needle = ''then "periodic-pit-channel-0"'';
+      }
+      {
+        label = "compact high ELF load layout";
+        needle = "Keep every ELF PT_LOAD segment above the option-ROM window";
+      }
+      {
+        label = "runtime AP trampoline copy";
+        needle = "movl $ap_trampoline_start, %esi";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum.nix" quantumGate [
@@ -102,6 +137,7 @@ in
             grep -Fxq 'deterministic_under_scheduler_preemption=true' ${liveQuantumSmp}/result
             grep -Fxq 'host_adversary=bounded-scheduler-preemption' ${liveQuantumSmp}/result
             grep -Fxq 'sim_double_schedule_matches=true' ${liveQuantumSmp}/result
+            grep -Fxq 'guest_load_segments=compact-high-only' ${smpGuest}/evidence.env
 
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
@@ -113,6 +149,11 @@ in
             memory_mib=64
             rr_subdivision=fixed-quantum-ascending
             all_vcpus_halted_idle_observed=true
+            halted_partial_rr_turn_reaches_idle=true
+            guest_pause_rr_handoff=canonical-cursor-zero
+            ap_trampoline=high-load-copy-to-sipi-vector
+            guest_load_segments=compact-high-only
+            exact_rr_handoff_register_capture=safe-zero-cursor
             idle_wake=minimum-live-timer-deadline
             deterministic_under_scheduler_preemption=true
             host_adversary=bounded-scheduler-preemption

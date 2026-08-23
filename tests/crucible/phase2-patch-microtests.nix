@@ -29,6 +29,11 @@
     attrPath = "${attrPath}.exactBoundaryVcpuIntrospection.liveNetwork";
     taskIds = ["T-QEMU-0089"];
   };
+  qemuLivePluginQuantumSmp = import ./phase2-qemu-live-plugin-quantum-smp.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.haltedPartialRrTurn";
+    taskIds = [];
+  };
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
     patchStackRepository = qemuPatchStackRepository;
@@ -275,6 +280,32 @@
             "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
           grep -q '^+        error_report("crucible RR accounting owner mismatch:' \
             "${patchDir}/0107-crucible-anchor-rr-cursor-genesis.patch"
+          grep -q '^+                if (rr_crucible_sim_vcpu_is_halted(cpu)) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                    cpu = NULL;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 \* the canonical idle boundary.' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                if (icount_crucible_rr_cursor_position() != 0) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                (current_cpu && owner == UINT64_MAX &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 current_cpu->cpu_index != serialized_owner &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+                 cursor_position == 0) || bql_locked())) ||' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+void icount_crucible_rr_yield_cpu(CPUState \*cpu)' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            !rr_crucible_sim_single_vcpu() &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            r == EXCP_INTERRUPT &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            icount_crucible_rr_current_vcpu() == cpu->cpu_index &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            icount_crucible_rr_yield_cpu(cpu);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
 
           cat > "$out/result" <<'RESULT'
           PASS
@@ -1108,6 +1139,10 @@
     {
       patch = "0109-crucible-control-boundary-node-faults.patch";
       check = qemuLiveNodeLifecycleFault;
+    }
+    {
+      patch = "0110-crucible-release-halted-rr-turn.patch";
+      check = qemuLivePluginQuantumSmp;
     }
   ];
 

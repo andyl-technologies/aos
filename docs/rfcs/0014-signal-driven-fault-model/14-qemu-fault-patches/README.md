@@ -1,6 +1,6 @@
 # 14 — QEMU fault-mutation patch series
 
-The complete node adapter and its exact-checkpoint handoff require sixty new single-purpose patches after the
+The complete node adapter and its exact-checkpoint handoff require sixty-one new single-purpose patches after the
 currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
 has its own specification in this directory and remains part of the one atomic
 RFC-0014 implementation PR.
@@ -76,6 +76,7 @@ and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-pa
 | [`0107-crucible-anchor-rr-cursor-genesis`](58-anchor-rr-cursor-genesis.md) | Establish the serialized RR cursor before the first execution budget | Determinism-critical scheduler state |
 | [`0108-crucible-deterministic-network-kick`](59-deterministic-network-kick.md) | Preserve sim-mode virtio-net transmit and interrupt-notification continuation | Determinism-critical network continuation |
 | [`0109-crucible-control-boundary-node-faults`](60-control-boundary-node-faults.md) | Dispatch halted-node PREPARE and APPLY commands at their exact drained control boundary | Determinism-critical node mutation progress |
+| [`0110-crucible-release-halted-rr-turn`](61-release-halted-rr-turn.md) | Leave an all-halted partial RR turn and commit a cursor-zero handoff for a multi-vCPU guest `PAUSE` | Determinism-critical scheduler progress |
 
 The numbers are reserved by this RFC. If the existing series grows before
 implementation, the PR may renumber the files while preserving this exact order

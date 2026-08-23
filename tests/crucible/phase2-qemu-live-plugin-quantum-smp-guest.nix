@@ -12,6 +12,19 @@
     if guestVcpus == 1 || !startAps
     then ""
     else ''
+        /*
+         * Keep every ELF PT_LOAD segment above the option-ROM window. QEMU's
+         * multiboot loader exposes the complete elf_low..elf_high span through
+         * one fw_cfg DMA transfer, including sparse zero-filled gaps. A low
+         * PT_LOAD at the SIPI vector would therefore overwrite the executing
+         * multiboot option ROM at 0xc0000. Copy this position-independent
+         * trampoline into low RAM from the compact high load segment instead.
+         */
+        movl $ap_trampoline_start, %esi
+        movl $0x00008000, %edi
+        movl $(ap_trampoline_end - ap_trampoline_start), %ecx
+        rep movsb
+
         /* Start APIC IDs 1..${toString (guestVcpus - 1)} at the real-mode trampoline on vector 8. */
         movl $1, %ecx
       start_next_ap:
@@ -181,13 +194,15 @@ in
              * SIPI enters real mode at vector << 12. APs deliberately keep
              * interrupts masked after reaching HLT; only the BSP owns the PIT.
              */
-            .section .ap_vector,"ax"
+            .section .ap_trampoline_source,"ax"
             .code16
+            ap_trampoline_start:
               jmp ap_start
 
             /*
-             * Keep the multiboot header in the first, low-address load segment so
-             * its file offset remains strictly below the 8 KiB scan boundary.
+             * Keep the multiboot header at the beginning of the compact high
+             * load segment so its file offset remains below the 8 KiB scan
+             * boundary without creating a sparse low-address PT_LOAD.
              */
             .section .multiboot,"a"
             .align 4
@@ -195,11 +210,12 @@ in
             .long 0x00000003
             .long -(0x1badb002 + 0x00000003)
 
-            .section .ap_trampoline,"ax"
+            .section .ap_trampoline_source,"ax"
             .code16
             ap_start:
               cli
             ${apRunLoop}
+            ap_trampoline_end:
             GUEST_ASM
 
             cat > guest.ld <<'GUEST_LD'
@@ -207,17 +223,15 @@ in
             PHDRS {
               text PT_LOAD FLAGS(5);
               data PT_LOAD FLAGS(6);
-              trampoline PT_LOAD FLAGS(5);
             }
             SECTIONS {
-              .ap_trampoline 0x00008000 : {
-                *(.ap_vector)
-                KEEP(*(.multiboot))
-                *(.ap_trampoline)
-              } :trampoline
               . = 0x00100000;
+              .multiboot : { KEEP(*(.multiboot)) } :text
               .text : { *(.text*) } :text
               .rodata : { *(.rodata*) } :text
+              .ap_trampoline_source : {
+                *(.ap_trampoline_source)
+              } :text
               . = ALIGN(0x1000);
               .data : { *(.data*) } :data
               .bss : { *(.bss*) *(COMMON) } :data
@@ -230,6 +244,14 @@ in
             strip --strip-all "$out/smp-idle-guest.elf"
             test -s "$out/smp-idle-guest.elf"
 
+            # QEMU's multiboot fw_cfg loader copies the full span between the
+            # lowest and highest PT_LOAD addresses. Keep that span compact and
+            # above 1 MiB so it cannot overwrite the executing option ROM.
+            readelf -lW "$out/smp-idle-guest.elf" > program-headers
+            test "$(grep -c '^[[:space:]]*LOAD[[:space:]]' program-headers)" -eq 2
+            grep -Eq 'LOAD[[:space:]]+0x[[:xdigit:]]+[[:space:]]+0x00100000[[:space:]]+0x00100000' program-headers
+            grep -Eq 'LOAD[[:space:]]+0x[[:xdigit:]]+[[:space:]]+0x00101000[[:space:]]+0x00101000' program-headers
+
             cat > "$out/evidence.env" <<'EVIDENCE'
             guest_format=multiboot-elf32
             guest_vcpus=${toString guestVcpus}
@@ -241,6 +263,8 @@ in
             }
             guest_activity=${guestActivity}
             guest_deadline=${guestDeadline}
+            guest_ap_trampoline=high-load-copy-to-sipi-vector
+            guest_load_segments=compact-high-only
             EVIDENCE
           '';
         }

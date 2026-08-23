@@ -11,8 +11,8 @@
 //! 3. **Idle-jump advancement.** A wide quantum must advance in O(1) deadline
 //!    jumps (T-PLUG-7, T-TIME-5/7).
 //!
-//! The whole scenario runs twice — the second run under deliberate host CPU
-//! load — and requires byte-identical fingerprints and idle observations,
+//! The whole scenario runs twice - the second run under bounded scheduler
+//! preemption - and requires byte-identical fingerprints and idle observations,
 //! proving icount-derived, host-time-independent execution (T-PLUG-4, T-TIME-5).
 
 mod errors;
@@ -39,7 +39,7 @@ use crucible_shmem::{
 
 use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig,
+    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
     QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
     complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
@@ -335,8 +335,8 @@ pub struct LivePluginQuantumReport {
 ///
 /// The scenario boots the standalone guest, observes its idle park with a
 /// computed timer deadline, idle-jumps toward a far ceiling in O(1), and tears
-/// the plugin down cleanly. It then repeats under bounded, duty-cycled host
-/// contention and requires the two runs to be byte-identical.
+/// the plugin down cleanly. It then repeats under bounded scheduler preemption
+/// and requires the two runs to be byte-identical.
 ///
 /// # Errors
 ///
@@ -439,7 +439,8 @@ fn run_one_scenario(
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
-        .with_fault_target_node(GATE_NODE);
+        .with_fault_target_node(GATE_NODE)
+        .with_fingerprint(QemuLaunchPluginSwitch::On);
     let command = profile
         .qemu_launch_command_for_live_gate(
             vm_launch_config(config),
@@ -490,6 +491,13 @@ fn run_one_scenario(
         &setup,
         config,
         &mut host_adversary,
+    )?;
+    scheduler::publish_terminal_fingerprint(
+        &hot_path,
+        &mut child,
+        &setup,
+        rates.terminal_icount,
+        config,
     )?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
