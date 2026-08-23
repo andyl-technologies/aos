@@ -63,6 +63,39 @@ in
             ${faultHardwareGuest}/evidence.env
           grep -Fq '.with_fingerprint(QemuLaunchPluginSwitch::On)' \
             crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
+          grep -Fq 'post_fault_fingerprint == pre_fault_fingerprint' \
+            crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
+          grep -Fq 'self.pump_fault_commands(raw_icount)?;' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
+          control_pump_line=$(grep -n 'Fault-result polling uses this same control wake' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs | cut -d: -f1)
+          control_capture_line=$(grep -n 'if boundary_requested && let Some(fingerprint)' \
+            crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs | cut -d: -f1)
+          test "$control_pump_line" -lt "$control_capture_line"
+
+          plugin_test_list="$TMPDIR/live-fault-hardware-plugin.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu-plugin \
+            --lib \
+            -- \
+            --list > "$plugin_test_list"
+          grep -Fxq \
+            'runtime::live_callbacks::tests::drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack: test' \
+            "$plugin_test_list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-fault-hardware-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu-plugin \
+            --lib \
+            runtime::live_callbacks::tests::drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack \
+            -- \
+            --exact
 
           cargo build \
             --frozen \
@@ -93,7 +126,11 @@ in
           grep -Fxq 'accelerator_jobs=gpu-vector-add,tpu-matrix-multiply,fpga-lookup-table' "$report"
           grep -Fxq 'accelerator_mutation=tpu-result-42-to-43' "$report"
           grep -Fxq 'host_adapter=qemu-live-accelerator-servicer' "$report"
+          grep -Fxq 'boundary_signal_actions=2' "$report"
           grep -Fxq 'clock_signal_actions=1' "$report"
+          grep -Fxq 'memory_signal_actions=1' "$report"
+          grep -Fxq 'same_icount_fault_fingerprint_changed=true' "$report"
+          grep -Eq '^same_icount_fault_fingerprint_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'accelerator_signal_actions=1' "$report"
           grep -Fxq 'clock_occurrences=1' "$report"
           grep -Fxq 'accelerator_occurrences=1' "$report"
@@ -103,7 +140,7 @@ in
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=signal-driven-clock-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
         '';
       }
     ];

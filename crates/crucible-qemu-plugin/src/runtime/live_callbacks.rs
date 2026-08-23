@@ -1197,6 +1197,11 @@ impl LiveVcpuTimeCallbackState {
         // idle/resume callbacks.
         let boundary_requested =
             PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
+        // Fault-result polling uses this same control wake. Apply every command
+        // first so a same-icount fingerprint captures the committed state, not
+        // the pre-mutation state that happened to share its coordinate. The
+        // pump's reentrancy guard keeps nested max-advance queries inert.
+        self.pump_fault_commands(raw_icount)?;
         if boundary_requested && let Some(fingerprint) = self.fingerprint.as_ref() {
             // A checkpoint control wake can revisit an icount already sampled
             // by the preceding scheduler quantum. Replace that sample with the
@@ -1238,7 +1243,6 @@ impl LiveVcpuTimeCallbackState {
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
         }
-        self.pump_fault_commands(raw_icount)?;
         PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
         Ok(())
     }

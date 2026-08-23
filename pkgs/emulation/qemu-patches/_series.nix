@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "75f9f50d4a2928e4ac82ec2b158a493a91f7f498436a9ac5e5e2e5e7642f4581";
+  patchBranchBundleSha256 = "b4cae16a1b10ede1b57ab68fc5ad4b93a70d610a6fd6ef7c25d78e29287e0ca0";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "7c34391d3900caa26fe60e76694a4782af8db275";
+  patchBranchHeadCommit = "b7776b202b791cb1ffbecc8ed17cea10c6b7dac1";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1029,12 +1029,12 @@ let
     {
       file = "0110-crucible-release-halted-rr-turn.patch";
       branchSubject = "crucible: release halted partial RR turns";
-      branchCommit = "7c34391d3900caa26fe60e76694a4782af8db275";
-      branchTree = "0a9988d122a20c8d78dc26808fbef779289e4da7";
+      branchCommit = "b7776b202b791cb1ffbecc8ed17cea10c6b7dac1";
+      branchTree = "89671c4c2cb74626ae3a57f83cdff63b88232a9f";
       catalogName = "crucible-release-halted-rr-turn";
       class = "D";
       enforces = "DET-1,PLUG-24,QEMU-43";
-      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE with no host exit request commits a cursor-zero early handoff so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
+      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
   ];
   catalogOnlyCapabilities = [
