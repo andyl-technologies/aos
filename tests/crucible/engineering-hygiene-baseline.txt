@@ -150,7 +150,7 @@ shape-line|crates/crucible-qemu/src/supervision/block_io_gate.rs|837
 shape-line|crates/crucible-qemu/src/supervision/block_io_servicer.rs|2709
 shape-line|crates/crucible-qemu/src/supervision/block_node_gate.rs|726
 shape-line|crates/crucible-qemu/src/supervision/device_host_work.rs|1066
-shape-line|crates/crucible-qemu/src/supervision/host_io_runtime.rs|1484
+shape-line|crates/crucible-qemu/src/supervision/host_io_runtime.rs|1491
 shape-line|crates/crucible-qemu/src/supervision/ninep_io_gate.rs|934
 shape-line|crates/crucible-qemu/src/supervision/ninep_io_servicer.rs|1394
 shape-line|crates/crucible-qemu/src/supervision/node_step_gate.rs|2432

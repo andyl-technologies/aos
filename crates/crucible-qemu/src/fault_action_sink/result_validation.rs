@@ -32,6 +32,67 @@ pub(super) fn reserve_fault_result_storage(
     Ok(storage)
 }
 
+pub(super) fn copy_fault_result_storage(
+    resource_limits: FaultResourceLimits,
+    source: &[u8],
+) -> Result<Vec<u8>, FaultActionCommitError> {
+    let mut storage = reserve_fault_result_storage(resource_limits, source.len())?;
+    storage.extend_from_slice(source);
+    Ok(storage)
+}
+
+pub(super) fn stage_apply_commands(
+    nodes: &mut QemuNodeSet,
+    memory: &mut [AuthorizedQemuNodeBatch],
+    typed: &mut [AuthorizedTypedNodeAction],
+) -> Result<(), FaultActionCommitError> {
+    for authorized in memory {
+        let sequence = nodes
+            .reserve_fault_command_sequence(&authorized.prepared.node)
+            .map_err(|_source| {
+                FaultActionCommitError::Fatal(FaultRuntimeError::SequenceOverflow(
+                    "qemu_fault_command",
+                ))
+            })?;
+        let header = memory_command_header(
+            authorized
+                .prepared
+                .actions
+                .first()
+                .ok_or(FaultActionCommitError::Fatal(
+                    FaultRuntimeError::IncompleteAdapterState,
+                ))?,
+            &authorized.prepared.node,
+            authorized.prepared.coordinate,
+            sequence,
+            FAULT_COMMAND_FLAG_NONE,
+            authorized.preparation.precondition_sha256,
+            &authorized.mutation_payload,
+        )?;
+        authorized.mutation_sequence = Some(sequence);
+        authorized.mutation_header = Some(header);
+    }
+    for authorized in typed {
+        let sequence = nodes
+            .reserve_fault_command_sequence(&authorized.prepared.node)
+            .map_err(|_source| {
+                FaultActionCommitError::Fatal(FaultRuntimeError::SequenceOverflow(
+                    "qemu_fault_command",
+                ))
+            })?;
+        let header = typed_command_header(
+            &authorized.prepared,
+            authorized.prepared.coordinate,
+            sequence,
+            FAULT_COMMAND_FLAG_NONE,
+            authorized.preparation.before_sha256,
+        )?;
+        authorized.apply_sequence = Some(sequence);
+        authorized.apply_header = Some(header);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_typed_node_result(
     request_payload: &[u8],
     result: DequeuedFaultResult,

@@ -231,6 +231,8 @@ in
           run_exact_qemu_test \
             fault_action_sink::tests::typed_prepare_reserves_only_the_exact_evidence_capacity
           run_exact_qemu_test \
+            fault_action_sink::tests::dynamic_prepare_retains_only_the_exact_published_evidence
+          run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::qemu_action_ledger_retains_impulses_and_removed_rules_for_events
