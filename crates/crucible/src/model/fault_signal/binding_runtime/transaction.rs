@@ -105,6 +105,11 @@ pub(super) fn commit_prepared_actions(
             FaultRuntimeError::IncompleteAdapterState,
         )),
         Err(FaultActionCommitError::Rejected(rejected))
+            if rejected.error == FaultRuntimeError::AdapterTransactionRollback =>
+        {
+            Err(BindingRuntimeError::AdapterCommit(rejected.error.clone()))
+        }
+        Err(FaultActionCommitError::Rejected(rejected))
             if validate_rejected_batch(actions, &rejected) =>
         {
             Err(BindingRuntimeError::AdapterRejected(rejected))

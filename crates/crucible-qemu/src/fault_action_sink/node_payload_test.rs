@@ -3,8 +3,8 @@
 use super::*;
 use crucible::model::{
     BindingActionCause, ByteRange, EffectLifetime, EffectRequest, FaultCoordinate,
-    MemoryAccessClasses, MemoryAccessMutation, NodeBootPolicy, NodeOccurrencePolicy,
-    ResolvedMappingOutput,
+    FaultResourceLimitError, FaultResourceLimits, FaultRuntimeError, MemoryAccessClasses,
+    MemoryAccessMutation, NodeBootPolicy, NodeOccurrencePolicy, ResolvedMappingOutput,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -212,8 +212,11 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
             };
         }
         if kind == crucible::model::EffectKind::MemoryMutation {
-            let prepared = super::super::prepare_memory_action_payload(&action)
-                .unwrap_or_else(|error| panic!("{kind:?} must prepare atomically: {error}"));
+            let prepared = super::super::prepare_memory_action_payload(
+                &action,
+                FaultResourceLimits::default(),
+            )
+            .unwrap_or_else(|error| panic!("{kind:?} must prepare atomically: {error}"));
             let bytes = prepared
                 .payload
                 .encode_preparation()
@@ -235,6 +238,70 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
             .unwrap_or_else(|error| panic!("{kind:?} wire schema must encode: {error}"));
         assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
     }
+}
+
+#[test]
+fn memory_bit_flip_rejects_authored_length_before_expanding_mask() {
+    let limits = FaultResourceLimits::default();
+    let requested = limits.memory_mutation_bytes_per_effect + 1;
+    let specification = EffectSpecification::Node(
+        serde_json::from_value(json!({
+            "kind": "memory_mutation",
+            "parameters": {
+                "address_space": "guest_physical",
+                "range": {"start": 4096, "length": requested},
+                "mutation": {"kind": "bit_flip", "parameters": {"mask": "01"}},
+                "atomicity": "all_or_nothing"
+            }
+        }))
+        .unwrap_or_else(|error| panic!("large memory effect must decode: {error}")),
+    );
+    let descriptor = specification.kind().descriptor();
+    let action = ResolvedBindingAction {
+        kind: BindingActionKind::Apply,
+        binding: object_id("binding-large-memory-bit-flip"),
+        target: ResolvedFaultTarget::MemoryRange {
+            node: object_id("node-a"),
+            address_space: object_id("gpa"),
+            guest_address: 4096,
+            vcpu: None,
+            length_bytes: requested,
+        },
+        phase: FaultPhase::Boundary,
+        effect: Arc::new(
+            EffectRequest::new(
+                descriptor.semantic_version,
+                descriptor.lifetimes[0],
+                specification,
+            )
+            .unwrap_or_else(|error| panic!("large memory request must validate: {error}")),
+        ),
+        mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+        mapped_digest: ContentHash { bytes: [1; 32] },
+        transition_sequence: 1,
+        opportunity: None,
+        coordinate: FaultCoordinate {
+            virtual_nanos: 1,
+            retired_instructions: Some(1),
+        },
+        cause: BindingActionCause::Signal,
+        expected_precondition: None,
+    };
+
+    assert!(matches!(
+        super::super::prepare_memory_action_payload(&action, limits),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "memory_mutation_bytes_per_effect",
+                current: 0,
+                requested: observed,
+                configured,
+                hard,
+            }
+        )) if observed == requested
+            && configured == limits.memory_mutation_bytes_per_effect
+            && hard == FaultResourceLimits::compiled_maximum().memory_mutation_bytes_per_effect
+    ));
 }
 
 fn test_target(kind: crucible::model::EffectKind) -> ResolvedFaultTarget {
