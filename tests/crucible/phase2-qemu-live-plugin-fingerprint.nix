@@ -7,7 +7,7 @@
   # hot path to a fixed ascending cadence of aggregate-icount targets, and reads
   # the black-box fingerprint sample it publishes into its per-node slot at each
   # boundary, including a real delivered frame and a scheduler-commanded fault.
-  # The whole scenario runs twice (the second under host CPU load) and must
+  # The whole scenario runs twice (the second under bounded scheduler preemption) and must
   # reproduce byte-for-byte. A negative-control pass changes the second frame,
   # bisects the real QEMU divergence, and exports both sides' complete raw state.
   # Proves the live half of T-QEMU-11, T-DET-8,
@@ -47,7 +47,7 @@ in
     # through the sampled targets before any idle park.
     GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
     CRUCIBLE_FP_TIMEOUT_SECS = timeoutSecs;
-    CRUCIBLE_FP_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
     CRUCIBLE_FP_PROBE_ICOUNT = probeIcount;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
@@ -131,7 +131,8 @@ in
           grep -Fxq 'rr_switch_quantum=4096' "$report"
           grep -Eq '^matching_final_fingerprint=[0-9a-f]{64}$' "$report"
           grep -Fxq 'deterministic_run_twice=true' "$report"
-          grep -Fxq 'second_run_host_load=true' "$report"
+          grep -Fxq 'second_run_scheduler_preemption=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Fxq 'synchronous_oracle_enabled=false' "$report"
           grep -Fxq 'synchronous_oracle_matches_all_samples=false' "$report"
           grep -Fxq 'probe_prefix_equal_at_6000000=true' "$report"
@@ -139,7 +140,7 @@ in
 
           oracle_report="$TMPDIR/live-plugin-fingerprint-oracle.result"
           CRUCIBLE_FP_SYNC_ORACLE=1 \
-            CRUCIBLE_FP_SECOND_RUN_LOAD=0 \
+            CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION=0 \
             timeout -k 15 1190 \
             "$TMPDIR/live-plugin-fingerprint-example/debug/examples/crucible-qemu-live-plugin-fingerprint" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \

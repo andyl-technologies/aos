@@ -120,7 +120,7 @@ in
             report="$TMPDIR/translation-prefetch-$mode.result"
             mkdir -p "$run_dir"
             CRUCIBLE_FP_TRANSLATION_PREFETCH="$mode_value" \
-              CRUCIBLE_FP_SECOND_RUN_LOAD=0 \
+              CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION=0 \
               CRUCIBLE_FP_TIMEOUT_SECS=240 \
               timeout -k 15 1190 \
               "$example" \

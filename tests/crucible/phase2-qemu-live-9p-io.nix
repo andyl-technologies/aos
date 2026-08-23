@@ -6,7 +6,7 @@
   #   - reference (sim) leg: boots a guest with a crucible-shmem virtio-9p
   #     device + mount initrd, forwards requests to the host 9p sub-node, and
   #     requires deterministic response delivery followed by guest progress;
-  #   - host-load sim leg: repeats with host CPU contention and a due response
+  #   - scheduler-preemption sim leg: repeats with bounded QEMU preemption and a due response
   #     deliberately delayed in wall time; modeled device latency must match;
   #   - TCG control leg: boots the same guest + 9p device under TCG with no
   #     plugin and requires PID 1's post-mount console marker, proving a real
@@ -64,7 +64,7 @@ in
     GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
     CRUCIBLE_9P_IO_BUSY_CEILING = busyCeiling;
     CRUCIBLE_9P_IO_TIMEOUT_SECS = ninepTimeoutSecs;
-    CRUCIBLE_9P_IO_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -108,8 +108,9 @@ in
           grep -Eq '^ceiling_closure=(retired-to-ceiling|idle-wake-beyond-ceiling)$' "$report"
           grep -Fxq 'guest_progressed_past_ninep_io=true' "$report"
           grep -Fxq 'tcg_control_issued_9p=true' "$report"
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
+          grep -Fxq 'scheduler_preemption_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Fxq 'delayed_response_applied=true' "$report"
 
           mkdir -p "$out"

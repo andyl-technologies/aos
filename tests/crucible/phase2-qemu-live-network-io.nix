@@ -89,6 +89,37 @@ in
           grep -Fxq 'multi_guest_tx_order=deterministic-node-mac-stagger' \
             ${networkInitramfs}/evidence.env
 
+          scheduler_test_list="$TMPDIR/bounded-scheduler-preemption.tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$scheduler_test_list"
+          for test_name in \
+            asynchronous_preemption_completes_while_target_runs \
+            disabled_adversary_spawns_no_controller \
+            dropping_controller_resumes_and_joins_stopped_target \
+            signal_failure_is_reported_and_joined \
+            watchdog_expiry_directly_resumes_stopped_target; do
+            grep -Fxq \
+              "bounded_scheduler_preemption::tests::$test_name: test" \
+              "$scheduler_test_list"
+          done
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            bounded_scheduler_preemption::tests:: \
+            -- \
+            --test-threads=1
+
           cargo build \
             --frozen \
             --offline \

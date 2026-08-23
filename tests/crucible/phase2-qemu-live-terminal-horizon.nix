@@ -145,7 +145,7 @@ in
           grep -Fxq 'negative_scenario_drift_rejected=true' "$report"
           grep -Fxq 'no_failed_request_attempt_allocated=true' "$report"
           grep -Fxq 'continuing_cadence_rejected=true' "$report"
-          grep -Fxq 'second_run_host_load=active' "$report"
+          grep -Fxq 'second_run_repeat=active' "$report"
 
           test -s "$artifact_root/preflight/attempt-00000001/preflight.jsonl"
           test -s "$artifact_root/runs/attempt-00000001/trace.jsonl"

@@ -21,6 +21,12 @@ pub enum QemuLive9pIoGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// The deterministic launch profile could not be derived.
     #[error("derive deterministic launch profile failed")]
     LaunchProfile {

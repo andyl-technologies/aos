@@ -1,6 +1,7 @@
 //! Live QEMU launch, priming, and bounded network exchange drive.
 
 use super::*;
+use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 #[derive(Clone, Copy)]
 struct BackpressureProbe {
@@ -110,23 +111,16 @@ pub(super) fn run_once(
         });
     }
 
-    // Interrupt the actual QEMU process only after both runs have completed
-    // identical launch, plugin setup, and guest execution past the boot
-    // barrier. Six short stop/continue pairs are sufficient to prove that the
-    // modeled network trajectory does not depend on uninterrupted host
-    // scheduling; unlike CPU burners, the adversary has zero synthetic CPU
-    // consumption and a two-second independent resume watchdog.
-    let scheduler_preemption =
-        if matches!(role, RunRole::Hostile) && config.second_run_scheduler_preemption {
-            Some(
-                crate::bounded_scheduler_preemption::apply_bounded_scheduler_preemption(
-                    child.process_id(),
-                )
-                .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?,
-            )
-        } else {
-            None
-        };
+    // Start only after identical launch/setup and guest progress past the boot
+    // barrier, then run concurrently with the retained retry and probe/reply/ACK
+    // exchange. Six short stop/continue pairs perturb the exact QEMU process;
+    // unlike CPU burners, the adversary consumes no synthetic CPU and owns an
+    // independent two-second resume watchdog.
+    let scheduler_preemption = HostAdversary::start_if(
+        matches!(role, RunRole::Hostile) && config.second_run_scheduler_preemption,
+        child.process_id(),
+    )
+    .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
     let DriveExchangeOutcome {
         acknowledgement_icount,
         backpressure_acknowledgement_icount,
@@ -144,6 +138,10 @@ pub(super) fn run_once(
             backpressure_probe,
         },
     )?;
+    let scheduler_preemption = scheduler_preemption
+        .map(|adversary| adversary.finish())
+        .transpose()
+        .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
     let snapshot = servicer.snapshot();
 
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);

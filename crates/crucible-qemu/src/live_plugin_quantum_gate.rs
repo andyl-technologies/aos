@@ -21,9 +21,6 @@ mod scheduler;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
 
 use crucible::{
@@ -40,6 +37,7 @@ use crucible_shmem::{
     ABI_VERSION, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
 };
 
+use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
     LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig,
     QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
@@ -62,9 +60,6 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the quantum run.
 const GATE_MEMORY_MIB: u32 = 64;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
-
 /// Tuning parameters for the multi-quantum scheduler that drives one scenario.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LivePluginQuantumSchedule {
@@ -113,7 +108,7 @@ pub struct LivePluginQuantumGateConfig {
     kernel_cmdline: Option<String>,
     schedule: LivePluginQuantumSchedule,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
     smp_vcpus: u16,
     memory_mib: u32,
     rr_switch_quantum: u64,
@@ -140,7 +135,7 @@ impl LivePluginQuantumGateConfig {
             kernel_cmdline: None,
             schedule: LivePluginQuantumSchedule::new(),
             completion_timeout: Duration::from_secs(240),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
             smp_vcpus: 1,
             memory_mib: GATE_MEMORY_MIB,
             rr_switch_quantum: 4096,
@@ -186,10 +181,13 @@ impl LivePluginQuantumGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 
@@ -317,10 +315,10 @@ pub struct LivePluginQuantumReport {
     pub rates: LivePluginAdvancementRates,
     /// Execution fingerprint the plugin published at the terminal boundary.
     pub execution_fingerprint: ExecutionFingerprint,
-    /// The second run, under host CPU load, matched the first byte for byte.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second run.
-    pub host_load_applied: bool,
+    /// The second run, under bounded scheduler preemption, matched the first byte for byte.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second run.
+    pub scheduler_preemption_applied: bool,
     /// The live production-plugin schedule replayed byte-for-byte through
     /// [`SimDouble`].
     pub sim_double_schedule_matches: bool,
@@ -337,8 +335,8 @@ pub struct LivePluginQuantumReport {
 ///
 /// The scenario boots the standalone guest, observes its idle park with a
 /// computed timer deadline, idle-jumps toward a far ceiling in O(1), and tears
-/// the plugin down cleanly. It then repeats under host CPU load and requires the
-/// two runs to be byte-identical.
+/// the plugin down cleanly. It then repeats under bounded, duty-cycled host
+/// contention and requires the two runs to be byte-identical.
 ///
 /// # Errors
 ///
@@ -354,8 +352,8 @@ pub fn run_live_plugin_quantum_gate(
     }
 
     let reference = run_one_scenario(config, RunRole::Reference)?;
-    let (second, host_load_applied) = if config.second_run_host_load {
-        (run_one_scenario(config, RunRole::HostLoad)?, true)
+    let (second, scheduler_preemption_applied) = if config.second_run_scheduler_preemption {
+        (run_one_scenario(config, RunRole::Hostile)?, true)
     } else {
         (run_one_scenario(config, RunRole::Repeat)?, false)
     };
@@ -377,8 +375,8 @@ pub fn run_live_plugin_quantum_gate(
         idle: reference.idle,
         rates: reference.rates,
         execution_fingerprint: reference.fingerprint,
-        deterministic_under_host_load: true,
-        host_load_applied,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied,
         sim_double_schedule_matches: true,
         host_observable_schedule_len: reference.host_observable_schedule.len(),
         idle_jump_proven,
@@ -386,11 +384,11 @@ pub fn run_live_plugin_quantum_gate(
     })
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -398,13 +396,13 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 }
 
@@ -419,8 +417,6 @@ fn run_one_scenario(
             source,
         }
     })?;
-
-    let host_load = HostLoad::start_if(role.applies_host_load());
 
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(config.memory_mib)
@@ -483,10 +479,20 @@ fn run_one_scenario(
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
 
+    // The bounded worker starts only after QEMU/plugin setup, immediately
+    // before the guest schedule it is meant to contend with.
+    let host_adversary =
+        HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
+            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     let (idle, rates, host_observable_schedule) =
         scheduler::drive_scenario(&mut hot_path, &mut child, &setup, config)?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
+    if let Some(host_adversary) = host_adversary {
+        host_adversary
+            .finish()
+            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
+    }
 
     setup
         .assert_run_control_silent()
@@ -503,8 +509,6 @@ fn run_one_scenario(
     }
     drop(setup);
     drop(child);
-    drop(host_load);
-
     Ok(ScenarioOutcome {
         idle,
         rates,
@@ -670,50 +674,6 @@ fn complete_sim_double_setup(double: &mut SimDouble) -> Result<(), LivePluginQua
 fn sim_double_error(source: SimDoubleError) -> LivePluginQuantumGateError {
     LivePluginQuantumGateError::SimDoubleScheduleMismatch {
         reason: source.to_string(),
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning plugin must produce
-/// an identical fingerprint whether or not the load is present.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
     }
 }
 

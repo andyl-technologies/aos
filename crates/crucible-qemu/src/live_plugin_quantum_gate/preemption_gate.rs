@@ -19,7 +19,7 @@ use crate::{
 use super::scheduler::QuantumStop;
 use super::{
     GATE_MEMORY_MIB, GATE_NODE, GATE_QUEUE_CAPACITY, GATE_ROUTER, GATE_SLOT, GateSendAuthorizer,
-    HostLoad, LivePluginQuantumGateConfig, LivePluginQuantumGateError,
+    HostAdversary, LivePluginQuantumGateConfig, LivePluginQuantumGateError,
     assert_sim_double_schedule_matches, channel_error, node_id, path_text, scheduler,
     vm_launch_config,
 };
@@ -57,10 +57,10 @@ pub struct LivePluginPreemptionReport {
     pub terminal_icount: u64,
     /// Final execution fingerprint shared by both runs.
     pub execution_fingerprint: ExecutionFingerprint,
-    /// Both commands and the final fingerprint reproduced under host load.
-    pub deterministic_under_host_load: bool,
-    /// The second run actually applied host CPU load.
-    pub host_load_applied: bool,
+    /// Both commands and the final fingerprint reproduced under bounded scheduler preemption.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// The second run actually applied bounded scheduler preemption.
+    pub scheduler_preemption_applied: bool,
     /// The three live RUN boundaries replayed byte-for-byte through `SimDouble`.
     pub sim_double_schedule_matches: bool,
 }
@@ -97,7 +97,7 @@ struct PreemptionScenarioOutcome {
 ///
 /// Returns [`LivePluginQuantumGateError`] when launch or setup fails, a RUN does
 /// not reach its exact ceiling, either command is rejected or unacknowledged,
-/// fingerprint sampling fails, the host-load run diverges, or teardown fails.
+/// fingerprint sampling fails, the scheduler-preemption run diverges, or teardown fails.
 pub fn run_live_plugin_preemption_gate(
     config: &LivePluginQuantumGateConfig,
 ) -> Result<LivePluginPreemptionReport, LivePluginQuantumGateError> {
@@ -108,15 +108,15 @@ pub fn run_live_plugin_preemption_gate(
         ));
     }
     let reference = run_preemption_scenario(config, "preemption-reference", false)?;
-    let host_load_applied = config.second_run_host_load;
+    let scheduler_preemption_applied = config.second_run_scheduler_preemption;
     let second = run_preemption_scenario(
         config,
-        if host_load_applied {
-            "preemption-host-load"
+        if scheduler_preemption_applied {
+            "preemption-scheduler-preemption"
         } else {
             "preemption-repeat"
         },
-        host_load_applied,
+        scheduler_preemption_applied,
     )?;
     if reference != second {
         return Err(LivePluginQuantumGateError::SecondRunDiverged {
@@ -141,8 +141,8 @@ pub fn run_live_plugin_preemption_gate(
         interrupt_consumed_sequence: reference.interrupt_consumed_sequence,
         terminal_icount: reference.terminal_icount,
         execution_fingerprint: reference.execution_fingerprint,
-        deterministic_under_host_load: true,
-        host_load_applied,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied,
         sim_double_schedule_matches: true,
     })
 }
@@ -150,7 +150,7 @@ pub fn run_live_plugin_preemption_gate(
 fn run_preemption_scenario(
     config: &LivePluginQuantumGateConfig,
     run_name: &str,
-    apply_host_load: bool,
+    apply_scheduler_preemption: bool,
 ) -> Result<PreemptionScenarioOutcome, LivePluginQuantumGateError> {
     let run_directory = config.run_directory.join(run_name);
     fs::create_dir_all(&run_directory).map_err(|source| {
@@ -159,7 +159,6 @@ fn run_preemption_scenario(
             source,
         }
     })?;
-    let host_load = HostLoad::start_if(apply_host_load);
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(GATE_MEMORY_MIB)
         .with_smp_vcpus(2)
@@ -215,6 +214,11 @@ fn run_preemption_scenario(
     let mut hot_path =
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+
+    // Setup is outside the compared schedule. Start the finite contention
+    // budget only once the guest is ready for its commanded RUN boundaries.
+    let host_adversary = HostAdversary::start_if(apply_scheduler_preemption, child.process_id())
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
 
     let ceiling_stride = config.schedule.ceiling_step_icount;
     let mut host_observable_schedule = Vec::with_capacity(3);
@@ -298,9 +302,13 @@ fn run_preemption_scenario(
             status: exit_status.to_string(),
         });
     }
+    if let Some(host_adversary) = host_adversary {
+        host_adversary
+            .finish()
+            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
+    }
     drop(setup);
     drop(child);
-    drop(host_load);
 
     Ok(PreemptionScenarioOutcome {
         switch_icount,

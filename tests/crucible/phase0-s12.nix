@@ -128,7 +128,7 @@ in
           require_fixed "$LIVE_PREEMPTION_RESULT" "ipi_rr_switch_quantum=4096"
           require_fixed "$LIVE_PREEMPTION_RESULT" "switch_consumed_sequence=1"
           require_fixed "$LIVE_PREEMPTION_RESULT" "interrupt_consumed_sequence=2"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "deterministic_under_host_load=true"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "deterministic_under_scheduler_preemption=true"
           require_fixed "$LIVE_PREEMPTION_RESULT" "sim_double_schedule_matches=true"
 
           decision_doc="rfc-docs/31-decision-register.md"
@@ -163,7 +163,7 @@ in
             echo vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject
             echo interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject
             echo commanded_preemption_choices_tested=2
-            echo commanded_preemption_reproducible=production_loaded_qemu_host_load_repeat
+            echo commanded_preemption_reproducible=production_loaded_qemu_scheduler_preemption_repeat
             echo commanded_preemption_discriminating=model_race_plus_live_command_application
             echo known_race_manifested_under_one_choice=modeled
             echo known_race_absent_under_another_choice=modeled
@@ -182,7 +182,7 @@ in
             echo s11_horizon_icount=4000000000
             echo s11_extended_fingerprint_match=true
             echo live_preemption_rr_switch_quantum=4096
-            echo live_preemption_deterministic_under_host_load=true
+            echo live_preemption_deterministic_under_scheduler_preemption=true
             echo live_preemption_sim_double_schedule_matches=true
             echo decision_preemption_exploration_enabled=true
             echo fallback_adopted=none

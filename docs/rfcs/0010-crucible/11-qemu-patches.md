@@ -1049,7 +1049,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   post-completion waiter notification in the reconstructed patch prefix. The
   live block-I/O gate additionally boots a real guest, services its block request
   at a future delivery icount, and requires progress to the scheduler ceiling
-  with identical observations under host load and with the due response's
+  with identical observations under bounded scheduler preemption and with the due response's
   physical ring write deliberately delayed in wall time.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — the hook runs only for the selected
   `crucible-shmem` driver and only when a plugin registers it; otherwise the
@@ -1075,7 +1075,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   results remain unchanged. The live 9p gate additionally boots a mounting
   guest, requires nonzero request and response frames on `SLOT_9P_IO`, closes
   the scheduler ceiling by retirement or a later idle wake, and reproduces
-  identical icount-domain observations under host load with a deliberately
+  identical icount-domain observations under bounded scheduler preemption with a deliberately
   late physical response write.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — outside sim-mode icount the
   upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
@@ -2296,7 +2296,7 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase2.qemuLivePluginQuantum`: the timer-driven multiboot
     guest idle-jumps through the exact PIT deadline, completion-first, then
     wakes and re-idles below the published ceiling without self-extension — a
-    40M-icount O(1) advance that is deterministic run-twice under host load.
+    40M-icount O(1) advance that is deterministic run-twice under bounded scheduler preemption.
     `checks.crucible.phase1.pluginTimeAdvance` models
     the icount clock and asserts the qtest set-based advance cannot converge
     while the bias-bump reaches the target (the regression guard for this class).
@@ -2306,7 +2306,7 @@ time-control primitives the whole design rests on.
     device rings, the host publishes completions at exact future icounts, the
     plugin holds virtual time while the response is unavailable, and the
     completion wakes the normal main-loop path. Both guests progress after the
-    hold clears, including a run with host CPU load and a deliberately delayed
+    hold clears, including a run with bounded scheduler preemption and a deliberately delayed
     response. Drop-one runtime probes for patches 0017 and 0019 prove the live
     block and 9p handoffs are patch-attributed rather than supplied by a later
     patch. Patch `0076-crucible-9p-completion-wake-registration.patch` closes the

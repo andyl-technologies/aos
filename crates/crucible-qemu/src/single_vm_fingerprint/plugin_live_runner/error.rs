@@ -32,6 +32,12 @@ pub enum PluginFingerprintRunnerError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// A stale translation-prefetch report could not be removed.
     #[error("cannot prepare translation-prefetch report path {path}")]
     PrepareTranslationPrefetchReport {
