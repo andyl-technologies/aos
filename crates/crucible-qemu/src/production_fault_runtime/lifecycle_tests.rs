@@ -179,8 +179,8 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
     assert_eq!(runtime.qemu_issued_actions.len(), 0);
     assert_eq!(runtime.qemu_action_commits.len(), 0);
     assert_eq!(runtime.qemu_active_rule_ids.len(), 0);
-    assert!(runtime.qemu_issued_actions.capacity() >= 1);
-    assert!(runtime.qemu_action_commits.capacity() >= 1);
+    assert_eq!(runtime.qemu_issued_actions.capacity(), 1);
+    assert_eq!(runtime.qemu_action_commits.capacity(), 1);
     runtime
         .commit_staged_qemu_action_ledger(staged_impulse, committed(&impulse, 1))
         .unwrap_or_else(|error| panic!("impulse should enter issued ledger: {error}"));
