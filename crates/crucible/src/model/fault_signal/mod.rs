@@ -11,7 +11,6 @@
 //! for replay.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt;
 
 use super::ContentHash;
 
@@ -27,6 +26,7 @@ mod effect_registry;
 mod error;
 mod evaluator;
 mod execution_runtime;
+mod fallible_decode;
 mod host_action_sink;
 mod network_effect;
 mod node_effect;
@@ -36,6 +36,7 @@ mod resource_limits;
 mod runtime;
 mod sampler;
 mod search_materialization;
+mod signal_id;
 mod spatial;
 mod storage_effect;
 #[cfg(test)]
@@ -66,6 +67,7 @@ pub use resource_limits::*;
 pub use runtime::*;
 pub use sampler::*;
 pub use search_materialization::*;
+pub use signal_id::*;
 pub use spatial::*;
 pub use storage_effect::*;
 pub use trace::*;
@@ -215,72 +217,6 @@ fn check_limit(field: &'static str, configured: u64, hard: u64) -> Result<(), Si
         });
     }
     Ok(())
-}
-
-/// Stable author-supplied identifier used by signal nodes and exported outputs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct SignalId(String);
-
-impl SignalId {
-    /// Parses a canonical signal identifier.
-    ///
-    /// Identifiers contain 1 through 96 ASCII bytes. They begin with a lower
-    /// case letter and otherwise contain lower case letters, digits, or single
-    /// hyphens separating non-empty components.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignalProgramError::InvalidId`] when `value` is not canonical.
-    pub fn parse(value: impl Into<String>) -> Result<Self, SignalProgramError> {
-        let value = value.into();
-        if !valid_signal_id(&value) {
-            return Err(SignalProgramError::InvalidId { value });
-        }
-        Ok(Self(value))
-    }
-
-    /// Returns the canonical identifier text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SignalId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Self::parse(value).map_err(serde::de::Error::custom)
-    }
-}
-
-impl fmt::Display for SignalId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-fn valid_signal_id(value: &str) -> bool {
-    if value.is_empty() || value.len() > 96 || !value.is_ascii() {
-        return false;
-    }
-    let bytes = value.as_bytes();
-    if !bytes[0].is_ascii_lowercase() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
-        return false;
-    }
-    let mut previous_hyphen = false;
-    for byte in bytes {
-        let hyphen = *byte == b'-';
-        if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || hyphen)
-            || (hyphen && previous_hyphen)
-        {
-            return false;
-        }
-        previous_hyphen = hyphen;
-    }
-    true
 }
 
 /// An exact reduced rational number with a positive denominator.
@@ -627,14 +563,15 @@ pub enum SignalValue {
         /// Event schema.
         schema: SignalId,
         /// Canonical bounded payload bytes.
+        #[serde(deserialize_with = "fallible_decode::deserialize_vec")]
         payload: Vec<u8>,
     },
     /// Two numeric components.
-    Vector2(Vec<SignalValue>),
+    Vector2(#[serde(deserialize_with = "fallible_decode::deserialize_vec")] Vec<SignalValue>),
     /// Three numeric components.
-    Vector3(Vec<SignalValue>),
+    Vector3(#[serde(deserialize_with = "fallible_decode::deserialize_vec")] Vec<SignalValue>),
     /// Bounded opaque bytes.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(deserialize_with = "fallible_decode::deserialize_vec")] Vec<u8>),
 }
 
 impl SignalValue {

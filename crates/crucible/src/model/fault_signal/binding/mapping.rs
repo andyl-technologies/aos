@@ -308,8 +308,10 @@ pub enum ResolvedMappingOutput {
         /// Closed service-profile identity.
         service_profile: FaultObjectId,
         /// Exact named physical contract paired with every canonical input value.
+        #[serde(deserialize_with = "super::super::fallible_decode::deserialize_vec")]
         input_contracts: Vec<ServiceProfileInput>,
         /// Canonically signal-ID-ordered numeric inputs.
+        #[serde(deserialize_with = "super::super::fallible_decode::deserialize_vec")]
         inputs: Vec<SignalValue>,
     },
 }
