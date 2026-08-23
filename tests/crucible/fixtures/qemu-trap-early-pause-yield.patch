@@ -1,0 +1,14 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -637,7 +637,9 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             owner = icount_crucible_rr_current_vcpu();
+             cursor = icount_crucible_rr_cursor_position();
+             if (owner == cpu->cpu_index) {
+-                icount_crucible_rr_yield_cpu(cpu);
++                error_report(
++                    "CRUCIBLE_TEST_EARLY_PAUSE_YIELD_REACHED");
++                abort();
+             } else if (cursor != 0) {
+                 error_report("crucible guest PAUSE owner mismatch: "
+                              "owner=%" PRIu64 " yielded-vcpu=%d cursor=%" PRIu64,

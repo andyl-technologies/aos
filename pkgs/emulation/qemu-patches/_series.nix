@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b4cae16a1b10ede1b57ab68fc5ad4b93a70d610a6fd6ef7c25d78e29287e0ca0";
+  patchBranchBundleSha256 = "2c386524a51ebe8d5161364cbddfee880688008b2f2e3618f29bba9af2db6b7c";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b7776b202b791cb1ffbecc8ed17cea10c6b7dac1";
+  patchBranchHeadCommit = "e0d79ebf02390b76ef67736cf05b3c197e974f48";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1029,12 +1029,12 @@ let
     {
       file = "0110-crucible-release-halted-rr-turn.patch";
       branchSubject = "crucible: release halted partial RR turns";
-      branchCommit = "b7776b202b791cb1ffbecc8ed17cea10c6b7dac1";
-      branchTree = "89671c4c2cb74626ae3a57f83cdff63b88232a9f";
+      branchCommit = "e0d79ebf02390b76ef67736cf05b3c197e974f48";
+      branchTree = "5dd5ac15805cc1d31a3e74e28eabf926fd75dbd5";
       catalogName = "crucible-release-halted-rr-turn";
       class = "D";
       enforces = "DET-1,PLUG-24,QEMU-43";
-      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
+      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed";
     }
   ];
   catalogOnlyCapabilities = [

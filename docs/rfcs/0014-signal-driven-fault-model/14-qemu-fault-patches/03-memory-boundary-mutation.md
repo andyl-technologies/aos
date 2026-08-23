@@ -96,6 +96,10 @@ commands are serialized by patch 0067. No separate mutation shadow memory exists
 4. Save before/after mutation and prove restore/fingerprint equivalence.
 5. Revert patch and prove capability/mutation live gate fails.
 6. Compare non-sim patched and unpatched QEMU.
+7. At one live signal boundary, mutate writable guest RAM without advancing
+   icount and require the RAM component of the production execution fingerprint
+   to change. Comparing the RAM component directly prevents an adjacent clock
+   mutation from satisfying the memory-mutation proof through device state.
 
 The x86-64 and AArch64 live guests each publish a readiness byte only after
 installing page tables and enabling write protection. The GPL-side test plugin

@@ -28,6 +28,9 @@
   memoryMib ? "64",
   requireSmpPauseRendezvous ? "0",
   customGuestKernel ? null,
+  qemuPackage ? pkgs.qemu-crucible,
+  pluginPackage ? pkgs.crucible-qemu-plugin,
+  expectedQemuFailureMarker ? "",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -47,9 +50,9 @@ in
 
     buildDeps = [
       pkgs.coreutils
-      pkgs.crucible-qemu-plugin
+      pluginPackage
       pkgs.grep
-      pkgs.qemu-crucible
+      qemuPackage
       pkgs.rust
       pkgs.sed
     ];
@@ -60,7 +63,7 @@ in
       else builtins.toString customGuestKernel;
     GUEST_KERNEL_IS_FILE = "1";
     GUEST_INITRD = "";
-    GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
+    GUEST_FIRMWARE = "${qemuPackage}/share/qemu/bios-256k.bin";
     GUEST_KERNEL_APPEND = "";
     CRUCIBLE_QUANTUM_CEILING_STEP = ceilingStep;
     CRUCIBLE_QUANTUM_MAX_SEARCH = maxSearch;
@@ -71,6 +74,7 @@ in
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS = requireSmpPauseRendezvous;
+    EXPECTED_QEMU_FAILURE_MARKER = expectedQemuFailureMarker;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -151,31 +155,54 @@ in
           run_dir="$TMPDIR/live-plugin-quantum-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-plugin-quantum.result"
+          stderr_report="$TMPDIR/live-plugin-quantum.stderr"
           # The diskless firmware-pinned launch attaches no block device. The
           # ROOT_IMAGE argument is unused when CRUCIBLE_QUANTUM_FIRMWARE is set,
           # so pass /dev/null as a placeholder.
           export CRUCIBLE_QUANTUM_FIRMWARE="$GUEST_FIRMWARE"
+          set +e
           if [ -n "$GUEST_INITRD" ]; then
             timeout -k 15 590 \
               "$TMPDIR/live-plugin-quantum-target/debug/examples/crucible-qemu-live-plugin-quantum" \
-              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${qemuPackage}/bin/qemu-system-x86_64 \
+              ${pluginPackage}/lib/libcrucible_qemu_plugin.so \
               "$vmlinuz" \
               /dev/null \
               "$run_dir" \
               "$GUEST_INITRD" \
               "$GUEST_KERNEL_APPEND" \
-              > "$report"
+              > "$report" 2> "$stderr_report"
           else
             timeout -k 15 590 \
               "$TMPDIR/live-plugin-quantum-target/debug/examples/crucible-qemu-live-plugin-quantum" \
-              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${qemuPackage}/bin/qemu-system-x86_64 \
+              ${pluginPackage}/lib/libcrucible_qemu_plugin.so \
               "$vmlinuz" \
               /dev/null \
               "$run_dir" \
-              > "$report"
+              > "$report" 2> "$stderr_report"
           fi
+          run_status=$?
+          set -e
+
+          if [ -n "$EXPECTED_QEMU_FAILURE_MARKER" ]; then
+            test "$run_status" -ne 0
+            grep -Fq "$EXPECTED_QEMU_FAILURE_MARKER" "$stderr_report"
+            if grep -Fxq PASS "$report"; then
+              echo 'FAIL: QEMU negative control emitted PASS' >&2
+              exit 1
+            fi
+            mkdir -p "$out"
+            {
+              printf 'PASS\n'
+              printf 'expected_qemu_failure_marker=%s\n' "$EXPECTED_QEMU_FAILURE_MARKER"
+              printf 'negative_control_exit_status=%s\n' "$run_status"
+            } > "$out/result"
+            cp "$stderr_report" "$out/stderr"
+            exit 0
+          fi
+
+          test "$run_status" -eq 0
 
           cat "$report"
           grep -Fxq PASS "$report"
