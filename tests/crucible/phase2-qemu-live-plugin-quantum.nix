@@ -31,6 +31,7 @@
   qemuPackage ? pkgs.qemu-crucible,
   pluginPackage ? pkgs.crucible-qemu-plugin,
   expectedQemuFailureMarker ? "",
+  expectedQemuFailureProvenance ? "",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -75,6 +76,7 @@ in
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS = requireSmpPauseRendezvous;
     EXPECTED_QEMU_FAILURE_MARKER = expectedQemuFailureMarker;
+    EXPECTED_QEMU_FAILURE_PROVENANCE = expectedQemuFailureProvenance;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -196,6 +198,8 @@ in
             {
               printf 'PASS\n'
               printf 'expected_qemu_failure_marker=%s\n' "$EXPECTED_QEMU_FAILURE_MARKER"
+              printf 'expected_qemu_failure_provenance=%s\n' \
+                "$EXPECTED_QEMU_FAILURE_PROVENANCE"
               printf 'negative_control_exit_status=%s\n' "$run_status"
             } > "$out/result"
             cp "$stderr_report" "$out/stderr"
