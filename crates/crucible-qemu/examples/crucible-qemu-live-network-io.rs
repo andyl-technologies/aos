@@ -164,6 +164,7 @@ fn run() -> Result<(), String> {
         "host_scheduler_preemption_pending_quantum={}",
         report.host_scheduler_preemption_pending_quantum
     );
+    println!("completion_owned_frames={}", report.completion_owned_frames);
     println!(
         "host_scheduler_preemption_requested_milliseconds={}",
         report.host_scheduler_preemption_requested_milliseconds

@@ -171,12 +171,20 @@
         needle = "BOUNDED_PREEMPTION_PAUSE_MILLISECONDS: u64 = 15";
       }
       {
+        label = "stable authenticated QEMU handle";
+        needle = "pidfd_open(raw_pid";
+      }
+      {
+        label = "pid-reuse-safe signaling";
+        needle = "pidfd_send_signal(pidfd";
+      }
+      {
         label = "actual QEMU stop";
-        needle = "libc::SIGSTOP";
+        needle = "Signal::STOP";
       }
       {
         label = "unconditional QEMU resume";
-        needle = "libc::SIGCONT";
+        needle = "Signal::CONT";
       }
       {
         label = "independent resume watchdog";
@@ -189,6 +197,10 @@
       {
         label = "unreleased controller fails closed";
         needle = "BoundedSchedulerPreemptionError::NotStarted";
+      }
+      {
+        label = "first stop rejects completed work";
+        needle = "observation.confirm_pending(pending_at_stop)";
       }
       {
         label = "synchronous controller cleanup";
@@ -213,8 +225,8 @@
             needle = "HostAdversary::start_if";
           }
           {
-            label = "pending quantum releases controller";
-            needle = "HostAdversary::begin_if_present";
+            label = "first stop synchronizes with pending quantum";
+            needle = "HostAdversary::certify_";
           }
           {
             label = "verified preemption completion";

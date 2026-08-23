@@ -127,6 +127,7 @@ pub(super) fn run_once(
         backpressure_retry_icount,
         delayed_reply_applied,
         scheduler_preemption_pending_quantum,
+        completion_owned_frames,
     } = drive_exchange(
         &mut hot_path,
         &mut servicer,
@@ -163,6 +164,7 @@ pub(super) fn run_once(
         orderly_child_exit,
         scheduler_preemption,
         scheduler_preemption_pending_quantum,
+        completion_owned_frames,
     })
 }
 
@@ -180,6 +182,7 @@ struct DriveExchangeOutcome {
     backpressure_retry_icount: Option<u64>,
     delayed_reply_applied: bool,
     scheduler_preemption_pending_quantum: bool,
+    completion_owned_frames: usize,
 }
 
 /// Finishes one scheduler quantum and transfers every completion-owned guest
@@ -240,26 +243,35 @@ fn drive_exchange(
     setup.signal_plugin_wake().map_err(|source| {
         QemuLiveNetworkIoGateError::drive("wake pending network quantum", source)
     })?;
-    let scheduler_preemption_pending_quantum = HostAdversary::begin_if_present(host_adversary)
-        .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
+    let pending = discovery_pending.as_mut().ok_or_else(|| {
+        QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
+            evidence: String::from("probe-discovery token absent before first stop"),
+        }
+    })?;
+    let scheduler_preemption_pending_quantum =
+        HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, pending)
+            .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
     let mut acknowledgement_icount = None;
     let mut backpressure_acknowledgement_icount = None;
     let mut delay_applied = false;
     let mut discovery_complete = false;
+    let mut completion_owned_frames = 0_usize;
     for _ in 0..bounded_drive_polls(timeout) {
         let _ = setup.signal_plugin_wake();
-        let should_delay = !delay_applied && !reply_wall_delay.is_zero();
-        let mut delayed_this_call = false;
-        let step = servicer
-            .service_with_before_reply(|| {
-                if should_delay {
-                    thread::park_timeout(reply_wall_delay);
-                    delayed_this_call = true;
-                }
-            })
-            .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
-        if step.reply_enqueued && delayed_this_call {
-            delay_applied = true;
+        if completion_owned_frames > 0 {
+            let should_delay = !delay_applied && !reply_wall_delay.is_zero();
+            let mut delayed_this_call = false;
+            let step = servicer
+                .service_with_before_reply(|| {
+                    if should_delay {
+                        thread::park_timeout(reply_wall_delay);
+                        delayed_this_call = true;
+                    }
+                })
+                .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })?;
+            if step.reply_enqueued && delayed_this_call {
+                delay_applied = true;
+            }
         }
         let service_snapshot = servicer.snapshot();
         if backpressure_acknowledgement_icount.is_none() {
@@ -300,6 +312,28 @@ fn drive_exchange(
                     ));
                 }
             };
+            let owned_frames = completion.emitted_frames.len();
+            if owned_frames == 0 {
+                drop(discovery_pending.take());
+                discovery_pending = Some(
+                    QemuShmemHotPathChannel::start_quantum(
+                        hot_path,
+                        crucible::ExecutionHorizon {
+                            icount: Icount {
+                                retired: PROBE_DISCOVERY_CEILING_ICOUNT,
+                            },
+                        },
+                    )
+                    .map_err(|source| {
+                        QemuLiveNetworkIoGateError::drive(
+                            "reissue empty probe-discovery quantum",
+                            source,
+                        )
+                    })?,
+                );
+                continue;
+            }
+            completion_owned_frames = completion_owned_frames.saturating_add(owned_frames);
             let should_delay = !delay_applied && !reply_wall_delay.is_zero();
             let mut delayed_completion = false;
             let completion_step = servicer
@@ -492,6 +526,7 @@ fn drive_exchange(
         backpressure_retry_icount,
         delayed_reply_applied: delay_applied,
         scheduler_preemption_pending_quantum,
+        completion_owned_frames,
     })
 }
 

@@ -146,7 +146,7 @@ pub(super) fn run_quantum(
         .map_err(|source| channel_error("read pre-quantum icount", source))?
         .current_icount
         .retired;
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         ExecutionHorizon {
             icount: Icount { retired: ceiling },
@@ -167,7 +167,7 @@ pub(super) fn run_quantum(
     setup
         .signal_plugin_wake()
         .map_err(|source| channel_error("wake plugin for next quantum", source))?;
-    HostAdversary::begin_if_present(host_adversary)
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
         .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     let stop = wait_for_quantum_boundary(hot_path, child, ceiling, config)?;
     let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)

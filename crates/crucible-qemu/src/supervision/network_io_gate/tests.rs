@@ -104,5 +104,6 @@ fn outcome_at(probe_icount: u64) -> NetworkIoRunOutcome {
         orderly_child_exit: true,
         scheduler_preemption: None,
         scheduler_preemption_pending_quantum: false,
+        completion_owned_frames: 1,
     }
 }
