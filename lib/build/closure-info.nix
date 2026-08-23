@@ -39,6 +39,7 @@ pkgs.mkDerivation {
 
         if [ "$(jq '.closure | length' < "$NIX_ATTRS_JSON_FILE")" -eq 0 ]; then
           : > "$out/registration"
+          : > "$out/store-paths"
         else
           jq -r '
             .closure
@@ -48,12 +49,14 @@ pkgs.mkDerivation {
             | add
           ' < "$NIX_ATTRS_JSON_FILE" \
             | head -n -1 > "$out/registration"
+          jq -r '.closure[].path' < "$NIX_ATTRS_JSON_FILE" \
+            | sort > "$out/store-paths"
         fi
       '';
     }
   ];
 
   meta = {
-    description = "Nix DB registration (load-db format) for a closure";
+    description = "Nix DB registration and path inventory for a closure";
   };
 }

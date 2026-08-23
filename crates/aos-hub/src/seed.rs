@@ -1021,6 +1021,7 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                     byte_size: info.len() as u64,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             },
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),

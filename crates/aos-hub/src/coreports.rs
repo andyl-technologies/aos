@@ -990,6 +990,10 @@ struct LocalFsWrite {
 
 #[async_trait]
 impl core_sw::SurfaceWrite for LocalFsWrite {
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        Some(1)
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
@@ -2265,6 +2269,8 @@ mod multipart_tests {
         let dir = tempfile::tempdir().unwrap();
         let w = LocalFsWrite::new(dir.path().to_path_buf());
         let path = "nar/sha256-test.nar.zst";
+
+        assert_eq!(w.multipart_protocol_version(), Some(1));
 
         let upload_id = w.create_multipart(path).await.unwrap();
         // Upload out of order; complete must reassemble by part_number.

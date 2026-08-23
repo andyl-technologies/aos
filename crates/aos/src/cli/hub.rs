@@ -802,9 +802,9 @@ pub enum HubBindingCmd {
         /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
         #[arg(long, env = "AOS_TOKEN")]
         token: Option<String>,
-        /// Organization slug
+        /// Organization slug; omit for instance-owned bindings
         #[arg(long)]
-        org: String,
+        org: Option<String>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },
@@ -3099,11 +3099,11 @@ mod tests {
     }
 
     #[test]
-    fn binding_replaces_the_legacy_binding_command() {
+    fn binding_replaces_the_legacy_storage_binding_command() {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "list",
             "--hub",
             "https://aos.example",
@@ -3123,7 +3123,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "binding",
+                "storage-binding",
                 "list",
                 "--hub",
                 "https://aos.example",
@@ -3139,7 +3139,7 @@ mod tests {
         let cli = parse_cli([
             "aos",
             "hub",
-            "storage-binding",
+            "binding",
             "create",
             "--hub",
             "https://aos.example",
@@ -3170,15 +3170,39 @@ mod tests {
     }
 
     #[test]
-    fn binding_list_requires_an_organization() {
+    fn binding_list_accepts_instance_scope_without_an_organization() {
+        let list = parse_cli([
+            "aos",
+            "hub",
+            "binding",
+            "list",
+            "--hub",
+            "https://aos.example",
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.command,
+            Commands::Hub {
+                command: HubCmd::Binding {
+                    command: HubBindingCmd::List { org: None, .. }
+                }
+            }
+        ));
+
         assert!(
             parse_cli([
                 "aos",
                 "hub",
-                "storage-binding",
-                "list",
+                "binding",
+                "create",
                 "--hub",
                 "https://aos.example",
+                "--name",
+                "native-storage",
+                "--kind",
+                "local-fs",
+                "--root",
+                "/var/lib/aos-hub/storage",
             ])
             .is_err()
         );
@@ -3254,7 +3278,7 @@ mod tests {
             parse_cli([
                 "aos",
                 "hub",
-                "network-boundary",
+                "network-policy",
                 "revision",
                 "activate",
                 "--hub",
@@ -3268,7 +3292,7 @@ mod tests {
         let parsed = parse_cli([
             "aos",
             "hub",
-            "network-boundary",
+            "network-policy",
             "revision",
             "activate",
             "--hub",
