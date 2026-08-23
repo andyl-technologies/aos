@@ -17,8 +17,8 @@ use crucible_api::{LifecycleApiError, ProductionVmNodeGeneration, ProductionVmNo
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
-    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuLaunchCommand, QemuNodeChild,
-    QemuPreparedRunDirectory, QemuVmRealizationError,
+    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuLaunchResourceRequirements,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 
 use crate::executor_supervisor::{
@@ -79,7 +79,7 @@ pub trait QemuAttemptHostResourceOwner {
     /// fails.
     fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
 
     /// Duplicates the narrow sticky process-cancellation capability.
@@ -239,9 +239,9 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
 
     fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
-        self.host.prepare_generation_run_directory(command)
+        self.host.prepare_generation_run_directory(requirements)
     }
 
     fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
@@ -475,9 +475,9 @@ where
 
     fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
-        self.host.prepare_generation_run_directory(command)
+        self.host.prepare_generation_run_directory(requirements)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
@@ -589,6 +589,7 @@ where
             ));
         }
         let node = identity.node().clone();
+        let previous_generation = state.latest.get(&node).copied();
         if state.active.iter().any(|active| active.node() == &node) {
             return Err(generation_error(format!(
                 "QEMU node `{}` already has an active generation lease",
@@ -621,6 +622,7 @@ where
         Ok(QemuAttemptGenerationLease {
             identity,
             generations: Arc::clone(&self.generations),
+            previous_generation,
             finished: false,
         })
     }
@@ -689,6 +691,23 @@ where
             "QEMU attempt aggregate resources were transferred to quarantine",
         ));
     }
+
+    /// Checks cancellation and hard-resource state between bounded operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] after terminal cleanup,
+    /// cancellation, resource exhaustion, or enforcement-state failure.
+    pub fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        if self.terminal {
+            return Err(generation_error(
+                "QEMU attempt generation owner is already terminal",
+            ));
+        }
+        self.guard.check_operational_boundary().map_err(|error| {
+            generation_error(format!("check QEMU attempt operational boundary: {error}"))
+        })
+    }
 }
 
 impl<G> QemuAttemptGenerationResourceOwner<G>
@@ -703,7 +722,7 @@ where
     /// when the guard rejects launch admission or storage provisioning.
     pub fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
         if self.terminal {
             return Err(generation_error(
@@ -711,7 +730,7 @@ where
             ));
         }
         self.guard
-            .prepare_generation_run_directory(command)
+            .prepare_generation_run_directory(requirements)
             .map_err(|error| {
                 generation_error(format!("prepare QEMU generation directory: {error}"))
             })
@@ -779,6 +798,7 @@ struct QemuAttemptGenerationState {
 pub struct QemuAttemptGenerationLease {
     identity: ProductionVmNodeGeneration,
     generations: Arc<Mutex<QemuAttemptGenerationState>>,
+    previous_generation: Option<u64>,
     finished: bool,
 }
 
@@ -787,8 +807,57 @@ impl fmt::Debug for QemuAttemptGenerationLease {
         formatter
             .debug_struct("QemuAttemptGenerationLease")
             .field("identity", &self.identity)
+            .field("previous_generation", &self.previous_generation)
             .field("finished", &self.finished)
             .finish_non_exhaustive()
+    }
+}
+
+impl QemuAttemptGenerationLease {
+    /// Aborts a generation whose launch left no live or unreaped process.
+    ///
+    /// This is the only path that rolls back the latest-generation fence. It is
+    /// reserved for the launcher that still owns proof that process spawn never
+    /// happened or that every spawned child was synchronously reaped. A normal
+    /// launched generation must instead remain monotone and use
+    /// [`ProductionVmNodeLease::finish`] after reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when the registry is poisoned,
+    /// this is no longer the exact active/latest generation, or the lease was
+    /// already finished. Failure leaves the lease fail-closed so its `Drop`
+    /// path poisons aggregate release.
+    pub(crate) fn abort_without_process(mut self) -> Result<(), LifecycleApiError> {
+        if self.finished {
+            return Err(generation_error(
+                "cannot abort an already-finished QEMU generation lease",
+            ));
+        }
+        let mut state = self
+            .generations
+            .lock()
+            .map_err(|_| generation_error("QEMU attempt generation registry is poisoned"))?;
+        if state.latest.get(self.identity.node()).copied() != Some(self.identity.generation())
+            || !state.active.remove(&self.identity)
+        {
+            state.abandoned = true;
+            return Err(generation_error(format!(
+                "QEMU node `{}` generation {} is not the exact pending generation",
+                self.identity.node().name,
+                self.identity.generation()
+            )));
+        }
+        match self.previous_generation {
+            Some(previous) => {
+                state.latest.insert(self.identity.node().clone(), previous);
+            }
+            None => {
+                state.latest.remove(self.identity.node());
+            }
+        }
+        self.finished = true;
+        Ok(())
     }
 }
 

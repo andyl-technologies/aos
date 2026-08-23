@@ -546,6 +546,10 @@ fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::write(&vmstate_path, b"provisioned")?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"provisioned",
+    )?;
     let mut prepared =
         QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
     let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
@@ -575,6 +579,76 @@ fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(
 }
 
 #[test]
+fn exact_root_overlay_materialization_commits_the_checkpoint_root_basis()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        b"provisioned",
+    )?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "overlay-a").bytes,
+    );
+    let payload = b"authenticated exact root overlay";
+
+    let mut materialization = prepared
+        .begin_exact_root_overlay_materialization(binding, u64::try_from(payload.len())?)?;
+    materialization.write_all(payload)?;
+    materialization.finish()?;
+
+    prepared.require_exact_root_overlay(binding)?;
+    prepared.revalidate()?;
+    assert_eq!(
+        std::fs::read(directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME))?,
+        payload
+    );
+    let other = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "overlay-b").bytes,
+    );
+    assert!(matches!(
+        prepared.require_exact_root_overlay(other),
+        Err(QemuSpawnError::PreparedRootOverlayBindingMismatch {
+            expected,
+            actual,
+        }) if expected == other && actual == binding
+    ));
+    Ok(())
+}
+
+#[test]
+fn interrupted_root_overlay_materialization_blocks_guarded_spawn() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        b"provisioned",
+    )?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "overlay-interrupted").bytes,
+    );
+
+    {
+        let mut materialization = prepared.begin_exact_root_overlay_materialization(binding, 4)?;
+        materialization.write_all(b"ab")?;
+    }
+
+    assert!(matches!(
+        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+            &command, &prepared, 4096, &contract,
+        ),
+        Err(QemuSpawnError::PreparedRootOverlayNotReady { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn reaped_vmstate_reader_survives_artifact_unlink_without_shared_cursor()
 -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
@@ -582,6 +656,10 @@ fn reaped_vmstate_reader_survives_artifact_unlink_without_shared_cursor()
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::write(&vmstate_path, b"provisioned")?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"provisioned",
+    )?;
     let mut prepared =
         QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
     let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
@@ -614,6 +692,10 @@ fn interrupted_exact_vmstate_materialization_blocks_guarded_launch_until_replace
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::write(&vmstate_path, b"provisioned")?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"provisioned",
+    )?;
     let mut prepared =
         QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
     let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
@@ -655,6 +737,10 @@ fn exact_vmstate_length_rejection_precedes_destination_mutation() -> Result<(), 
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::write(&vmstate_path, b"unchanged")?;
+    std::fs::write(
+        directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"provisioned",
+    )?;
     let mut prepared =
         QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
     let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
@@ -940,6 +1026,10 @@ fn open_prepared_run_directory_for_test(
 ) -> Result<QemuPreparedRunDirectory, Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
     let contract = wide_test_process_contract()?;
+    std::fs::write(
+        path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"provisioned",
+    )?;
     Ok(QemuPreparedRunDirectory::open_for_launch(
         &command, path, &contract,
     )?)

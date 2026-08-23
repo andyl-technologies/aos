@@ -71,6 +71,7 @@ use crucible_shmem::{
     mmap_setup_region, node_fault_field,
 };
 
+use crate::QemuChildProcessContract;
 use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::supervision::{
     BlockIoDiagnostics, NinepIoDiagnostics, QemuLive9pIoServicer, QemuLiveAcceleratorServicer,
@@ -85,11 +86,13 @@ use crate::{
     QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
     QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
-    QemuNodeRestorePlan, QemuNodeSet, QemuQmpChannelConfig, QemuQuantumShmemConfig,
-    QemuRootImageFormat, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig,
-    QemuVmSnapshot, QemuWhiteboxSetupError, QmpError, build_qemu_node_from_completed_setup,
-    build_qemu_node_from_restored_checkpoint, build_qemu_node_from_restored_checkpoint_paused,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuNodeRestorePlan, QemuNodeSet, QemuPreparedRunDirectory, QemuQmpChannelConfig,
+    QemuQuantumShmemConfig, QemuRootImageFormat, QemuShmemHotPathChannel, QemuShutdownPolicy,
+    QemuVmLaunchConfig, QemuVmSnapshot, QemuVmStateBinding, QemuWhiteboxSetupError, QmpError,
+    build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
+    build_qemu_node_from_restored_checkpoint_paused, complete_qemu_host_plugin_setup,
+    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 use super::QemuLiveHostIoRuntimeError;
@@ -263,6 +266,20 @@ impl QemuLiveNodeStepGateConfig {
     pub fn with_run_directory(mut self, run_directory: impl Into<PathBuf>) -> Self {
         self.run_directory = run_directory.into();
         self
+    }
+
+    /// Returns the fixed host-resource baseline for this launch profile.
+    ///
+    /// The value is independent of the generation run-directory namespace and
+    /// can therefore be admitted before that directory exists. The concrete
+    /// launch command must reproduce this exact profile before guarded spawn.
+    #[must_use]
+    pub const fn resource_requirements(&self) -> crate::QemuLaunchResourceRequirements {
+        crate::QemuLaunchResourceRequirements::from_vm_shape(
+            self.memory_mib,
+            self.smp_vcpus,
+            self.root_image.is_some(),
+        )
     }
 
     /// Builds a node-step configuration with bounded defaults.
@@ -834,7 +851,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
     let mut discovery_node = build_live_node(
         &discovery_config,
         &discovery_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "signal-node-lifecycle-manifest-discovery",
@@ -864,7 +881,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
     let mut channel_proof_node = build_live_node(
         &exact_config,
         &channel_proof_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "signal-node-lifecycle-channel-corruption",
@@ -886,7 +903,7 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
     let mut node = build_live_node(
         &exact_config,
         &run_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "signal-node-lifecycle",
@@ -1014,7 +1031,7 @@ fn prove_cross_adapter_rejection_rollback(
     let mut node = build_live_node(
         config,
         &run_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "signal-rollback",
@@ -1547,7 +1564,7 @@ pub fn launch_qemu_live_node(
     build_live_node(
         config,
         run_directory.as_ref(),
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node,
             router,
             crash_detector,
@@ -1577,7 +1594,7 @@ pub fn launch_qemu_live_node_restored(
     build_live_node(
         config,
         run_directory.as_ref(),
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node,
             router,
             crash_detector,
@@ -1605,18 +1622,11 @@ pub fn launch_qemu_live_node_exact_snapshot(
     crash_detector: &str,
     snapshot: &QemuVmSnapshot,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-    let binding = snapshot.checkpoint().id;
-    if !snapshot.is_live_capture()
-        || !snapshot.has_valid_identity()
-        || snapshot.host_io().execution_binding() != binding
-        || snapshot.node_continuation().execution_binding() != binding
-    {
-        return Err(QemuLiveNodeStepGateError::InvalidExactSnapshot);
-    }
+    validate_live_exact_snapshot(snapshot)?;
     build_live_node(
         config,
         run_directory.as_ref(),
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node,
             router,
             crash_detector,
@@ -1644,6 +1654,107 @@ pub fn launch_qemu_live_node_exact_snapshot_paused(
     crash_detector: &str,
     snapshot: &QemuVmSnapshot,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    validate_live_exact_snapshot(snapshot)?;
+    build_live_node(
+        config,
+        run_directory.as_ref(),
+        QemuLiveNodeIdentity {
+            node,
+            router,
+            crash_detector,
+        },
+        Some(QemuNodeRestorePlan::captured_exact(snapshot)),
+        false,
+    )
+}
+
+/// Complete borrowed basis for one guarded exact-snapshot node launch.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuGuardedExactNodeLaunch<'a> {
+    run_directory: &'a QemuPreparedRunDirectory,
+    process_contract: &'a QemuChildProcessContract,
+    vmstate_binding: QemuVmStateBinding,
+    identity: QemuLiveNodeIdentity<'a>,
+    snapshot: &'a QemuVmSnapshot,
+}
+
+impl<'a> QemuGuardedExactNodeLaunch<'a> {
+    /// Seals the pinned storage, process, checkpoint, and scheduler-name basis.
+    #[must_use]
+    pub const fn new(
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+        vmstate_binding: QemuVmStateBinding,
+        identity: QemuLiveNodeIdentity<'a>,
+        snapshot: &'a QemuVmSnapshot,
+    ) -> Self {
+        Self {
+            run_directory,
+            process_contract,
+            vmstate_binding,
+            identity,
+            snapshot,
+        }
+    }
+}
+
+/// Launches one exact-snapshot node through a descriptor-pinned process contract.
+///
+/// The complete checkpoint-root binding must already have been materialized
+/// into the request's run directory. The concrete launch command is rebuilt
+/// from `config` and must reproduce the resource profile sealed into the
+/// directory before the child installs cgroup membership, sticky cancellation,
+/// file limits, and unprivileged credentials in `pre_exec`.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the snapshot or VMState root is
+/// invalid, the configured and pinned directory paths differ, guarded x86
+/// white-box probing would require an uncontained helper, guarded spawn fails,
+/// or any setup, restore, assembly, or mandatory cleanup step fails.
+pub fn launch_qemu_live_node_exact_snapshot_guarded(
+    config: &QemuLiveNodeStepGateConfig,
+    request: QemuGuardedExactNodeLaunch<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    launch_qemu_live_node_exact_snapshot_guarded_inner(config, request, true)
+}
+
+/// Launches one guarded exact-snapshot node and leaves its guest paused.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] under the same conditions as
+/// [`launch_qemu_live_node_exact_snapshot_guarded`].
+pub fn launch_qemu_live_node_exact_snapshot_paused_guarded(
+    config: &QemuLiveNodeStepGateConfig,
+    request: QemuGuardedExactNodeLaunch<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    launch_qemu_live_node_exact_snapshot_guarded_inner(config, request, false)
+}
+
+fn launch_qemu_live_node_exact_snapshot_guarded_inner(
+    config: &QemuLiveNodeStepGateConfig,
+    request: QemuGuardedExactNodeLaunch<'_>,
+    resume_restored: bool,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    validate_live_exact_snapshot(request.snapshot)?;
+    build_live_node_with_authority(
+        config,
+        request.run_directory.path(),
+        request.identity,
+        Some(QemuNodeRestorePlan::captured_exact(request.snapshot)),
+        resume_restored,
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory: request.run_directory,
+            process_contract: request.process_contract,
+            vmstate_binding: request.vmstate_binding,
+        },
+    )
+}
+
+fn validate_live_exact_snapshot(
+    snapshot: &QemuVmSnapshot,
+) -> Result<(), QemuLiveNodeStepGateError> {
     let binding = snapshot.checkpoint().id;
     if !snapshot.is_live_capture()
         || !snapshot.has_valid_identity()
@@ -1652,17 +1763,7 @@ pub fn launch_qemu_live_node_exact_snapshot_paused(
     {
         return Err(QemuLiveNodeStepGateError::InvalidExactSnapshot);
     }
-    build_live_node(
-        config,
-        run_directory.as_ref(),
-        LiveNodeIdentity {
-            node,
-            router,
-            crash_detector,
-        },
-        Some(QemuNodeRestorePlan::captured_exact(snapshot)),
-        false,
-    )
+    Ok(())
 }
 
 /// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
@@ -1696,7 +1797,7 @@ fn run_one_scenario(
     let mut node = build_live_node(
         config,
         &run_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: GATE_CRASH_NODE_ID,
@@ -1731,26 +1832,95 @@ fn run_one_scenario(
     })
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct LiveNodeIdentity<'a> {
+/// Deterministic scheduler-facing names for one live QEMU node generation.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuLiveNodeIdentity<'a> {
     pub(super) node: &'a str,
     pub(super) router: &'a str,
     pub(super) crash_detector: &'a str,
 }
 
+impl<'a> QemuLiveNodeIdentity<'a> {
+    /// Creates the three exact names consumed by a live node launch.
+    #[must_use]
+    pub const fn new(node: &'a str, router: &'a str, crash_detector: &'a str) -> Self {
+        Self {
+            node,
+            router,
+            crash_detector,
+        }
+    }
+}
+
+enum LiveNodeSpawnAuthority<'a> {
+    Uncontained,
+    Guarded {
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+        vmstate_binding: QemuVmStateBinding,
+    },
+}
+
 pub(super) fn build_live_node(
     config: &QemuLiveNodeStepGateConfig,
     run_directory: &Path,
-    identity: LiveNodeIdentity<'_>,
+    identity: QemuLiveNodeIdentity<'_>,
     restore: Option<QemuNodeRestorePlan<'_>>,
     resume_restored: bool,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-    fs::create_dir_all(run_directory).map_err(|source| {
-        QemuLiveNodeStepGateError::PrepareRunDirectory {
-            path: run_directory.to_path_buf(),
-            source,
+    build_live_node_with_authority(
+        config,
+        run_directory,
+        identity,
+        restore,
+        resume_restored,
+        LiveNodeSpawnAuthority::Uncontained,
+    )
+}
+
+fn build_live_node_with_authority(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: &Path,
+    identity: QemuLiveNodeIdentity<'_>,
+    restore: Option<QemuNodeRestorePlan<'_>>,
+    resume_restored: bool,
+    spawn_authority: LiveNodeSpawnAuthority<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    match &spawn_authority {
+        LiveNodeSpawnAuthority::Uncontained => {
+            fs::create_dir_all(run_directory).map_err(|source| {
+                QemuLiveNodeStepGateError::PrepareRunDirectory {
+                    path: run_directory.to_path_buf(),
+                    source,
+                }
+            })?;
         }
-    })?;
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory: prepared,
+            vmstate_binding,
+            ..
+        } => {
+            prepared
+                .require_exact_vmstate(*vmstate_binding)
+                .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+            if config.resource_requirements().has_root_overlay() {
+                prepared
+                    .require_exact_root_overlay(*vmstate_binding)
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+            }
+            if prepared.path() != config.run_directory() {
+                return Err(QemuLiveNodeStepGateError::PreparedRunDirectoryMismatch {
+                    configured: config.run_directory().to_path_buf(),
+                    prepared: prepared.path().to_path_buf(),
+                });
+            }
+            if config.whitebox == QemuLaunchPluginSwitch::On
+                && config.architecture == LivePluginGuestArchitecture::X86_64
+            {
+                return Err(QemuLiveNodeStepGateError::GuardedWhiteboxProbeUnavailable);
+            }
+        }
+    }
     let debug_guest_activation_listener = (config.whitebox == QemuLaunchPluginSwitch::On)
         .then(|| {
             crate::unix_socket_path::bind(
@@ -1860,65 +2030,98 @@ pub(super) fn build_live_node(
     let region_config = RegionConfig::new(1, config.queue_capacity, 0);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
-    let spawned = spawn_qemu_child_with_fds_in_directory(
-        &command,
-        run_directory,
-        allocation.layout().region_size,
-    )
+    let spawned = match spawn_authority {
+        LiveNodeSpawnAuthority::Uncontained => spawn_qemu_child_with_fds_in_directory(
+            &command,
+            run_directory,
+            allocation.layout().region_size,
+        ),
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory,
+            process_contract,
+            ..
+        } => spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+            &command,
+            run_directory,
+            allocation.layout().region_size,
+            process_contract,
+        ),
+    }
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup = complete_qemu_host_plugin_setup(
-        resources.into_setup_resources(),
-        region_config,
-        GATE_SLOT,
-        command.fault_capability_requirement(),
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })?;
-    if !setup.setup_ack().can_schedule() {
-        return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
+
+    macro_rules! launch_try {
+        ($result:expr) => {
+            match $result {
+                Ok(value) => value,
+                Err(primary) => return Err(reap_failed_live_node_child(child, primary)),
+            }
+        };
     }
-    let debug_guest_activation_stream = debug_guest_activation_listener
-        .map(|listener| listener.accept().map(|(stream, _address)| stream))
-        .transpose()
-        .map_err(|source| {
-            QemuLiveNodeStepGateError::prime(
-                "accept debug guest activation stream",
-                QemuNodeChannelError::new(
+
+    let setup = launch_try!(
+        complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            region_config,
+            GATE_SLOT,
+            command.fault_capability_requirement(),
+        )
+        .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })
+    );
+    if !setup.setup_ack().can_schedule() {
+        return Err(reap_failed_live_node_child(
+            child,
+            QemuLiveNodeStepGateError::SetupAckNotReady,
+        ));
+    }
+    let debug_guest_activation_stream = launch_try!(
+        debug_guest_activation_listener
+            .map(|listener| listener.accept().map(|(stream, _address)| stream))
+            .transpose()
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::prime(
                     "accept debug guest activation stream",
-                    source.to_string(),
-                ),
-            )
-        })?;
-    let console_observation = config
-        .console_capture
-        .then(|| {
-            // QEMU realizes chardevs before the plugin publishes its setup ACK,
-            // so a missing socket here is a launch failure rather than a race.
-            crate::unix_socket_path::connect(
-                &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
-            )
-        })
-        .transpose()
-        .map_err(|source| {
-            QemuLiveNodeStepGateError::prime(
-                "connect console observation",
-                QemuNodeChannelError::new("connect QEMU console stream", source.to_string()),
-            )
-        })?;
+                    QemuNodeChannelError::new(
+                        "accept debug guest activation stream",
+                        source.to_string(),
+                    ),
+                )
+            })
+    );
+    let console_observation = launch_try!(
+        config
+            .console_capture
+            .then(|| {
+                // QEMU realizes chardevs before the plugin publishes its setup ACK,
+                // so a missing socket here is a launch failure rather than a race.
+                crate::unix_socket_path::connect(
+                    &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
+                )
+            })
+            .transpose()
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::prime(
+                    "connect console observation",
+                    QemuNodeChannelError::new("connect QEMU console stream", source.to_string()),
+                )
+            })
+    );
 
     let console_spool = console_observation
         .as_ref()
         .map(|_stream| QemuConsoleObservationSpool::new());
-    let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
-        setup.shmem_as_fd(),
-        setup.wake_as_fd(),
-        setup.region().region_len,
-        GATE_SLOT,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    let runtime = launch_try!(
+        QemuLiveHostIoRuntime::from_shmem_fd(
+            setup.shmem_as_fd(),
+            setup.wake_as_fd(),
+            setup.region().region_len,
+            GATE_SLOT,
+        )
+        .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
+    );
     let mut runtime = match (console_observation, console_spool.as_ref()) {
         (Some(output), Some(spool)) => {
-            let reader =
+            let reader = launch_try!(
                 QemuConsoleObservationReader::new(output, spool.clone()).map_err(|source| {
                     QemuLiveNodeStepGateError::prime(
                         "configure console observation",
@@ -1927,66 +2130,80 @@ pub(super) fn build_live_node(
                             source.to_string(),
                         ),
                     )
-                })?;
-            runtime
-                .with_console_observation(reader)
-                .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?
+                })
+            );
+            launch_try!(
+                runtime
+                    .with_console_observation(reader)
+                    .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
+            )
         }
         (None, None) => runtime,
         _ => {
-            return Err(QemuLiveNodeStepGateError::prime(
-                "configure console observation",
-                QemuNodeChannelError::new(
-                    "configure QEMU console stream",
-                    "console stream and staging spool disagreed",
+            return Err(reap_failed_live_node_child(
+                child,
+                QemuLiveNodeStepGateError::prime(
+                    "configure console observation",
+                    QemuNodeChannelError::new(
+                        "configure QEMU console stream",
+                        "console stream and staging spool disagreed",
+                    ),
                 ),
             ));
         }
     };
     let mut block_servicer = if let Some(block) = &config.shmem_block {
-        let mut servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base(
-            setup.shmem_as_fd(),
-            setup.region().region_len,
-            GATE_SLOT,
-            config.icount_shift,
-            block.base.clone(),
-        )
-        .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
-        servicer
-            .configure_storage_faults(block.durability.clone(), block.require_fault_directives)
-            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
-        Some(servicer)
-    } else {
-        None
-    };
-    let mut ninep_servicer = config
-        .shmem_ninep
-        .as_ref()
-        .map(|ninep| {
-            QemuLive9pIoServicer::from_shmem_fd_with_tree(
+        let mut servicer = launch_try!(
+            QemuLiveBlockIoServicer::from_shmem_fd_with_base(
                 setup.shmem_as_fd(),
                 setup.region().region_len,
                 GATE_SLOT,
                 config.icount_shift,
-                ninep.tree.clone(),
-                ninep.latency,
+                block.base.clone(),
             )
-        })
-        .transpose()
-        .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
-    let accelerator_servicer = config
-        .accelerator
-        .then(|| {
-            QemuLiveAcceleratorServicer::from_shmem_fd(
-                setup.shmem_as_fd(),
-                setup.region().region_len,
-                GATE_SLOT,
-            )
-        })
-        .transpose()
-        .map_err(|source| QemuLiveNodeStepGateError::AcceleratorServicer { source })?;
+            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
+        launch_try!(
+            servicer
+                .configure_storage_faults(block.durability.clone(), block.require_fault_directives)
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
+        Some(servicer)
+    } else {
+        None
+    };
+    let mut ninep_servicer = launch_try!(
+        config
+            .shmem_ninep
+            .as_ref()
+            .map(|ninep| {
+                QemuLive9pIoServicer::from_shmem_fd_with_tree(
+                    setup.shmem_as_fd(),
+                    setup.region().region_len,
+                    GATE_SLOT,
+                    config.icount_shift,
+                    ninep.tree.clone(),
+                    ninep.latency,
+                )
+            })
+            .transpose()
+            .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })
+    );
+    let accelerator_servicer = launch_try!(
+        config
+            .accelerator
+            .then(|| {
+                QemuLiveAcceleratorServicer::from_shmem_fd(
+                    setup.shmem_as_fd(),
+                    setup.region().region_len,
+                    GATE_SLOT,
+                )
+            })
+            .transpose()
+            .map_err(|source| QemuLiveNodeStepGateError::AcceleratorServicer { source })
+    );
     let restoring_checkpoint = restore.is_some();
-    let priming = prime_guest_off_boot_barrier(
+    let priming = launch_try!(prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
         identity,
@@ -1996,16 +2213,20 @@ pub(super) fn build_live_node(
         (!restoring_checkpoint)
             .then_some(config.boot_network_backpressure_capture.as_deref())
             .flatten(),
-    )?;
+    ));
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
-        servicer
-            .set_latency_model(block.latency)
-            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        launch_try!(
+            servicer
+                .set_latency_model(block.latency)
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
     }
     if let Some(servicer) = block_servicer {
-        runtime = runtime
-            .with_block_servicer(servicer, BlockIoDiagnostics::shared())
-            .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })?;
+        runtime = launch_try!(
+            runtime
+                .with_block_servicer(servicer, BlockIoDiagnostics::shared())
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
     }
     if let Some(servicer) = ninep_servicer {
         runtime = runtime.with_ninep_servicer(servicer, NinepIoDiagnostics::shared());
@@ -2013,23 +2234,26 @@ pub(super) fn build_live_node(
     if let Some(servicer) = accelerator_servicer {
         runtime = runtime.with_accelerator_servicer(servicer);
     }
-    let qmp = connect_qmp_priming_main_loop(
-        &setup,
-        &qmp_config.socket_path(run_directory),
-        config.completion_timeout,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+    let qmp = launch_try!(
+        connect_qmp_priming_main_loop(
+            &setup,
+            &qmp_config.socket_path(run_directory),
+            config.completion_timeout,
+        )
+        .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })
+    );
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
-        qmp.with_predeclared_debug_guest_endpoint()
-            .with_debug_guest_activation_stream(debug_guest_activation_stream.ok_or_else(|| {
-                QemuLiveNodeStepGateError::prime(
+        let activation_stream = launch_try!(debug_guest_activation_stream.ok_or_else(|| {
+            QemuLiveNodeStepGateError::prime(
+                "configure debug guest activation stream",
+                QemuNodeChannelError::new(
                     "configure debug guest activation stream",
-                    QemuNodeChannelError::new(
-                        "configure debug guest activation stream",
-                        "white-box launch omitted its activation stream",
-                    ),
-                )
-            })?)
+                    "white-box launch omitted its activation stream",
+                ),
+            )
+        }));
+        qmp.with_predeclared_debug_guest_endpoint()
+            .with_debug_guest_activation_stream(activation_stream)
     } else {
         qmp
     };
@@ -2059,6 +2283,16 @@ pub(super) fn build_live_node(
         None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
     }
     .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
+
+    macro_rules! node_try {
+        ($result:expr) => {
+            match $result {
+                Ok(value) => value,
+                Err(primary) => return Err(reap_failed_live_node(node, primary)),
+            }
+        };
+    }
+
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
     }
@@ -2066,24 +2300,56 @@ pub(super) fn build_live_node(
         node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
-        node.retain_priming_network_outputs(priming.emitted_frames)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
-            })?;
+        node_try!(
+            node.retain_priming_network_outputs(priming.emitted_frames)
+                .map_err(|source| {
+                    QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
+                })
+        );
     }
     if let Some(network) = &priming.retained_network {
-        node.restore_network_transport_for_gate(network)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::node_op(
-                    "bind retained priming network continuation",
-                    source,
-                )
-            })?;
+        node_try!(
+            node.restore_network_transport_for_gate(network)
+                .map_err(|source| {
+                    QemuLiveNodeStepGateError::node_op(
+                        "bind retained priming network continuation",
+                        source,
+                    )
+                })
+        );
     }
-    node.synchronize_observed_time().map_err(|source| {
+    node_try!(node.synchronize_observed_time().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
-    })?;
+    }));
     Ok(node)
+}
+
+fn reap_failed_live_node_child(
+    mut child: crate::QemuNodeChild,
+    primary: QemuLiveNodeStepGateError,
+) -> QemuLiveNodeStepGateError {
+    match child.force_kill_and_reap_failed_realization() {
+        Ok(()) => primary,
+        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
+            primary: Box::new(primary),
+            cleanup,
+            unreaped_child: Some(Box::new(child)),
+        },
+    }
+}
+
+fn reap_failed_live_node(
+    mut node: QemuNode,
+    primary: QemuLiveNodeStepGateError,
+) -> QemuLiveNodeStepGateError {
+    match node.reap_failed_realization() {
+        Ok(()) => primary,
+        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
+            primary: Box::new(primary),
+            cleanup,
+            unreaped_child: Some(Box::new(node.into_direct_child_for_quarantine())),
+        },
+    }
 }
 
 #[path = "node_step_gate/support.rs"]

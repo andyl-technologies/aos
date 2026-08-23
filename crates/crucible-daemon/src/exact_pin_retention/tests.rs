@@ -512,7 +512,7 @@ impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
 
     fn prepare_generation_run_directory(
         &mut self,
-        _command: &crucible_qemu::QemuLaunchCommand,
+        _requirements: crucible_qemu::QemuLaunchResourceRequirements,
     ) -> Result<crucible_qemu::QemuPreparedRunDirectory, QemuVmRealizationError> {
         self.preparations.fetch_add(1, Ordering::SeqCst);
         if let Some(prepared) = self.prepared_run_directory.take() {

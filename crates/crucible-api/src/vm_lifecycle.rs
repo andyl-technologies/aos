@@ -787,6 +787,7 @@ pub trait ProductionVmNodeLease: Send {
 pub struct ProductionVmNodeLaunch {
     node: QemuNode,
     lease: Box<dyn ProductionVmNodeLease>,
+    run_directory: PathBuf,
 }
 
 impl ProductionVmNodeLaunch {
@@ -805,6 +806,28 @@ impl ProductionVmNodeLaunch {
     where
         L: ProductionVmNodeLease + 'static,
     {
+        Self::new_in_run_directory(request, request.run_directory(), node, lease)
+    }
+
+    /// Pairs a launched node with its exact launcher-owned run directory.
+    ///
+    /// An attempt-owned launcher uses this constructor when its sealed storage
+    /// allocator chooses a descriptor-pinned directory rather than trusting the
+    /// lifecycle's diagnostic path hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
+    /// different node or generation, or the chosen path is empty.
+    pub fn new_in_run_directory<L>(
+        request: ProductionVmNodeLaunchRequest<'_>,
+        run_directory: impl Into<PathBuf>,
+        node: QemuNode,
+        lease: L,
+    ) -> Result<Self, LifecycleApiError>
+    where
+        L: ProductionVmNodeLease + 'static,
+    {
         let expected =
             ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
         if lease.identity() != &expected {
@@ -812,10 +835,23 @@ impl ProductionVmNodeLaunch {
                 "production QEMU node lease does not match its launch request",
             ));
         }
+        let run_directory = run_directory.into();
+        if run_directory.as_os_str().is_empty() {
+            return Err(loop_factory_error(
+                "production QEMU node launch returned an empty run directory",
+            ));
+        }
         Ok(Self {
             node,
             lease: Box::new(lease),
+            run_directory,
         })
+    }
+
+    /// Returns the exact directory retained for this launched generation.
+    #[must_use]
+    pub fn run_directory(&self) -> &Path {
+        &self.run_directory
     }
 
     fn node(&self) -> &QemuNode {
@@ -1889,6 +1925,18 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
         };
+        let launched_run_directory = launched.run_directory().to_path_buf();
+        node_run_directories.insert(vm.id.clone(), launched_run_directory.clone());
+        launch_configs.insert(
+            vm.id.clone(),
+            launch.clone().with_run_directory(&launched_run_directory),
+        );
+        if debug_backend_paths.contains_key(&vm.id) {
+            debug_backend_paths.insert(
+                vm.id.clone(),
+                private_backend_gdbstub_path(&launched_run_directory),
+            );
+        }
         let (backend, lease) = launched.into_parts();
         if backends.insert(vm.id.clone(), backend).is_some() {
             return Err(loop_factory_error(format!(

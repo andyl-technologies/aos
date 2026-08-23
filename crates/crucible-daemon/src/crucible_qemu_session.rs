@@ -13,7 +13,7 @@ use crucible::{
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ObservationCandidate};
 use crucible_qemu::{
     QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuChildProcessContract,
-    QemuLaunchCommand, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
+    QemuLaunchResourceRequirements, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
     QemuLoadvmRealizationAdmission, QemuNodeChild, QemuPreparedRunDirectory,
     QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
     QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
@@ -146,12 +146,12 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     ///
     /// # Errors
     ///
-    /// Returns an operational error when the command exceeds the admitted
+    /// Returns an operational error when the launch profile exceeds the admitted
     /// resources or the aggregate storage identity, fresh generation
     /// directory, or VMState policy cannot be authenticated.
     fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
 
     /// Retains a direct child whose failed realization could not reap it.

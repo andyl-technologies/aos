@@ -416,18 +416,22 @@ fn exact_checkpoint_artifact_is_lent_only_after_sealed_shutdown()
     )?;
 
     let (captured, vmstate) = executor.capture_exact_checkpoint_artifact(checkpoint.clone())?;
-    let mut bytes = vec![0_u8; usize::try_from(vmstate.logical_length()).map_err(|_| {
-        QemuVmRealizationError::Executor {
-            operation: "allocate scripted captured VMState",
-            message: String::from("captured length does not fit usize"),
-        }
-    })?];
-    let read = vmstate
-        .read_at(&mut bytes, 0)
-        .map_err(|source| QemuVmRealizationError::Executor {
-            operation: "read scripted captured VMState",
-            message: source.to_string(),
-        })?;
+    let mut bytes = vec![
+        0_u8;
+        usize::try_from(vmstate.logical_length()).map_err(|_| {
+            QemuVmRealizationError::Executor {
+                operation: "allocate scripted captured VMState",
+                message: String::from("captured length does not fit usize"),
+            }
+        })?
+    ];
+    let read =
+        vmstate
+            .read_at(&mut bytes, 0)
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "read scripted captured VMState",
+                message: source.to_string(),
+            })?;
 
     assert_eq!(captured.checkpoint(), &checkpoint);
     assert_eq!(read, bytes.len());

@@ -49,6 +49,8 @@
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
 //! [`qemu_exact_resume_executor`] owns concrete guarded real-node resume from a
 //! durable operational checkpoint root;
+//! [`qemu_lifecycle_launcher`] streams lifecycle checkpoint artifacts into one
+//! exact guarded process generation;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -92,6 +94,7 @@ pub mod planner_loopback;
 pub mod planner_process;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
+pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
 
@@ -189,6 +192,7 @@ pub use crucible_qemu_session::{
     QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
+pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 #[cfg(target_os = "linux")]
 pub use exact_checkpoint_restore::{
     ExactCheckpointRestoreError, ExactCheckpointResumeError, MaterializedAttemptCheckpoint,

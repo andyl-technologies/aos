@@ -77,7 +77,7 @@ impl QemuAttemptHostResourceOwner for FakeHostOwner {
 
     fn prepare_generation_run_directory(
         &mut self,
-        _command: &QemuLaunchCommand,
+        _requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
         Err(QemuVmRealizationError::Executor {
             operation: "prepare fake QEMU run directory",
@@ -433,6 +433,66 @@ fn abandoned_generation_lease_permanently_quarantines_aggregate_guard() {
 
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn no_process_abort_preserves_the_exact_generation_for_retry() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+
+    let pending = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("pending generation");
+    pending
+        .abort_without_process()
+        .expect("abort generation before process ownership");
+
+    let mut retried = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("exact generation retry");
+    retried.finish().expect("release reaped retry generation");
+    owner.finish().expect("release aggregate attempt resources");
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn aborting_a_replacement_restores_the_previous_generation_fence() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+
+    let mut first = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("first generation");
+    first.finish().expect("release first generation");
+    owner
+        .register_generation(generation("vm-a", 2))
+        .expect("pending replacement")
+        .abort_without_process()
+        .expect("abort pending replacement");
+
+    assert!(
+        owner.register_generation(generation("vm-a", 1)).is_err(),
+        "the prior committed generation remains fenced"
+    );
+    let mut retried = owner
+        .register_generation(generation("vm-a", 2))
+        .expect("exact replacement retry");
+    retried.finish().expect("release replacement retry");
+    owner.finish().expect("release aggregate attempt resources");
 }
 
 #[test]

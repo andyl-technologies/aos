@@ -37,9 +37,9 @@ use crate::linux_project_quota::{
     LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
     validate_project_quota_root,
 };
-use crate::spawn::{QemuChildCredentials, validate_guarded_launch_resources};
+use crate::spawn::{QemuChildCredentials, validate_guarded_launch_requirements};
 use crate::{
-    DEFAULT_VMSTATE_FILE_NAME, QemuChildProcessContract, QemuLaunchCommand,
+    DEFAULT_VMSTATE_FILE_NAME, QemuChildProcessContract, QemuLaunchResourceRequirements,
     QemuPreparedRunDirectory, QemuSpawnError,
 };
 
@@ -382,10 +382,10 @@ impl LinuxQemuAttemptStorageOwner {
     /// exhausted, or child-directory/VMState provisioning or durability fails.
     pub(crate) fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
         contract: &QemuChildProcessContract,
     ) -> Result<QemuPreparedRunDirectory, LinuxQemuAttemptStorageError> {
-        validate_guarded_launch_resources(command, contract)
+        validate_guarded_launch_requirements(requirements, contract)
             .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
         self.pin_directory()?;
         self.verify_named_directory()?;
@@ -407,7 +407,11 @@ impl LinuxQemuAttemptStorageOwner {
             provision_vmstate_file(&directory, &path, self.child_user_id, self.child_group_id)?;
         let directory = duplicate_fd(&directory, "lend pinned QEMU generation directory", &path)?;
         let prepared = QemuPreparedRunDirectory::from_admitted_descriptors(
-            command, &path, directory, vmstate, contract,
+            requirements,
+            &path,
+            directory,
+            vmstate,
+            contract,
         )
         .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
         Ok(prepared)
