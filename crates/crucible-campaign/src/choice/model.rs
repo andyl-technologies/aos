@@ -277,6 +277,12 @@ impl SelectableDeclaration {
         &self.semantic_tags
     }
 
+    /// Returns the semantic context used to derive the choice class.
+    #[must_use]
+    pub const fn class_context(&self) -> &ChoiceClassContext {
+        &self.class_context
+    }
+
     /// Returns whether absence of this selectable fails scenario admission.
     #[must_use]
     pub const fn required(&self) -> bool {

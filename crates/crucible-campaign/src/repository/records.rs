@@ -450,6 +450,7 @@ impl CampaignRepository {
             let selection = ResolvedSelection {
                 selection,
                 opportunity,
+                declaration,
                 domain,
             };
             selections.insert(*id, selection.clone());
