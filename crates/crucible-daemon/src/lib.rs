@@ -30,6 +30,8 @@
 //! [`executor_worker`] resolves accepted assignments, delegates execution, and
 //! publishes immutable observation candidates; [`executor_pool`] owns the
 //! fixed worker threads and their short supervisor reconciliation phases;
+//! [`executor_server`] owns the bounded authenticated Unix listener that lends
+//! cloneable executor-service handles to fixed connection workers;
 //! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
 //! [`exact_checkpoint_restore`] authenticates exact-pin selections or durable
 //! attempt-resume roots and streams their VMState into fail-closed guarded
@@ -77,6 +79,7 @@ pub mod exact_pin_retention;
 pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_pool;
+pub mod executor_server;
 pub mod executor_supervisor;
 pub mod executor_worker;
 #[cfg(target_os = "linux")]
@@ -203,14 +206,22 @@ pub use exact_pin_retention::{
 };
 pub use executor_capability::LocalExecutorCapabilityService;
 pub use executor_loopback::{
-    LoopbackExecutorProtocolError, LoopbackExecutorServerError, LoopbackExecutorService,
-    LoopbackExecutorTimeouts, serve_loopback_executor_component_once, serve_loopback_executor_once,
+    DEFAULT_EXECUTOR_REQUESTS_PER_CONNECTION, LoopbackExecutorProtocolError,
+    LoopbackExecutorServerError, LoopbackExecutorService, LoopbackExecutorTimeouts,
+    MAX_EXECUTOR_REQUESTS_PER_CONNECTION, serve_loopback_executor_component_connection_with_limits,
+    serve_loopback_executor_component_once, serve_loopback_executor_once,
     serve_loopback_executor_once_with_timeouts,
 };
 pub use executor_pool::{
     LocalExecutorPoolConfigError, LocalExecutorPoolReport, LocalExecutorPoolService,
     LocalExecutorPoolServiceError, LocalExecutorPoolShutdownError, LocalExecutorWorkerPool,
     MAX_LOCAL_EXECUTOR_WORKERS,
+};
+pub use executor_server::{
+    ExecutorLoopbackListenerError, ExecutorLoopbackServer, ExecutorLoopbackServerConfig,
+    ExecutorLoopbackServerConfigError, ExecutorLoopbackServerReport,
+    ExecutorLoopbackServerShutdown, MAX_EXECUTOR_LISTENER_WORKERS,
+    MAX_EXECUTOR_PENDING_CONNECTIONS, UnixPeerExecutorIdentity,
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,

@@ -471,6 +471,12 @@ local executor through either the direct or loopback-RPC adapter. Planner and
 executor services are component seams, not additional user control planes;
 their authority and idempotency rules are defined in
 [`04a-coordinator-executor-contract.md`](04a-coordinator-executor-contract.md).
+The loopback executor component now has a bounded fixed-worker listener over an
+already-bound Unix socket. It authenticates one startup-fixed effective
+user/group identity through `SO_PEERCRED`, bounds queued sockets and requests
+per connection, and joins all connection workers on shutdown. Filesystem
+endpoint ownership and production QEMU worker selection remain daemon bootstrap
+responsibilities rather than a second user-facing service.
 
 The direct service contract implements strict request-bound `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, historical `GetSnapshot`, coalesced

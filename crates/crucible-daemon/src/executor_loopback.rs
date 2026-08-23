@@ -56,6 +56,10 @@ const RESUME_ATTEMPT_EXECUTION_REQUEST_KIND: u8 = 13;
 const RESUME_ATTEMPT_EXECUTION_RESPONSE_KIND: u8 = 14;
 const DEFAULT_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Default fairness ceiling for one executor connection.
+pub const DEFAULT_EXECUTOR_REQUESTS_PER_CONNECTION: usize = 4_096;
+/// Maximum complete exchanges admitted on one executor connection.
+pub const MAX_EXECUTOR_REQUESTS_PER_CONNECTION: usize = 65_536;
 
 /// Finite read/write deadlines for one loopback executor exchange.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,6 +412,51 @@ where
     result
 }
 
+/// Serves one executor connection until clean peer shutdown or its fairness limit.
+///
+/// The service value remains connection-local while its cloneable underlying
+/// executor actor may be shared by a bounded listener. Reaching the request
+/// ceiling closes the connection after the last complete response so the peer
+/// must re-enter listener admission. A clean close between frames is success;
+/// a partial frame remains a protocol error.
+///
+/// # Errors
+///
+/// Returns [`LoopbackExecutorServerError::Protocol`] for an invalid request
+/// limit, malformed framing, canonical bytes, invalid service response, or
+/// bounded socket failure. Returns [`LoopbackExecutorServerError::Service`]
+/// when the executor cannot produce a selected response. Every error shuts
+/// down the stream.
+pub fn serve_loopback_executor_component_connection_with_limits<S>(
+    stream: &mut UnixStream,
+    service: &mut S,
+    timeouts: LoopbackExecutorTimeouts,
+    maximum_requests: usize,
+) -> Result<(), LoopbackExecutorServerError<S::Error>>
+where
+    S: ExecutorCapabilityService + ExecutorControlService + ExecutorResumeService,
+{
+    if maximum_requests == 0 || maximum_requests > MAX_EXECUTOR_REQUESTS_PER_CONNECTION {
+        let _ = stream.shutdown(Shutdown::Both);
+        return Err(LoopbackExecutorProtocolError::InvalidRequestLimit.into());
+    }
+
+    for _ in 0..maximum_requests {
+        match serve_loopback_executor_component_inner(stream, service, timeouts) {
+            Ok(()) => {}
+            Err(LoopbackExecutorServerError::Protocol(
+                LoopbackExecutorProtocolError::ConnectionClosed,
+            )) => return Ok(()),
+            Err(error) => {
+                let _ = stream.shutdown(Shutdown::Both);
+                return Err(error);
+            }
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
 fn serve_loopback_executor_component_inner<S>(
     stream: &mut UnixStream,
     service: &mut S,
@@ -530,6 +579,12 @@ pub enum LoopbackExecutorProtocolError {
     /// A caller attempted to disable a required finite deadline.
     #[error("executor loopback read/write timeout must be between 1ns and 1h")]
     InvalidTimeout,
+    /// The peer closed cleanly between complete request frames.
+    #[error("executor loopback peer closed the connection")]
+    ConnectionClosed,
+    /// A connection fairness limit was zero or exceeded 65,536 requests.
+    #[error("executor loopback request limit is outside 1..=65,536")]
+    InvalidRequestLimit,
     /// The fixed frame header violated the versioned protocol.
     #[error("executor loopback frame is invalid: {reason}")]
     InvalidFrame {
@@ -601,7 +656,16 @@ fn read_frame(
     expected_kind: u8,
     timeout: Duration,
 ) -> Result<Vec<u8>, LoopbackExecutorProtocolError> {
-    let (kind, body) = read_frame_any(stream, timeout)?;
+    let (kind, body) = match read_frame_any(stream, timeout) {
+        Err(LoopbackExecutorProtocolError::ConnectionClosed) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "executor loopback peer closed before a response",
+            )
+            .into());
+        }
+        result => result?,
+    };
     if kind != expected_kind {
         return Err(LoopbackExecutorProtocolError::InvalidFrame {
             reason: "unexpected-message-kind",
@@ -616,7 +680,7 @@ fn read_frame_any(
 ) -> Result<(u8, Vec<u8>), LoopbackExecutorProtocolError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     let deadline = operation_deadline(timeout)?;
-    read_exact_until(stream, &mut header, deadline)?;
+    read_exact_until(stream, &mut header, deadline, true)?;
     if &header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
         return Err(LoopbackExecutorProtocolError::InvalidFrame {
             reason: "unsupported-frame-version",
@@ -638,7 +702,7 @@ fn read_frame_any(
         });
     }
     let mut body = vec![0; length];
-    read_exact_until(stream, &mut body, deadline)?;
+    read_exact_until(stream, &mut body, deadline, false)?;
     Ok((header[8], body))
 }
 
@@ -655,6 +719,7 @@ fn read_exact_until(
     stream: &mut UnixStream,
     buffer: &mut [u8],
     deadline: Instant,
+    clean_initial_eof: bool,
 ) -> Result<(), LoopbackExecutorProtocolError> {
     let mut offset = 0;
     while offset < buffer.len() {
@@ -663,6 +728,9 @@ fn read_exact_until(
             .ok_or_else(timeout_io_error)?;
         stream.set_read_timeout(Some(remaining))?;
         match stream.read(&mut buffer[offset..]) {
+            Ok(0) if offset == 0 && clean_initial_eof => {
+                return Err(LoopbackExecutorProtocolError::ConnectionClosed);
+            }
             Ok(0) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
