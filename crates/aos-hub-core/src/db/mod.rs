@@ -6628,6 +6628,10 @@ impl Database {
 
     /// Advances an active multipart upload into its idempotent completion phase.
     ///
+    /// A retry carrying the durable completion token renews the same logical
+    /// completion. A different request may only take ownership after the lease
+    /// expires.
+    ///
     /// # Errors
     ///
     /// Returns an error when the upload is not active/completing or persistence fails.
@@ -6652,6 +6656,7 @@ impl Database {
                  WHERE upload_id = ?1
                    AND ((state = 'active' AND completion_token IS NULL
                          AND completion_since IS NULL)
+                     OR (state = 'completing' AND completion_token = ?2)
                      OR (state = 'completing' AND completion_since <= ?4))",
                 &vals![upload_id, completion_token, claimed_at, steal_before],
             )
@@ -29423,8 +29428,12 @@ source_nar_hash = ""
             .create_managed_registry(org_id, "", "registry", "public", &[], false)
             .await
             .unwrap();
-        let mut placement =
-            topology_placement(SurfaceTarget::Registry(registry_id), "primary", "registry", 0);
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "registry",
+            0,
+        );
         placement.binding_id = binding_id;
         let placement = db.create_surface_placement(&placement).await.unwrap();
 
@@ -29449,11 +29458,10 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
-        assert!(
-            db.advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
-                .await
-                .unwrap()
-        );
+        assert!(db
+            .advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
+            .await
+            .unwrap());
 
         let watermark_version = placement.watermark_resource_version.unwrap();
         let advanced = db
@@ -30797,6 +30805,52 @@ source_nar_hash = ""
                 .unwrap()
                 .len(),
             1
+        );
+
+        let first_completion = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-1",
+                200,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first_completion.completion_token.as_deref(),
+            Some("completion-token-1")
+        );
+        let retry = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-1",
+                201,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.completion_since, Some(201));
+        assert!(db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-2",
+                202,
+                0,
+            )
+            .await
+            .is_err());
+        let stolen = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-2",
+                900,
+                300,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stolen.completion_token.as_deref(),
+            Some("completion-token-2")
         );
 
         db.finish_registry_publication_multipart_upload("multipart-upload-1", "aborted", 3)

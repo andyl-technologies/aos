@@ -475,9 +475,8 @@ async fn main() -> Result<()> {
             }
             let mut app_state = AppState::new(db, external_url).await;
             if let Some(path) = jwt_secret_file {
-                let secret = aos_hub::auth::seal::read_secret_file(&path).with_context(|| {
-                    format!("reading JWT signing secret at {}", path.display())
-                })?;
+                let secret = aos_hub::auth::seal::read_secret_file(&path)
+                    .with_context(|| format!("reading JWT signing secret at {}", path.display()))?;
                 anyhow::ensure!(
                     secret.len() >= 32,
                     "JWT signing secret must contain at least 32 bytes"
