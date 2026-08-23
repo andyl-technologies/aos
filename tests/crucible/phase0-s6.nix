@@ -801,7 +801,7 @@ in
             echo host_adversary_runs=2
             echo host_adversary_configured_pause_milliseconds=15
             echo host_adversary_configured_total_stopped_milliseconds_per_run=90
-            echo host_adversary_nominal_worker_wall_milliseconds_per_run=240
+            echo host_adversary_nominal_worker_wall_milliseconds_per_run=95
             echo host_adversary_worker_wall_timeout_seconds=2
             echo host_adversary_busy_workers=0
             echo qemu_internal_seed=0x0010c006

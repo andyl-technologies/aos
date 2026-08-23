@@ -973,7 +973,7 @@ in
             host_adversary_perturbations=6
             host_adversary_configured_pause_milliseconds=15
             host_adversary_configured_total_stopped_milliseconds=90
-            host_adversary_nominal_worker_wall_milliseconds=240
+            host_adversary_nominal_worker_wall_milliseconds=95
             host_adversary_worker_wall_timeout_seconds=2
             host_adversary_busy_workers=0
             scenario_identity_includes=guest-entropy-seed

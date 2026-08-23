@@ -1,8 +1,5 @@
 //! Exact QEMU adapter-coordinate tests.
 
-// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for localization.
-#![allow(clippy::expect_used)]
-
 use super::*;
 
 #[test]
@@ -145,9 +142,9 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
         29,
         second_evidence,
     )
-    .expect("finalize second staged result");
+    .unwrap_or_else(|error| panic!("second staged result must finalize: {error}"));
     finalize_staged_result(&mut results, first, first_precondition, 23, first_evidence)
-        .expect("finalize first staged result");
+        .unwrap_or_else(|error| panic!("first staged result must finalize: {error}"));
 
     assert_eq!(results.capacity(), results_capacity);
     assert_eq!(results[0].action, first);
@@ -174,9 +171,9 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
     let mut committed = Vec::with_capacity(2);
     let committed_capacity = committed.capacity();
     retain_committed_evidence(&mut committed, first, committed_evidence)
-        .expect("retain first committed evidence");
+        .unwrap_or_else(|error| panic!("first evidence must fit reserved storage: {error}"));
     retain_committed_evidence(&mut committed, second, committed_evidence)
-        .expect("retain second committed evidence");
+        .unwrap_or_else(|error| panic!("second evidence must fit reserved storage: {error}"));
     assert_eq!(committed.capacity(), committed_capacity);
     assert_eq!(
         committed

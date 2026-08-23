@@ -1534,7 +1534,7 @@ in
               echo host_adversary_perturbations=6
               echo host_adversary_configured_pause_milliseconds=15
               echo host_adversary_configured_total_stopped_milliseconds=90
-              echo host_adversary_nominal_worker_wall_milliseconds=240
+              echo host_adversary_nominal_worker_wall_milliseconds=95
               echo host_adversary_worker_wall_timeout_seconds=2
               echo host_adversary_busy_workers=0
               echo authoritative_trace_scope="$authoritative_trace_scope"

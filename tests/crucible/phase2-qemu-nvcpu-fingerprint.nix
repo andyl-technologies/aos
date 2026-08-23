@@ -1491,7 +1491,7 @@ in
             real_qemu_adversary_perturbations=6
             real_qemu_adversary_configured_pause_milliseconds=15
             real_qemu_adversary_configured_total_stopped_milliseconds=90
-            real_qemu_adversary_nominal_worker_wall_milliseconds=240
+            real_qemu_adversary_nominal_worker_wall_milliseconds=95
             real_qemu_adversary_worker_wall_timeout_seconds=2
             real_qemu_adversary_busy_workers=0
             real_qemu_importer=crucible-qemu-fingerprint
