@@ -286,6 +286,8 @@ pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
-    QemuAttemptCancellationSignal, QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
+    MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
+    QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
+    QemuAttemptHostResourceOwner,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

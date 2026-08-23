@@ -354,3 +354,106 @@ fn dropping_a_live_guard_transfers_all_host_resources_to_quarantine() {
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
+
+fn generation(node: &str, generation: u64) -> ProductionVmNodeGeneration {
+    ProductionVmNodeGeneration::new(
+        NodeId {
+            name: String::from(node),
+        },
+        generation,
+    )
+    .expect("valid process generation")
+}
+
+#[test]
+fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 2).expect("bounded generation owner");
+
+    let mut first_a = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("first vm-a generation");
+    let mut first_b = owner
+        .register_generation(generation("vm-b", 1))
+        .expect("first vm-b generation");
+    assert!(
+        owner.register_generation(generation("vm-a", 1)).is_err(),
+        "one generation identity cannot be reused"
+    );
+    assert!(
+        owner.register_generation(generation("vm-a", 2)).is_err(),
+        "one scheduler node cannot retain two live generations"
+    );
+    assert!(
+        owner.register_generation(generation("vm-c", 1)).is_err(),
+        "distinct node retention stays bounded"
+    );
+
+    first_a.finish().expect("release reaped vm-a generation");
+    first_b.finish().expect("release reaped vm-b generation");
+    let mut second_a = owner
+        .register_generation(generation("vm-a", 2))
+        .expect("strictly newer vm-a generation");
+    second_a
+        .finish()
+        .expect("release reaped replacement generation");
+    owner.finish().expect("release aggregate attempt resources");
+    owner.finish().expect("aggregate finish is idempotent");
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn abandoned_generation_lease_permanently_quarantines_aggregate_guard() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+
+    let lease = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("first vm-a generation");
+    drop(lease);
+    assert!(owner.finish().is_err());
+    assert!(
+        owner.finish().is_err(),
+        "quarantine remains observable on exact retry"
+    );
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn active_generation_prevents_aggregate_release_without_losing_lease_authority() {
+    let resources = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default())
+        .expect("composed resource guard");
+    let mut owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+    let mut lease = owner
+        .register_generation(generation("vm-a", 1))
+        .expect("first vm-a generation");
+
+    assert!(owner.finish().is_err());
+    lease
+        .finish()
+        .expect("the exact lease remains locally releasable for diagnostics");
+    assert!(owner.finish().is_err());
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
