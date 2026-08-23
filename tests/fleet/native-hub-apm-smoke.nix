@@ -196,8 +196,21 @@ in {
             {HUB}/-/auth/session-token | {JQ} -er .accessToken
       """), timeout=120).strip()
       assert token.startswith("ey"), "browser session did not mint a JWT"
-      publisher.succeed(hub_command("whoami", token) + " | grep -q fleet-root")
+
+      identity = json.loads(publisher.succeed(hub_command("whoami", token)))
+      assert identity["schema_version"] == "aos.hub.cli/v1", identity
+      assert identity["kind"] == "who_am_i_response", identity
+      assert identity["data"]["principal_kind"] == "user", identity
+      assert identity["data"]["principal_ref"] == "fleet-root@example.test", identity
+      assert identity["data"]["email"] == "fleet-root@example.test", identity
+      assert identity["data"]["access_scope"] == "instance", identity
+      assert identity["data"]["grants"] == [
+          {"scope": "instance", "role": "owner"}
+      ], identity
+
       empty_orgs = json.loads(publisher.succeed(hub_command("org list", token)))
+      assert empty_orgs["schema_version"] == "aos.hub.cli/v1", empty_orgs
+      assert empty_orgs["kind"] == "list_organizations_response", empty_orgs
       assert empty_orgs["data"]["organizations"] == [], empty_orgs
 
       # The publisher receives host-built paths through 9p, then makes only
