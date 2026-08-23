@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
-    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuNodeChild, QemuVmRealizationError,
+    LinuxQemuAttemptHostOwner, QemuChildProcessContract, QemuLaunchCommand, QemuNodeChild,
+    QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 
 use crate::executor_supervisor::{
@@ -62,6 +63,17 @@ pub trait QemuAttemptHostResourceOwner {
     /// Returns an operational error after terminal cleanup has closed launch
     /// authority or when the contract cannot be authenticated.
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError>;
+
+    /// Provisions and lends the descriptor-pinned run-directory capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error when launch admission or retained storage
+    /// authentication fails, or the one-shot capability was already issued.
+    fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
 
     /// Duplicates the narrow sticky process-cancellation capability.
     ///
@@ -216,6 +228,13 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.process_contract()
+    }
+
+    fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.host.prepare_run_directory(command)
     }
 
     fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
@@ -445,6 +464,13 @@ where
 {
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.child_process_contract()
+    }
+
+    fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.host.prepare_run_directory(command)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
