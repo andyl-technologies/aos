@@ -73,7 +73,7 @@ impl<K: Ord, V, const MAX: u64> BoundedMap<K, V, MAX> {
             ));
         }
         self.entries
-            .try_reserve(additional)
+            .try_reserve_exact(additional)
             .map_err(|_| collection_resource("bounded CBOR map", current, requested, MAX))
     }
 

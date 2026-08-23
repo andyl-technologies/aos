@@ -10,7 +10,7 @@ pub(super) fn memory_batch(
         actions: actions
             .iter()
             .map(|prepared| MemoryMutationBatchActionV1 {
-                action_hash: prepared.action.id().bytes,
+                action_hash: prepared.action_id.bytes,
                 mutation: prepared.payload.clone(),
             })
             .collect(),
@@ -28,7 +28,7 @@ pub(super) fn memory_batch_evidence_matches(
             .iter()
             .zip(&prepared.actions)
             .all(|(evidence, prepared_action)| {
-                evidence.action_hash == prepared_action.action.id().bytes
+                evidence.action_hash == prepared_action.action_id.bytes
                     && memory_evidence_matches(
                         &evidence.evidence,
                         &prepared_action.payload,

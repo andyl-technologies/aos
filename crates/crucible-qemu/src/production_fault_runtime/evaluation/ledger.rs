@@ -4,7 +4,7 @@ use super::*;
 
 /// Owns every QEMU action record needed after the backend commit becomes visible.
 pub(in crate::production_fault_runtime) struct StagedQemuActionLedger {
-    actions: Vec<ResolvedBindingAction>,
+    actions: Vec<(ContentHash, ResolvedBindingAction)>,
 }
 
 impl ProductionFaultRuntime {
@@ -83,7 +83,7 @@ impl ProductionFaultRuntime {
             let identity = action.id();
             if staged
                 .iter()
-                .any(|candidate: &ResolvedBindingAction| candidate.id() == identity)
+                .any(|(candidate, _action)| *candidate == identity)
                 || (action.kind != BindingActionKind::RemovePersistent
                     && self.qemu_issued_actions.get(&identity).is_some())
             {
@@ -102,9 +102,12 @@ impl ProductionFaultRuntime {
             {
                 return Err(FaultExecutionError::CheckpointPresence.into());
             }
-            staged.push(try_clone_action(action, || {
-                ledger_allocation(current, node_action_count, self.resource_limits)
-            })?);
+            staged.push((
+                identity,
+                try_clone_action(action, || {
+                    ledger_allocation(current, node_action_count, self.resource_limits)
+                })?,
+            ));
         }
         Ok(StagedQemuActionLedger { actions: staged })
     }
@@ -115,15 +118,13 @@ impl ProductionFaultRuntime {
         mut commits: Vec<(ContentHash, CommittedQemuActionEvidence)>,
     ) -> Result<(), ProductionFaultRuntimeError> {
         if commits.len() != staged.actions.len()
-            || staged
-                .actions
-                .iter()
-                .any(|action| !commits.iter().any(|(identity, _)| *identity == action.id()))
+            || staged.actions.iter().any(|(action_id, _action)| {
+                !commits.iter().any(|(identity, _)| identity == action_id)
+            })
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        for action in staged.actions {
-            let identity = action.id();
+        for (identity, action) in staged.actions {
             let commit = take_qemu_commit(&mut commits, identity)
                 .ok_or(FaultExecutionError::CheckpointPresence)?;
             match action.kind {

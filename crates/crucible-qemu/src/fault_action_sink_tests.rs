@@ -218,6 +218,18 @@ fn typed_prepare_reserves_only_the_exact_evidence_capacity() {
 }
 
 #[test]
+fn dynamic_prepare_retains_only_the_exact_published_evidence() {
+    let source = vec![7_u8; 913];
+    let mut oversized = Vec::with_capacity(32 * 1024 * 1024);
+    oversized.extend_from_slice(&source);
+
+    let retained = copy_fault_result_storage(FaultResourceLimits::default(), &oversized)
+        .unwrap_or_else(|error| panic!("dynamic evidence storage must be admitted: {error}"));
+    assert_eq!(retained, source);
+    assert_eq!(retained.capacity(), source.len());
+}
+
+#[test]
 fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
     let payload = b"typed-result-evidence";
     let header = crucible_shmem::FaultResultHeaderV1 {

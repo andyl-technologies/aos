@@ -41,11 +41,15 @@ mod result_validation;
 use evidence::*;
 use memory_payload::{memory_batch, memory_batch_evidence_matches, prepare_memory_action_payload};
 pub(crate) use result_validation::validate_typed_node_result;
-use result_validation::{reserve_fault_result_storage, validate_typed_node_result_decoded};
+use result_validation::{
+    copy_fault_result_storage, reserve_fault_result_storage, stage_apply_commands,
+    validate_typed_node_result_decoded,
+};
 
 #[derive(Clone)]
 struct PreparedMemoryAction {
     action: ResolvedBindingAction,
+    action_id: ContentHash,
     node: NodeId,
     coordinate: u64,
     payload: MemoryMutationPayloadV1,
@@ -69,6 +73,7 @@ struct PreparedQemuNodeBatch {
 #[derive(Clone)]
 struct PreparedTypedNodeAction {
     action: ResolvedBindingAction,
+    action_id: ContentHash,
     node: NodeId,
     coordinate: u64,
     command_kind: FaultCommandKind,
@@ -82,6 +87,8 @@ struct AuthorizedQemuNodeBatch {
     preparation_evidence_len: usize,
     result_buffer: Vec<u8>,
     mutation_payload: Vec<u8>,
+    mutation_sequence: Option<u64>,
+    mutation_header: Option<FaultCommandHeaderV1>,
 }
 
 struct AuthorizedTypedNodeAction {
@@ -89,6 +96,8 @@ struct AuthorizedTypedNodeAction {
     preparation: NodeFaultEvidenceV1,
     request: NodeFaultPayloadV1,
     result_buffer: Vec<u8>,
+    apply_sequence: Option<u64>,
+    apply_header: Option<FaultCommandHeaderV1>,
 }
 
 /// Authenticated APPLY-result identity retained for occurrence correlation.
@@ -187,6 +196,7 @@ impl<'a> QemuFaultActionSink<'a> {
             qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
         Ok(PreparedMemoryAction {
             action: prepared.action,
+            action_id: action.id(),
             node: prepared.node,
             coordinate,
             payload: prepared.payload,
@@ -234,6 +244,7 @@ impl<'a> QemuFaultActionSink<'a> {
             qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
         Ok(PreparedTypedNodeAction {
             action: action.clone(),
+            action_id: action.id(),
             node,
             coordinate,
             command_kind: encoded.command_kind,
@@ -497,6 +508,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                     FaultRuntimeError::IncompleteAdapterState,
                 ));
             };
+            let preparation_evidence =
+                copy_fault_result_storage(self.resource_limits, &preparation_evidence)?;
             verify_qemu_evidence_hash(&preparation_header, &preparation_evidence)?;
             if preparation_header.status != FaultResultStatus::Prepared {
                 let evidence = result_evidence_hash(&preparation_header, &preparation_evidence);
@@ -555,6 +568,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 preparation_evidence_len: preparation_evidence.len(),
                 result_buffer: preparation_evidence,
                 mutation_payload,
+                mutation_sequence: None,
+                mutation_header: None,
             });
         }
 
@@ -623,7 +638,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 return Err(FaultActionCommitError::Rejected(Self::reject(
                     Some(&prepared.action),
                     FaultRuntimeError::ReplayPreconditionMismatch {
-                        action: prepared.action.id(),
+                        action: prepared.action_id,
                         expected,
                         observed: observed_precondition,
                     },
@@ -637,8 +652,12 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 preparation: evidence,
                 request,
                 result_buffer,
+                apply_sequence: None,
+                apply_header: None,
             });
         }
+
+        stage_apply_commands(self.nodes, &mut authorized, &mut authorized_typed)?;
 
         let mut applied = false;
         for authorized in authorized {
@@ -649,29 +668,15 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 preparation_evidence_len,
                 result_buffer,
                 mutation_payload,
-            } = authorized;
-            let mutation_sequence = self
-                .nodes
-                .reserve_fault_command_sequence(&prepared.node)
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::SequenceOverflow(
-                        "qemu_fault_command",
-                    ))
-                })?;
-            let mutation_header = memory_command_header(
-                prepared
-                    .actions
-                    .first()
-                    .ok_or(FaultActionCommitError::Fatal(
-                        FaultRuntimeError::IncompleteAdapterState,
-                    ))?,
-                &prepared.node,
-                prepared.coordinate,
                 mutation_sequence,
-                FAULT_COMMAND_FLAG_NONE,
-                preparation.precondition_sha256,
-                &mutation_payload,
-            )?;
+                mutation_header,
+            } = authorized;
+            let mutation_sequence = mutation_sequence.ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+            let mutation_header = mutation_header.ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
             let result = self
                 .nodes
                 .apply_fault_command_at_current_boundary_with_result_buffer(
@@ -732,7 +737,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             };
             applied = true;
             for prepared in prepared.actions {
-                let action = prepared.action.id();
+                let action = prepared.action_id;
                 retain_committed_evidence(&mut self.committed, action, committed_evidence)?;
                 finalize_staged_result(
                     &mut results,
@@ -749,23 +754,16 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 preparation,
                 request,
                 result_buffer,
+                apply_sequence,
+                apply_header,
             } = authorized;
             let coordinate = prepared.coordinate;
-            let sequence = self
-                .nodes
-                .reserve_fault_command_sequence(&prepared.node)
-                .map_err(|_source| {
-                    FaultActionCommitError::Fatal(FaultRuntimeError::SequenceOverflow(
-                        "qemu_fault_command",
-                    ))
-                })?;
-            let header = typed_command_header(
-                &prepared,
-                coordinate,
-                sequence,
-                FAULT_COMMAND_FLAG_NONE,
-                preparation.before_sha256,
-            )?;
+            let sequence = apply_sequence.ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+            let header = apply_header.ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
             let result = self
                 .nodes
                 .apply_fault_command_at_current_boundary_with_result_buffer(
@@ -784,7 +782,7 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
                 FaultResultStatus::Applied,
             )?;
             let evidence_hash = typed_node_application_evidence_hash(&evidence, coordinate);
-            let action = prepared.action.id();
+            let action = prepared.action_id;
             retain_committed_evidence(
                 &mut self.committed,
                 action,

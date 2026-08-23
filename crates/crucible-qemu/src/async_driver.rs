@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use crucible::{AdvanceOutcome, ExecutionHorizon, Icount};
 use crucible_shmem::DequeuedFaultResult;
-use thiserror::Error;
 
 use crate::{
     QemuCrashDetector, QemuNodeChannelError, QemuNodeRunStatus, QemuQuantumOperation,
@@ -403,26 +402,26 @@ pub trait QemuHostIoRuntime: Send {
             "host-I/O runtime does not own a QEMU fault-result transport",
         ))
     }
-}
 
-/// Error returned by a host-I/O runtime adapter.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
-pub struct QemuAsyncDriverRuntimeError {
-    /// Operation being attempted.
-    pub operation: &'static str,
-    /// Deterministic failure detail.
-    pub message: String,
-}
-
-impl QemuAsyncDriverRuntimeError {
-    /// Creates a runtime adapter error.
-    #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            operation,
-            message: message.into(),
-        }
+    /// Wakes QEMU and obtains one non-mutating PREPARE result with exact storage.
+    ///
+    /// Implementations may inspect the published result length and reserve
+    /// exactly that storage because PREPARE cannot make architectural state
+    /// visible. APPLY must continue to use [`Self::await_fault_result`] with
+    /// caller-owned storage reserved before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot wake
+    /// QEMU, inspect or allocate the result, or complete within `timeout`.
+    fn await_fault_preparation_result(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "await fault preparation result",
+            "host-I/O runtime does not own a QEMU fault-result transport",
+        ))
     }
 }
 
@@ -577,7 +576,7 @@ pub struct QemuAsyncLifecycleAwaitReport {
 }
 
 mod error;
-pub use error::{QemuAsyncDriverError, QemuAsyncDriverTargetError};
+pub use error::{QemuAsyncDriverError, QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError};
 
 mod driver;
 pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};
