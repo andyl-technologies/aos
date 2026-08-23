@@ -312,6 +312,7 @@ impl QuantumLoop for AppendingLoop {
                 .map(|operation| resolved_control_operation(self.quanta, operation))
                 .collect(),
             decisions: vec![decision],
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),

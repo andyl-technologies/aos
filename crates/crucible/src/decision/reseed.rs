@@ -34,7 +34,10 @@ impl DecisionRecorder {
 pub(super) fn count_app_random_draws(decisions: &[Decision]) -> u64 {
     decisions
         .iter()
-        .filter(|decision| matches!(decision, Decision::AppRandom(_)))
+        .filter(|decision| {
+            matches!(decision, Decision::AppRandom(_))
+                || matches!(decision, Decision::Selection(selection) if selection.is_app_random_model_sample())
+        })
         .count() as u64
 }
 

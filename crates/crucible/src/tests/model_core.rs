@@ -71,6 +71,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     let selection = campaign_selection_fixture()?;
     let decision = SelectionDecision::new(&selection);
     assert_eq!(decision.selection()?, selection);
+    assert!(!decision.is_app_random_model_sample());
 
     let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
     let encoded = schedule.to_compact_binary();

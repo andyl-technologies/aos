@@ -35,6 +35,49 @@ pub fn app_random_stream_name(node_name: &str, stream_tag: &str) -> String {
     )
 }
 
+/// Returns whether a canonical app-random stream name belongs to `node_name`.
+///
+/// The length-framed node component prevents a prefix collision with another
+/// node name or an embedded `/stream:` substring.
+#[must_use]
+pub fn app_random_stream_name_belongs_to_node(stream_name: &str, node_name: &str) -> bool {
+    let Some(framed_node) = stream_name.strip_prefix("app-random/node:") else {
+        return false;
+    };
+    let Some((declared_node_len, node_and_stream)) = framed_node.split_once(':') else {
+        return false;
+    };
+    let Some(node_len) = parse_canonical_length(declared_node_len) else {
+        return false;
+    };
+    if node_len != node_name.len() || node_and_stream.get(..node_len) != Some(node_name) {
+        return false;
+    }
+    let Some(framed_stream) = node_and_stream
+        .get(node_len..)
+        .and_then(|tail| tail.strip_prefix("/stream:"))
+    else {
+        return false;
+    };
+    let Some((declared_tag_len, tag)) = framed_stream.split_once(':') else {
+        return false;
+    };
+    parse_canonical_length(declared_tag_len) == Some(tag.len())
+}
+
+fn parse_canonical_length(value: &str) -> Option<usize> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.bytes().try_fold(0_usize, |length, byte| {
+        let digit = byte.checked_sub(b'0')?;
+        if digit > 9 {
+            return None;
+        }
+        length.checked_mul(10)?.checked_add(usize::from(digit))
+    })
+}
+
 /// One completed deterministic app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppRandomDecisionTransportRecord {
@@ -226,5 +269,24 @@ mod tests {
                 value: 0x100,
             })
         );
+    }
+
+    #[test]
+    fn stream_name_membership_uses_the_complete_length_framed_node() {
+        let stream = app_random_stream_name("node-a", "tag/with/slashes");
+        assert!(app_random_stream_name_belongs_to_node(&stream, "node-a"));
+        assert!(!app_random_stream_name_belongs_to_node(&stream, "node"));
+        assert!(!app_random_stream_name_belongs_to_node(
+            &stream,
+            "node-a/stream"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:3:toolong",
+            "node-a"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:03:tag",
+            "node-a"
+        ));
     }
 }

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{DebugCoordinate, RuntimeState};
+use crucible_campaign::ChoiceDiscovery;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
@@ -475,9 +476,11 @@ pub trait QuantumLoop {
 
     /// Validates and appends causal decisions completed by a live backend.
     ///
-    /// The returned tuple contains the canonical decisions actually appended
-    /// (including any seeded RNG draw preceding an app-random decision), the
-    /// updated frontier configuration, and their unified event-log append.
+    /// The returned tuple contains the canonical decisions actually appended,
+    /// self-contained records for choices discovered while normalizing them,
+    /// the updated frontier configuration, and their unified event-log append.
+    /// Live application randomness is returned as a seeded RNG draw followed
+    /// by a typed selection rather than the backend's legacy transport record.
     ///
     /// # Errors
     ///
@@ -486,7 +489,15 @@ pub trait QuantumLoop {
     fn append_backend_causal_decisions(
         &mut self,
         _decisions: Vec<Decision>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("quantum loop cannot append causal backend decisions"),
         })
@@ -639,6 +650,8 @@ pub struct QuantumOutcome {
     pub resolved_events: Vec<ScheduledEvent>,
     /// Decisions appended by STEP in canonical order.
     pub decisions: Vec<Decision>,
+    /// Self-contained choice records discovered while normalizing live decisions.
+    pub discovered_choices: Vec<ChoiceDiscovery>,
     /// Event-log entries appended by EMIT in deterministic order.
     pub event_log_entries: Vec<SchedulerEventLogEntry>,
     /// Canonical bytes of the final event-log segment appended by this quantum.

@@ -97,6 +97,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),
@@ -180,6 +181,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     advanced_node: None,
                     resolved_events: Vec::new(),
                     decisions,
+                    discovered_choices: Vec::new(),
                     event_log_entries: append.entries,
                     event_log_segment_bytes: append.segment_bytes,
                     event_log_segment_text: append.segment_text,
@@ -504,7 +506,15 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     fn append_backend_causal_decisions(
         &mut self,
         decisions: Vec<Decision>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible::campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         self.inner.append_backend_causal_decisions(decisions)
     }
 

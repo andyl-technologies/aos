@@ -153,6 +153,7 @@ impl QuantumLoop for QuiescentLifecycleLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: vec![decision],
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),
