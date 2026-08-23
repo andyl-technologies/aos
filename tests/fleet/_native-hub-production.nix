@@ -101,6 +101,14 @@
       maxDownloadMiB = 768;
       maxRootMiB = 768;
     };
+    # Fleet assertions and the publisher runbook use the same small Unix
+    # inspection toolkit an operator image carries. These are AOS-built tools;
+    # they do not provide package payloads or seeded Hub state.
+    environment.systemPackages = [
+      pkgs.gawk
+      pkgs.grep
+      pkgs.sed
+    ];
   };
 
   consumerTools = {
