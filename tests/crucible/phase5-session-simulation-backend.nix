@@ -21,7 +21,10 @@
   qemuNodeLib = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
     (builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs)
-    (builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
   ];
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;

@@ -3,6 +3,7 @@
 use crucible_shmem::{MappedSetupRegionAccessError, SetupRegionMapError};
 use thiserror::Error;
 
+use super::QemuLiveHostIoRuntime;
 use crate::QemuAsyncDriverRuntimeError;
 
 /// Maps a node-slot access failure to a runtime await error.
