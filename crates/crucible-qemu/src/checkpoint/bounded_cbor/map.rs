@@ -60,6 +60,29 @@ impl<K: Ord, V, const MAX: u64> BoundedMap<K, V, MAX> {
             .map(|index| &mut self.entries[index].1)
     }
 
+    /// Reserves storage for later inserts without changing canonical contents.
+    pub(crate) fn try_reserve(&mut self, additional: usize) -> Result<(), BoundedCborError> {
+        let current = u64::try_from(self.entries.len()).unwrap_or(u64::MAX);
+        let requested = u64::try_from(additional).unwrap_or(u64::MAX);
+        if current.saturating_add(requested) > MAX {
+            return Err(collection_resource(
+                "bounded CBOR map",
+                current,
+                requested,
+                MAX,
+            ));
+        }
+        self.entries
+            .try_reserve(additional)
+            .map_err(|_| collection_resource("bounded CBOR map", current, requested, MAX))
+    }
+
+    /// Returns the admitted entry capacity for precommit staging tests.
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+
     /// Inserts or replaces one entry after fallibly admitting vector growth.
     ///
     /// # Errors
