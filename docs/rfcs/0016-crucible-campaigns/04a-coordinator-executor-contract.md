@@ -2110,7 +2110,8 @@ instruction count to match the live boundary before QEMU VMState or host-I/O
 capture begins. Success leaves QEMU paused. Failure after sealing also closes
 further modeled progress and retains the session for guarded reap or
 quarantine. A successful capture returns authenticated `QemuVmSnapshot`
-metadata plus a reopenable, byte-stable VMState source. The session reaps QEMU
+metadata, the complete `SingleSchedulerCheckpoint` from that same paused
+boundary, and a reopenable, byte-stable VMState source. The session reaps QEMU
 before handing that linear capture to the worker pool; the supervisor continues
 charging the execution reservation until durable pause. The real-node executor
 now supplies the underlying ordered primitive: after
@@ -2123,11 +2124,14 @@ open. The guarded live session now performs that conversion itself, records the
 successful capture as the backend reap attestation, and releases only the host
 resource guard during `finish`; it cannot accidentally issue a second shutdown
 or hand modeled code the opaque source. The modeled driver and production
-worker/factory selection remain open. The daemon then
-prepares a no-write, content-addressed root over canonical snapshot metadata and
-the streamed opaque VMState child, stages that exact root in the assignment
-ledger before the first immutable write, publishes both children before the
-root, and requires exact durable placement receipts. The
+worker/factory selection remain open. The daemon then prepares a no-write,
+content-addressed version-three root over canonical snapshot metadata, the
+complete scheduler continuation, and the streamed opaque VMState child; stages
+that exact root in the assignment ledger before the first immutable write;
+publishes all three children before the root; and requires exact durable
+placement receipts. Version-two roots remain readable for legacy
+authentication but are incomplete campaign continuations and MUST be rejected
+by attempt resume before VMState materialization. The
 ledger preserves requested, publishing, and paused phases across restart; the
 worker result and publication APIs use linear captured, prepared, staged, and
 published tokens, so a storage or compare-exchange error never requires
@@ -2135,9 +2139,16 @@ rerunning QEMU or repeating a completed capture.
 The campaign supervisor issues the exact checkpoint request and retains its
 reservation until the executor reports durable pause. Attempt resume takes the
 exact root retained in that execution's durable paused origin, authenticates
-the complete immutable root, and requires its configuration to equal either
-the attempt's pre-selection boundary or its post-selection boundary before any
-destination write. Exact-pin hibernation instead loads the selected root under
+the complete immutable root, requires the scheduler child to reconstruct the
+same exact configuration, and requires that configuration to equal either the
+attempt's pre-selection boundary or its post-selection boundary before any
+destination write. Before modeled work, the runner also exact-checks the
+scheduler frontier, scheduler-state projection, future decision-RNG cursors,
+event-log offset, and retained event-log segment set against the restored
+checkpoint/runtime. The modeled driver receives this authenticated
+continuation separately from the QEMU live capability; it cannot silently
+restart scheduler state from the reduced runtime projection. Exact-pin
+hibernation instead loads the selected root under
 the exact-pin inventory fence, releases that fence, and reauthenticates the
 recorded pin fact against the current semantic projection. Both operations
 stream the VMState child through the same pinned run-directory transaction. The
@@ -2145,7 +2156,8 @@ destination becomes unlaunchable before its first truncate, accepts no more
 than the declared/admitted bytes, and becomes
 eligible for exact restore only after authenticated EOF, exact length, file
 sync, retained-inode validation, and binding to the aggregate snapshot
-metadata plus VMState child through the selected `ExactCheckpointId` root.
+metadata, scheduler continuation, and VMState child through the selected
+`ExactCheckpointId` root.
 Cancellation, corruption, a short copy, or a dropped writer leaves
 the authority unready; a later exact retry must replace it completely. Guarded
 spawn separately requires the same launch-resource ceiling and exact snapshot

@@ -8,7 +8,7 @@
 
 use crucible::{
     AdvanceOutcome, BackendError, BackendInput, Configuration, EventLog, EventLogOffset,
-    ExecutionFingerprint, ExecutionHorizon, Icount,
+    ExecutionFingerprint, ExecutionHorizon, Icount, SingleSchedulerCheckpoint,
 };
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ObservationCandidate};
 use crucible_qemu::{
@@ -23,6 +23,7 @@ use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CrucibleAttemptExecution, ExecutionCancellation,
     QemuCrucibleAttemptSession, QemuCrucibleSessionFactory, captured_qemu_vmstate_blob,
+    exact_checkpoint_store::validate_scheduler_checkpoint_basis,
 };
 
 /// Read-only operational boundary available to a modeled attempt driver.
@@ -190,14 +191,20 @@ pub trait QemuAttemptResourceGuardFactory {
 pub struct QemuExactCheckpointRealization {
     checkpoint: ExactCheckpointId,
     realization: QemuVmRealization,
+    scheduler: SingleSchedulerCheckpoint,
 }
 
 impl QemuExactCheckpointRealization {
     /// Binds an authenticated immutable root to the realization restored from it.
-    pub const fn new(checkpoint: ExactCheckpointId, realization: QemuVmRealization) -> Self {
+    pub const fn new(
+        checkpoint: ExactCheckpointId,
+        realization: QemuVmRealization,
+        scheduler: SingleSchedulerCheckpoint,
+    ) -> Self {
         Self {
             checkpoint,
             realization,
+            scheduler,
         }
     }
 
@@ -213,10 +220,16 @@ impl QemuExactCheckpointRealization {
         &self.realization
     }
 
-    /// Consumes the binding into the live realization.
+    /// Returns the complete modeled scheduler continuation restored with QEMU.
     #[must_use]
-    pub fn into_realization(self) -> QemuVmRealization {
-        self.realization
+    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+        &self.scheduler
+    }
+
+    /// Consumes the binding into the live realization and scheduler continuation.
+    #[must_use]
+    pub fn into_parts(self) -> (QemuVmRealization, SingleSchedulerCheckpoint) {
+        (self.realization, self.scheduler)
     }
 }
 
@@ -230,6 +243,8 @@ pub enum QemuLiveAttemptResult {
         candidate: Box<ObservationCandidate>,
         /// Exact scheduler checkpoint at the same paused boundary.
         checkpoint: Box<crucible::Checkpoint>,
+        /// Complete scheduler continuation at the same paused boundary.
+        scheduler: Box<SingleSchedulerCheckpoint>,
         /// Unified-log boundary incorporated by both values.
         event_log: EventLogOffset,
     },
@@ -237,6 +252,8 @@ pub enum QemuLiveAttemptResult {
     Checkpoint {
         /// Exact scheduler checkpoint at the paused live boundary.
         checkpoint: Box<crucible::Checkpoint>,
+        /// Complete scheduler continuation at the paused live boundary.
+        scheduler: Box<SingleSchedulerCheckpoint>,
     },
 }
 
@@ -246,20 +263,26 @@ impl QemuLiveAttemptResult {
     pub fn at_current_boundary(
         candidate: ObservationCandidate,
         checkpoint: crucible::Checkpoint,
+        scheduler: SingleSchedulerCheckpoint,
         backend: &dyn QemuLiveAttemptBackend,
     ) -> Self {
         Self::Observation {
             candidate: Box::new(candidate),
             checkpoint: Box::new(checkpoint),
+            scheduler: Box::new(scheduler),
             event_log: backend.event_log().offset(),
         }
     }
 
     /// Returns one early checkpoint boundary after the request was observed.
     #[must_use]
-    pub fn checkpoint(checkpoint: crucible::Checkpoint) -> Self {
+    pub fn checkpoint(
+        checkpoint: crucible::Checkpoint,
+        scheduler: SingleSchedulerCheckpoint,
+    ) -> Self {
         Self::Checkpoint {
             checkpoint: Box::new(checkpoint),
+            scheduler: Box::new(scheduler),
         }
     }
 
@@ -276,7 +299,17 @@ impl QemuLiveAttemptResult {
     #[must_use]
     pub const fn checkpoint_boundary(&self) -> &crucible::Checkpoint {
         match self {
-            Self::Observation { checkpoint, .. } | Self::Checkpoint { checkpoint } => checkpoint,
+            Self::Observation { checkpoint, .. } | Self::Checkpoint { checkpoint, .. } => {
+                checkpoint
+            }
+        }
+    }
+
+    /// Returns the complete scheduler continuation at this paused boundary.
+    #[must_use]
+    pub const fn scheduler_continuation(&self) -> &SingleSchedulerCheckpoint {
+        match self {
+            Self::Observation { scheduler, .. } | Self::Checkpoint { scheduler, .. } => scheduler,
         }
     }
 }
@@ -301,7 +334,8 @@ pub trait QemuLiveAttemptDriver {
     /// [`QemuLiveAttemptBackend::event_log`] exposes the read-only unified log
     /// updated by every completed live quantum. The session drains once more
     /// after this method returns and rejects the candidate if that seal changes
-    /// the log boundary.
+    /// the log boundary. `scheduler` is the complete authenticated continuation
+    /// for an exact resume and is `None` for fresh or thin materialization.
     ///
     /// # Errors
     ///
@@ -312,6 +346,7 @@ pub trait QemuLiveAttemptDriver {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         realization: QemuVmRealization,
+        scheduler: Option<SingleSchedulerCheckpoint>,
     ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>>;
 }
 
@@ -776,7 +811,9 @@ where
         &mut self,
         input: &CrucibleAttemptExecution,
         realization: QemuVmRealization,
+        scheduler: Option<SingleSchedulerCheckpoint>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        let scenario = realization.configuration.def.clone();
         self.guard
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
@@ -791,7 +828,7 @@ where
         };
         let result = self
             .driver
-            .run_attempt(&mut backend, input, self.context, realization)
+            .run_attempt(&mut backend, input, self.context, realization, scheduler)
             .map_err(map_live_driver_failure);
         if let Some(error) = backend.take_operational_failure() {
             return Err(classify_operational_failure(error));
@@ -799,13 +836,23 @@ where
         let result = result?;
 
         if self.context.checkpoint_request().is_requested() {
-            let checkpoint = match result {
-                QemuLiveAttemptResult::Observation { checkpoint, .. }
-                | QemuLiveAttemptResult::Checkpoint { checkpoint } => *checkpoint,
+            let (checkpoint, scheduler) = match result {
+                QemuLiveAttemptResult::Observation {
+                    checkpoint,
+                    scheduler,
+                    ..
+                }
+                | QemuLiveAttemptResult::Checkpoint {
+                    checkpoint,
+                    scheduler,
+                } => (*checkpoint, *scheduler),
             };
+            validate_captured_scheduler_configuration(&scenario, &checkpoint, &scheduler)
+                .map_err(classify_operational_failure)?;
             let capture = self
                 .capture_exact_checkpoint(checkpoint)
-                .map_err(classify_operational_failure)?;
+                .map_err(classify_operational_failure)?
+                .with_scheduler(scheduler);
             return Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(capture)));
         }
 
@@ -872,6 +919,34 @@ where
     fn finish(mut self) -> Result<(), QemuVmRealizationError> {
         self.cleanup()
     }
+}
+
+fn validate_captured_scheduler_configuration(
+    scenario: &crucible::ScenarioDef,
+    checkpoint: &crucible::Checkpoint,
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<(), QemuVmRealizationError> {
+    let scheduler_configuration = scheduler.configuration_for(scenario).map_err(|error| {
+        QemuVmRealizationError::InvalidCheckpoint {
+            role: "captured scheduler continuation",
+            message: error.to_string(),
+        }
+    })?;
+    if scheduler_configuration.id() != checkpoint.configuration
+        || scheduler_configuration.id() != checkpoint.id
+    {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "captured scheduler continuation",
+            message: String::from("scheduler configuration does not match the captured checkpoint"),
+        });
+    }
+    validate_scheduler_checkpoint_basis(checkpoint, scheduler).map_err(|error| {
+        QemuVmRealizationError::InvalidCheckpoint {
+            role: "captured scheduler continuation",
+            message: error.to_string(),
+        }
+    })?;
+    Ok(())
 }
 
 impl<E, D, G> QemuLiveAttemptSession<'_, E, D, G>

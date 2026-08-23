@@ -7,7 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
+use crucible::{
+    Checkpoint, CheckpointKind, Configuration, ContentHash, DecisionRngState, MaterializedState,
+    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant,
+    SingleScheduler,
+};
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId,
     CheckpointAttemptExecutionRequest, DaemonEpoch, ExecutionRetentionIntent,
@@ -132,7 +136,7 @@ fn prepare_is_write_free_and_publication_round_trips_streamed_vmstate() {
     );
     assert_eq!(
         prepared.root().content_id().schema_version(),
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+        LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
     );
     assert_eq!(prepared.metadata_id().kind(), ObjectKind::DeviceState);
     assert_eq!(
@@ -174,17 +178,147 @@ fn prepare_is_write_free_and_publication_round_trips_streamed_vmstate() {
 }
 
 #[test]
+fn complete_scheduler_continuation_round_trips_in_v3_root() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let (snapshot, scheduler) = snapshot_with_scheduler("scheduler-round-trip");
+    let capture = CapturedExactCheckpoint::new_with_scheduler(
+        snapshot.clone(),
+        scheduler.clone(),
+        BlobHandle::from_bytes(vec![0x5a; 4_096]),
+    );
+
+    let prepared = store
+        .prepare_capture(capture)
+        .expect("prepare complete exact checkpoint");
+    assert_eq!(backend.object_count(), 0);
+    assert_eq!(
+        prepared.root().content_id().schema_version(),
+        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        prepared
+            .scheduler_id
+            .expect("scheduler child")
+            .schema_version(),
+        SCHEDULER_CONTINUATION_SCHEMA_VERSION
+    );
+
+    let publication = store.publish(&prepared).expect("publish complete root");
+    assert_eq!(publication.scheduler(), prepared.scheduler_id);
+    assert_eq!(backend.object_count(), 4);
+
+    let loaded = store.load(publication.root()).expect("load complete root");
+    assert_eq!(loaded.snapshot(), &snapshot);
+    assert_eq!(loaded.scheduler(), Some(&scheduler));
+    assert_eq!(loaded.scheduler_id(), prepared.scheduler_id);
+}
+
+#[test]
+fn mismatched_scheduler_continuation_is_rejected_before_writes() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let (snapshot, _) = snapshot_with_scheduler("scheduler-basis-a");
+    let (_, foreign_scheduler) = snapshot_with_scheduler("scheduler-basis-b");
+    let capture = CapturedExactCheckpoint::new_with_scheduler(
+        snapshot,
+        foreign_scheduler,
+        BlobHandle::from_bytes(vec![0x6b; 4_096]),
+    );
+
+    assert!(matches!(
+        store.prepare_capture(capture),
+        Err(ExactCheckpointStoreError::InvalidRoot {
+            reason: "scheduler continuation does not match checkpoint projections"
+        })
+    ));
+    assert_eq!(backend.object_count(), 0);
+}
+
+#[test]
+fn scheduler_rng_and_event_segment_projections_are_exact() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
+    let (snapshot, scheduler) = snapshot_with_scheduler("scheduler-projection");
+    let checkpoint = snapshot.checkpoint().clone();
+    let materialized = checkpoint
+        .state
+        .as_ref()
+        .expect("materialized state")
+        .clone();
+
+    let mut decision_rng = DecisionRngState::empty();
+    decision_rng.positions.insert(
+        RngStreamId::from_name("foreign-cursor"),
+        RngStreamPosition::new(1),
+    );
+    let mismatched_rng = checkpoint.clone().with_materialized_state(Some(
+        MaterializedState::from_components_with_event_log_segments(
+            materialized.vm_snapshots.clone(),
+            materialized.device_overlays.clone(),
+            materialized.scheduler.clone(),
+            decision_rng,
+            materialized.event_log,
+            materialized.event_log_segments.clone(),
+        ),
+    ));
+    let mismatched_rng =
+        QemuVmSnapshot::diskless(mismatched_rng, QemuReplayOracleValidation::NotRun)
+            .expect("mismatched RNG snapshot");
+    assert!(matches!(
+        store.prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            mismatched_rng,
+            scheduler.clone(),
+            BlobHandle::from_bytes(vec![0x6c; 4_096]),
+        )),
+        Err(ExactCheckpointStoreError::InvalidRoot {
+            reason: "scheduler continuation does not match checkpoint projections"
+        })
+    ));
+
+    let mismatched_segments = checkpoint.with_materialized_state(Some(
+        MaterializedState::from_components_with_event_log_segments(
+            materialized.vm_snapshots.clone(),
+            materialized.device_overlays.clone(),
+            materialized.scheduler.clone(),
+            materialized.decision_rng.clone(),
+            materialized.event_log,
+            [ContentHash::from_bytes(b"foreign-event-segment")],
+        ),
+    ));
+    let mismatched_segments =
+        QemuVmSnapshot::diskless(mismatched_segments, QemuReplayOracleValidation::NotRun)
+            .expect("mismatched event-segment snapshot");
+    assert!(matches!(
+        store.prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            mismatched_segments,
+            scheduler,
+            BlobHandle::from_bytes(vec![0x6d; 4_096]),
+        )),
+        Err(ExactCheckpointStoreError::InvalidRoot {
+            reason: "scheduler continuation does not match checkpoint projections"
+        })
+    ));
+    assert_eq!(backend.object_count(), 0);
+}
+
+#[test]
 fn replay_oracle_promotion_reuses_vmstate_and_publishes_a_new_exact_root() {
     let backend = Arc::new(TestDurableBackend::new());
     let store = ExactCheckpointStore::new(backend.clone(), STORE_LIMIT).expect("admit store");
-    let snapshot = snapshot("oracle-promotion");
+    let (snapshot, scheduler) = snapshot_with_scheduler("oracle-promotion");
     let vmstate = vec![0x6d; 4096];
     let source = store
-        .prepare(&snapshot, BlobHandle::from_bytes(vmstate.clone()))
+        .prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            snapshot.clone(),
+            scheduler.clone(),
+            BlobHandle::from_bytes(vmstate.clone()),
+        ))
         .and_then(|prepared| store.publish(&prepared))
         .expect("publish unvalidated source");
     let loaded = store.load(source.root()).expect("load unvalidated source");
     let source_vmstate = loaded.vmstate_id();
+    let source_scheduler = loaded.scheduler_id().expect("source scheduler child");
     let source_count = backend.object_count();
     let runtime_hash = crucible::ContentHash::from_canonical_material(
         "crucible.test.exact-checkpoint-store.runtime.v1",
@@ -210,6 +344,8 @@ fn replay_oracle_promotion_reuses_vmstate_and_publishes_a_new_exact_root() {
         .expect("authenticate durable promotion pair");
     let reloaded = store.load(published.root()).expect("load promotion");
     assert_eq!(reloaded.vmstate_id(), source_vmstate);
+    assert_eq!(reloaded.scheduler_id(), Some(source_scheduler));
+    assert_eq!(reloaded.scheduler(), Some(&scheduler));
     let mut reloaded_vmstate = Vec::new();
     assert_eq!(
         reloaded
@@ -271,11 +407,13 @@ fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
         )
         .expect("request checkpoint");
 
+    let (phase_snapshot, phase_scheduler) = snapshot_with_scheduler("phase-ordering");
     let prepared = store
-        .prepare(
-            &snapshot("phase-ordering"),
+        .prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            phase_snapshot,
+            phase_scheduler.clone(),
             BlobHandle::from_bytes(vec![0x55; 8192]),
-        )
+        ))
         .expect("prepare checkpoint");
     let root = prepared.root();
     let staged = match stage_prepared_checkpoint_result(
@@ -297,8 +435,10 @@ fn publication_phase_tokens_keep_capacity_and_root_ordering_exact() {
     assert_eq!(roots, vec![root]);
 
     let published = publish_staged_checkpoint_result(&store, staged).expect("publish checkpoint");
-    assert_eq!(backend.object_count(), 3);
-    assert_eq!(store.load(root).expect("load published root").root(), root);
+    assert_eq!(backend.object_count(), 4);
+    let loaded = store.load(root).expect("load published root");
+    assert_eq!(loaded.root(), root);
+    assert_eq!(loaded.scheduler(), Some(&phase_scheduler));
     assert_eq!(supervisor.active_count(), 1);
     assert_eq!(
         reconcile_published_checkpoint_result(&mut supervisor, published)
@@ -543,7 +683,7 @@ fn paused_raw_root_promotion_survives_restart_and_enables_exact_resume() {
 fn directory_publication_is_reloadable_after_store_restart() {
     let directory = tempfile::tempdir().expect("create exact-checkpoint store directory");
     let root_path = directory.path().join("objects");
-    let snapshot = snapshot("directory-restart");
+    let (snapshot, scheduler) = snapshot_with_scheduler("directory-restart");
     let vmstate_bytes = vec![0xa5; 64 * 1024];
 
     let first_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
@@ -552,7 +692,11 @@ fn directory_publication_is_reloadable_after_store_restart() {
     ));
     let first = ExactCheckpointStore::new(first_backend, STORE_LIMIT).expect("admit first store");
     let prepared = first
-        .prepare(&snapshot, BlobHandle::from_bytes(vmstate_bytes.clone()))
+        .prepare_capture(CapturedExactCheckpoint::new_with_scheduler(
+            snapshot.clone(),
+            scheduler.clone(),
+            BlobHandle::from_bytes(vmstate_bytes.clone()),
+        ))
         .expect("prepare durable checkpoint");
     let root = first
         .publish(&prepared)
@@ -572,6 +716,7 @@ fn directory_publication_is_reloadable_after_store_restart() {
         .expect("authenticate restarted VMState");
 
     assert_eq!(loaded.snapshot(), &snapshot);
+    assert_eq!(loaded.scheduler(), Some(&scheduler));
     assert_eq!(restored, vmstate_bytes);
 }
 
@@ -674,7 +819,7 @@ fn load_rejects_extraneous_root_children_before_child_reads() {
     assert!(matches!(
         store.load(malformed_id),
         Err(ExactCheckpointStoreError::InvalidRoot {
-            reason: "root must contain exactly two children"
+            reason: "root contains an unknown child role"
         })
     ));
     assert_eq!(backend.object_count(), 1);
@@ -699,11 +844,13 @@ fn root_binds_snapshot_semantics_not_only_child_shape() {
         .read_all(MAX_ROOT_BYTES)
         .expect("read original root");
     let original_root = ContentEnvelope::from_canonical_bytes(&original_bytes).expect("root");
-    let original_body = decode_root_body(original_root.body()).expect("decode original body");
+    let original_body = decode_root_body(original_root.schema_version(), original_root.body())
+        .expect("decode original body");
     let forged_body = encode_root_body(
         original_body.snapshot_identity,
         original_body.configuration,
         replacement.metadata_source.logical_length(),
+        None,
         replacement.vmstate_source.logical_length(),
     );
     let children = BTreeSet::from([
@@ -714,7 +861,7 @@ fn root_binds_snapshot_semantics_not_only_child_shape() {
     ]);
     let forged = ContentEnvelope::new(
         EXACT_CHECKPOINT_ROOT_SCHEMA,
-        EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
+        LEGACY_EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
         children,
         forged_body,
     )
@@ -759,6 +906,45 @@ fn snapshot(name: &str) -> QemuVmSnapshot {
     .expect("build checkpoint");
     QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("build snapshot")
+}
+
+fn snapshot_with_scheduler(name: &str) -> (QemuVmSnapshot, SingleSchedulerCheckpoint) {
+    let scenario =
+        ScenarioDef::from_canonical_material("crucible.test.exact-checkpoint-store", name);
+    let configuration = Configuration::genesis(scenario.clone());
+    let scheduler_scenario = SchedulerLivenessScenario::from_canonical_material(
+        name,
+        Shift::new(0).expect("zero shift"),
+        1,
+        SimInstant { nanos: 1 },
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_scenario_def(scenario);
+    let scheduler = SingleScheduler::new(scheduler_scenario).expect("build scheduler");
+    let scheduler_checkpoint = scheduler.checkpoint().expect("capture scheduler");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        scheduler_checkpoint.frontier(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("build checkpoint");
+    let materialized = MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler_checkpoint
+            .scheduler_state()
+            .expect("scheduler projection"),
+        scheduler_checkpoint.future_decision_rng_state().clone(),
+        scheduler_checkpoint.event_log_offset(),
+    );
+    let checkpoint = checkpoint.with_materialized_state(Some(materialized));
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("build snapshot");
+    (snapshot, scheduler_checkpoint)
 }
 
 fn typed_id(tag: &str, kind: &str, version: u32, byte: u8) -> String {

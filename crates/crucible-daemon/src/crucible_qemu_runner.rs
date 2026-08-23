@@ -5,7 +5,7 @@
 //! GPL-side fork protocol must land and pass its safety gates before a runner
 //! may report [`CrucibleMaterializationTier::HotFork`].
 
-use crucible::Configuration;
+use crucible::{Configuration, SingleSchedulerCheckpoint};
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId};
 use crucible_qemu::{
     QemuExactSnapshotPolicy, QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor,
@@ -122,9 +122,10 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
     /// The session retains the live backend instead of handing modeled code a
     /// detached [`crucible::RuntimeState`]. It applies the typed selection only
     /// when the realized configuration is the branch parent; a post-selection
-    /// resume must continue without applying the edge twice. It enforces the
-    /// operational context and constructs the complete immutable observation
-    /// candidate.
+    /// resume must continue without applying the edge twice. `scheduler` is the
+    /// complete authenticated continuation for an exact resume and is `None`
+    /// for fresh or thin materialization. It enforces the operational context
+    /// and constructs the complete immutable observation candidate.
     ///
     /// # Errors
     ///
@@ -133,6 +134,7 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
         &mut self,
         input: &CrucibleAttemptExecution,
         realization: QemuVmRealization,
+        scheduler: Option<SingleSchedulerCheckpoint>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
 
     /// Captures one exact paused checkpoint under the active resource guard.
@@ -366,7 +368,7 @@ where
         | QemuVmRealizationKind::BakedGenesisLoad { .. } => CrucibleMaterializationTier::ThinReplay,
     };
     let product = session
-        .run_attempt(input, realization)
+        .run_attempt(input, realization, None)
         .map_err(map_driver_failure)?;
     Ok(CrucibleExecutionOutcome::new(product, materialization))
 }
@@ -392,8 +394,9 @@ where
     session
         .check_operational_boundary()
         .map_err(classify_realization_failure)?;
+    let (realization, scheduler) = resumed.into_parts();
     let product = session
-        .run_attempt(input, resumed.into_realization())
+        .run_attempt(input, realization, Some(scheduler))
         .map_err(map_driver_failure)?;
     Ok(CrucibleExecutionOutcome::new(
         product,
@@ -408,6 +411,13 @@ fn validate_resumed_realization(
     post_selection: Option<&Configuration>,
 ) -> Result<(), QemuVmRealizationError> {
     let realization = resumed.realization();
+    let scheduler_configuration = resumed
+        .scheduler()
+        .configuration_for(&realization.configuration.def)
+        .map_err(|error| QemuVmRealizationError::InvalidCheckpoint {
+            role: "attempt scheduler continuation",
+            message: error.to_string(),
+        })?;
     let configuration_is_allowed = &realization.configuration == initial
         || post_selection.is_some_and(|selected| &realization.configuration == selected);
     let checkpoint_matches = match &realization.branch {
@@ -415,6 +425,7 @@ fn validate_resumed_realization(
             checkpoint.configuration == realization.configuration.id()
                 && checkpoint.id == realization.configuration.id()
                 && checkpoint.kind == crucible::CheckpointKind::Fat
+                && resumed.scheduler().frontier() == checkpoint.virtual_time
         }
         QemuVmRealizationKind::AncestorReplay { .. }
         | QemuVmRealizationKind::BakedGenesisLoad { .. } => false,
@@ -424,6 +435,14 @@ fn validate_resumed_realization(
         || !configuration_is_allowed
         || !checkpoint_matches
         || realization.runtime.configuration != realization.configuration.id()
+        || scheduler_configuration != realization.configuration
+        || resumed.scheduler().scheduler_state().map_err(|error| {
+            QemuVmRealizationError::InvalidCheckpoint {
+                role: "attempt scheduler continuation",
+                message: error.to_string(),
+            }
+        })? != realization.runtime.scheduler
+        || resumed.scheduler().event_log_offset() != realization.runtime.event_log
     {
         return Err(QemuVmRealizationError::Executor {
             operation: "validate exact-checkpoint resumed realization",
@@ -543,8 +562,8 @@ mod tests {
     };
 
     use crucible::{
-        Checkpoint, CheckpointKind, ContentHash, RuntimeState, ScenarioDef, SchedulerState,
-        VirtualTime,
+        Checkpoint, CheckpointKind, ContentHash, OverrideDecision, RuntimeState, ScenarioDef,
+        SchedulerLivenessScenario, SchedulerState, Shift, SimInstant, SingleScheduler, VirtualTime,
     };
     use crucible_qemu::{
         QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
@@ -620,6 +639,7 @@ mod tests {
             &mut self,
             _input: &CrucibleAttemptExecution,
             _realization: QemuVmRealization,
+            _scheduler: Option<SingleSchedulerCheckpoint>,
         ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
             unreachable!("finish-only test session does not drive QEMU")
         }
@@ -745,18 +765,26 @@ mod tests {
             "crucible.test.qemu-runner-resume",
             "initial",
         ));
-        let selected = crucible::step(
-            &initial,
-            crucible::Decision::RngDraw(crucible::RngDecision {
-                stream: crucible::RngStreamId::from_name("resume-edge"),
-                value: 5,
-            }),
-        );
+        let decision = crucible::Decision::Override(OverrideDecision {
+            point: crucible::SchedulingPoint {
+                key: String::from("resume-point"),
+            },
+            choice: crucible::ChoiceTag {
+                name: String::from("selected"),
+            },
+        });
+        let selected = crucible::step(&initial, decision.clone());
         let root = exact_checkpoint_id(b"valid-resume-root");
-        let valid = QemuExactCheckpointRealization::new(
-            root,
-            resumed_realization(&selected, &selected, Some(&initial)),
-        );
+        let scheduler = scheduler_for(&initial, vec![decision]);
+        let mut realization = resumed_realization(&selected, &selected, Some(&initial));
+        realization.runtime.scheduler = scheduler.scheduler_state().expect("scheduler projection");
+        realization.runtime.event_log = scheduler.event_log_offset();
+        let QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint } = &mut realization.branch
+        else {
+            unreachable!("resume fixture is exact")
+        };
+        checkpoint.virtual_time = scheduler.frontier();
+        let valid = QemuExactCheckpointRealization::new(root, realization, scheduler);
 
         assert!(validate_resumed_realization(&valid, root, &initial, Some(&selected)).is_ok());
         assert!(validate_resumed_realization(&valid, root, &selected, None).is_ok());
@@ -774,7 +802,8 @@ mod tests {
 
         let mut wrong_operation = valid.realization().clone();
         wrong_operation.operation = crucible_qemu::QemuVmRealizationOperation::Instantiate;
-        let wrong_operation = QemuExactCheckpointRealization::new(root, wrong_operation);
+        let wrong_operation =
+            QemuExactCheckpointRealization::new(root, wrong_operation, valid.scheduler().clone());
         assert!(
             validate_resumed_realization(&wrong_operation, root, &initial, Some(&selected))
                 .is_err()
@@ -783,6 +812,7 @@ mod tests {
         let wrong_checkpoint = QemuExactCheckpointRealization::new(
             root,
             resumed_realization(&selected, &initial, None),
+            valid.scheduler().clone(),
         );
         assert!(
             validate_resumed_realization(&wrong_checkpoint, root, &initial, Some(&selected))
@@ -796,8 +826,11 @@ mod tests {
             unreachable!("resume fixture is exact")
         };
         checkpoint.id = initial.id();
-        let wrong_checkpoint_identity =
-            QemuExactCheckpointRealization::new(root, wrong_checkpoint_identity);
+        let wrong_checkpoint_identity = QemuExactCheckpointRealization::new(
+            root,
+            wrong_checkpoint_identity,
+            valid.scheduler().clone(),
+        );
         assert!(
             validate_resumed_realization(
                 &wrong_checkpoint_identity,
@@ -810,17 +843,18 @@ mod tests {
 
         let mut wrong_runtime = resumed_realization(&selected, &selected, Some(&initial));
         wrong_runtime.runtime.configuration = initial.id();
-        let wrong_runtime = QemuExactCheckpointRealization::new(root, wrong_runtime);
+        let wrong_runtime =
+            QemuExactCheckpointRealization::new(root, wrong_runtime, valid.scheduler().clone());
         assert!(
             validate_resumed_realization(&wrong_runtime, root, &initial, Some(&selected)).is_err()
         );
 
-        let mut thin = valid.into_realization();
+        let mut thin = valid.realization().clone();
         thin.branch = QemuVmRealizationKind::AncestorReplay {
             ancestor_configuration: initial.id(),
             replayed_decisions: 1,
         };
-        let thin = QemuExactCheckpointRealization::new(root, thin);
+        let thin = QemuExactCheckpointRealization::new(root, thin, valid.scheduler().clone());
         assert!(validate_resumed_realization(&thin, root, &initial, Some(&selected)).is_err());
     }
 
@@ -863,5 +897,25 @@ mod tests {
             },
             branch: QemuVmRealizationKind::ExactSnapshotLoadvm { checkpoint },
         }
+    }
+
+    fn scheduler_for(
+        configuration: &Configuration,
+        decisions: Vec<crucible::Decision>,
+    ) -> SingleSchedulerCheckpoint {
+        let scenario = SchedulerLivenessScenario::from_canonical_material(
+            "qemu-runner-resume",
+            Shift::new(0).expect("zero shift"),
+            1,
+            SimInstant { nanos: 1 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(configuration.def.clone());
+        let mut scheduler = SingleScheduler::new(scenario).expect("build resume scheduler");
+        scheduler
+            .append_branch_prefix_overrides(decisions)
+            .expect("append resume branch prefix");
+        scheduler.checkpoint().expect("capture resume scheduler")
     }
 }

@@ -272,26 +272,31 @@ delete or resume fails. The remaining storage work is:
 - compact long delta chains without changing configuration identity;
 - verify complete artifact length, chunk order, and whole-object digest.
 
-The single-node exact-checkpoint foundation uses three registered immutable
+The single-node exact-checkpoint foundation uses four registered immutable
 objects. `crucible.qemu.vm-snapshot@device-state.2` is the owner-decoded
-storage profile for canonical `QemuVmSnapshotV1` metadata and Apache
-continuation bytes. Device-state version 1 remains reserved for opaque QEMU
-VMState, so the two leaf roles cannot alias one logical content ID.
+storage profile for canonical `QemuVmSnapshotV1` metadata and its projected
+Apache state. `crucible.executor.scheduler-continuation@device-state.3` retains
+the complete canonical `SingleSchedulerCheckpoint` required to continue all
+scheduler, device, network, search, trigger, RNG, and event-log state.
+Device-state version 1 remains reserved for opaque QEMU VMState, so the three
+leaf roles cannot alias one logical content ID.
 `crucible.qemu.vmstate@device-state.1` is the opaque QEMU qcow2 VMState byte
-stream. `crucible.executor.exact-checkpoint-root@exact-manifest.2` is a generic
+stream. `crucible.executor.exact-checkpoint-root@exact-manifest.3` is a generic
 content envelope with exactly these sorted children:
 
 ```text
-snapshot-metadata -> crucible.qemu.vm-snapshot@device-state.2
-qemu-vmstate      -> crucible.qemu.vmstate@device-state.1
+snapshot-metadata      -> crucible.qemu.vm-snapshot@device-state.2
+scheduler-continuation -> crucible.executor.scheduler-continuation@device-state.3
+qemu-vmstate           -> crucible.qemu.vmstate@device-state.1
 ```
 
-Its fixed 80-byte body contains the 32-byte aggregate snapshot identity, the
-32-byte materialized configuration identity, and big-endian `u64` metadata and
-VMState byte lengths. The root therefore authenticates one exact pairing rather
-than two independently reusable objects. Preparation validates and hashes both
-children without writes. Publication places metadata and VMState first,
-requires durable receipts for both, and places the root last. The caller MUST
+Its fixed 88-byte body contains the 32-byte aggregate snapshot identity, the
+32-byte materialized configuration identity, and big-endian `u64` metadata,
+scheduler-continuation, and VMState byte lengths. The root therefore
+authenticates one exact triple rather than independently reusable objects.
+Preparation validates and hashes all children without writes. Publication
+places metadata, scheduler continuation, and VMState first, requires durable
+receipts for all three, and places the root last. The caller MUST
 durably stage the expected root in its bounded assignment ledger before the
 first put. The executor's `checkpoint-publishing`, `paused`, and
 replay-validation `checkpoint-promoting(source,promoted)` records are the
@@ -300,7 +305,7 @@ persisted before the first replacement write and retains both the raw source
 and expected promoted root; only a fully authenticated exact raw-to-matching
 pair may become `paused(promoted)`. A failed put may leave unreachable
 immutable children for GC, but may not make an incomplete root visible. The
-live session returns metadata plus its reopenable VMState source
+live session returns metadata, the scheduler continuation, and its reopenable VMState source
 as one linear capture result, reaps QEMU, and hands that value to the fixed
 worker pool. Preparation, root staging, publication, and paused-state
 reconciliation each consume a distinct retryable phase token, so storage or
@@ -333,8 +338,9 @@ valid declared length is checked against the
 attempt's aggregate writable-byte reservation before truncation. Beginning the
 copy marks the destination unavailable for launch; only an exact-length,
 authenticated, file-synchronized completion records the aggregate
-`ExactCheckpointId` root binding, which covers both `QemuVmSnapshot` metadata
-and the opaque VMState child. The exact launcher MUST require that binding
+`ExactCheckpointId` root binding, which covers `QemuVmSnapshot` metadata, the
+complete scheduler continuation, and the opaque VMState child. The exact
+launcher MUST require that binding
 immediately before guarded spawn; metadata identity alone is insufficient. An
 interrupted or failed copy remains
 unready rather than falling back to the previously provisioned image, and a
@@ -347,6 +353,15 @@ The binding marker is process-local authority rather than trusted on-disk
 metadata. After daemon restart, reopening the same pinned inode treats it as
 unbound and repeats authenticated materialization from the retained root before
 exact restore.
+
+Version-two roots with only snapshot metadata and VMState remain readable for
+legacy authentication and source-bound promotion. They are not complete
+campaign continuations. Attempt resume MUST reject them before destination
+materialization or guarded launch. A version-three attempt resume reconstructs
+the scheduler configuration against the authenticated attempt scenario and
+requires exact configuration, virtual-time frontier, scheduler projection,
+future decision-RNG cursor, event-log-offset, and retained event-log segment
+equality before modeled guest work.
 
 A newly captured exact root records replay-oracle state `NotRun` and is not
 eligible for resume. The single-host owner authenticates the selected root and

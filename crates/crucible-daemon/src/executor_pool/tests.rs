@@ -10,7 +10,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
+use crucible::{
+    Checkpoint, CheckpointKind, Configuration, MaterializedState, ScenarioDef,
+    SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, SingleSchedulerCheckpoint,
+};
 use crucible_campaign::{
     AssignmentId, Attempt, AttemptId, AttemptResourceLimits, AttemptStart, BooleanDomain,
     BranchBudget, BranchPath, BranchPathSegment, BranchRequest, BranchRequestCause,
@@ -232,11 +235,13 @@ impl LocalAttemptWorker for CheckpointWorker {
             }
             thread::sleep(Duration::from_millis(1));
         }
+        let (snapshot, scheduler) = checkpoint_capture("pool-checkpoint");
         AttemptWorkResult::new(
             queued,
             Ok(AttemptExecutionProduct::ExactCheckpoint(Box::new(
-                crate::CapturedExactCheckpoint::new(
-                    checkpoint_snapshot("pool-checkpoint"),
+                crate::CapturedExactCheckpoint::new_with_scheduler(
+                    snapshot,
+                    scheduler,
                     BlobHandle::from_bytes(vec![0x5a; 512]),
                 ),
             ))),
@@ -450,7 +455,9 @@ fn checkpoint_capture_publishes_once_and_reconciles_paused_without_rerun() {
         .checkpoints
         .load(checkpoint)
         .expect("load published exact checkpoint");
-    assert_eq!(loaded.snapshot(), &checkpoint_snapshot("pool-checkpoint"));
+    let (expected_snapshot, expected_scheduler) = checkpoint_capture("pool-checkpoint");
+    assert_eq!(loaded.snapshot(), &expected_snapshot);
+    assert_eq!(loaded.scheduler(), Some(&expected_scheduler));
     assert_eq!(loaded.vmstate_bytes(), 512);
 
     let report = service.report().expect("checkpoint pool report");
@@ -1204,6 +1211,45 @@ fn checkpoint_snapshot(name: &str) -> QemuVmSnapshot {
     .expect("checkpoint boundary");
     QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
         .expect("QEMU checkpoint snapshot")
+}
+
+fn checkpoint_capture(name: &str) -> (QemuVmSnapshot, SingleSchedulerCheckpoint) {
+    let scenario =
+        ScenarioDef::from_canonical_material("crucible.test.executor-pool-checkpoint", name);
+    let configuration = Configuration::genesis(scenario.clone());
+    let scheduler = SingleScheduler::new(
+        SchedulerLivenessScenario::from_canonical_material(
+            name,
+            Shift::new(0).expect("zero shift"),
+            1,
+            SimInstant { nanos: 1 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario),
+    )
+    .expect("checkpoint scheduler")
+    .checkpoint()
+    .expect("scheduler continuation");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &configuration,
+        None,
+        scheduler.frontier(),
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("checkpoint boundary")
+    .with_materialized_state(Some(MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
+        .expect("QEMU checkpoint snapshot");
+    (snapshot, scheduler)
 }
 
 fn capability(

@@ -365,8 +365,14 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             "device-state",
         ),
         (
+            "crucible.executor.scheduler-continuation",
+            "3",
+            "crucible-daemon::exact_checkpoint_store",
+            "device-state",
+        ),
+        (
             "crucible.executor.exact-checkpoint-root",
-            "2",
+            "3",
             "crucible-daemon::exact_checkpoint_store",
             "exact-manifest",
         ),

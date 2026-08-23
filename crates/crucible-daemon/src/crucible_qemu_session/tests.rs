@@ -16,7 +16,8 @@ use crate::ExecutionCheckpointRequest;
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, Configuration, ContentHash,
     Decision, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, RngDecision, RngStreamId,
-    RuntimeState, ScenarioDef, SchedulerState,
+    RuntimeState, ScenarioDef, SchedulerLivenessScenario, SchedulerState, Shift, SimInstant,
+    SingleScheduler, SingleSchedulerCheckpoint,
 };
 use crucible_campaign::ExecutionRetentionIntent;
 use crucible_qemu::{
@@ -128,6 +129,7 @@ struct FakeExecutor {
     resume_initial: Option<ContentHash>,
     resume_post_selection: Option<ContentHash>,
     resume_realization: Option<QemuVmRealization>,
+    resume_scheduler: Option<SingleSchedulerCheckpoint>,
 }
 
 impl QemuVmRealizationExecutor for FakeExecutor {
@@ -265,7 +267,10 @@ impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
         self.active = true;
         self.resume_realization
             .clone()
-            .map(|realization| QemuExactCheckpointRealization::new(checkpoint, realization))
+            .zip(self.resume_scheduler.clone())
+            .map(|(realization, scheduler)| {
+                QemuExactCheckpointRealization::new(checkpoint, realization, scheduler)
+            })
             .ok_or_else(|| QemuVmRealizationError::Executor {
                 operation: "resume fake exact attempt checkpoint",
                 message: String::from("no exact resume fixture was installed"),
@@ -381,6 +386,7 @@ impl QemuLiveAttemptDriver for UnusedDriver {
         _input: &CrucibleAttemptExecution,
         _context: &AttemptExecutionContext,
         _realization: QemuVmRealization,
+        _scheduler: Option<SingleSchedulerCheckpoint>,
     ) -> Result<QemuLiveAttemptResult, AttemptWorkerFailure<Self::Error>> {
         unreachable!("ownership test does not drive a modeled attempt")
     }
@@ -510,6 +516,63 @@ fn execution_quantum_counter_is_exact_and_failure_atomic() {
         Err(QemuVmRealizationError::Executor { .. })
     ));
     assert_eq!(counter.charged(), 2);
+}
+
+#[test]
+fn captured_scheduler_configuration_is_checked_before_qemu_capture() {
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.live-session",
+        "capture-scheduler-basis",
+    ));
+    let scheduler = scheduler_checkpoint(&initial);
+    let matching = Checkpoint::from_recorded_configuration(
+        &initial,
+        None,
+        scheduler.frontier(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("matching checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    assert!(validate_captured_scheduler_configuration(&initial.def, &matching, &scheduler).is_ok());
+
+    let selected = crucible::step(
+        &initial,
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("capture-scheduler-basis"),
+            value: 9,
+        }),
+    );
+    let mismatched = Checkpoint::from_recorded_configuration(
+        &selected,
+        Some(&initial),
+        scheduler.frontier(),
+        BTreeMap::new(),
+        crucible::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )
+    .expect("mismatched checkpoint")
+    .with_materialized_state(Some(crucible::MaterializedState::from_components(
+        BTreeMap::new(),
+        BTreeMap::new(),
+        scheduler.scheduler_state().expect("scheduler projection"),
+        scheduler.future_decision_rng_state().clone(),
+        scheduler.event_log_offset(),
+    )));
+    assert!(matches!(
+        validate_captured_scheduler_configuration(&initial.def, &mismatched, &scheduler),
+        Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "captured scheduler continuation",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -944,6 +1007,8 @@ fn exact_attempt_resume_is_delegated_under_the_same_guard_and_basis() {
     executor.resume_initial = Some(initial.id());
     executor.resume_post_selection = Some(selected.id());
     executor.resume_realization = Some(resume_realization(&selected, Some(&initial)));
+    let scheduler = scheduler_checkpoint(&initial);
+    executor.resume_scheduler = Some(scheduler.clone());
     let mut factory = QemuLiveAttemptSessionFactory::new(executor, driver, guard_factory);
     let context = execution_context(resources);
     let mut session = factory
@@ -960,6 +1025,7 @@ fn exact_attempt_resume_is_delegated_under_the_same_guard_and_basis() {
         QemuVmRealizationOperation::Resume
     );
     assert_eq!(realization.realization().configuration, selected);
+    assert_eq!(realization.scheduler(), &scheduler);
     assert_eq!(counters.resumes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.checks.load(Ordering::SeqCst), 3);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
@@ -1161,6 +1227,7 @@ fn session_factory(
             resume_initial: None,
             resume_post_selection: None,
             resume_realization: None,
+            resume_scheduler: None,
         },
         UnusedDriver,
         TrackingGuardFactory {
@@ -1179,6 +1246,22 @@ fn execution_context(resources: AttemptResourceLimits) -> AttemptExecutionContex
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
     )
+}
+
+fn scheduler_checkpoint(configuration: &Configuration) -> SingleSchedulerCheckpoint {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "live-session-resume",
+        Shift::new(0).expect("zero shift"),
+        1,
+        SimInstant { nanos: 1 },
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_scenario_def(configuration.def.clone());
+    SingleScheduler::new(scenario)
+        .expect("build live-session scheduler")
+        .checkpoint()
+        .expect("capture live-session scheduler")
 }
 
 fn fake_captured_vmstate() -> Result<QemuCapturedVmState, QemuVmRealizationError> {
