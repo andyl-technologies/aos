@@ -453,7 +453,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   latches quarantine and prevents later aggregate release. Explicit shutdown reaps
   the nodes, finishes every exact generation lease, and then asks the authority
   to attest aggregate release, while failed finish or abandonment transfers
-  remaining authority to quarantine. The
+  remaining authority to quarantine. The daemon now provides the bounded join
+  owner for that contract: it retains one latest generation per scenario node,
+  rejects stale/reused generation identities, tracks at most one active linear
+  lease per node, and quarantines the one attempt guard if any lease is dropped
+  or aggregate finish races a live generation. The
   campaign worker's Linux implementation of that authority, fresh exact-cache,
   baked/thin image provisioning, the modeled attempt driver, and production
   worker/factory selection remain open. Real-node exact-

@@ -2097,7 +2097,13 @@ asks all retained nodes to reap, releases each exact generation lease, and only
 then asks the aggregate launch authority to finish. A failed attestation stays
 observable and transfers the remaining authority to quarantine. Construction
 failure, unwind, or abandonment before those explicit finishes must perform the
-same fail-closed transfer from the lease and authority drop paths. The packaged
+same fail-closed transfer from the lease and authority drop paths. The daemon's
+attempt-generation owner now enforces this join around one resource guard. It
+retains at most one latest generation integer per bounded scenario node plus
+at most one active lease per node, rejects stale/reused identities, and releases
+the guard only when every exact lease finished. Dropping a lease or requesting
+aggregate finish with a live lease permanently transfers the guard to
+quarantine; exact retry continues to report that terminal outcome. The packaged
 non-campaign lifecycle uses the existing launcher through the default
 authority and no-op generation leases. The campaign worker must still provide
 the Linux attempt-owned multi-generation implementation and must not select
