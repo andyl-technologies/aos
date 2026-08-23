@@ -12,6 +12,29 @@ fn node() -> NodeId {
     }
 }
 
+struct FailingFinishLauncher {
+    finish_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ProductionVmNodeLauncher for FailingFinishLauncher {
+    fn launch(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<QemuNode, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(loop_factory_error("test launcher retained quarantine"))
+    }
+}
+
 #[test]
 fn recorded_control_boundary_waits_until_every_node_reaches_the_exact_time() {
     let node_a = node();
@@ -331,9 +354,31 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         debug_runtime_evidence: Vec::new(),
+        node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: ProductionRunDirectory::temporary()
             .unwrap_or_else(|error| panic!("test run directory should build: {error}")),
     }
+}
+
+#[test]
+fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
+    let source = initially_violated_scenario();
+    let finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.node_launcher = Box::new(FailingFinishLauncher {
+        finish_calls: Arc::clone(&finish_calls),
+    });
+
+    let error = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("failed launch-authority cleanup must reject shutdown"));
+
+    assert!(
+        error
+            .to_string()
+            .contains("test launcher retained quarantine")
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

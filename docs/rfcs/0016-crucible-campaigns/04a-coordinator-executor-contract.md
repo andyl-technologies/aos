@@ -2066,6 +2066,19 @@ guarded launch/session path transfers retained pre-install and active-node
 children into the abstract attempt guard, and the daemon guard composes
 cancellation, quantum accounting, descriptor-pinned preparation, and
 all-or-quarantine cleanup around the concrete combined Linux host owner. A
+production lifecycle now accepts and retains one object-safe node-launch
+authority. Initial fresh/exact materialization and every modeled crash/restart
+replacement pass through that same authority; whole-world debugger replay must
+obtain an independent authority from it or fail closed. The authoritative
+lifecycle therefore no longer has a later direct-spawn path that can bypass an
+attempt guard after the first generation. Shutdown asks all retained nodes to
+reap before the authority attests aggregate release; a failed attestation stays
+observable and transfers the remaining authority to quarantine. Construction
+failure, unwind, or abandonment before that explicit finish must perform the
+same fail-closed transfer from the authority's drop path. The packaged
+non-campaign lifecycle uses the existing launcher through the default
+authority. The campaign worker must still provide the Linux attempt-owned
+implementation and must not select that default. A
 concrete exact-resume adapter obtains that one-shot prepared directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the

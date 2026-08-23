@@ -506,7 +506,214 @@ pub struct ProductionVmLifecycleLoop {
     debug_gateway_teardown_required: bool,
     indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
+    node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
+}
+
+/// Process materialization requested by the authoritative production lifecycle.
+#[derive(Clone, Copy, Debug)]
+pub enum ProductionVmNodeLaunchKind<'a> {
+    /// Starts one freshly provisioned node at its baked ready boundary.
+    Fresh,
+    /// Restores one authenticated exact snapshot.
+    Exact {
+        /// Snapshot paired with the scheduler and host-I/O continuation.
+        snapshot: &'a QemuVmSnapshot,
+        /// Whether the restored node remains paused after installation.
+        paused: bool,
+    },
+}
+
+/// Borrowed launch request for one production lifecycle node generation.
+#[derive(Clone, Copy, Debug)]
+pub struct ProductionVmNodeLaunchRequest<'a> {
+    launch: &'a ProductionLiveNodeStepGateConfig,
+    run_directory: &'a Path,
+    node_name: &'a str,
+    router_name: &'a str,
+    crash_detector: &'a str,
+    kind: ProductionVmNodeLaunchKind<'a>,
+}
+
+impl<'a> ProductionVmNodeLaunchRequest<'a> {
+    const fn new(
+        launch: &'a ProductionLiveNodeStepGateConfig,
+        run_directory: &'a Path,
+        node_name: &'a str,
+        router_name: &'a str,
+        crash_detector: &'a str,
+        kind: ProductionVmNodeLaunchKind<'a>,
+    ) -> Self {
+        Self {
+            launch,
+            run_directory,
+            node_name,
+            router_name,
+            crash_detector,
+            kind,
+        }
+    }
+
+    /// Returns the validated production launch profile.
+    #[must_use]
+    pub const fn launch(&self) -> &ProductionLiveNodeStepGateConfig {
+        self.launch
+    }
+
+    /// Returns the descriptor-owning node run-directory path.
+    #[must_use]
+    pub const fn run_directory(&self) -> &Path {
+        self.run_directory
+    }
+
+    /// Returns the scheduler node name.
+    #[must_use]
+    pub const fn node_name(&self) -> &str {
+        self.node_name
+    }
+
+    /// Returns the deterministic router role name.
+    #[must_use]
+    pub const fn router_name(&self) -> &str {
+        self.router_name
+    }
+
+    /// Returns the process-generation crash-detector label.
+    #[must_use]
+    pub const fn crash_detector(&self) -> &str {
+        self.crash_detector
+    }
+
+    /// Returns the fresh or exact process materialization request.
+    #[must_use]
+    pub const fn kind(&self) -> ProductionVmNodeLaunchKind<'a> {
+        self.kind
+    }
+}
+
+/// Attempt-owned authority for every QEMU generation in one production lifecycle.
+///
+/// Implementations may install cgroup, filesystem-quota, cancellation, and
+/// process-reap ownership before delegating to the packaged QEMU launcher. An
+/// error return must leave no unowned child process. The lifecycle retains this
+/// authority for modeled crash/restart replacements instead of bypassing it
+/// after the initial generation. Implementations must also retain or transfer
+/// containment authority from their `Drop` path when lifecycle construction,
+/// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
+pub trait ProductionVmNodeLauncher: Send {
+    /// Launches one requested node generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when admission, process launch, exact
+    /// restore, or post-launch authentication fails. The implementation must
+    /// retain or reap every process it may have spawned before returning.
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<QemuNode, LifecycleApiError>;
+
+    /// Creates an independent authority for whole-world debugger replay.
+    ///
+    /// An attempt-scoped implementation may reject this operation when its
+    /// resource contract cannot admit a second world. It must never silently
+    /// substitute an unguarded launcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when replay process authority cannot be
+    /// allocated under the same containment policy.
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError>;
+
+    /// Finalizes process-containment ownership after lifecycle node shutdown.
+    ///
+    /// The lifecycle calls this method after asking every retained QEMU node to
+    /// shut down. Implementations must make it idempotent. Success attests that
+    /// no child remains and that attempt resources may be released. An error
+    /// must retain or transfer all remaining authority to quarantine. Dropping
+    /// the authority without calling this method must provide the same
+    /// fail-closed ownership transfer, without claiming resource release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when reap or containment release cannot be
+    /// attested. The caller reports this failure even when node shutdown also
+    /// failed.
+    fn finish(&mut self) -> Result<(), LifecycleApiError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PackagedProductionVmNodeLauncher;
+
+impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<QemuNode, LifecycleApiError> {
+        let launched = match request.kind() {
+            ProductionVmNodeLaunchKind::Fresh => launch_production_live_node(
+                request.launch(),
+                request.run_directory(),
+                request.node_name(),
+                request.router_name(),
+                request.crash_detector(),
+            ),
+            ProductionVmNodeLaunchKind::Exact {
+                snapshot,
+                paused: false,
+            } => launch_production_live_node_exact_snapshot(
+                request.launch(),
+                request.run_directory(),
+                request.node_name(),
+                request.router_name(),
+                request.crash_detector(),
+                snapshot,
+            ),
+            ProductionVmNodeLaunchKind::Exact {
+                snapshot,
+                paused: true,
+            } => launch_production_live_node_exact_snapshot_paused(
+                request.launch(),
+                request.run_directory(),
+                request.node_name(),
+                request.router_name(),
+                request.crash_detector(),
+                snapshot,
+            ),
+        };
+        launched.map_err(|error| {
+            loop_factory_error(format!(
+                "launch QEMU node `{}` through packaged authority: {error}",
+                request.node_name()
+            ))
+        })
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Ok(Box::new(Self))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+}
+
+fn launch_production_node_generation(
+    launcher: &mut dyn ProductionVmNodeLauncher,
+    launch: &ProductionLiveNodeStepGateConfig,
+    run_directory: &Path,
+    node_name: &str,
+    crash_detector: &str,
+    kind: ProductionVmNodeLaunchKind<'_>,
+) -> Result<QemuNode, LifecycleApiError> {
+    launcher.launch(ProductionVmNodeLaunchRequest::new(
+        launch,
+        run_directory,
+        node_name,
+        "crucible-router",
+        crash_detector,
+        kind,
+    ))
 }
 
 mod config;
@@ -779,6 +986,35 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
     config: &ProductionVmLifecycleConfig,
     checkpoint: &Checkpoint,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    build_production_vm_lifecycle_loop_from_checkpoint_with_launcher(
+        scenario,
+        source,
+        config,
+        checkpoint,
+        PackagedProductionVmNodeLauncher,
+    )
+}
+
+/// Builds a production lifecycle from an exact checkpoint and launch authority.
+///
+/// The supplied authority owns every initial and modeled replacement QEMU
+/// process generation. It is retained by the returned lifecycle.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the checkpoint closure is
+/// invalid, materialization fails, or `launcher` cannot produce an exact
+/// contained process generation.
+pub fn build_production_vm_lifecycle_loop_from_checkpoint_with_launcher<L>(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    checkpoint: &Checkpoint,
+    launcher: L,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
+where
+    L: ProductionVmNodeLauncher + 'static,
+{
     if checkpoint.kind != CheckpointKind::Fat
         || checkpoint.scenario_ref != scenario.id()
         || checkpoint.configuration != checkpoint.id
@@ -799,7 +1035,13 @@ pub fn build_production_vm_lifecycle_loop_from_checkpoint(
             "durable production continuation does not match checkpoint model state",
         ));
     }
-    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, Some(restored))
+    build_production_vm_lifecycle_loop_with_restore(
+        scenario,
+        source,
+        config,
+        Some(restored),
+        Box::new(launcher),
+    )
 }
 
 /// Builds a production local-QEMU lifecycle loop for `scenario`.
@@ -819,7 +1061,41 @@ pub fn build_production_vm_lifecycle_loop(
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, None)
+    build_production_vm_lifecycle_loop_with_launcher(
+        scenario,
+        source,
+        config,
+        PackagedProductionVmNodeLauncher,
+    )
+}
+
+/// Builds a fresh production lifecycle under one retained launch authority.
+///
+/// The authority is invoked for every initial node and every later modeled
+/// process replacement. This keeps an attempt-scoped containment policy on the
+/// authoritative scheduler path for the lifecycle's complete process lifetime.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when scenario validation,
+/// run-directory preparation, launch admission, QEMU startup, or scheduler
+/// construction fails.
+pub fn build_production_vm_lifecycle_loop_with_launcher<L>(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    launcher: L,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
+where
+    L: ProductionVmNodeLauncher + 'static,
+{
+    build_production_vm_lifecycle_loop_with_restore(
+        scenario,
+        source,
+        config,
+        None,
+        Box::new(launcher),
+    )
 }
 
 fn build_production_vm_lifecycle_loop_with_restore(
@@ -827,6 +1103,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
+    mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let network_implementations = fault_implementation::network_effect_implementation_registry()
         .map_err(|error| {
@@ -1120,25 +1397,32 @@ fn build_production_vm_lifecycle_loop_with_restore(
         let service_state = restored_service_state.unwrap_or(ProductionNodeServiceState::Running);
         node_generations.insert(vm.id.clone(), generation);
         node_service_states.insert(vm.id.clone(), service_state);
+        let crash_detector = format!("lifecycle-{}-generation-{generation}", vm.id.name);
         let launched = match (restore_target, service_state) {
             (Some(target), ProductionNodeServiceState::Running) => {
-                launch_production_live_node_exact_snapshot(
+                launch_production_node_generation(
+                    node_launcher.as_mut(),
                     &launch,
                     &node_directory,
                     &vm.id.name,
-                    "crucible-router",
-                    &format!("lifecycle-{}-generation-{generation}", vm.id.name),
-                    &target.snapshot,
+                    &crash_detector,
+                    ProductionVmNodeLaunchKind::Exact {
+                        snapshot: &target.snapshot,
+                        paused: false,
+                    },
                 )
             }
             (Some(target), ProductionNodeServiceState::PoweredOff) => {
-                launch_production_live_node_exact_snapshot_paused(
+                launch_production_node_generation(
+                    node_launcher.as_mut(),
                     &launch,
                     &node_directory,
                     &vm.id.name,
-                    "crucible-router",
-                    &format!("lifecycle-{}-generation-{generation}", vm.id.name),
-                    &target.snapshot,
+                    &crash_detector,
+                    ProductionVmNodeLaunchKind::Exact {
+                        snapshot: &target.snapshot,
+                        paused: true,
+                    },
                 )
             }
             (Some(_), ProductionNodeServiceState::PermanentlyFailed) => {
@@ -1148,17 +1432,16 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
             (None, ProductionNodeServiceState::PermanentlyFailed) => continue,
-            (None, _) => launch_production_live_node(
+            (None, _) => launch_production_node_generation(
+                node_launcher.as_mut(),
                 &launch,
                 &node_directory,
                 &vm.id.name,
-                "crucible-router",
                 &format!("lifecycle-{}", vm.id.name),
+                ProductionVmNodeLaunchKind::Fresh,
             ),
         };
-        let mut backend = launched.map_err(|error| {
-            loop_factory_error(format!("launch QEMU node `{}`: {error}", vm.id.name))
-        })?;
+        let mut backend = launched?;
         let observed = SimulationBackend::now(&backend).ticks;
         if let Some(target) = restore_target {
             let restored_configuration = restore_checkpoint
@@ -1567,6 +1850,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
         debug_runtime_evidence: Vec::new(),
+        node_launcher,
         _run_directory: run_directory,
     };
     if let Some(checkpoint) = &restore_checkpoint {

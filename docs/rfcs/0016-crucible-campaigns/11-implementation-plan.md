@@ -433,9 +433,17 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact-resume adapter obtains that authority from the guard, streams and
   authenticates the durable root into the pinned inode, installs a root-bound
   real-node launcher, and transfers failed-launch or active-node child authority
-  back to the guard on failure. Fresh exact-cache, baked/thin image provisioning,
-  the modeled attempt driver, and production worker/factory selection remain
-  open. Real-node exact-
+  back to the guard on failure. The canonical production lifecycle now retains
+  one injected node-launch authority across initial fresh/exact launch,
+  modeled crash/restart replacement, and whole-world debugger replay; a replay
+  must obtain an independent authority or fail closed. This removes the
+  lifecycle's direct-spawn bypass seam while keeping the packaged ordinary
+  lifecycle behind an explicit default authority. Explicit shutdown reaps the
+  nodes before asking the authority to attest aggregate release, while failed
+  finish or abandonment transfers remaining authority to quarantine. The
+  campaign worker's Linux implementation of that authority, fresh exact-cache,
+  baked/thin image provisioning, the modeled attempt driver, and production
+  worker/factory selection remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes

@@ -319,10 +319,153 @@ pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiErro
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RecordedLaunch {
+        node: String,
+        router: String,
+        crash_detector: String,
+        exact: Option<(ContentHash, bool)>,
+    }
+
+    struct RecordingRejectingLauncher {
+        calls: Arc<std::sync::Mutex<Vec<RecordedLaunch>>>,
+    }
+
+    impl ProductionVmNodeLauncher for RecordingRejectingLauncher {
+        fn launch(
+            &mut self,
+            request: ProductionVmNodeLaunchRequest<'_>,
+        ) -> Result<QemuNode, LifecycleApiError> {
+            let exact = match request.kind() {
+                ProductionVmNodeLaunchKind::Fresh => None,
+                ProductionVmNodeLaunchKind::Exact { snapshot, paused } => {
+                    Some((snapshot.id(), paused))
+                }
+            };
+            self.calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy"))
+                .push(RecordedLaunch {
+                    node: request.node_name().to_owned(),
+                    router: request.router_name().to_owned(),
+                    crash_detector: request.crash_detector().to_owned(),
+                    exact,
+                });
+            Err(loop_factory_error(
+                "recording launcher rejects process spawn",
+            ))
+        }
+
+        fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+            Err(loop_factory_error(
+                "recording launcher rejects replay authority",
+            ))
+        }
+
+        fn finish(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+    }
+
+    fn launch_snapshot(label: &str) -> QemuVmSnapshot {
+        let scenario = ScenarioDef::from_canonical_material(
+            "crucible.test.production-launch-authority",
+            label,
+        );
+        let configuration = Configuration::genesis(scenario);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )
+        .unwrap_or_else(|error| panic!("launch checkpoint should build: {error}"));
+        QemuVmSnapshot::diskless(
+            checkpoint,
+            crucible_qemu::QemuReplayOracleValidation::NotRun,
+        )
+        .unwrap_or_else(|error| panic!("launch snapshot should build: {error}"))
+    }
+
     #[test]
     fn production_vm_loop_can_move_to_the_session_actor() {
         fn assert_send<T: Send>() {}
         assert_send::<ProductionVmLifecycleLoop>();
+    }
+
+    #[test]
+    fn production_lifecycle_routes_every_launch_mode_through_one_authority() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut launcher = RecordingRejectingLauncher {
+            calls: Arc::clone(&calls),
+        };
+        let profile = ProductionLiveNodeStepGateConfig::new_with_root_image(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            "run-directory",
+        );
+        let snapshot = launch_snapshot("exact");
+
+        for (crash_detector, kind) in [
+            ("fresh", ProductionVmNodeLaunchKind::Fresh),
+            (
+                "exact-running",
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &snapshot,
+                    paused: false,
+                },
+            ),
+            (
+                "exact-paused",
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &snapshot,
+                    paused: true,
+                },
+            ),
+        ] {
+            let error = launch_production_node_generation(
+                &mut launcher,
+                &profile,
+                Path::new("run-directory"),
+                "node-a",
+                crash_detector,
+                kind,
+            )
+            .err()
+            .unwrap_or_else(|| panic!("recording launcher should reject process spawn"));
+            assert!(error.to_string().contains("recording launcher rejects"));
+        }
+
+        assert!(launcher.replay_candidate().is_err());
+        assert_eq!(
+            *calls
+                .lock()
+                .unwrap_or_else(|_| panic!("launch recorder lock should remain healthy")),
+            vec![
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("fresh"),
+                    exact: None,
+                },
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("exact-running"),
+                    exact: Some((snapshot.id(), false)),
+                },
+                RecordedLaunch {
+                    node: String::from("node-a"),
+                    router: String::from("crucible-router"),
+                    crash_detector: String::from("exact-paused"),
+                    exact: Some((snapshot.id(), true)),
+                },
+            ]
+        );
     }
 
     #[test]

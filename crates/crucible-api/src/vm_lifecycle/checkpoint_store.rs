@@ -1,8 +1,8 @@
 //! Durable content-addressed closure store for exact production checkpoints.
 
 use super::*;
-use crucible::model::FaultResourceLimits;
 use crucible::LocalDagStore;
+use crucible::model::FaultResourceLimits;
 use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 
