@@ -31,9 +31,10 @@ impl QemuAsyncDriverRuntimeError {
     pub fn fault_result_storage(requested: usize, configured: usize) -> Self {
         Self {
             operation: "reserve fault preparation result",
-            message: format!(
-                "cannot admit or reserve published result length {requested} against limit {configured}"
-            ),
+            // This constructor is itself used after allocation refusal. Keep
+            // its diagnostic storage empty so propagating typed LIMIT-2 never
+            // attempts another heap allocation.
+            message: String::new(),
             fault_result_storage: Some((
                 u32::try_from(requested).unwrap_or(u32::MAX),
                 u32::try_from(configured).unwrap_or(u32::MAX),
