@@ -281,6 +281,62 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
 }
 
 #[test]
+fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
+    let base = test_plan();
+    let limits = FaultResourceLimits {
+        thin_replay_events: 2,
+        resolved_effect_records: 1,
+        ..base.resource_limits()
+    };
+    let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
+        .unwrap_or_else(|error| panic!("limited plan: {error}"));
+    let seed = ContentHash::from_bytes(b"durable-checkpoint-record-preflight");
+    let mut runtime = FaultExecutionRuntime::new(
+        &plan,
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        manifests(),
+    )
+    .unwrap_or_else(|error| panic!("runtime: {error}"));
+    runtime
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+        )
+        .unwrap_or_else(|error| panic!("boundary: {error}"));
+    let mut checkpoint = runtime
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("checkpoint: {error}"));
+    let item = checkpoint
+        .recorded_work_items
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("recording must produce one work item"));
+    assert_eq!(item.records.len(), 1);
+    checkpoint.recorded_work_items.push(item);
+
+    let mut hostile = Vec::new();
+    ciborium::ser::into_writer(&checkpoint, &mut hostile)
+        .unwrap_or_else(|error| panic!("hostile checkpoint fixture: {error}"));
+    assert!(matches!(
+        FaultRuntimeCheckpoint::from_canonical_bytes(&hostile, &plan, seed),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 1,
+                requested: 1,
+                configured: 1,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
 fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
     let base = test_plan();
     let seed = ContentHash::from_bytes(b"atomic-replay-install");

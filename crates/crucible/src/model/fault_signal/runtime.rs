@@ -591,6 +591,7 @@ pub struct ResolvedReplayWorkItem {
     /// Complete post-derivation signal and binding continuation fingerprint.
     pub derivation_fingerprint: ContentHash,
     /// Ordered effects committed for this work item; an empty list records pass.
+    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
     pub records: Vec<ResolvedEffectRecord>,
 }
 
@@ -665,6 +666,7 @@ pub struct ResolvedEffectTrace {
     /// Replay mode encoded in the reproduction artifact.
     pub mode: FaultReplayMode,
     /// Exact ordered boundaries and opportunities, including pass outcomes.
+    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
     pub work_items: Vec<ResolvedReplayWorkItem>,
     /// Next work item to consume.
     pub cursor: usize,
@@ -916,6 +918,7 @@ pub struct FaultRuntimeCheckpoint {
     /// Replay trace and cursor, when replaying.
     pub replay: Option<ResolvedEffectTrace>,
     /// Complete evaluated work items and their resolved effects.
+    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
     pub recorded_work_items: Vec<ResolvedReplayWorkItem>,
     /// Resolved-effect objects retained as checkpoint dependencies.
     pub retained_effects: BTreeSet<ContentHash>,
