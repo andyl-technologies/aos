@@ -2053,11 +2053,15 @@ both retained owners to a detached worker; ordinary failures retry with bounded
 backoff, while an invariant panic parks the worker without dropping authority.
 Partial setup never exposes a child contract and either cleans the storage
 owner asynchronously or retains lower-level setup authority fail-closed. The
-combined owner now admits the exact launch profile before creating an empty
-VMState destination through its retained run-directory descriptor, applies and
-reads back the child ownership/mode policy, synchronizes the file and directory,
-and issues exactly one descriptor-pinned prepared authority without exposing a
-raw storage descriptor. Invocation by guarded launch, baked/thin image
+combined owner now admits each exact launch profile before creating a fresh
+fixed-width monotone generation directory and empty VMState destination through
+its retained attempt-root descriptor. It applies and reads back the child
+ownership/mode policy, synchronizes the child and attempt root, and issues a
+descriptor-pinned prepared authority without exposing a raw storage descriptor.
+All generations inherit the same project ID and share the attempt's aggregate
+block/inode quota. The owner retains only the next generation ordinal; kernel
+inode enforcement and bounded cleanup own every completed or partial child.
+Invocation by guarded launch, baked/thin image
 provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
 before this host owner is selected by the production executor.
 
@@ -2098,7 +2102,7 @@ non-campaign lifecycle uses the existing launcher through the default
 authority and no-op generation leases. The campaign worker must still provide
 the Linux attempt-owned multi-generation implementation and must not select
 that default. A
-concrete exact-resume adapter obtains that one-shot prepared directory from the
+concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the
 guarded live facade to the session. Fresh exact-cache, baked-genesis, and thin

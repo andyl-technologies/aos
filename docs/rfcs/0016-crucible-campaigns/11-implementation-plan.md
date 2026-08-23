@@ -390,9 +390,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   process contract, proves reap before synchronous storage cleanup, and
   transfers both retained owners to a nondroppable detached worker with bounded
   retry and panic parking. The combined owner now admits the launch profile and
-  creates, owns, and synchronizes one empty exact-VMState destination through
-  its retained run-directory descriptor before lending a one-shot prepared
-  authority; raw storage descriptors remain sealed. Guarded-launch invocation,
+  creates, owns, and synchronizes fresh monotone generation directories plus
+  their empty exact-VMState destinations through its retained attempt-root
+  descriptor before lending descriptor-pinned prepared authorities. Every
+  generation stays under the one aggregate project quota; issuance retains only
+  the next ordinal, while the inode quota bounds allocation and cleanup. Raw
+  storage descriptors remain sealed. Guarded-launch invocation,
   baked/thin image provisioning, and a real ext4 enforcement VM gate remain
   open before the production executor selects this owner.
   A prepared run-directory authority now pins the directory and exact regular
@@ -428,8 +431,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   poisons itself while retaining authority after partial setup. Aggregate
   filesystem-quota reservation, exact run-directory binding, and nondroppable
   process/storage quarantine are now composed by the concrete Linux host owner.
-  Descriptor-pinned exact-VMState destination preparation and its one-shot
-  daemon guard capability are now composed by that owner. The concrete
+  Descriptor-pinned multi-generation exact-VMState destination preparation and
+  its daemon guard capability are now composed by that owner. The concrete
   exact-resume adapter obtains that authority from the guard, streams and
   authenticates the durable root into the pinned inode, installs a root-bound
   real-node launcher, and transfers failed-launch or active-node child authority
@@ -546,8 +549,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   implemented without holding the supervisor actor across QEMU or store work.
   The crate-internal quota/run-directory owner and its public sealed composition
   with the process owner are implemented, including reap-before-storage release
-  and nondroppable combined quarantine. The owner now lends a one-shot admitted,
-  descriptor-pinned exact-VMState destination through the daemon guard.
+  and nondroppable combined quarantine. The owner now lends fresh monotone,
+  admitted descriptor-pinned generation directories and exact-VMState
+  destinations through the daemon guard under one aggregate quota.
   The guarded exact-resume adapter now invokes the real-node launcher only after
   root materialization through the attempt-owned directory. Fresh exact-cache,
   baked/thin image provisioning, the full executor flight, and production

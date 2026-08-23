@@ -68,9 +68,10 @@ pub trait QemuAttemptHostResourceOwner {
     ///
     /// # Errors
     ///
-    /// Returns an operational error when launch admission or retained storage
-    /// authentication fails, or the one-shot capability was already issued.
-    fn prepare_run_directory(
+    /// Returns an operational error when launch admission, retained aggregate
+    /// storage authentication, or fresh generation-directory provisioning
+    /// fails.
+    fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
@@ -173,7 +174,7 @@ pub struct LinuxQemuAttemptHostResourceOwner {
 }
 
 impl LinuxQemuAttemptHostResourceOwner {
-    /// Returns the exact pinned run-directory path for diagnostics.
+    /// Returns the exact pinned aggregate attempt-root path for diagnostics.
     ///
     /// # Errors
     ///
@@ -230,11 +231,11 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.host.process_contract()
     }
 
-    fn prepare_run_directory(
+    fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
-        self.host.prepare_run_directory(command)
+        self.host.prepare_generation_run_directory(command)
     }
 
     fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
@@ -466,11 +467,11 @@ where
         self.host.child_process_contract()
     }
 
-    fn prepare_run_directory(
+    fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
-        self.host.prepare_run_directory(command)
+        self.host.prepare_generation_run_directory(command)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {

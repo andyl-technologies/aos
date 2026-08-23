@@ -147,9 +147,9 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// # Errors
     ///
     /// Returns an operational error when the command exceeds the admitted
-    /// resources, storage identity or policy cannot be authenticated, or this
-    /// one-shot capability was already issued.
-    fn prepare_run_directory(
+    /// resources or the aggregate storage identity, fresh generation
+    /// directory, or VMState policy cannot be authenticated.
+    fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
