@@ -12,16 +12,17 @@ use crucible::{
 };
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ObservationCandidate};
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLaunchCommand,
-    QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission,
-    QemuNodeChild, QemuPreparedRunDirectory, QemuVmLiveRealizationExecutor, QemuVmRealization,
-    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuChildProcessContract,
+    QemuLaunchCommand, QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization,
+    QemuLoadvmRealizationAdmission, QemuNodeChild, QemuPreparedRunDirectory,
+    QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
 };
 
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CrucibleAttemptExecution, ExecutionCancellation,
-    QemuCrucibleAttemptSession, QemuCrucibleSessionFactory,
+    QemuCrucibleAttemptSession, QemuCrucibleSessionFactory, captured_qemu_vmstate_blob,
 };
 
 /// Read-only operational boundary available to a modeled attempt driver.
@@ -485,21 +486,25 @@ where
         request: QemuVmReplayRequest,
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError>;
 
-    /// Captures the installed backend at one exact paused boundary under `guard`.
+    /// Captures and reaps the installed backend at one exact paused boundary.
     ///
-    /// A successful return leaves the process paused and owned by the session.
-    /// An error must retain every process and resource authority required for
-    /// guarded cleanup or quarantine.
+    /// A successful return attests that the final observable drain did not
+    /// change the sealed checkpoint boundary, that the process was reaped, and
+    /// that the returned positional VMState source names the synchronized
+    /// retained inode. An error must retain every process and resource authority
+    /// required for guarded cleanup or quarantine unless
+    /// [`QemuVmLiveRealizationExecutor::live_backend_is_active`] reports that
+    /// reap already completed.
     ///
     /// # Errors
     ///
     /// Returns [`QemuVmRealizationError`] on cancellation, basis mismatch,
     /// observation sealing failure, or VMState/host-I/O capture failure.
-    fn capture_live_exact_snapshot_guarded(
+    fn capture_exact_checkpoint_artifact_guarded(
         &mut self,
         guard: &mut G,
         checkpoint: crucible::Checkpoint,
-    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError>;
+    ) -> Result<(QemuVmSnapshot, QemuCapturedVmState), QemuVmRealizationError>;
 
     /// Drains, terminates, and reaps the active backend under `guard`.
     ///
@@ -843,9 +848,25 @@ where
         self.guard.check_operational_boundary()?;
         let result = self
             .executor
-            .capture_live_exact_snapshot_guarded(&mut self.guard, checkpoint);
+            .capture_exact_checkpoint_artifact_guarded(&mut self.guard, checkpoint);
+        let backend_is_active = self.executor.live_backend_is_active();
+        if !backend_is_active {
+            self.backend_reaped = true;
+        }
         self.guard.check_operational_boundary()?;
-        result
+        let (snapshot, vmstate) = result?;
+        if backend_is_active {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "accept captured QEMU checkpoint artifact",
+                message: String::from(
+                    "capture returned a VMState source before attesting backend reap",
+                ),
+            });
+        }
+        Ok(CapturedExactCheckpoint::new(
+            snapshot,
+            captured_qemu_vmstate_blob(vmstate),
+        ))
     }
 
     fn finish(mut self) -> Result<(), QemuVmRealizationError> {

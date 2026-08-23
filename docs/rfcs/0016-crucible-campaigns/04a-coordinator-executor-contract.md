@@ -2062,8 +2062,11 @@ sealed event-log change, synchronizes and reauthenticates the retained VMState
 inode, and yields only a bounded positional reader that survives artifact
 unlink without carrying directory or mutation authority. The daemon wraps that
 reader as a reopenable CAS source with an independent positional cursor per
-open. Live-session orchestration remains open before this primitive enters the
-production worker flight. The daemon then
+open. The guarded live session now performs that conversion itself, records the
+successful capture as the backend reap attestation, and releases only the host
+resource guard during `finish`; it cannot accidentally issue a second shutdown
+or hand modeled code the opaque source. Concrete real-node session construction
+and the production worker flight remain open. The daemon then
 prepares a no-write, content-addressed root over canonical snapshot metadata and
 the streamed opaque VMState child, stages that exact root in the assignment
 ledger before the first immutable write, publishes both children before the
