@@ -97,27 +97,30 @@ fn runtime_continues_bounded_progress_then_waits_for_explicit_wake() {
 
 #[test]
 fn shutdown_interrupts_the_maximum_quiescent_wait() {
-    let steps = Arc::new(Mutex::new(VecDeque::from([Ok(
-        CampaignRuntimeStepDisposition::Wait,
-    )])));
-    let (entered_tx, _entered_rx) = mpsc::channel();
-    let (observed_tx, observed_rx) = mpsc::channel();
-    let runtime = CampaignRuntime::start(
-        FakeDriver {
-            steps,
-            entered: entered_tx,
-            observed: observed_tx,
-        },
-        CampaignRuntimeConfig::new(MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL).expect("maximum interval"),
-    )
-    .expect("start runtime");
-    observed_rx
-        .recv_timeout(TEST_TIMEOUT)
-        .expect("runtime entered quiescence");
+    for _ in 0..64 {
+        let steps = Arc::new(Mutex::new(VecDeque::from([Ok(
+            CampaignRuntimeStepDisposition::Wait,
+        )])));
+        let (entered_tx, _entered_rx) = mpsc::channel();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let runtime = CampaignRuntime::start(
+            FakeDriver {
+                steps,
+                entered: entered_tx,
+                observed: observed_tx,
+            },
+            CampaignRuntimeConfig::new(MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL)
+                .expect("maximum interval"),
+        )
+        .expect("start runtime");
+        observed_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("runtime entered quiescence");
 
-    let report = runtime.shutdown_and_join().expect("shutdown wakes runtime");
-    assert_eq!(report.steps(), 1);
-    assert_eq!(report.fallback_polls(), 0);
+        let report = runtime.shutdown_and_join().expect("shutdown wakes runtime");
+        assert_eq!(report.steps(), 1);
+        assert_eq!(report.fallback_polls(), 0);
+    }
 }
 
 #[test]
