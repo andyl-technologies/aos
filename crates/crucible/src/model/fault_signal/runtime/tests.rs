@@ -43,6 +43,47 @@ fn resolved_effect_trace_rejects_unversioned_and_future_envelopes() {
 }
 
 #[test]
+fn resolved_effect_trace_preflights_authored_collection_counts() {
+    let limits = FaultResourceLimits {
+        thin_replay_events: 1,
+        resolved_effect_records: 1,
+        ..FaultResourceLimits::default()
+    };
+    let oversized_work_items = [
+        0xa1, 0x6a, b'w', b'o', b'r', b'k', b'_', b'i', b't', b'e', b'm', b's', 0x82,
+    ];
+    assert!(matches!(
+        super::trace_codec::preflight(&oversized_work_items, limits),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "thin_replay_events",
+                current: 0,
+                requested: 2,
+                configured: 1,
+                ..
+            }
+        ))
+    ));
+
+    let oversized_records = [
+        0xa1, 0x6a, b'w', b'o', b'r', b'k', b'_', b'i', b't', b'e', b'm', b's', 0x81, 0xa1, 0x67,
+        b'r', b'e', b'c', b'o', b'r', b'd', b's', 0x82,
+    ];
+    assert!(matches!(
+        super::trace_codec::preflight(&oversized_records, limits),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 0,
+                requested: 2,
+                configured: 1,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
 fn healing_removes_only_one_contributor() {
     let target = ResolvedFaultTarget::NetworkSegment {
         segment: object_id("segment-a"),

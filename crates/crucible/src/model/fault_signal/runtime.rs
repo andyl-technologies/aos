@@ -11,14 +11,17 @@ use super::*;
 use crate::{ChoiceTag, OverrideDecision, SchedulingPoint};
 
 mod checkpoint;
-mod checkpoint_codec;
+pub(super) mod checkpoint_codec;
 mod error;
 mod observation;
+mod search;
 #[cfg(test)]
 mod tests;
+mod trace_codec;
 
 pub use error::FaultRuntimeError;
 pub use observation::*;
+use search::parse_search_content_hash;
 
 /// Semantic version of runtime/checkpoint state.
 pub const FAULT_RUNTIME_STATE_VERSION: u16 = 3;
@@ -526,21 +529,6 @@ impl SearchOverride {
     }
 }
 
-fn parse_search_content_hash(encoded: &str) -> Option<ContentHash> {
-    if encoded.len() != 64
-        || !encoded
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return None;
-    }
-    let mut bytes = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(ContentHash { bytes })
-}
-
 /// Authoritative replay behavior.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -689,10 +677,7 @@ impl ResolvedEffectTrace {
     ///
     /// Returns [`FaultRuntimeError::CheckpointEncoding`] when serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
-        let mut bytes = RESOLVED_EFFECT_TRACE_MAGIC.to_vec();
-        ciborium::ser::into_writer(self, &mut bytes)
-            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
-        Ok(bytes)
+        trace_codec::encode(self, FaultResourceLimits::compiled_maximum())
     }
 
     /// Decodes and validates a deterministic CBOR trace.
@@ -708,10 +693,11 @@ impl ResolvedEffectTrace {
         let payload = bytes
             .strip_prefix(RESOLVED_EFFECT_TRACE_MAGIC)
             .ok_or(FaultRuntimeError::VersionOrIdentityMismatch)?;
-        let trace: Self = ciborium::de::from_reader(payload)
-            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        checkpoint_codec::admit_input(bytes, resource_limits)?;
+        trace_codec::preflight(payload, resource_limits)?;
+        let trace = trace_codec::decode(payload, resource_limits)?;
         trace.validate(resource_limits)?;
-        if trace.canonical_bytes()?.as_slice() != bytes {
+        if trace_codec::encode(&trace, resource_limits)?.as_slice() != bytes {
             return Err(FaultRuntimeError::CheckpointEncoding);
         }
         Ok(trace)

@@ -11,7 +11,10 @@
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   eventLogTest = builtins.readFile ../../crates/crucible/tests/event_log_unified.rs;
   emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
-  triggerFiringTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  triggerFiringTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
