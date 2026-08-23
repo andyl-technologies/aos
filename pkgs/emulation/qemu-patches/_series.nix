@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "7cc3513ceb7e5587dd6415ed2c8642df8a0749730c601ac1e0cdd6d1fdfb1025";
+  patchBranchBundleSha256 = "fe2fa2c0068784502310e7803a9e839c33b46d9ef4117e093f15bcf968a621de";
   patchBranchBaseCommit = "0400e2d08acb30307af7cb214b21552807c1dd46";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "cb983ca4a3f36fe161f7db46a48ec3314f6abb09";
+  patchBranchHeadCommit = "66c65442fb90f5bb8542060678f6988d0dff0d05";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1025,6 +1025,16 @@ let
       class = "F";
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
       capability = "a node-boundary command submitted while QEMU is halted at an exact drained control wake is dispatched at that same raw icount, so PREPARE and APPLY complete without requiring guest progress; terminal authorization hashes zero the raw evidence coordinate before the plugin maps it into scheduler-logical space";
+    }
+    {
+      file = "0110-crucible-release-halted-rr-turn.patch";
+      branchSubject = "crucible: release halted partial RR turns";
+      branchCommit = "66c65442fb90f5bb8542060678f6988d0dff0d05";
+      branchTree = "cda309236ca0d7bda334313b905abb2f0468ad33";
+      catalogName = "crucible-release-halted-rr-turn";
+      class = "D";
+      enforces = "DET-1,PLUG-24,QEMU-43";
+      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable, while a multi-vCPU guest PAUSE with no host exit request commits a cursor-zero early handoff so a released spin lock cannot be reacquired before a waiting peer runs";
     }
   ];
   catalogOnlyCapabilities = [

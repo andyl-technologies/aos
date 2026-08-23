@@ -283,6 +283,78 @@ pub(super) fn wait_for_fingerprint_sample(
     }
 }
 
+/// Requests and waits for an exact BQL-held terminal fingerprint boundary.
+///
+/// # Errors
+///
+/// Returns [`LivePluginQuantumGateError`] when the request cannot be published,
+/// QEMU exits, the acknowledgement does not arrive within the gate timeout, or
+/// the digest worker does not publish the exact terminal sample.
+pub(super) fn publish_terminal_fingerprint(
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    child: &mut crate::QemuNodeChild,
+    setup: &crate::QemuHostPluginSetup,
+    expected_icount: u64,
+    config: &LivePluginQuantumGateConfig,
+) -> Result<FingerprintSample, LivePluginQuantumGateError> {
+    let request = hot_path
+        .request_control_boundary()
+        .map_err(|source| channel_error("request terminal fingerprint boundary", source))?;
+    setup
+        .signal_plugin_wake()
+        .map_err(|source| channel_error("wake terminal fingerprint boundary", source))?;
+
+    let started = Instant::now();
+    loop {
+        let snapshot = hot_path
+            .node_snapshot()
+            .map_err(|source| channel_error("read terminal fingerprint boundary", source))?;
+        if control_boundary_request_is_acknowledged(request, snapshot.control_boundary_ack) {
+            if snapshot.current_icount != expected_icount {
+                return Err(channel_error(
+                    "verify terminal fingerprint boundary",
+                    QemuNodeChannelError::new(
+                        "terminal fingerprint boundary",
+                        format!(
+                            "acknowledged at icount {} instead of {expected_icount}",
+                            snapshot.current_icount
+                        ),
+                    ),
+                ));
+            }
+            return wait_for_fingerprint_sample(hot_path, child, expected_icount, config);
+        }
+        if let Some(status) = child
+            .try_wait_natural_exit()
+            .map_err(|source| LivePluginQuantumGateError::ChildWait { source })?
+        {
+            return Err(LivePluginQuantumGateError::ChildExitBeforeBoundary {
+                ceiling_icount: expected_icount,
+                status: status.to_string(),
+            });
+        }
+        if started.elapsed() >= config.completion_timeout() {
+            return Err(
+                LivePluginQuantumGateError::FingerprintControlBoundaryTimeout {
+                    expected_icount,
+                    request,
+                    observed: snapshot.control_boundary_ack,
+                    timeout: config.completion_timeout(),
+                },
+            );
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn control_boundary_request_is_acknowledged(request: u32, observed: u32) -> bool {
+    let forward_distance = observed.wrapping_sub(request);
+    request & 1 == 0
+        && observed & 1 == 1
+        && forward_distance != 0
+        && forward_distance < (1_u32 << 31)
+}
+
 // crucible-lint: allow clippy-disallowed-method -- quantum-gate host timeout bounds plugin teardown only.
 #[allow(clippy::disallowed_methods)]
 pub(super) fn wait_for_plugin_teardown(

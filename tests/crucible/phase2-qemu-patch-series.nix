@@ -762,6 +762,13 @@
       enforces = "QFP-LIFE-1,QFP-LIFE-2,FAULT-ORDER";
       capability = "a node-boundary command submitted while QEMU is halted at an exact drained control wake is dispatched at that same raw icount, so PREPARE and APPLY complete without requiring guest progress; terminal authorization hashes zero the raw evidence coordinate before the plugin maps it into scheduler-logical space";
     }
+    {
+      file = "0110-crucible-release-halted-rr-turn.patch";
+      catalogName = "crucible-release-halted-rr-turn";
+      class = "D";
+      enforces = "DET-1,PLUG-24,QEMU-43";
+      capability = "a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable, while a multi-vCPU guest PAUSE with no host exit request commits a cursor-zero early handoff so a released spin lock cannot be reacquired before a waiting peer runs";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

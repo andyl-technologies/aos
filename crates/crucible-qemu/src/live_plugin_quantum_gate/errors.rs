@@ -134,6 +134,21 @@ pub enum LivePluginQuantumGateError {
         /// Later boundary published by the worker.
         sample_icount: u64,
     },
+    /// The exact main-loop boundary used for terminal fingerprint capture did
+    /// not acknowledge its host request within the liveness bound.
+    #[error(
+        "terminal fingerprint boundary at icount {expected_icount} did not acknowledge request {request} within {timeout:?}; observed token {observed}"
+    )]
+    FingerprintControlBoundaryTimeout {
+        /// Exact terminal coordinate whose fingerprint was requested.
+        expected_icount: u64,
+        /// Even host request token.
+        request: u32,
+        /// Last observed request or acknowledgement token.
+        observed: u32,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+    },
     /// QEMU exited before a quantum published its boundary.
     #[error("quantum QEMU exited before reaching a boundary at ceiling {ceiling_icount}: {status}")]
     ChildExitBeforeBoundary {
