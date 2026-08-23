@@ -110,10 +110,32 @@
     ];
   };
 
+  consumerBaseline = {
+    systemd.services.aos-upgrade-removed = {
+      description = "Upgrade qualification service removed by generation two";
+      wantedBy = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
+        RemainAfterExit = true;
+      };
+    };
+  };
+
   consumerUpgrade = {...}: {
     aos.system.version = "test-2";
     environment.etc."aos/upgrade-test/marker.conf".text = "marker = 1\n";
     systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
+    systemd.services.aos-upgrade-test-marker = {
+      description = "Upgrade qualification generation-two marker";
+      wantedBy = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        RemainAfterExit = true;
+      };
+    };
   };
 
   hubSystem = mkSystem [
@@ -158,20 +180,13 @@
   consumerSystem = mkSystem [
     ../../systems/server-test.nix
     qualificationImage
-    (import ../../systems/_upgrade-http-fixture.nix {
-      inherit lib pkgs;
-      generation = 1;
-    })
     consumerTools
+    consumerBaseline
   ];
 
   consumerUpgradeSystem = mkSystem [
     ../../systems/server-test.nix
     qualificationImage
-    (import ../../systems/_upgrade-http-fixture.nix {
-      inherit lib pkgs;
-      generation = 2;
-    })
     consumerTools
     consumerUpgrade
   ];
