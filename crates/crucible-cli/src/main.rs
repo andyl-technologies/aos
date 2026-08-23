@@ -417,11 +417,32 @@ struct CampaignBranchArgs {
     #[arg(long, value_name = "CONFIGURATION_ARTIFACT", required = true)]
     parent: String,
     /// Exact choice-opportunity ID reached at the parent.
-    #[arg(long, value_name = "OPPORTUNITY", required = true)]
-    opportunity: String,
+    #[arg(
+        long,
+        value_name = "OPPORTUNITY",
+        required_unless_present = "selector",
+        requires = "domain",
+        conflicts_with = "selector"
+    )]
+    opportunity: Option<String>,
     /// Exact effective choice-domain ID.
-    #[arg(long, value_name = "DOMAIN", required = true)]
-    domain: String,
+    #[arg(
+        long,
+        value_name = "DOMAIN",
+        required_unless_present = "selector",
+        requires = "opportunity",
+        conflicts_with = "selector"
+    )]
+    domain: Option<String>,
+    /// Resolve one opportunity by declaration name, id:ID, or tag:TAG.
+    #[arg(long, value_name = "SELECTOR")]
+    selector: Option<String>,
+    /// Optional exact opportunity instance filter used with --selector.
+    #[arg(long, value_name = "INSTANCE", requires = "selector")]
+    instance: Option<String>,
+    /// Maximum authenticated opportunities examined during selector resolution.
+    #[arg(long, value_name = "COUNT", default_value_t = 256)]
+    selector_scan_limit: u32,
     /// Finite value: true, false, i64:N, u64:N, or discrete:ALTERNATIVE_ID.
     #[arg(
         long = "value",

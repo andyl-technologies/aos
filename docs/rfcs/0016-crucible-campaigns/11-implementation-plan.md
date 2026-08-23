@@ -995,8 +995,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   bind. Offline `campaign validate-import` now applies the same strict file and
   configuration checks, requires a self-contained dependency-ordered generator
   set, streams one body at a time, and reports exact derived identities without
-  opening repository state. Rich manifest authoring, start attachment, and
-  selector resolution remain open.
+  opening repository state. Operator branch porcelain now resolves an exact
+  declaration name, selectable ID, or semantic tag through the proof-bearing
+  choice index and separately authorized opportunity/declaration/domain reads,
+  scans to authenticated EOF under a 4,096-opportunity ceiling, and rejects
+  absent or ambiguous matches before publication. Rich manifest authoring,
+  start attachment, and bounded compound selector predicates remain open.
 - [ ] **T-CAM-8.2** Implement graph/frontier/choices/findings/explain/compare
   queries with branch-point/source/provenance views, pagination, and versioned
   JSON. The first snapshot-bound graph/frontier/choices page and its exact typed

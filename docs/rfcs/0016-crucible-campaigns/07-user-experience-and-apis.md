@@ -198,6 +198,11 @@ crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   [--proposals N] [--attempts N] [--stop CONDITION]
 crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
+  --selector NAME|name:NAME|id:SELECTABLE_ID|tag:TAG [--instance INSTANCE] \
+  [--selector-scan-limit N] --value VALUE [--value VALUE ...] \
+  [--proposals N] [--attempts N] [--stop CONDITION]
+crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
+  --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
   --opportunity OPPORTUNITY --domain DOMAIN --generator GENERATOR \
   --proposals N [--attempts N] [--stop CONDITION]
 crucible campaign branch NAME --expected SNAPSHOT \
@@ -223,8 +228,18 @@ version 2 `all`, and sets the proposal budget to the domain's exact cardinality.
 The owner accepts it only for a Boolean or discrete domain, when that generator
 is selected by the active exhaustive policy and the cardinality is within the
 policy's configured ceiling; every mismatch fails before request publication.
-Selector resolution remains richer future
-porcelain over the same record. Finite values are validated against the choice
+The selector form resolves one opportunity through the exact snapshot's
+proof-bearing choice index and separately authorized opportunity and declaration
+bodies. A bare selector and `name:` match the declaration name, `id:` matches
+the exact content-addressed selectable declaration, and `tag:` matches one
+exact semantic tag. `--instance` optionally restricts the stable runtime
+instance. Resolution scans to authenticated EOF before accepting a match,
+rejects zero or multiple matches, and examines at most 256 opportunities by
+default or an explicit `--selector-scan-limit` within `1..=4096`. The selected
+effective domain is then fetched and exact-checked against the opportunity;
+`--opportunity` and `--domain` remain the unambiguous low-level form. Bounded
+multi-tag predicates and richer policy-file selector expressions remain future
+porcelain over the same records. Finite values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain
 below the configured exhaustive-cardinality ceiling. A request may target one

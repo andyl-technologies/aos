@@ -44,8 +44,8 @@ use crucible_campaign::{
     MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, PinCampaignRequest,
     PinChange, PinRequest, PinRetention, QueryCampaignChoicesRequest, QueryCampaignFindingsRequest,
     QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
-    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, StopCondition, SubmitCampaignBranchRequest,
-    WatchCampaignRequest,
+    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, SelectableDeclaration, SelectableId,
+    StopCondition, SubmitCampaignBranchRequest, WatchCampaignRequest,
 };
 use crucible_daemon::LoopbackCampaignService;
 use serde::Serialize;
@@ -54,6 +54,7 @@ const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v1";
 const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v1";
+const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
 
 #[derive(Serialize)]
 struct CampaignHeadReport {
@@ -179,6 +180,21 @@ struct ParsedCampaignBranchBasis {
     stop: StopCondition,
 }
 
+struct ParsedCampaignBranchCommonBasis {
+    campaign: CampaignName,
+    expected: CampaignSnapshotId,
+    command: Option<CampaignCommandId>,
+    branch_point: BranchPointId,
+    parent: ConfigurationArtifactId,
+    stop: StopCondition,
+}
+
+enum CampaignChoiceSelector {
+    Name(String),
+    Declaration(SelectableId),
+    Tag(String),
+}
+
 pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<(), CliError> {
     if let CampaignCommand::ValidateImport(validate) = &args.command {
         let report = validate_campaign_import_manifests(&validate.manifests)?;
@@ -225,7 +241,9 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             render_campaign_acceptance(&report, cli.output_format())?
         }
         CampaignCommand::Branch(branch) => {
-            let report = if branch.all {
+            let report = if branch.selector.is_some() {
+                apply_campaign_selector_branch(&client, principal.clone(), branch)?
+            } else if branch.all {
                 apply_campaign_all_branch(&client, principal.clone(), branch)?
             } else {
                 let prepared = prepared.ok_or_else(|| {
@@ -337,6 +355,36 @@ fn prepare_campaign_command(
                         usage_error(format!("invalid campaign derivation basis: {error}"))
                     })?;
             Ok(Some(PreparedCampaignCommand::Derive(request)))
+        }
+        CampaignCommand::Branch(branch) if branch.selector.is_some() => {
+            parse_campaign_branch_common_basis(branch)?;
+            parse_campaign_choice_selector(
+                branch
+                    .selector
+                    .as_deref()
+                    .ok_or_else(|| backend_error("campaign selector disappeared"))?,
+            )?;
+            validate_campaign_selector_scan_limit(branch.selector_scan_limit)?;
+            if let Some(instance) = &branch.instance {
+                validate_campaign_selector_atom(instance, "campaign choice instance")?;
+            }
+            if branch.all
+                && (branch.command.is_some()
+                    || !branch.values.is_empty()
+                    || branch.generator.is_some()
+                    || branch.proposals.is_some())
+            {
+                return Err(usage_error(concat!(
+                    "campaign --all branch cannot carry an operator command, values, ",
+                    "a generator, or a proposal budget",
+                )));
+            }
+            if !branch.all && branch.generator.is_none() && branch.values.is_empty() {
+                return Err(usage_error(
+                    "campaign selector branch requires finite values, a generator, or --all",
+                ));
+            }
+            Ok(None)
         }
         CampaignCommand::Branch(branch) if branch.all => {
             parse_campaign_branch_basis(branch)?;
@@ -544,7 +592,14 @@ fn prepare_campaign_branch(
     principal: &CampaignPrincipal,
 ) -> Result<PreparedCampaignCommand, CliError> {
     let basis = parse_campaign_branch_basis(branch)?;
+    prepare_campaign_branch_with_basis(branch, principal, basis)
+}
 
+fn prepare_campaign_branch_with_basis(
+    branch: &CampaignBranchArgs,
+    principal: &CampaignPrincipal,
+    basis: ParsedCampaignBranchBasis,
+) -> Result<PreparedCampaignCommand, CliError> {
     if branch.all || (branch.generator.is_some() && !branch.values.is_empty()) {
         return Err(usage_error(
             "campaign branch must use exactly one of finite values, a generator, or --all",
@@ -601,10 +656,259 @@ fn prepare_campaign_branch(
     Ok(PreparedCampaignCommand::Branch(submission))
 }
 
+fn apply_campaign_selector_branch<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    branch: &CampaignBranchArgs,
+) -> Result<CampaignAcceptanceReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let selector = parse_campaign_choice_selector(
+        branch
+            .selector
+            .as_deref()
+            .ok_or_else(|| backend_error("campaign selector disappeared"))?,
+    )?;
+    let scan_limit = validate_campaign_selector_scan_limit(branch.selector_scan_limit)?;
+    let common = parse_campaign_branch_common_basis(branch)?;
+    let (opportunity, domain) = resolve_campaign_choice_selector(
+        client,
+        &principal,
+        &common.campaign,
+        common.expected,
+        &selector,
+        branch.instance.as_deref(),
+        scan_limit,
+    )?;
+    let basis = parse_campaign_branch_basis_with_choice(
+        branch,
+        &opportunity.to_string(),
+        &domain.to_string(),
+    )?;
+
+    if branch.all {
+        return apply_campaign_all_branch_with_basis(client, principal, branch, basis);
+    }
+    let prepared = prepare_campaign_branch_with_basis(branch, &principal, basis)?;
+    apply_campaign_acceptance(client, prepared)
+}
+
+fn resolve_campaign_choice_selector<S>(
+    client: &CampaignClient<S>,
+    principal: &CampaignPrincipal,
+    campaign: &CampaignName,
+    snapshot: CampaignSnapshotId,
+    selector: &CampaignChoiceSelector,
+    instance: Option<&str>,
+    scan_limit: usize,
+) -> Result<(ChoiceOpportunityId, ChoiceDomainId), CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let mut after = None;
+    let mut scanned = 0usize;
+    let mut matched = None;
+    loop {
+        let remaining = scan_limit.saturating_sub(scanned);
+        if remaining == 0 {
+            return Err(usage_error(format!(
+                "campaign selector scan exceeded {scan_limit} authenticated opportunities"
+            )));
+        }
+        let limit = u32::try_from(
+            remaining.min(
+                usize::try_from(MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS)
+                    .map_err(|_| backend_error("campaign choice page bound exceeds usize"))?,
+            ),
+        )
+        .map_err(|_| backend_error("campaign selector page bound exceeds u32"))?;
+        let request = QueryCampaignChoicesRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            snapshot,
+            after,
+            limit,
+        )
+        .map_err(|error| usage_error(format!("invalid campaign selector query: {error}")))?;
+        let response = client.query_campaign_choices(&request).map_err(|error| {
+            backend_error(format!("campaign selector choice scan failed: {error}"))
+        })?;
+        scanned = scanned
+            .checked_add(response.entries().len())
+            .ok_or_else(|| backend_error("campaign selector scan count overflowed"))?;
+
+        for entry in response.entries() {
+            let opportunity_id = entry.opportunity();
+            let declaration_request = GetCampaignChoiceObjectRequest::new(
+                principal.clone(),
+                campaign.clone(),
+                snapshot,
+                opportunity_id,
+                CampaignChoiceObjectKind::Declaration,
+            )
+            .map_err(|error| usage_error(format!("invalid selector declaration query: {error}")))?;
+            let declaration_response = client
+                .get_campaign_choice_object(&declaration_request)
+                .map_err(|error| {
+                    backend_error(format!(
+                        "campaign selector declaration query failed: {error}"
+                    ))
+                })?;
+            let CampaignChoiceObject::Declaration(declaration) = declaration_response.object()
+            else {
+                return Err(backend_error(
+                    "authenticated selector declaration query returned another object kind",
+                ));
+            };
+            let opportunity = declaration_response.opportunity();
+            if instance.is_some_and(|expected| opportunity.instance() != expected) {
+                continue;
+            }
+            if !campaign_choice_selector_matches(selector, declaration)? {
+                continue;
+            }
+            if matched
+                .replace((opportunity_id, opportunity.domain()))
+                .is_some()
+            {
+                return Err(usage_error(
+                    "campaign selector matches multiple opportunities; add --instance or use --opportunity",
+                ));
+            }
+        }
+
+        after = response.next_after();
+        if after.is_none() {
+            break;
+        }
+    }
+
+    let (opportunity, domain) = matched.ok_or_else(|| {
+        usage_error("campaign selector matches no authenticated choice opportunity")
+    })?;
+    let domain_request = GetCampaignChoiceObjectRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        opportunity,
+        CampaignChoiceObjectKind::Domain,
+    )
+    .map_err(|error| usage_error(format!("invalid selector domain query: {error}")))?;
+    let domain_response = client
+        .get_campaign_choice_object(&domain_request)
+        .map_err(|error| {
+            backend_error(format!("campaign selector domain query failed: {error}"))
+        })?;
+    let CampaignChoiceObject::Domain(value) = domain_response.object() else {
+        return Err(backend_error(
+            "authenticated selector domain query returned another object kind",
+        ));
+    };
+    if value
+        .id()
+        .map_err(|error| backend_error(format!("selector domain identity failed: {error}")))?
+        != domain
+    {
+        return Err(backend_error(
+            "authenticated selector domain differs from its opportunity",
+        ));
+    }
+    Ok((opportunity, domain))
+}
+
+fn parse_campaign_choice_selector(value: &str) -> Result<CampaignChoiceSelector, CliError> {
+    if let Some(value) = value.strip_prefix("id:") {
+        return SelectableId::parse(value)
+            .map(CampaignChoiceSelector::Declaration)
+            .map_err(|error| usage_error(format!("invalid campaign selectable ID: {error}")));
+    }
+    if let Some(value) = value.strip_prefix("tag:") {
+        validate_campaign_selector_atom(value, "campaign choice tag")?;
+        return Ok(CampaignChoiceSelector::Tag(value.to_owned()));
+    }
+    let value = value.strip_prefix("name:").unwrap_or(value);
+    validate_campaign_selector_atom(value, "campaign choice name")?;
+    Ok(CampaignChoiceSelector::Name(value.to_owned()))
+}
+
+fn validate_campaign_selector_atom(value: &str, label: &str) -> Result<(), CliError> {
+    if value.is_empty()
+        || value.len() > 512
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-/:".contains(&byte))
+    {
+        return Err(usage_error(format!("invalid {label}")));
+    }
+    Ok(())
+}
+
+fn validate_campaign_selector_scan_limit(value: u32) -> Result<usize, CliError> {
+    if value == 0 || value > MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS {
+        return Err(usage_error(format!(
+            "campaign selector scan limit must be within 1..={MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS}"
+        )));
+    }
+    usize::try_from(value).map_err(|_| backend_error("campaign selector scan limit exceeds usize"))
+}
+
+fn campaign_choice_selector_matches(
+    selector: &CampaignChoiceSelector,
+    declaration: &SelectableDeclaration,
+) -> Result<bool, CliError> {
+    match selector {
+        CampaignChoiceSelector::Name(name) => Ok(declaration.name() == name),
+        CampaignChoiceSelector::Declaration(id) => declaration
+            .id()
+            .map(|actual| actual == *id)
+            .map_err(|error| {
+                backend_error(format!(
+                    "authenticated selectable declaration identity failed: {error}"
+                ))
+            }),
+        CampaignChoiceSelector::Tag(tag) => Ok(declaration.semantic_tags().contains(tag)),
+    }
+}
+
 fn parse_campaign_branch_basis(
     branch: &CampaignBranchArgs,
 ) -> Result<ParsedCampaignBranchBasis, CliError> {
+    let opportunity = branch.opportunity.as_deref().ok_or_else(|| {
+        usage_error("campaign branch requires --opportunity unless --selector is used")
+    })?;
+    let domain = branch.domain.as_deref().ok_or_else(|| {
+        usage_error("campaign branch requires --domain unless --selector is used")
+    })?;
+    parse_campaign_branch_basis_with_choice(branch, opportunity, domain)
+}
+
+fn parse_campaign_branch_basis_with_choice(
+    branch: &CampaignBranchArgs,
+    opportunity: &str,
+    domain: &str,
+) -> Result<ParsedCampaignBranchBasis, CliError> {
+    let common = parse_campaign_branch_common_basis(branch)?;
     Ok(ParsedCampaignBranchBasis {
+        campaign: common.campaign,
+        expected: common.expected,
+        command: common.command,
+        branch_point: common.branch_point,
+        parent: common.parent,
+        opportunity: ChoiceOpportunityId::parse(opportunity)
+            .map_err(|error| usage_error(format!("invalid choice opportunity: {error}")))?,
+        domain: ChoiceDomainId::parse(domain)
+            .map_err(|error| usage_error(format!("invalid choice domain: {error}")))?,
+        stop: common.stop,
+    })
+}
+
+fn parse_campaign_branch_common_basis(
+    branch: &CampaignBranchArgs,
+) -> Result<ParsedCampaignBranchCommonBasis, CliError> {
+    Ok(ParsedCampaignBranchCommonBasis {
         campaign: campaign_name(&branch.name)?,
         expected: CampaignSnapshotId::parse(&branch.expected).map_err(|error| {
             usage_error(format!("invalid campaign snapshot precondition: {error}"))
@@ -620,10 +924,6 @@ fn parse_campaign_branch_basis(
         parent: ConfigurationArtifactId::parse(&branch.parent).map_err(|error| {
             usage_error(format!("invalid parent configuration artifact: {error}"))
         })?,
-        opportunity: ChoiceOpportunityId::parse(&branch.opportunity)
-            .map_err(|error| usage_error(format!("invalid choice opportunity: {error}")))?,
-        domain: ChoiceDomainId::parse(&branch.domain)
-            .map_err(|error| usage_error(format!("invalid choice domain: {error}")))?,
         stop: parse_campaign_stop_condition(&branch.stop)?,
     })
 }
@@ -638,6 +938,19 @@ where
     S::Error: CampaignServiceFailureSource,
 {
     let basis = parse_campaign_branch_basis(branch)?;
+    apply_campaign_all_branch_with_basis(client, principal, branch, basis)
+}
+
+fn apply_campaign_all_branch_with_basis<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    branch: &CampaignBranchArgs,
+    basis: ParsedCampaignBranchBasis,
+) -> Result<CampaignAcceptanceReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
     let domain_request = GetCampaignChoiceObjectRequest::new(
         principal.clone(),
         basis.campaign.clone(),
@@ -1620,6 +1933,7 @@ mod tests {
         declaration: SelectableDeclaration,
         domain: ChoiceDomain,
         opportunity: ChoiceOpportunity,
+        additional_choices: Vec<(ChoiceOpportunity, SelectableDeclaration, ChoiceDomain)>,
         branch_request: BranchRequest,
         frontier_projection: ContinuationProjection,
         finding: Finding,
@@ -2022,9 +2336,67 @@ mod tests {
 
         fn query_campaign_choices(
             &self,
-            _request: &QueryCampaignChoicesRequest,
+            request: &QueryCampaignChoicesRequest,
         ) -> Result<QueryCampaignChoicesResponse, Self::Error> {
-            unreachable!("unused campaign-service operation")
+            let graph = self.snapshot.roots().graph;
+            let (_, index_proof) = self
+                .map
+                .get_with_proof(graph, CampaignChoiceEntry::index_anchor_key())
+                .expect("selector choice index proof");
+            let index = self
+                .map
+                .get(graph, CampaignChoiceEntry::index_anchor_key())
+                .expect("selector choice index lookup")
+                .expect("selector choice index root");
+            let (page, page_proof) = self
+                .map
+                .scan_with_proof(
+                    index,
+                    request
+                        .after()
+                        .map(|value| CampaignChoiceEntry::new(value).index_key()),
+                    usize::try_from(request.limit()).expect("selector page limit"),
+                )
+                .expect("selector choice page proof");
+            let entries = page
+                .entries()
+                .iter()
+                .map(|(_, value)| {
+                    let selected = std::iter::once(&self.opportunity)
+                        .chain(self.additional_choices.iter().map(|(value, _, _)| value))
+                        .find_map(|candidate| {
+                            let id = candidate.id().expect("selector opportunity ID");
+                            (id.content_id() == *value).then_some(id)
+                        })
+                        .expect("selector indexed opportunity ID");
+                    CampaignChoiceEntry::new(selected)
+                })
+                .collect();
+            Ok(QueryCampaignChoicesResponse::new(
+                request,
+                self.snapshot.clone(),
+                entries,
+                page.next_after().map(|_| {
+                    page.entries()
+                        .last()
+                        .and_then(|(_, value)| {
+                            std::iter::once(&self.opportunity)
+                                .chain(
+                                    self.additional_choices
+                                        .iter()
+                                        .map(|(candidate, _, _)| candidate),
+                                )
+                                .find_map(|candidate| {
+                                    let id = candidate.id().expect("selector opportunity ID");
+                                    (id.content_id() == *value).then_some(id)
+                                })
+                        })
+                        .expect("selector page cursor opportunity")
+                }),
+                index_proof,
+                page_proof,
+            )
+            .expect("bound selector choice page"))
         }
 
         fn query_campaign_frontier(
@@ -2073,10 +2445,20 @@ mod tests {
             &self,
             request: &GetCampaignChoiceObjectRequest,
         ) -> Result<GetCampaignChoiceObjectResponse, Self::Error> {
-            assert_eq!(
-                request.opportunity(),
-                self.opportunity.id().expect("explanation opportunity ID")
-            );
+            let (opportunity, declaration, domain) = if request.opportunity()
+                == self.opportunity.id().expect("explanation opportunity ID")
+            {
+                (&self.opportunity, &self.declaration, &self.domain)
+            } else {
+                let (opportunity, declaration, domain) = self
+                    .additional_choices
+                    .iter()
+                    .find(|(value, _, _)| {
+                        value.id().expect("additional opportunity ID") == request.opportunity()
+                    })
+                    .expect("requested choice fixture");
+                (opportunity, declaration, domain)
+            };
             let (_, proof) = self
                 .map
                 .get_with_proof(
@@ -2086,16 +2468,14 @@ mod tests {
                 .expect("choice explanation membership proof");
             let object = match request.kind() {
                 CampaignChoiceObjectKind::Declaration => {
-                    CampaignChoiceObject::Declaration(self.declaration.clone())
+                    CampaignChoiceObject::Declaration(declaration.clone())
                 }
-                CampaignChoiceObjectKind::Domain => {
-                    CampaignChoiceObject::Domain(self.domain.clone())
-                }
+                CampaignChoiceObjectKind::Domain => CampaignChoiceObject::Domain(domain.clone()),
             };
             Ok(GetCampaignChoiceObjectResponse::new(
                 request,
                 self.snapshot.clone(),
-                self.opportunity.clone(),
+                opportunity.clone(),
                 object,
                 proof,
             )
@@ -2721,8 +3101,11 @@ mod tests {
             command: None,
             branch_point: template.branch_point().to_string(),
             parent: template.parent().to_string(),
-            opportunity: template.opportunity().to_string(),
-            domain: template.domain().to_string(),
+            opportunity: Some(template.opportunity().to_string()),
+            domain: Some(template.domain().to_string()),
+            selector: None,
+            instance: None,
+            selector_scan_limit: 256,
             values: Vec::new(),
             generator: None,
             all: true,
@@ -2758,6 +3141,120 @@ mod tests {
                 ..
             } if request == expected.to_string() && prior_snapshot == source_snapshot.to_string()
         ));
+    }
+
+    #[test]
+    fn campaign_branch_selector_resolves_authenticated_name_and_domain() {
+        let (service, source_snapshot, _) = graph_page_service();
+        let template = service.branch_request.clone();
+        let declaration_id = service.declaration.id().expect("selector declaration ID");
+        let branch = CampaignBranchArgs {
+            name: "example".to_owned(),
+            expected: source_snapshot.to_string(),
+            command: Some(CampaignCommandId::from_hash(hash("selector-command")).to_string()),
+            branch_point: template.branch_point().to_string(),
+            parent: template.parent().to_string(),
+            opportunity: None,
+            domain: None,
+            selector: Some("product.network.retry".to_owned()),
+            instance: Some("network-retry".to_owned()),
+            selector_scan_limit: 8,
+            values: vec!["true".to_owned()],
+            generator: None,
+            all: false,
+            proposals: None,
+            attempts: 1,
+            stop: "next-choice".to_owned(),
+        };
+        let expected = BranchRequest::new(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+                .expect("selector finite source"),
+            BranchRequestCause::Operator(
+                CampaignCommandId::parse(branch.command.as_deref().expect("selector command"))
+                    .expect("selector command ID"),
+            ),
+            BranchBudget::new(1, 1).expect("selector budget"),
+            StopCondition::NextChoice,
+        )
+        .expect("expected selector request")
+        .id()
+        .expect("expected selector request ID");
+
+        let report = apply_campaign_selector_branch(
+            &CampaignClient::new(service),
+            CampaignPrincipal::new("operator").expect("principal"),
+            &branch,
+        )
+        .expect("apply selector branch");
+
+        assert!(matches!(
+            report,
+            CampaignAcceptanceReport::Branch { request, .. }
+                if request == expected.to_string()
+        ));
+        assert!(matches!(
+            parse_campaign_choice_selector("tag:network").expect("tag selector"),
+            CampaignChoiceSelector::Tag(tag) if tag == "network"
+        ));
+        assert!(matches!(
+            parse_campaign_choice_selector(&format!("id:{declaration_id}"))
+                .expect("declaration selector"),
+            CampaignChoiceSelector::Declaration(id) if id == declaration_id
+        ));
+    }
+
+    #[test]
+    fn campaign_branch_selector_rejects_ambiguity_and_scan_truncation() {
+        let (service, _, _) = graph_page_service();
+        let (service, snapshot) = add_ambiguous_selector_choice(service);
+        let template = service.branch_request.clone();
+        let mut branch = CampaignBranchArgs {
+            name: "example".to_owned(),
+            expected: snapshot.to_string(),
+            command: Some(
+                CampaignCommandId::from_hash(hash("ambiguous-selector-command")).to_string(),
+            ),
+            branch_point: template.branch_point().to_string(),
+            parent: template.parent().to_string(),
+            opportunity: None,
+            domain: None,
+            selector: Some("tag:network".to_owned()),
+            instance: None,
+            selector_scan_limit: 8,
+            values: vec!["true".to_owned()],
+            generator: None,
+            all: false,
+            proposals: None,
+            attempts: 1,
+            stop: "next-choice".to_owned(),
+        };
+        let client = CampaignClient::new(service);
+        let principal = CampaignPrincipal::new("operator").expect("principal");
+
+        let ambiguity = match apply_campaign_selector_branch(&client, principal.clone(), &branch) {
+            Ok(_) => panic!("ambiguous selector must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            ambiguity
+                .to_string()
+                .contains("matches multiple opportunities")
+        );
+
+        branch.selector_scan_limit = 1;
+        let truncated = match apply_campaign_selector_branch(&client, principal, &branch) {
+            Ok(_) => panic!("truncated selector scan must fail"),
+            Err(error) => error,
+        };
+        assert!(truncated.to_string().contains("selector scan exceeded 1"));
+        assert!(validate_campaign_selector_scan_limit(0).is_err());
+        assert!(
+            validate_campaign_selector_scan_limit(MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS + 1).is_err()
+        );
     }
 
     #[test]
@@ -3374,7 +3871,10 @@ mod tests {
             "--snapshot",
             &object_snapshot,
             "--opportunity",
-            &object_branch.opportunity,
+            object_branch
+                .opportunity
+                .as_deref()
+                .expect("object opportunity"),
             "--kind",
             "domain",
         ])
@@ -3486,9 +3986,9 @@ mod tests {
             "--parent",
             &branch.parent,
             "--opportunity",
-            &branch.opportunity,
+            branch.opportunity.as_deref().expect("branch opportunity"),
             "--domain",
-            &branch.domain,
+            branch.domain.as_deref().expect("branch domain"),
             "--value",
             "false",
             "--value",
@@ -3524,9 +4024,9 @@ mod tests {
             "--parent",
             &branch.parent,
             "--opportunity",
-            &branch.opportunity,
+            branch.opportunity.as_deref().expect("branch opportunity"),
             "--domain",
-            &branch.domain,
+            branch.domain.as_deref().expect("branch domain"),
             "--generator",
             &format!(
                 "crucible.campaign.candidate-generator-spec@{}",
@@ -3567,9 +4067,9 @@ mod tests {
             "--parent",
             &branch.parent,
             "--opportunity",
-            &branch.opportunity,
+            branch.opportunity.as_deref().expect("branch opportunity"),
             "--domain",
-            &branch.domain,
+            branch.domain.as_deref().expect("branch domain"),
             "--all",
             "--attempts",
             "2",
@@ -3588,6 +4088,47 @@ mod tests {
                 }),
                 ..
             }) if values.is_empty()
+        ));
+        let selector_branch = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "branch",
+            "created",
+            "--expected",
+            &branch.expected,
+            "--command",
+            branch.command.as_deref().expect("operator command"),
+            "--branch-point",
+            &branch.branch_point,
+            "--parent",
+            &branch.parent,
+            "--selector",
+            "tag:network",
+            "--instance",
+            "network-retry",
+            "--selector-scan-limit",
+            "32",
+            "--value",
+            "true",
+        ])
+        .expect("campaign selector branch arguments");
+        assert!(matches!(
+            selector_branch.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Branch(CampaignBranchArgs {
+                    opportunity: None,
+                    domain: None,
+                    selector: Some(ref selector),
+                    instance: Some(ref instance),
+                    selector_scan_limit: 32,
+                    ..
+                }),
+                ..
+            }) if selector == "tag:network" && instance == "network-retry"
         ));
         assert!(
             Cli::try_parse_from([
@@ -3608,9 +4149,9 @@ mod tests {
                 "--parent",
                 &branch.parent,
                 "--opportunity",
-                &branch.opportunity,
+                branch.opportunity.as_deref().expect("branch opportunity"),
                 "--domain",
-                &branch.domain,
+                branch.domain.as_deref().expect("branch domain"),
                 "--all",
             ])
             .is_err()
@@ -3632,9 +4173,9 @@ mod tests {
                 "--parent",
                 &branch.parent,
                 "--opportunity",
-                &branch.opportunity,
+                branch.opportunity.as_deref().expect("branch opportunity"),
                 "--domain",
-                &branch.domain,
+                branch.domain.as_deref().expect("branch domain"),
                 "--value",
                 "false",
             ])
@@ -3896,28 +4437,35 @@ mod tests {
             ))
             .expect("parent ID")
             .to_string(),
-            opportunity: ChoiceOpportunityId::parse(&format!(
-                "crucible.campaign.choice-opportunity@{}",
-                ContentId::for_bytes(
-                    ObjectKind::CampaignFact,
-                    1,
-                    format!("{label}-opportunity").as_bytes(),
-                )
-                .encode()
-            ))
-            .expect("opportunity ID")
-            .to_string(),
-            domain: ChoiceDomainId::parse(&format!(
-                "crucible.campaign.choice-domain@{}",
-                ContentId::for_bytes(
-                    ObjectKind::CampaignFact,
-                    1,
-                    format!("{label}-domain").as_bytes(),
-                )
-                .encode()
-            ))
-            .expect("domain ID")
-            .to_string(),
+            opportunity: Some(
+                ChoiceOpportunityId::parse(&format!(
+                    "crucible.campaign.choice-opportunity@{}",
+                    ContentId::for_bytes(
+                        ObjectKind::CampaignFact,
+                        1,
+                        format!("{label}-opportunity").as_bytes(),
+                    )
+                    .encode()
+                ))
+                .expect("opportunity ID")
+                .to_string(),
+            ),
+            domain: Some(
+                ChoiceDomainId::parse(&format!(
+                    "crucible.campaign.choice-domain@{}",
+                    ContentId::for_bytes(
+                        ObjectKind::CampaignFact,
+                        1,
+                        format!("{label}-domain").as_bytes(),
+                    )
+                    .encode()
+                ))
+                .expect("domain ID")
+                .to_string(),
+            ),
+            selector: None,
+            instance: None,
+            selector_scan_limit: 256,
             values: vec!["false".to_owned(), "true".to_owned()],
             generator: None,
             all: false,
@@ -4003,6 +4551,20 @@ mod tests {
                 opportunity_id.content_id(),
             )
             .expect("choice opportunity graph insertion");
+        let choice_index = map
+            .insert(
+                empty,
+                CampaignChoiceEntry::new(opportunity_id).index_key(),
+                opportunity_id.content_id(),
+            )
+            .expect("choice opportunity index insertion");
+        root = map
+            .insert(
+                root.content_id(),
+                CampaignChoiceEntry::index_anchor_key(),
+                choice_index.content_id(),
+            )
+            .expect("choice opportunity index anchor");
         let branch_request = BranchRequest::new(
             opportunity.branch_point_id(configuration.configuration()),
             configuration.id().expect("configuration artifact ID"),
@@ -4229,6 +4791,7 @@ mod tests {
                 declaration,
                 domain,
                 opportunity,
+                additional_choices: Vec::new(),
                 branch_request,
                 frontier_projection,
                 finding,
@@ -4244,6 +4807,85 @@ mod tests {
             snapshot_id,
             historical_id,
         )
+    }
+
+    fn add_ambiguous_selector_choice(
+        mut service: GraphPageService,
+    ) -> (GraphPageService, CampaignSnapshotId) {
+        let opportunity = ChoiceOpportunity::new(
+            service.opportunity.scenario(),
+            &service.declaration,
+            &service.domain,
+            ChoiceCoordinate {
+                scheduler: hash("second-selector-scheduler"),
+                producer: hash("second-selector-producer"),
+            },
+            "network-retry-secondary",
+            None,
+        )
+        .expect("second selector opportunity");
+        let opportunity_id = opportunity.id().expect("second selector opportunity ID");
+        let old_graph = service.snapshot.roots().graph;
+        let choice_index = service
+            .map
+            .get(old_graph, CampaignChoiceEntry::index_anchor_key())
+            .expect("choice index lookup")
+            .expect("choice index root");
+        let choice_index = service
+            .map
+            .insert(
+                choice_index,
+                CampaignChoiceEntry::new(opportunity_id).index_key(),
+                opportunity_id.content_id(),
+            )
+            .expect("second selector index insertion");
+        let graph = service
+            .map
+            .insert(
+                old_graph,
+                CampaignChoiceEntry::new(opportunity_id).graph_key(),
+                opportunity_id.content_id(),
+            )
+            .expect("second selector graph insertion");
+        let graph = service
+            .map
+            .insert(
+                graph.content_id(),
+                CampaignChoiceEntry::index_anchor_key(),
+                choice_index.content_id(),
+            )
+            .expect("second selector index anchor");
+        let mut roots = service.snapshot.roots();
+        roots.graph = graph.content_id();
+        let parent = service.snapshot.id().expect("selector parent snapshot ID");
+        let transition = CampaignFactId::parse(&format!(
+            "crucible.campaign.fact@{}",
+            ContentId::for_bytes(
+                ObjectKind::CampaignFact,
+                2,
+                b"cli-selector-ambiguity-transition",
+            )
+            .encode()
+        ))
+        .expect("selector transition fact ID");
+        let snapshot = CampaignSnapshot::successor(
+            parent,
+            service.snapshot.lineage(),
+            service.snapshot.active_policy(),
+            roots,
+            transition,
+        )
+        .expect("selector ambiguity snapshot");
+        let snapshot_id = snapshot.id().expect("selector ambiguity snapshot ID");
+        service.root = graph.content_id();
+        service.snapshot = snapshot.clone();
+        service.snapshots.insert(snapshot_id, snapshot);
+        service.additional_choices.push((
+            opportunity,
+            service.declaration.clone(),
+            service.domain.clone(),
+        ));
+        (service, snapshot_id)
     }
 
     fn finding_index_key(cluster: CampaignHash) -> CampaignHash {
