@@ -550,6 +550,26 @@ impl ProductionVmNodeCheckpointArtifact<'_> {
         self.artifact.length
     }
 
+    /// Streams and authenticates the complete artifact into `destination`.
+    ///
+    /// The method bounds its temporary memory independently of artifact size
+    /// and validates both the declared length and content identity before
+    /// returning success. A destination may have received a partial prefix on
+    /// failure; callers must use a fail-closed staging or linear materialization
+    /// authority when partial output cannot be reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when the retained source is
+    /// unavailable or changed, a chunk closure is invalid, the destination
+    /// rejects a write, or the final length or content identity differs.
+    pub fn stream_into(
+        &self,
+        destination: &mut impl std::io::Write,
+    ) -> Result<(), LifecycleApiError> {
+        checkpoint_store::stream_checkpoint_artifact(self.artifact, destination, self.role)
+    }
+
     /// Materializes and reauthenticates the artifact at `destination`.
     ///
     /// The destination must not already exist. The copy is staged under its
@@ -578,6 +598,8 @@ pub enum ProductionVmNodePreparationKind<'a> {
     },
     /// Materializes the two authenticated artifacts of an exact restore.
     Exact {
+        /// Complete authenticated per-node checkpoint manifest identity.
+        root: ContentHash,
         /// Exact writable-root overlay artifact.
         root_overlay: ProductionVmNodeCheckpointArtifact<'a>,
         /// Exact QEMU VMState artifact.
@@ -916,6 +938,7 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
                 root_image,
             } => prepare_root_overlay(qemu_executable, root_image, request.run_directory()),
             ProductionVmNodePreparationKind::Exact {
+                root: _,
                 root_overlay,
                 vmstate,
             } => {
@@ -1741,6 +1764,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         let crash_detector = format!("lifecycle-{}-generation-{generation}", vm.id.name);
         let preparation = match restore_target {
             Some(target) => ProductionVmNodePreparationKind::Exact {
+                root: target.manifest_identity,
                 root_overlay: ProductionVmNodeCheckpointArtifact {
                     artifact: &target.overlay_artifact,
                     role: "root overlay",
