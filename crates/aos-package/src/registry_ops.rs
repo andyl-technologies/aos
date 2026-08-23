@@ -3635,15 +3635,17 @@ fn validate_image_artifact_budgets(
     let download_fits = download_size <= budgets.download.saturating_mul(1024 * 1024);
     let esp_holds_two_ukis = budgets.esp >= budgets.uki.saturating_mul(2).saturating_add(32);
     let partition_contracts_match = partitions.iter().all(|partition| {
-        let expected = match partition.kind.as_str() {
-            "esp" => Some(budgets.esp),
-            "root" => Some(budgets.root),
-            "verity" => Some(budgets.verity),
-            _ => None,
+        let exact_size = partition.size_bytes == partition.size_mi_b.saturating_mul(1024 * 1024);
+        let budget_matches = match partition.kind.as_str() {
+            "esp" => partition.size_mi_b == budgets.esp,
+            // Root partitions are fixed storage capacity, while the root
+            // budget is an artifact growth ceiling. The image module permits
+            // intentional update headroom but rejects undersized partitions.
+            "root" => partition.size_mi_b >= budgets.root,
+            "verity" => partition.size_mi_b == budgets.verity,
+            _ => true,
         };
-        expected.is_none_or(|size| {
-            size == partition.size_mi_b && partition.size_bytes == size.saturating_mul(1024 * 1024)
-        })
+        exact_size && budget_matches
     });
     if !nonzero || !uki_fits || !download_fits || !esp_holds_two_ukis || !partition_contracts_match
     {
@@ -15298,6 +15300,17 @@ mod tests {
         );
 
         budgets.root = 511;
+        assert!(
+            validate_image_artifact_budgets(
+                &budgets,
+                590 * 1024 * 1024,
+                108 * 1024 * 1024,
+                &partitions,
+            )
+            .is_ok()
+        );
+
+        budgets.root = 513;
         assert!(
             validate_image_artifact_budgets(
                 &budgets,
