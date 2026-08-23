@@ -276,20 +276,32 @@ in {
           publisher.succeed(hub_command("org show acme", token))
       )["data"]["organization"]
       org_scope = org["stable_id"]
-      reviewed(
-          publisher,
-          "public-boundary-grant",
-          "network-policy grant instance:public "
-          f"--consumer-scope {shlex.quote(org_scope)}",
-          token,
-      )
-      reviewed(
-          publisher,
-          "binding-create",
-          "binding create --org acme --name primary --kind local-fs "
-          "--root /var/lib/aos-hub/storage/acme",
-          token,
-      )
+      public_boundary = json.loads(
+          publisher.succeed(
+              hub_command("network-policy show instance:public", token)
+          )
+      )["data"]["network_policy"]
+      assert any(
+          grant["consumer_scope_key"] == org_scope
+          for grant in public_boundary["grants"]
+      ), public_boundary
+      bindings = json.loads(
+          publisher.succeed(hub_command("binding list", token))
+      )["data"]["bindings"]
+      assert len(bindings) == 1, bindings
+      instance_binding = bindings[0]
+      assert instance_binding["stable_id"] == "instance-default", instance_binding
+      assert instance_binding["owner_scope_key"] == "instance", instance_binding
+      assert instance_binding["spec"]["name"] == "default", instance_binding
+      assert instance_binding["spec"]["local_filesystem"]["root_path"] == \
+          "/var/lib/aos-hub/storage", instance_binding
+      assert instance_binding["capabilities"]["reads_supported"], instance_binding
+      assert instance_binding["capabilities"]["writes_supported"], instance_binding
+      assert instance_binding["health"]["state"] == "valid", instance_binding
+      assert any(
+          grant["consumer_scope_key"] == org_scope
+          for grant in instance_binding["grants"]
+      ), instance_binding
       reviewed(
           publisher,
           "registry-create",
@@ -300,15 +312,21 @@ in {
       reviewed(
           publisher,
           "placement-create",
-          "placement add registry:acme/production primary --binding primary "
+          "placement add registry:acme/production primary --binding instance-default "
           "--prefix registries/production --kind complete "
           "--desired-state active --read enabled",
           token,
       )
+      placement = json.loads(
+          publisher.succeed(
+              hub_command("placement show registry:acme/production primary", token)
+          )
+      )["data"]["placement"]
       reviewed(
           publisher,
           "placement-scan",
-          "placement scan registry:acme/production primary --wait --timeout 2m",
+          "placement scan registry:acme/production primary --wait --timeout 2m "
+          f"--if-version {shlex.quote(placement['resource_version'])}",
           token,
           timeout=180,
       )
@@ -340,11 +358,17 @@ in {
           "--probe-public-key ${fixture.probePublicKey}",
           token,
       )
+      endpoint = json.loads(
+          publisher.succeed(hub_command("endpoint show fleet-native-hub", token))
+      )["data"]["endpoint"]
+      endpoint_generation = int(endpoint["desired_generation"])
+      assert endpoint_generation > 0, endpoint
       reviewed(
           publisher,
           "route-create",
           "route add registry:acme/production --stable-id fleet-production "
-          "--endpoint fleet-native-hub --base-path /acme/production "
+          f"--endpoint fleet-native-hub@{endpoint_generation} "
+          "--base-path /acme/production "
           "--mode hub-proxy --placement primary --serves git --serves cache "
           "--serves web --access public",
           token,
