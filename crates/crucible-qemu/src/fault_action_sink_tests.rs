@@ -218,15 +218,27 @@ fn typed_prepare_reserves_only_the_exact_evidence_capacity() {
 }
 
 #[test]
-fn dynamic_prepare_retains_only_the_exact_published_evidence() {
-    let source = vec![7_u8; 913];
-    let mut oversized = Vec::with_capacity(32 * 1024 * 1024);
-    oversized.extend_from_slice(&source);
-
-    let retained = copy_fault_result_storage(FaultResourceLimits::default(), &oversized)
-        .unwrap_or_else(|error| panic!("dynamic evidence storage must be admitted: {error}"));
-    assert_eq!(retained, source);
-    assert_eq!(retained.capacity(), source.len());
+fn dynamic_prepare_limit_preserves_authored_coordinates() {
+    let limits = FaultResourceLimits {
+        effect_payload_bytes: 31,
+        ..FaultResourceLimits::default()
+    };
+    let error = map_preparation_result_error(crate::QemuNodeError::FaultResultStorage {
+        requested: 32,
+        configured: limits.effect_payload_bytes,
+    });
+    assert_eq!(
+        error,
+        FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "effect_payload_bytes",
+                current: 0,
+                requested: 32,
+                configured: 31,
+                hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
+            }
+        ))
+    );
 }
 
 #[test]

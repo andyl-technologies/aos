@@ -417,6 +417,7 @@ pub trait QemuHostIoRuntime: Send {
     fn await_fault_preparation_result(
         &mut self,
         _timeout: Duration,
+        _maximum_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault preparation result",

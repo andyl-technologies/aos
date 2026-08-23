@@ -35,6 +35,15 @@ fn bounded_poll_attempts_tolerates_a_zero_interval() {
 }
 
 #[test]
+fn preparation_result_is_admitted_before_exact_storage_allocation() {
+    assert_eq!(fault_result::admit_fault_preparation_result(31, 31), Ok(()));
+    assert_eq!(
+        fault_result::admit_fault_preparation_result(32, 31),
+        Err(QemuAsyncDriverRuntimeError::fault_result_storage(32, 31))
+    );
+}
+
+#[test]
 fn unacknowledged_device_wake_invalidates_an_idle_snapshot() {
     let idle = crate::QemuNodeIdleState {
         current_icount: crucible::Icount { retired: 40 },

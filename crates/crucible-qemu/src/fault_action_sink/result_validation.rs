@@ -32,13 +32,22 @@ pub(super) fn reserve_fault_result_storage(
     Ok(storage)
 }
 
-pub(super) fn copy_fault_result_storage(
-    resource_limits: FaultResourceLimits,
-    source: &[u8],
-) -> Result<Vec<u8>, FaultActionCommitError> {
-    let mut storage = reserve_fault_result_storage(resource_limits, source.len())?;
-    storage.extend_from_slice(source);
-    Ok(storage)
+pub(super) fn map_preparation_result_error(source: crate::QemuNodeError) -> FaultActionCommitError {
+    match source {
+        crate::QemuNodeError::FaultResultStorage {
+            requested,
+            configured,
+        } => FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "effect_payload_bytes",
+                current: 0,
+                requested,
+                configured,
+                hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
+            },
+        )),
+        _ => FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback),
+    }
 }
 
 pub(super) fn stage_apply_commands(

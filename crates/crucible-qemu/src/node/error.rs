@@ -166,11 +166,13 @@ pub enum QemuNodeError {
     },
     /// Precommit storage for the lossless QEMU result payload could not be reserved.
     #[error(
-        "cannot reserve {requested} bytes for the QEMU fault result before command publication"
+        "cannot admit or reserve {requested} bytes for the QEMU fault result against limit {configured}"
     )]
     FaultResultStorage {
-        /// Exact hard-bounded result storage requested before visible mutation.
+        /// Exact result storage requested before visible mutation.
         requested: u64,
+        /// Authored or hard byte ceiling governing the request.
+        configured: u64,
     },
 }
 
