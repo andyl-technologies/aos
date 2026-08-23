@@ -254,6 +254,7 @@ impl Configuration {
 pub struct SelectionDecision {
     canonical_selection: Vec<u8>,
     app_random_model_sample: bool,
+    campaign_branch: bool,
 }
 
 impl SelectionDecision {
@@ -263,6 +264,10 @@ impl SelectionDecision {
         Self {
             canonical_selection: selection.canonical_bytes(),
             app_random_model_sample: crate::decision::is_app_random_model_selection(selection),
+            campaign_branch: matches!(
+                selection.origin(),
+                crucible_campaign::SelectionOrigin::CampaignBranch { .. }
+            ),
         }
     }
 
@@ -292,6 +297,15 @@ impl SelectionDecision {
     #[must_use]
     pub const fn is_app_random_model_sample(&self) -> bool {
         self.app_random_model_sample
+    }
+
+    /// Returns whether this decision was produced by a campaign branch.
+    ///
+    /// The flag is derived from the canonical selection bytes and is not a
+    /// separate serialized field.
+    #[must_use]
+    pub const fn is_campaign_branch(&self) -> bool {
+        self.campaign_branch
     }
 
     /// Decodes the retained campaign selection.

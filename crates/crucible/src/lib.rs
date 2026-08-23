@@ -89,8 +89,8 @@ pub use model::{
     ADAPTIVE_UCB_SCORE_ONE_MICRO, APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, AdaptiveCampaignConfig,
     AdaptiveCampaignRun, AdaptiveCampaignSelection, AdaptiveStrategyArm, AdaptiveStrategyConfig,
     AdaptiveStrategyCredit, AdaptiveStrategyReward, AdaptiveStrategyRun, AdaptiveStrategySelection,
-    AppRandomBranchConfig, AppRandomBranchRun, AppRandomDecision, AppRandomDrawSite,
-    AppRandomSampleBudget, AssertionDef, AssertionId, AssertionPhase,
+    AppRandomBranchConfig, AppRandomBranchError, AppRandomBranchRun, AppRandomDecision,
+    AppRandomDrawSite, AppRandomSampleBudget, AssertionDef, AssertionId, AssertionPhase,
     AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag,
     CodePoint, Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidanceSignal,
     CoverageGuidedCorpus, CoverageGuidedCorpusAdmission, CoverageGuidedCorpusAdmissionDecision,
@@ -184,9 +184,9 @@ pub use model::{
     WhiteBoxPolicy, WorkloadEngineRole, World, WorldBlockLatency, WorldDeviceKind,
     WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldLookaheadEdge, WorldNinePLatency,
     WorldNode, WorldNodeDef, WorldStaticTopology, WorldWorkloadConfigTree,
-    app_random_branch_decisions, app_random_draw_sites_from_schedule, bake, instantiate,
-    lint_guidance_determinism_source, materialize_search_plans, preemption_branch_decisions,
-    reduce, run_adaptive_strategy_selection, step, try_step,
+    app_random_branch_decisions, bake, instantiate, lint_guidance_determinism_source,
+    materialize_search_plans, preemption_branch_decisions, reduce, run_adaptive_strategy_selection,
+    step, try_step,
 };
 pub use node_time::{NodeTimeMapping, NodeTimeProjection};
 #[cfg(feature = "test-double")]

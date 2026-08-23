@@ -16,10 +16,14 @@ use crucible_campaign::{
     ProbabilityModelId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
 };
 use crucible_protocol::WHITEBOX_DOORBELL_PROTOCOL_VERSION;
-use crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
+use crucible_protocol::app_random_transport::{
+    app_random_stream_name_belongs_to_node, app_random_stream_name_is_canonical,
+};
 use thiserror::Error;
 
-use crate::{AppRandomDecision, Configuration, NodeId, RngStreamId, ScenarioDef};
+use crate::{
+    AppRandomDecision, Configuration, Decision, NodeId, RngDecision, RngStreamId, ScenarioDef,
+};
 
 const APP_RANDOM_DOMAIN_SEMANTIC_VERSION: u32 = 1;
 const MAX_APP_RANDOM_COMPONENT_BYTES: usize = 512;
@@ -56,12 +60,27 @@ impl AppRandomSelectable {
         request_id: u64,
         width: u8,
     ) -> Result<Self, AppRandomSelectableError> {
+        Self::new_for_scenario_id(
+            campaign_scenario_id(scenario),
+            node,
+            stream,
+            request_id,
+            width,
+        )
+    }
+
+    fn new_for_scenario_id(
+        scenario: ScenarioDefId,
+        node: NodeId,
+        stream: RngStreamId,
+        request_id: u64,
+        width: u8,
+    ) -> Result<Self, AppRandomSelectableError> {
         validate_width(width)?;
         validate_component("node", &node.name)?;
         validate_component("stream domain", &stream.domain)?;
         validate_component("stream name", &stream.name)?;
 
-        let scenario = campaign_scenario_id(scenario);
         let model = AppRandomUniformModel::new(&stream, width);
         let domain = app_random_domain(width)?;
         let declaration = app_random_declaration(&node, width, model.stream())?;
@@ -85,6 +104,44 @@ impl AppRandomSelectable {
             domain,
             opportunity,
         })
+    }
+
+    /// Reconstructs a standardized model-sampled app-random choice from its
+    /// authenticated campaign records and preceding named RNG stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomSelectableError`] when the records, stream, modeled
+    /// evidence, request instance, or selected value do not form the exact
+    /// standardized producer contract.
+    pub fn from_model_sample_records(
+        stream: RngStreamId,
+        selection: &Selection,
+        declaration: &SelectableDeclaration,
+        opportunity: &crucible_campaign::ChoiceOpportunity,
+        domain: &ChoiceDomain,
+    ) -> Result<Self, AppRandomSelectableError> {
+        validate_app_random_model_selection(selection, declaration, opportunity, domain)?;
+        let ChoiceSource::Guest { node, .. } = opportunity.source() else {
+            return Err(AppRandomSelectableError::ProducerContractMismatch);
+        };
+        let node = NodeId { name: node.clone() };
+        let width = app_random_width(domain)?;
+        let request_id = parse_request_instance(opportunity.instance())?;
+        let reconstructed =
+            Self::new_for_scenario_id(opportunity.scenario(), node, stream, request_id, width)?;
+        if reconstructed.declaration != *declaration
+            || reconstructed.domain != *domain
+            || reconstructed.opportunity != *opportunity
+        {
+            return Err(AppRandomSelectableError::ProducerContractMismatch);
+        }
+        selection.validate_model_replay(
+            &reconstructed.opportunity,
+            &reconstructed.domain,
+            &reconstructed.model,
+        )?;
+        Ok(reconstructed)
     }
 
     /// Reconstructs the selectable named by an existing app-random decision.
@@ -131,6 +188,30 @@ impl AppRandomSelectable {
         &self.opportunity
     }
 
+    /// Returns the guest node that owns this request.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the named decision stream consumed by this request.
+    #[must_use]
+    pub const fn stream(&self) -> &RngStreamId {
+        &self.stream
+    }
+
+    /// Returns the producer-local request identifier.
+    #[must_use]
+    pub const fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
+    /// Returns the unsigned response width in bits.
+    #[must_use]
+    pub const fn width(&self) -> u8 {
+        self.width
+    }
+
     /// Consumes this reconstruction into the records required for publication.
     ///
     /// # Errors
@@ -173,6 +254,30 @@ impl AppRandomSelectable {
             value,
             evidence,
             &self.model,
+        )?)
+    }
+
+    /// Builds one campaign branch at this request's exact parent configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomSelectableError`] when `parent` belongs to another
+    /// scenario or `value` lies outside the request's unsigned domain.
+    pub fn branch_selection(
+        &self,
+        parent: &Configuration,
+        value: u64,
+    ) -> Result<Selection, AppRandomSelectableError> {
+        if campaign_scenario_id(&parent.def) != self.opportunity.scenario() {
+            return Err(AppRandomSelectableError::ParentScenarioMismatch);
+        }
+        let value = ChoiceValue::Integer(IntegerValue::Unsigned(value));
+        let parent = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+        Ok(Selection::new_campaign_branch(
+            &self.opportunity,
+            &self.domain,
+            value,
+            self.opportunity.branch_point_id(parent),
         )?)
     }
 
@@ -319,8 +424,7 @@ pub fn validate_app_random_model_selection(
 /// been normalized to opaque campaign selections.
 #[must_use]
 pub fn app_random_stream_belongs_to_node(stream: &RngStreamId, node: &NodeId) -> bool {
-    stream.domain == RngStreamId::from_name("").domain
-        && app_random_stream_name_belongs_to_node(&stream.name, &node.name)
+    stream.is_default_domain() && app_random_stream_name_belongs_to_node(&stream.name, &node.name)
 }
 
 pub(crate) fn is_app_random_model_selection(selection: &Selection) -> bool {
@@ -328,6 +432,25 @@ pub(crate) fn is_app_random_model_selection(selection: &Selection) -> bool {
         return false;
     };
     app_random_model_ids().contains(&evidence.model())
+}
+
+pub(crate) fn is_app_random_schedule_decision(decisions: &[Decision], index: usize) -> bool {
+    match decisions.get(index) {
+        Some(Decision::AppRandom(_)) => true,
+        Some(Decision::Selection(selection)) if selection.is_app_random_model_sample() => true,
+        Some(Decision::Selection(selection)) if selection.is_campaign_branch() => {
+            let Some(previous) = index.checked_sub(1).and_then(|index| decisions.get(index)) else {
+                return false;
+            };
+            matches!(
+                previous,
+                Decision::RngDraw(RngDecision { stream, .. })
+                    if stream.is_default_domain()
+                        && app_random_stream_name_is_canonical(&stream.name)
+            )
+        }
+        _ => false,
+    }
 }
 
 fn app_random_model_ids() -> &'static BTreeSet<ProbabilityModelId> {
@@ -693,6 +816,14 @@ mod tests {
                 .value,
             9
         );
+        let decision = crate::SelectionDecision::new(&selection);
+        assert!(decision.is_campaign_branch());
+        assert!(!decision.is_app_random_model_sample());
+        let decoded = crate::SelectionDecision::from_canonical_bytes(decision.canonical_bytes())
+            .expect("campaign branch decision should decode");
+        assert_eq!(decoded, decision);
+        assert!(decoded.is_campaign_branch());
+
         let foreign = Configuration::genesis(scenario("foreign"));
         assert!(matches!(
             subject.apply_selection(&selection, &foreign),

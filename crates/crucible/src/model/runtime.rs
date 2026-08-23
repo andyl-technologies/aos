@@ -250,12 +250,12 @@ pub(super) fn validate_debug_gdb_endpoint(
 }
 
 pub(super) fn count_app_random_decisions(schedule: &Schedule) -> u64 {
-    schedule
-        .decisions()
+    let decisions = schedule.decisions();
+    decisions
         .iter()
-        .filter(|decision| {
-            matches!(decision, Decision::AppRandom(_))
-                || matches!(decision, Decision::Selection(selection) if selection.is_app_random_model_sample())
+        .enumerate()
+        .filter(|(index, _decision)| {
+            crate::decision::is_app_random_schedule_decision(decisions, *index)
         })
         .count() as u64
 }

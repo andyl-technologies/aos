@@ -435,12 +435,42 @@ version 6 registers the causal `campaign_selection` kind with the single
 selection bytes.
 
 Standardized model-sample selections consume the same scenario-hashed
-app-random draw cap as retained legacy `AppRandom` decisions. Checkpoint
-relaunch derives each node's continuation from the authoritative named-stream
-cursor, using the protocol's length-framed node component rather than opaque
-selection bytes. Migrating retained legacy `AppRandom` entries and removing the
-older raw-width branch generator remain required before T-CAM-2.3 and
-T-CAM-2.7 are complete.
+app-random draw cap as retained legacy `AppRandom` decisions. A campaign branch
+replaces the model sample at the exact parent after its `RngDraw`, emits a
+`SelectionOrigin::CampaignBranch`, and remains chargeable because the parent
+draw uses the reserved, strictly length-framed app-random stream namespace.
+Checkpoint relaunch derives each node's continuation from that same
+authoritative named-stream cursor rather than opaque selection bytes.
+
+Branch generation is lazy: it accepts one exact parent, the observed typed
+selection, and its validated discovery records, and generates at most the
+configured 64 alternatives. It never scans or eagerly expands every random
+request in a retained schedule. There is no raw-width `AppRandom` branch API.
+Alternative index `i` uses this exact deterministic sampler, where `CH(domain,
+bytes)` is the execution model's `ContentHash::from_canonical_hex_bytes`
+operation and `low_u64_le` interprets the first eight digest bytes as a
+little-endian integer:
+
+```text
+material = seed_32
+        || LP(node)
+        || LP(engine_stream_domain)
+        || LP(engine_stream_name)
+        || u64be(request_id)
+        || u8(width_bits)
+        || u64be(i)
+value = low_u64_le(CH("crucible.app-random.branch.v3", material)) & width_mask
+```
+
+Indices are considered in ascending order from zero. The producer omits the
+observed value and duplicate sampled values, so the result contains at most the
+configured number of alternatives and remains deterministic even for narrow
+domains.
+Retained legacy entries remain readable and replayable only; campaign expansion
+rejects them by requiring the typed selection/discovery basis. Operators that
+need to explore such an artifact must re-execute its prefix through the live
+producer to retain the canonical typed discovery. The broader migration policy
+for other legacy explorable decisions remains required by T-CAM-2.3.
 
 ## 02.10 Admission limits
 

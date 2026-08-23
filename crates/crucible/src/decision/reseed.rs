@@ -7,6 +7,8 @@ use crucible_sim::{DecisionRng, DecisionStream};
 use super::DecisionRecorder;
 use crate::{Configuration, Decision, DecisionRngState, RngStreamId, Seed};
 
+use super::app_random_selectable::is_app_random_schedule_decision;
+
 impl DecisionRecorder {
     /// Builds a recorder from an explicit seed and authoritative stream cursors.
     ///
@@ -34,10 +36,8 @@ impl DecisionRecorder {
 pub(super) fn count_app_random_draws(decisions: &[Decision]) -> u64 {
     decisions
         .iter()
-        .filter(|decision| {
-            matches!(decision, Decision::AppRandom(_))
-                || matches!(decision, Decision::Selection(selection) if selection.is_app_random_model_sample())
-        })
+        .enumerate()
+        .filter(|(index, _decision)| is_app_random_schedule_decision(decisions, *index))
         .count() as u64
 }
 

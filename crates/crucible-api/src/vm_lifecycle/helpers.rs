@@ -150,7 +150,9 @@ fn app_random_request_stream<'a>(
 ) -> Option<&'a crucible::RngStreamId> {
     match decisions.get(index)? {
         Decision::AppRandom(random) if random.node == *node => Some(&random.stream),
-        Decision::Selection(selection) if selection.is_app_random_model_sample() => {
+        Decision::Selection(selection)
+            if selection.is_app_random_model_sample() || selection.is_campaign_branch() =>
+        {
             let Decision::RngDraw(draw) = decisions.get(index.checked_sub(1)?)? else {
                 return None;
             };
@@ -404,7 +406,7 @@ mod tests {
             .fork_in_domain(&stream.domain, &stream.name);
         let raw = expected.next_u64();
 
-        let Ok((_recorded, discoveries, _configuration, _append)) =
+        let Ok((recorded, discoveries, _configuration, _append)) =
             QuantumLoop::append_backend_causal_decisions(
                 &mut scheduler,
                 vec![Decision::AppRandom(crucible::AppRandomDecision {
@@ -431,8 +433,40 @@ mod tests {
         assert_eq!(resumed.draw_offset, 1);
         assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
 
+        let [
+            Decision::RngDraw(recorded_draw),
+            Decision::Selection(recorded_selection),
+        ] = recorded.as_slice()
+        else {
+            panic!("live normalization should return one draw and one selection");
+        };
+        let Ok(selection) = recorded_selection.selection() else {
+            panic!("recorded selection should decode");
+        };
+        let Ok(selectable) = crucible::AppRandomSelectable::from_model_sample_records(
+            recorded_draw.stream.clone(),
+            &selection,
+            discoveries[0].declaration(),
+            discoveries[0].opportunity(),
+            discoveries[0].domain(),
+        ) else {
+            panic!("recorded app-random discovery should resolve");
+        };
+        let parent = crucible::step(
+            &Configuration::genesis(scenario.clone()),
+            Decision::RngDraw(recorded_draw.clone()),
+        );
+        let Ok(branch_selection) = selectable.branch_selection(&parent, (raw & 0xff) ^ 1) else {
+            panic!("typed app-random branch should build");
+        };
+        let typed_branch = crucible::step(
+            &parent,
+            Decision::Selection(crucible::SelectionDecision::new(&branch_selection)),
+        );
+        assert_eq!(app_random_request_count(&typed_branch, &node), 1);
+
         let branch = ProductionVmBranchConfig {
-            base: scheduler.configuration().clone(),
+            base: typed_branch,
             frontier: scheduler.frontier(),
             decisions: Vec::new(),
             seed: Some(Seed::from_u64(0x00b1_2ac4)),
