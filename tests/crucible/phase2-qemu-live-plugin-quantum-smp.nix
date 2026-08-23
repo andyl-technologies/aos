@@ -99,7 +99,8 @@ in
             grep -Fxq 'all_vcpus_halted_idle_observed=true' ${liveQuantumSmp}/result
             grep -Fxq 'idle_kind=timer-deadline' ${liveQuantumSmp}/result
             grep -Fxq 'idle_jump_proven=true' ${liveQuantumSmp}/result
-            grep -Fxq 'deterministic_under_host_load=true' ${liveQuantumSmp}/result
+            grep -Fxq 'deterministic_under_scheduler_preemption=true' ${liveQuantumSmp}/result
+            grep -Fxq 'host_adversary=bounded-scheduler-preemption' ${liveQuantumSmp}/result
             grep -Fxq 'sim_double_schedule_matches=true' ${liveQuantumSmp}/result
 
             mkdir -p "$out"
@@ -113,7 +114,8 @@ in
             rr_subdivision=fixed-quantum-ascending
             all_vcpus_halted_idle_observed=true
             idle_wake=minimum-live-timer-deadline
-            deterministic_under_host_load=true
+            deterministic_under_scheduler_preemption=true
+            host_adversary=bounded-scheduler-preemption
             RESULT
           '';
         }

@@ -977,7 +977,7 @@ component that makes that purity true *inside* the QEMU process.
   observation plugin so the Rust plugin is the sole `sim_shmem` time authority:
   across the boot quanta the guest advances by exactly its guest-instruction icount
   up to each host-published scheduler ceiling and stops there, and the whole boot
-  fingerprint is byte-identical on a second run taken under host CPU load — only
+  fingerprint is byte-identical on a second run taken under bounded scheduler preemption — only
   possible if virtual time is owned by the plugin and never sampled from a host
   clock. When the guest idles, the plugin advances virtual time by the authorized
   idle jump to the exact next timer deadline and the guest wakes and runs on: the
@@ -1028,7 +1028,7 @@ component that makes that purity true *inside* the QEMU process.
   O(1) jump through the exact `QEMU_CLOCK_VIRTUAL` timer deadline. The guest
   wakes, runs, and re-idles below the published scheduler ceiling without
   self-extending past it. The terminal architectural state is byte-identical on
-  a second run taken under host CPU load, proving the queued advance commits the
+  a second run taken under bounded scheduler preemption, proving the queued advance commits the
   same wake-point state regardless of host timing. The advance rides QEMU patch
   0010's `icount_advance_virtual_time_to_ns`
   primitive (replacing the qtest-only helper that spun under icount) with the
@@ -1042,7 +1042,7 @@ component that makes that purity true *inside* the QEMU process.
   emits a probe through virtio-net, the router reply enters the reserved inbound
   ring at exactly +100,000,000 icount, and the plugin injects it before the
   guest emits its acknowledgement. The exact router latency, frame bytes,
-  ordering, and sequences are identical under host CPU load; the gate records
+  ordering, and sequences are identical under bounded scheduler preemption; the gate records
   raw probe and guest-ACK offsets separately as whole-guest diagnostics.
 - [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
@@ -1053,7 +1053,7 @@ component that makes that purity true *inside* the QEMU process.
   completion horizon, then require the device hold to clear and the real guest
   to progress. The block path pairs each request token with one completion; the
   9p path holds the counter across the whole request burst and clears it only at
-  burst-done. Both repeat under host CPU load with identical modeled traffic.
+  burst-done. Both repeat under bounded scheduler preemption with identical modeled traffic.
 - [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
@@ -1243,7 +1243,7 @@ component that makes that purity true *inside* the QEMU process.
   Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
   hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
   the parked APs have none. The gate performs the authorized idle jump, observes
-  the BSP wake and re-halt, and repeats under host CPU load with an identical
+  the BSP wake and re-halt, and repeats under bounded scheduler preemption with an identical
   idle observation, execution fingerprint, and host-observable schedule.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
@@ -1258,7 +1258,7 @@ component that makes that purity true *inside* the QEMU process.
   `qemu_plugin_inject_preemption` at its exact commanded node-icount and
   acknowledges the mailbox sequence only after patched QEMU accepts it. The
   live `-smp 2` gate reaches exact ceilings after both a forced vCPU switch and
-  a commanded interrupt, repeats byte-identically under host CPU load, and
+  a commanded interrupt, repeats byte-identically under bounded scheduler preemption, and
   cross-checks the host-observable schedule against `SimDouble`. Patch and
   plugin negative controls reject commands outside the authorized window
   `[deadline, ceiling]` rather than clamp, defer, or apply it at a different
@@ -1275,7 +1275,7 @@ component that makes that purity true *inside* the QEMU process.
   `PluginFingerprintSampling::sample` feeds them into the N-vCPU fingerprint
   sample. The reads are side-effect-free with respect to `S`/`T`: the whole
   fingerprint stream (per-vCPU register digests + RR cursor + guest-RAM +
-  device-state) is byte-identical across two runs (the second under host load) and
+  device-state) is byte-identical across two runs (the second under bounded scheduler preemption) and
   under a restart probe, so sampling perturbs neither guest state nor the
   execution trace. The N-vCPU fingerprint mints under the new
   `crucible.qemu.rust-plugin-fingerprint.v2` domain.

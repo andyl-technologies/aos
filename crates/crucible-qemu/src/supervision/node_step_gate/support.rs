@@ -1,8 +1,9 @@
-//! Busy-window driving, launch, priming, and host-load support.
+//! Busy-window driving, launch, priming, and scheduler-preemption support.
 
 use std::os::unix::net::UnixStream;
 
 use super::*;
+pub(super) use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 
 const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
 const X86_64_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
@@ -440,50 +441,6 @@ pub(super) fn path_text(path: &Path) -> String {
 pub(super) fn node_id(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning node must produce an
-/// identical fingerprint whether or not the load is present.
-pub(super) struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    pub(super) fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
     }
 }
 

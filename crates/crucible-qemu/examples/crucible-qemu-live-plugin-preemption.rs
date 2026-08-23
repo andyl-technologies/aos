@@ -57,7 +57,10 @@ fn run() -> Result<(), String> {
                 "CRUCIBLE_PREEMPTION_TIMEOUT_SECS",
                 240,
             )?))
-            .with_second_run_host_load(env_flag("CRUCIBLE_PREEMPTION_SECOND_RUN_LOAD", true)?);
+            .with_second_run_scheduler_preemption(env_flag(
+                "CRUCIBLE_PREEMPTION_SECOND_RUN_SCHEDULER_PREEMPTION",
+                true,
+            )?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -103,10 +106,21 @@ fn run() -> Result<(), String> {
     );
     println!("terminal_icount={}", report.terminal_icount);
     println!(
-        "deterministic_under_host_load={}",
-        report.deterministic_under_host_load
+        "deterministic_under_scheduler_preemption={}",
+        report.deterministic_under_scheduler_preemption
     );
-    println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "scheduler_preemption_applied={}",
+        report.scheduler_preemption_applied
+    );
+    println!(
+        "host_adversary={}",
+        if report.scheduler_preemption_applied {
+            "bounded-scheduler-preemption"
+        } else {
+            "none"
+        }
+    );
     println!(
         "sim_double_schedule_matches={}",
         report.sim_double_schedule_matches

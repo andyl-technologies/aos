@@ -234,7 +234,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
-            dimensions=seeded-scheduling,seeded-affinity,jitter-load,core-counts,producer-consumer-skew
+            dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
             rust_tests=crucible-harness::adversarial_host_fixture,crucible::gate_single_vm_fingerprint::adversarial-host-profiles
             RESULT
           '';

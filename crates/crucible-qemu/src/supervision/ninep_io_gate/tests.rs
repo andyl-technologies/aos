@@ -99,12 +99,12 @@ fn certification_requires_forwarding_completion_and_progress() {
 }
 
 #[test]
-fn host_load_certification_requires_the_wall_delay() {
+fn scheduler_preemption_certification_requires_the_wall_delay() {
     let mut outcome = certifying_outcome();
     outcome.response_delay_applied = false;
     assert!(certify_run("repeat", &outcome, false).is_ok());
     assert!(matches!(
-        certify_run("host-load", &outcome, true),
+        certify_run("scheduler-preemption", &outcome, true),
         Err(QemuLive9pIoGateError::CertificationFailed { .. })
     ));
 }

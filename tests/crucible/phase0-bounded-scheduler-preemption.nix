@@ -4,6 +4,7 @@
 }: let
   harnessSource = builtins.readFile ./_bounded-scheduler-preemption.sh;
   targetWrapperSource = builtins.readFile ./_bounded-scheduler-preemption-target.sh;
+  rustSchedulerSource = builtins.readFile ../../crates/crucible-qemu/src/bounded_scheduler_preemption.rs;
   consumerSources = [
     {
       label = "tests/crucible/phase0-s1.nix";
@@ -40,6 +41,52 @@
       source = builtins.readFile ./phase2-qemu-nvcpu-fingerprint.nix;
       evidence = "real_qemu_adversary=second-run-bounded-scheduler-preemption";
       cleanup = "cleanup_qemu; exit 143";
+    }
+  ];
+  rustSchedulerConsumers = [
+    {
+      label = "crates/crucible-qemu/src/live_plugin_quantum_gate";
+      source =
+        builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate.rs
+        + builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate/preemption_gate.rs;
+    }
+    {
+      label = "crates/crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs";
+      source = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs;
+    }
+    {
+      label = "crates/crucible-qemu/src/supervision/block_io_gate";
+      source =
+        builtins.readFile ../../crates/crucible-qemu/src/supervision/block_io_gate.rs
+        + builtins.readFile ../../crates/crucible-qemu/src/supervision/block_io_gate/support.rs;
+    }
+    {
+      label = "crates/crucible-qemu/src/supervision/ninep_io_gate";
+      source =
+        builtins.readFile ../../crates/crucible-qemu/src/supervision/ninep_io_gate.rs
+        + builtins.readFile ../../crates/crucible-qemu/src/supervision/ninep_io_gate/support.rs;
+    }
+    {
+      label = "crates/crucible-qemu/src/supervision/node_step_gate";
+      source =
+        builtins.readFile ../../crates/crucible-qemu/src/supervision/node_step_gate.rs
+        + builtins.readFile ../../crates/crucible-qemu/src/supervision/node_step_gate/support.rs;
+    }
+    {
+      label = "crates/crucible-qemu/src/supervision/network_io_gate";
+      source = builtins.readFile ../../crates/crucible-qemu/src/supervision/network_io_gate/drive.rs;
+    }
+  ];
+  removedAdversarySources = [
+    {
+      label = "crates/crucible-qemu/examples/crucible-qemu-live-terminal-horizon.rs";
+      source = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-terminal-horizon.rs;
+      repeatEvidence = ''println!("second_run_repeat=active")'';
+    }
+    {
+      label = "crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs";
+      source = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs;
+      repeatEvidence = ''println!("second_ordinal_repeat=true")'';
     }
   ];
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -108,6 +155,82 @@
       needle = ''exec "$@"'';
     }
   ];
+  rustSchedulerFailures =
+    failuresFor "crates/crucible-qemu/src/bounded_scheduler_preemption.rs" rustSchedulerSource [
+      {
+        label = "single finite preemption controller";
+        needle = ''name(String::from("crucible-qemu-scheduler-preemption"))'';
+      }
+      {
+        label = "finite perturbation count";
+        needle = "BOUNDED_PREEMPTION_COUNT: u32 = 6";
+      }
+      {
+        label = "short bounded pause";
+        needle = "BOUNDED_PREEMPTION_PAUSE_MILLISECONDS: u64 = 15";
+      }
+      {
+        label = "actual QEMU stop";
+        needle = "libc::SIGSTOP";
+      }
+      {
+        label = "unconditional QEMU resume";
+        needle = "libc::SIGCONT";
+      }
+      {
+        label = "independent resume watchdog";
+        needle = "BOUNDED_PREEMPTION_WALL_TIMEOUT";
+      }
+      {
+        label = "synchronous controller cleanup";
+        needle = "controller.join()";
+      }
+    ]
+    ++ lib.optionals (
+      hasInfix "black_box" rustSchedulerSource
+      || hasInfix "while !stop.load" rustSchedulerSource
+      || hasInfix "HOST_LOAD_WORKERS" rustSchedulerSource
+    ) ["bounded Rust scheduler harness retains a CPU burner or unbounded worker shape"];
+  rustConsumerFailures =
+    lib.concatMap (
+      consumer:
+        failuresFor consumer.label consumer.source [
+          {
+            label = "shared bounded scheduler harness";
+            needle = "BoundedSchedulerPreemption as HostAdversary";
+          }
+          {
+            label = "fallible preemption startup";
+            needle = "HostAdversary::start_if";
+          }
+          {
+            label = "verified contention completion";
+            needle = ".finish()";
+          }
+        ]
+        ++ lib.optionals (
+          hasInfix "HOST_LOAD_WORKERS" consumer.source
+          || hasInfix "HostLoad" consumer.source
+          || hasInfix "black_box(accumulator)" consumer.source
+        ) ["${consumer.label}: retains a duplicated or multi-worker CPU burner"]
+    )
+    rustSchedulerConsumers;
+  removedAdversaryFailures =
+    lib.concatMap (
+      consumer:
+        failuresFor consumer.label consumer.source [
+          {
+            label = "accurate unperturbed-repeat evidence";
+            needle = consumer.repeatEvidence;
+          }
+        ]
+        ++ lib.optionals (
+          hasInfix "HostLoad" consumer.source
+          || hasInfix "spin_loop" consumer.source
+          || hasInfix "while !stop.load" consumer.source
+        ) ["${consumer.label}: retains a CPU adversary unrelated to its terminal-target invariant"]
+    )
+    removedAdversarySources;
   consumerFailures =
     lib.concatMap (
       consumer:
@@ -142,11 +265,11 @@
     )
     consumerSources;
   sourceCheck =
-    if sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures == []
+    if sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures ++ rustSchedulerFailures ++ rustConsumerFailures ++ removedAdversaryFailures == []
     then true
     else
       throw (lib.concatStringsSep "\n"
-        (sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures));
+        (sourceFailures ++ forbiddenFailures ++ targetWrapperFailures ++ consumerFailures ++ rustSchedulerFailures ++ rustConsumerFailures ++ removedAdversaryFailures));
 in
   assert sourceCheck;
     pkgs.mkDerivation {

@@ -20,7 +20,7 @@
   stepCount ? "4",
   busyCap ? "15000000",
   stepTimeoutSecs ? "240",
-  # Run the whole scenario twice, the second run under host CPU load, and require
+  # Run the whole scenario twice, the second run under bounded scheduler preemption, and require
   # byte-identical per-step accounting and execution fingerprint.
   secondRunLoad ? "1",
 }: let
@@ -54,7 +54,7 @@ in
     CRUCIBLE_NODE_STEP_COUNT = stepCount;
     CRUCIBLE_NODE_STEP_BUSY_CAP = busyCap;
     CRUCIBLE_NODE_STEP_TIMEOUT_SECS = stepTimeoutSecs;
-    CRUCIBLE_NODE_STEP_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_NODE_STEP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -142,10 +142,11 @@ in
           grep -Fxq 'busy_window_logical_offset_zero=true' "$report"
           # The node's shutdown escalation reaped the child cleanly.
           grep -Fxq 'orderly_child_exit=true' "$report"
-          # The whole run repeated (second run under host CPU load) and produced a
+          # The whole run repeated (second run under bounded scheduler preemption) and produced a
           # byte-identical execution fingerprint and per-step accounting.
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
+          grep -Fxq 'scheduler_preemption_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Eq '^execution_fingerprint=[0-9a-f]+$' "$report"
 
           mkdir -p "$out"

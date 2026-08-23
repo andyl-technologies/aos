@@ -32,7 +32,7 @@ in
     GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
     CRUCIBLE_PREEMPTION_CEILING_STEP = ceilingStep;
     CRUCIBLE_PREEMPTION_TIMEOUT_SECS = timeoutSecs;
-    CRUCIBLE_PREEMPTION_SECOND_RUN_LOAD = "1";
+    CRUCIBLE_PREEMPTION_SECOND_RUN_SCHEDULER_PREEMPTION = "1";
     RR_SWITCH_QUANTUMS = builtins.concatStringsSep " " rrSwitchQuantums;
     TASK_IDS = builtins.concatStringsSep "," taskIds;
     OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
@@ -136,8 +136,9 @@ in
             grep -Fxq 'interrupt_vector=241' "$report"
             grep -Fxq 'interrupt_consumed_sequence=2' "$report"
             grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"
-            grep -Fxq 'deterministic_under_host_load=true' "$report"
-            grep -Fxq 'host_load_applied=true' "$report"
+            grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
+            grep -Fxq 'scheduler_preemption_applied=true' "$report"
+            grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
             grep -Fxq 'sim_double_schedule_matches=true' "$report"
             grep -Eq '^execution_fingerprint=[0-9a-f]{64}$' "$report"
             cat "$report" >> "$all_reports"
@@ -150,7 +151,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=live-smp-vcpu-switch,live-smp-commanded-interrupt,fixed-latency-ipi,next-rr-switch-delivery,exact-icount-fail-stop,mailbox-ack,host-load-repeat,sim-double-schedule\n'
+            printf 'proven=live-smp-vcpu-switch,live-smp-commanded-interrupt,fixed-latency-ipi,next-rr-switch-delivery,exact-icount-fail-stop,mailbox-ack,scheduler-preemption-repeat,sim-double-schedule\n'
           } >> "$out/result"
         '';
       }

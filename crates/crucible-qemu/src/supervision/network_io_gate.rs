@@ -228,7 +228,7 @@ pub fn run_qemu_live_network_io_gate(
     .with_shmem_network_mac(crate::DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC)
     .with_fingerprint(QemuLaunchPluginSwitch::On)
     .with_completion_timeout(config.completion_timeout)
-    .with_second_run_host_load(false);
+    .with_second_run_scheduler_preemption(false);
     if let Some(cmdline) = &config.kernel_cmdline {
         retained_config = retained_config.with_kernel_cmdline(cmdline.clone());
     }

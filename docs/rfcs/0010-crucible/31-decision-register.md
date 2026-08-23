@@ -1382,7 +1382,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   against the `980` floor. At every candidate, the modeled known two-vCPU race
   remained discriminating and the corresponding production loaded-QEMU gate
   applied exact acknowledged vCPU-switch and interrupt commands twice, including
-  a host-load run, with matching execution fingerprints and SimDouble schedule.
+  a scheduler-preemption run, with matching execution fingerprints and SimDouble schedule.
   Since race yield tied across all five candidates, `4096` is the smallest value
   meeting the throughput floor. The separate four-vCPU S11 run also reproduces
   at `4096` through its 4-billion-instruction horizon.
@@ -2200,7 +2200,7 @@ register.
     `vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `commanded_preemption_choices_tested=2`,
-    `commanded_preemption_reproducible=production_loaded_qemu_host_load_repeat`,
+    `commanded_preemption_reproducible=production_loaded_qemu_scheduler_preemption_repeat`,
     `commanded_preemption_discriminating=model_race_plus_live_command_application`,
     `known_race_manifested_under_one_choice=modeled`,
     `known_race_absent_under_another_choice=modeled`,
@@ -2213,7 +2213,7 @@ register.
     `s11_result_status=PASS`, `s11_rr_switch_quantum=4096`,
     `s11_horizon_icount=4000000000`, `s11_extended_fingerprint_match=true`,
     `live_preemption_rr_switch_quantum=4096`,
-    `live_preemption_deterministic_under_host_load=true`,
+    `live_preemption_deterministic_under_scheduler_preemption=true`,
     `live_preemption_sim_double_schedule_matches=true`,
     `decision_preemption_exploration_enabled=true`, `fallback_adopted=none`,
     `s12_complete=true`.
@@ -2222,7 +2222,7 @@ register.
     `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
     `checks.crucible.phase2.qemuPreemptionInject` covers command validation and
     `gate:single-vm-fingerprint` covers acknowledged vCPU-switch and interrupt
-    application at fixed icounts under differing host load. It
+    application at fixed icounts with and without bounded scheduler preemption. It
     requires green S1 and S11 decision-register entries as
     default-determinism prerequisites; both are green. It also witnesses that
     commanded preemption **discriminates a known race at the deterministic model
@@ -2356,8 +2356,8 @@ register.
   [D-36]: the known-race model witness
   `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
   is composed with exact production loaded-QEMU vCPU-switch and interrupt
-  application at every candidate quantum. All five candidates reproduce under
-  host load and preserve race yield, while `4096` is the smallest candidate over
+  application at every candidate quantum. All five candidates reproduce with
+  bounded scheduler preemption and preserve race yield, while `4096` is the smallest candidate over
   the throughput floor and is independently S11-green with four vCPUs.
   `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports
   `race_yield_tested=true`, `d25_status=resolved_rr_switch_quantum_4096`, and
