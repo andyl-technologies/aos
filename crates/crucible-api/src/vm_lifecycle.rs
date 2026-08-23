@@ -526,6 +526,94 @@ pub enum ProductionVmNodeLaunchKind<'a> {
     },
 }
 
+/// Immutable checkpoint artifact offered to one node-generation preparer.
+///
+/// The capability keeps the checkpoint store representation private while
+/// allowing an injected preparation authority to authenticate and materialize
+/// the exact bytes only after it has installed its writable-storage policy.
+#[derive(Clone, Copy, Debug)]
+pub struct ProductionVmNodeCheckpointArtifact<'a> {
+    artifact: &'a ProductionCheckpointArtifact,
+    role: &'static str,
+}
+
+impl ProductionVmNodeCheckpointArtifact<'_> {
+    /// Returns the exact content identity of the artifact.
+    #[must_use]
+    pub const fn identity(&self) -> ContentHash {
+        self.artifact.identity
+    }
+
+    /// Returns the exact logical byte length of the artifact.
+    #[must_use]
+    pub const fn length(&self) -> u64 {
+        self.artifact.length
+    }
+
+    /// Materializes and reauthenticates the artifact at `destination`.
+    ///
+    /// The destination must not already exist. The copy is staged under its
+    /// parent and durably published only after its length and content identity
+    /// match this capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when source authentication,
+    /// bounded copying, destination publication, or directory synchronization
+    /// fails.
+    pub fn materialize_into(&self, destination: &Path) -> Result<(), LifecycleApiError> {
+        copy_exact_checkpoint_artifact(self.artifact, destination, self.role)
+    }
+}
+
+/// Filesystem preparation requested for one production node generation.
+#[derive(Clone, Copy, Debug)]
+pub enum ProductionVmNodePreparationKind<'a> {
+    /// Creates a fresh writable root overlay from one immutable root image.
+    Fresh {
+        /// QEMU executable whose adjacent `qemu-img` owns the image format.
+        qemu_executable: &'a Path,
+        /// Immutable root image used only as the overlay size and backing basis.
+        root_image: &'a Path,
+    },
+    /// Materializes the two authenticated artifacts of an exact restore.
+    Exact {
+        /// Exact writable-root overlay artifact.
+        root_overlay: ProductionVmNodeCheckpointArtifact<'a>,
+        /// Exact QEMU VMState artifact.
+        vmstate: ProductionVmNodeCheckpointArtifact<'a>,
+    },
+    /// Clones the current generation's writable artifacts for replacement.
+    Replacement {
+        /// Exact prior generation directory owned by the same launcher.
+        source_run_directory: &'a Path,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProductionVmNodeLaunchBasis<'a> {
+    launch: &'a ProductionLiveNodeStepGateConfig,
+    run_directory: &'a Path,
+    node: &'a NodeId,
+    generation: u64,
+}
+
+impl<'a> ProductionVmNodeLaunchBasis<'a> {
+    const fn new(
+        launch: &'a ProductionLiveNodeStepGateConfig,
+        run_directory: &'a Path,
+        node: &'a NodeId,
+        generation: u64,
+    ) -> Self {
+        Self {
+            launch,
+            run_directory,
+            node,
+            generation,
+        }
+    }
+}
+
 /// Borrowed launch request for one production lifecycle node generation.
 #[derive(Clone, Copy, Debug)]
 pub struct ProductionVmNodeLaunchRequest<'a> {
@@ -535,26 +623,26 @@ pub struct ProductionVmNodeLaunchRequest<'a> {
     generation: u64,
     router_name: &'a str,
     crash_detector: &'a str,
+    preparation: ProductionVmNodePreparationKind<'a>,
     kind: ProductionVmNodeLaunchKind<'a>,
 }
 
 impl<'a> ProductionVmNodeLaunchRequest<'a> {
     const fn new(
-        launch: &'a ProductionLiveNodeStepGateConfig,
-        run_directory: &'a Path,
-        node: &'a NodeId,
-        generation: u64,
+        basis: ProductionVmNodeLaunchBasis<'a>,
         router_name: &'a str,
         crash_detector: &'a str,
+        preparation: ProductionVmNodePreparationKind<'a>,
         kind: ProductionVmNodeLaunchKind<'a>,
     ) -> Self {
         Self {
-            launch,
-            run_directory,
-            node,
-            generation,
+            launch: basis.launch,
+            run_directory: basis.run_directory,
+            node: basis.node,
+            generation: basis.generation,
             router_name,
             crash_detector,
+            preparation,
             kind,
         }
     }
@@ -599,6 +687,12 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
     #[must_use]
     pub const fn crash_detector(&self) -> &str {
         self.crash_detector
+    }
+
+    /// Returns the exact writable-artifact operation preceding process spawn.
+    #[must_use]
+    pub const fn preparation(&self) -> ProductionVmNodePreparationKind<'a> {
+        self.preparation
     }
 
     /// Returns the fresh or exact process materialization request.
@@ -740,15 +834,20 @@ impl ProductionVmNodeLaunch {
 pub trait ProductionVmNodeLauncher: Send {
     /// Launches one requested node generation.
     ///
+    /// Before spawning any process, the implementation creates the generation
+    /// run directory and performs [`ProductionVmNodeLaunchRequest::preparation`]
+    /// under the same aggregate storage, cancellation, and cleanup authority.
     /// Success returns the node and a linear containment lease whose identity
     /// exactly matches the request. The lifecycle retains that lease until the
     /// corresponding child has been reaped.
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError`] when admission, process launch, exact
-    /// restore, or post-launch authentication fails. The implementation must
-    /// retain or reap every process it may have spawned before returning.
+    /// Returns [`LifecycleApiError`] when admission, namespace or artifact
+    /// preparation, process launch, exact restore, or post-launch
+    /// authentication fails. The implementation must retain or clean every
+    /// partial artifact and retain or reap every process it may have spawned
+    /// before returning.
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
@@ -805,6 +904,49 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        fs::create_dir_all(request.run_directory()).map_err(|error| {
+            loop_factory_error(format!(
+                "create QEMU node run directory {}: {error}",
+                request.run_directory().display()
+            ))
+        })?;
+        match request.preparation() {
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable,
+                root_image,
+            } => prepare_root_overlay(qemu_executable, root_image, request.run_directory()),
+            ProductionVmNodePreparationKind::Exact {
+                root_overlay,
+                vmstate,
+            } => {
+                root_overlay.materialize_into(
+                    &request
+                        .run_directory()
+                        .join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
+                )?;
+                vmstate
+                    .materialize_into(&request.run_directory().join(PRODUCTION_VMSTATE_FILE_NAME))
+            }
+            ProductionVmNodePreparationKind::Replacement {
+                source_run_directory,
+            } => {
+                for artifact in [
+                    PRODUCTION_ROOT_OVERLAY_FILE_NAME,
+                    PRODUCTION_VMSTATE_FILE_NAME,
+                ] {
+                    let source = source_run_directory.join(artifact);
+                    let target = request.run_directory().join(artifact);
+                    fs::copy(&source, &target).map_err(|error| {
+                        loop_factory_error(format!(
+                            "copy production lifecycle artifact {} to {}: {error}",
+                            source.display(),
+                            target.display()
+                        ))
+                    })?;
+                }
+                Ok(())
+            }
+        }?;
         let launched = match request.kind() {
             ProductionVmNodeLaunchKind::Fresh => launch_production_live_node(
                 request.launch(),
@@ -858,21 +1000,32 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
 
 fn launch_production_node_generation(
     launcher: &mut dyn ProductionVmNodeLauncher,
-    launch: &ProductionLiveNodeStepGateConfig,
-    run_directory: &Path,
-    node: &NodeId,
-    generation: u64,
+    basis: ProductionVmNodeLaunchBasis<'_>,
     crash_detector: &str,
+    preparation: ProductionVmNodePreparationKind<'_>,
     kind: ProductionVmNodeLaunchKind<'_>,
 ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-    ProductionVmNodeGeneration::new(node.clone(), generation)?;
+    ProductionVmNodeGeneration::new(basis.node.clone(), basis.generation)?;
+    if !matches!(
+        (preparation, kind),
+        (
+            ProductionVmNodePreparationKind::Fresh { .. },
+            ProductionVmNodeLaunchKind::Fresh
+        ) | (
+            ProductionVmNodePreparationKind::Exact { .. }
+                | ProductionVmNodePreparationKind::Replacement { .. },
+            ProductionVmNodeLaunchKind::Exact { .. }
+        )
+    ) {
+        return Err(loop_factory_error(
+            "production QEMU node preparation does not match its launch kind",
+        ));
+    }
     launcher.launch(ProductionVmNodeLaunchRequest::new(
-        launch,
-        run_directory,
-        node,
-        generation,
+        basis,
         "crucible-router",
         crash_detector,
+        preparation,
         kind,
     ))
 }
@@ -1419,12 +1572,6 @@ fn build_production_vm_lifecycle_loop_with_restore(
             validate_guest_asset_references(vm, guest_assets)?;
         }
         let node_directory = run_directory.path().join(format!("node-{index}"));
-        fs::create_dir_all(&node_directory).map_err(|error| {
-            loop_factory_error(format!(
-                "create QEMU node run directory {}: {error}",
-                node_directory.display()
-            ))
-        })?;
         let restore_target = restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.targets.get(&vm.id));
@@ -1450,22 +1597,6 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     loop_factory_error("exact checkpoint target lost its fault continuation")
                 })?;
             validate_exact_checkpoint_target(&vm.id, target, fault_identity)?;
-            copy_exact_checkpoint_artifact(
-                &target.overlay_artifact,
-                &node_directory.join(PRODUCTION_ROOT_OVERLAY_FILE_NAME),
-                "root overlay",
-            )?;
-            copy_exact_checkpoint_artifact(
-                &target.vmstate_artifact,
-                &node_directory.join(PRODUCTION_VMSTATE_FILE_NAME),
-                "VMState",
-            )?;
-        } else {
-            prepare_root_overlay(
-                &config.executable,
-                &guest_assets.root_image,
-                &node_directory,
-            )?;
         }
         let kernel_cmdline_prefix = production_kernel_cmdline_prefix(config, vm.arch, guest_assets);
         let kernel_cmdline = match kernel_cmdline_prefix {
@@ -1482,7 +1613,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .unwrap_or(1);
         let qemu_executable = production_qemu_executable(&config.executable, vm.arch);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
-            qemu_executable,
+            &qemu_executable,
             &config.plugin,
             &guest_assets.kernel,
             &guest_assets.root_image,
@@ -1608,15 +1739,29 @@ fn build_production_vm_lifecycle_loop_with_restore(
         node_generations.insert(vm.id.clone(), generation);
         node_service_states.insert(vm.id.clone(), service_state);
         let crash_detector = format!("lifecycle-{}-generation-{generation}", vm.id.name);
+        let preparation = match restore_target {
+            Some(target) => ProductionVmNodePreparationKind::Exact {
+                root_overlay: ProductionVmNodeCheckpointArtifact {
+                    artifact: &target.overlay_artifact,
+                    role: "root overlay",
+                },
+                vmstate: ProductionVmNodeCheckpointArtifact {
+                    artifact: &target.vmstate_artifact,
+                    role: "VMState",
+                },
+            },
+            None => ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: &qemu_executable,
+                root_image: &guest_assets.root_image,
+            },
+        };
         let launched = match (restore_target, service_state) {
             (Some(target), ProductionNodeServiceState::Running) => {
                 launch_production_node_generation(
                     node_launcher.as_mut(),
-                    &launch,
-                    &node_directory,
-                    &vm.id,
-                    generation,
+                    ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
                     &crash_detector,
+                    preparation,
                     ProductionVmNodeLaunchKind::Exact {
                         snapshot: &target.snapshot,
                         paused: false,
@@ -1626,11 +1771,9 @@ fn build_production_vm_lifecycle_loop_with_restore(
             (Some(target), ProductionNodeServiceState::PoweredOff) => {
                 launch_production_node_generation(
                     node_launcher.as_mut(),
-                    &launch,
-                    &node_directory,
-                    &vm.id,
-                    generation,
+                    ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
                     &crash_detector,
+                    preparation,
                     ProductionVmNodeLaunchKind::Exact {
                         snapshot: &target.snapshot,
                         paused: true,
@@ -1646,11 +1789,9 @@ fn build_production_vm_lifecycle_loop_with_restore(
             (None, ProductionNodeServiceState::PermanentlyFailed) => continue,
             (None, _) => launch_production_node_generation(
                 node_launcher.as_mut(),
-                &launch,
-                &node_directory,
-                &vm.id,
-                generation,
+                ProductionVmNodeLaunchBasis::new(&launch, &node_directory, &vm.id, generation),
                 &format!("lifecycle-{}", vm.id.name),
+                preparation,
                 ProductionVmNodeLaunchKind::Fresh,
             ),
         };

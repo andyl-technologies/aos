@@ -2070,10 +2070,19 @@ production lifecycle now accepts and retains one object-safe node-launch
 authority. Initial fresh/exact materialization and every modeled crash/restart
 replacement pass through that same authority; whole-world debugger replay must
 obtain an independent authority from it or fail closed. The authoritative
-lifecycle therefore no longer has a later direct-spawn path that can bypass an
-attempt guard after the first generation. Every successful launch returns the
-live node together with a linear lease naming the exact scheduler `NodeId` and
-positive process generation. The lifecycle retains active and staged leases
+lifecycle binds the exact node, positive generation, launch profile, and one of
+three preparation operations in the same request: fresh overlay creation,
+authenticated exact overlay/VMState materialization, or replacement cloning
+from the prior generation. The launcher performs that preparation before it
+spawns the child. The lifecycle itself no longer creates a generation
+directory, invokes `qemu-img`, copies exact artifacts, or clones replacement
+artifacts before the authority sees the request. A fresh process request cannot
+be paired with exact/replacement preparation, and an exact process request
+cannot be paired with fresh preparation. The lifecycle therefore has neither a
+pre-spawn writable-storage bypass nor a later direct-spawn bypass around the
+attempt guard. Every successful launch returns the live node together with a
+linear lease naming the exact scheduler `NodeId` and positive process
+generation. The lifecycle retains active and staged leases
 separately. A staged replacement cannot displace the active lease; the active
 lease is released only after the old child is attested reaped, and the staged
 lease becomes active only with the backend replacement commit. Failed staging

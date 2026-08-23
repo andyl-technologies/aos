@@ -68,6 +68,12 @@ struct RecordingFinishLauncher {
     finish_order: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
+type PreparationObservation = (&'static str, bool, u64);
+
+struct PreparationBoundaryLauncher {
+    observations: Arc<std::sync::Mutex<Vec<PreparationObservation>>>,
+}
+
 impl ProductionVmNodeLauncher for RecordingFinishLauncher {
     fn launch(
         &mut self,
@@ -85,6 +91,38 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
             .push("launcher");
+        Ok(())
+    }
+}
+
+impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
+    fn launch(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        let preparation = match request.preparation() {
+            ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
+            ProductionVmNodePreparationKind::Exact { .. } => "exact",
+            ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
+        };
+        self.observations
+            .lock()
+            .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy"))
+            .push((
+                preparation,
+                request.run_directory().exists(),
+                request.generation(),
+            ));
+        Err(loop_factory_error(
+            "preparation-boundary launcher rejects before path access",
+        ))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
 }
@@ -277,6 +315,40 @@ fn initially_violated_scenario() -> ScenarioDefForm {
         0,
     )
     .unwrap_or_else(|error| panic!("test scenario should validate: {error}"))
+}
+
+#[test]
+fn production_lifecycle_lends_generation_preparation_before_path_access() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let source = initially_violated_scenario();
+    let scenario = source.scenario_def();
+    let config = ProductionVmLifecycleConfig::new(
+        "missing-qemu",
+        "missing-plugin",
+        "missing-kernel",
+        "missing-root",
+        root.path(),
+    );
+    let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let error = build_production_vm_lifecycle_loop_with_launcher(
+        &scenario,
+        &source,
+        &config,
+        PreparationBoundaryLauncher {
+            observations: Arc::clone(&observations),
+        },
+    )
+    .err()
+    .unwrap_or_else(|| panic!("preparation-boundary launcher should reject construction"));
+
+    assert!(error.to_string().contains("rejects before path access"));
+    assert_eq!(
+        *observations
+            .lock()
+            .unwrap_or_else(|_| panic!("preparation observation lock should remain healthy")),
+        vec![("fresh", false, 1)]
+    );
 }
 
 #[test]

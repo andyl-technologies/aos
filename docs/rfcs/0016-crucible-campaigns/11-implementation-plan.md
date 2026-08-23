@@ -438,9 +438,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   modeled crash/restart replacement, and whole-world debugger replay; a replay
   must obtain an independent authority or fail closed. This removes the
   lifecycle's direct-spawn bypass seam while keeping the packaged ordinary
-  lifecycle behind an explicit default authority. Each launch now returns a
-  linear lease bound to the exact scheduler node and positive process
-  generation. Active and staged replacement leases remain disjoint; old leases
+  lifecycle behind an explicit default authority. The same exact
+  node-generation request now also moves generation-directory creation,
+  `qemu-img` overlay creation, authenticated restore-artifact materialization,
+  and replacement cloning behind the launcher before process spawn; the
+  lifecycle rejects fresh/exact preparation-kind mismatches before invoking
+  it. Each launch now returns a linear lease bound to the exact scheduler node
+  and positive process generation. Active and staged replacement leases remain disjoint; old leases
   release only after reap attestation, staged leases become active only with
   backend commit, and abort reaps before lease finish. A lease-release failure
   latches quarantine and prevents later aggregate release. Explicit shutdown reaps
