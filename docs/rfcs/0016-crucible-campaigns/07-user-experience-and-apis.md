@@ -164,11 +164,14 @@ source snapshot and may activate an already imported compatible canonical
 policy. A runtime-capable local daemon also receives
 `--campaign-component-authority FILE`, the strict owner-only version-one
 planner/debugger authority bundle specified in §04a. The current control-only
-service may omit it; planner/debugger attachment must fail closed until it is
-present. `start` attaches local execution resources and changes desired state
-through a recorded command. `pause` stops new proposals/reservations and applies
-the selected active-attempt behavior. `stop --seal` prevents accidental future
-budget grants until an explicit unseal command.
+service may omit it. Supplying both `--campaign-runtime NAME` and
+`--campaign-executor-socket PATH` attaches the packaged canonical planner and
+one authenticated local executor to that existing campaign; attachment fails
+closed unless the component authority is present and the service is writable.
+`start` then changes desired state through a recorded command. `pause` stops new
+proposals/reservations and applies the selected active-attempt behavior. `stop
+--seal` prevents accidental future budget grants until an explicit unseal
+command.
 
 Operational flags such as `--workers` and `--memory` are daemon attachment
 configuration and do not alter policy identity.
@@ -486,8 +489,8 @@ the named source history, authorizes both names, leaves the source unchanged,
 and exactly replays by target name after later target mutations or restart. The
 initial nested CLI now exposes authenticated current status, one-shot resumable
 watch, exact-precondition lifecycle mutation, and semantic pin/unpin mutation;
-resource attachment and remaining paged inspection are still required before
-the service is complete. Repeated bounded `WatchCampaign`
+automatic/multiple campaign attachment and remaining paged inspection are still
+required before the service is complete. Repeated bounded `WatchCampaign`
 calls provide
 the initial resumable, coalesced current-head stream. The bounded versioned
 Unix-stream loopback binding is now
@@ -520,14 +523,21 @@ crucible serve --listen 127.0.0.1:0 --trusted-unauthenticated-bind \
   --campaign-socket /run/crucible/campaign.sock \
   --campaign-state /var/lib/crucible/campaign \
   --campaign-policy /etc/crucible/campaign-policy.toml \
+  --campaign-component-authority /etc/crucible/campaign-authority.bin \
+  --campaign-runtime nightly-search \
+  --campaign-executor-socket /run/crucible/executor.sock \
   --campaign-socket-mode 600
 ```
 
 The three campaign paths are an all-or-none profile. The daemon uses its exact
 effective UID/GID as the filesystem and peer-policy owner, takes one durable
 repository lock before opening the socket, and stops the lifecycle and campaign
-services as one signal-driven lifecycle. Restart reopens the same object/ref
-directories while stale-socket recovery remains exact-owner conditional.
+services plus the attached campaign runtime as one signal-driven lifecycle.
+The executor socket is an absolute, dot-free, exact-owner mode-`0600` Unix
+socket; attachment rechecks its inode and exact peer UID/GID around capability
+negotiation before starting planner or executor work. Restart reopens the same
+object/ref directories while stale-socket recovery remains exact-owner
+conditional.
 `--read-only` applies to both APIs and cannot be bypassed by a mutation grant in
 the campaign policy.
 

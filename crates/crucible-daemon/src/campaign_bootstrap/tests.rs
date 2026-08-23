@@ -8,6 +8,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use crucible_campaign::{
     CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal, CampaignServiceFailure,
@@ -15,7 +16,7 @@ use crucible_campaign::{
 };
 use tempfile::tempdir;
 
-use crate::{LoopbackCampaignService, LoopbackCampaignTimeouts};
+use crate::{CanonicalPlannerProcessConfig, LoopbackCampaignService, LoopbackCampaignTimeouts};
 
 use super::*;
 
@@ -81,6 +82,49 @@ fn write_component_authorities(path: &Path, planner: [u8; 32], debugger: [u8; 32
     fs::write(path, bytes).expect("write component authorities");
     fs::set_permissions(path, Permissions::from_mode(0o600))
         .expect("secure component-authority mode");
+}
+
+fn runtime_config() -> CanonicalCampaignRuntimeConfig {
+    CanonicalCampaignRuntimeConfig::canonical_defaults(
+        CampaignName::new("attached").expect("campaign name"),
+        CanonicalPlannerProcessConfig::new("/planner", Duration::from_secs(1))
+            .expect("planner process configuration"),
+    )
+    .expect("runtime configuration")
+}
+
+#[test]
+fn runtime_attachment_requires_writable_component_authority_before_executor_io() {
+    let (_directory, config) = fixture();
+    let prepared = config
+        .prepare()
+        .expect("prepare service without authorities");
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        prepared.prepare_runtime(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeAuthorityUnavailable)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    let mut byte = [0_u8; 1];
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
+
+    let (_directory, config) = fixture();
+    let read_only = CampaignLocalServiceConfig::new(
+        config.endpoint().clone(),
+        config.state_directory(),
+        config.policy_path(),
+        CampaignLocalServiceMode::ReadOnly,
+        config.server(),
+    )
+    .expect("read-only service configuration");
+    let prepared = read_only.prepare().expect("prepare read-only service");
+    let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
+    assert!(matches!(
+        prepared.prepare_runtime(executor, &runtime_config()),
+        Err(CampaignLocalServiceError::RuntimeReadOnly)
+    ));
+    peer.set_nonblocking(true).expect("nonblocking peer");
+    assert_eq!(peer.read(&mut byte).expect("closed executor peer"), 0);
 }
 
 #[test]

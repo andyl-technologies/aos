@@ -21,6 +21,42 @@ impl crate::CampaignPrincipalAuthorizer for PermitExhaustive {
 }
 
 #[test]
+fn canonical_frontier_planner_basis_is_complete_and_idempotent() {
+    let (repository, _lineage, _policy, blobs) = counted_fixture();
+    let before = blobs.object_count().expect("objects before planner basis");
+
+    let basis = repository
+        .publish_canonical_frontier_planner_basis()
+        .expect("publish canonical planner basis");
+    let after = blobs.object_count().expect("objects after planner basis");
+    assert_eq!(after, before + 4);
+    assert_eq!(
+        basis,
+        CanonicalFrontierPlanner::basis().expect("closed basis")
+    );
+
+    let objects = repository
+        .authenticated_closure_ids([
+            basis.artifact().id().expect("artifact id").content_id(),
+            basis.initial_state().id().expect("state id").content_id(),
+        ])
+        .expect("authenticate planner basis");
+    assert!(objects.contains(&CanonicalFrontierPlanner::dependency_lock_id()));
+    assert!(objects.contains(&basis.engine().id().expect("engine id").content_id()));
+
+    assert_eq!(
+        repository
+            .publish_canonical_frontier_planner_basis()
+            .expect("replay canonical planner basis"),
+        basis
+    );
+    assert_eq!(
+        blobs.object_count().expect("objects after basis replay"),
+        after
+    );
+}
+
+#[test]
 fn authenticated_closure_inventory_includes_campaign_records_and_merkle_nodes() {
     let (repository, lineage, policy) = fixture();
     let created = repository

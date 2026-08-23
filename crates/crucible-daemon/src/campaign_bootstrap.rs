@@ -9,8 +9,10 @@
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 
 use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
@@ -23,10 +25,12 @@ use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
 use crate::{
-    CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, CampaignLoopbackListenerError,
-    CampaignLoopbackServer, CampaignLoopbackServerConfig, CampaignLoopbackServerReport,
-    CampaignLoopbackServerShutdown, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    MAX_CAMPAIGN_POLICY_BYTES, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
+    AttachedCanonicalCampaignRuntime, CampaignLoopbackEndpointConfig,
+    CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
+    CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
+    CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CrucibleArtifactError,
+    CrucibleCampaignArtifactStore, MAX_CAMPAIGN_POLICY_BYTES, PreparedCanonicalCampaignRuntime,
+    UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -220,17 +224,26 @@ impl CampaignLocalServiceConfig {
             state.object_directory.clone(),
         ));
         let refs = Arc::new(DirectoryRefBackend::new(state.ref_directory.clone()));
-        let repository = match component_authorities {
-            Some((planner, debugger)) => Arc::new(
-                CampaignRepository::with_component_authorities(blobs, refs, planner, debugger)
-                    .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
-            ),
-            None => Arc::new(CampaignRepository::new(blobs, refs)),
+        let (repository, planner_authority) = match component_authorities {
+            Some((planner, debugger)) => {
+                let retained_planner = planner.clone();
+                (
+                    Arc::new(
+                        CampaignRepository::with_component_authorities(
+                            blobs, refs, planner, debugger,
+                        )
+                        .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
+                    ),
+                    Some(retained_planner),
+                )
+            }
+            None => (Arc::new(CampaignRepository::new(blobs, refs)), None),
         };
         Ok(PreparedCampaignLocalService {
             endpoint: self.endpoint.clone(),
             server: self.server,
             repository,
+            planner_authority,
             policy,
             mode: self.mode,
             state,
@@ -261,6 +274,7 @@ pub struct PreparedCampaignLocalService {
     endpoint: CampaignLoopbackEndpointConfig,
     server: CampaignLoopbackServerConfig,
     repository: Arc<CampaignRepository>,
+    planner_authority: Option<PlannerAuthorityKey>,
     policy: Arc<UnixPeerCampaignPolicy>,
     mode: CampaignLocalServiceMode,
     state: CampaignStateOwner,
@@ -304,6 +318,40 @@ impl PreparedCampaignLocalService {
             .map_err(Into::into)
     }
 
+    /// Prepares one named canonical runtime against an authenticated executor.
+    ///
+    /// The supplied stream must already be connected to and authenticated as
+    /// the intended local executor by the deployment owner. Capability and
+    /// lineage negotiation complete before the deterministic planner basis is
+    /// published. The returned owner has not started a runtime thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::RuntimeReadOnly`] in read-only
+    /// mode, [`CampaignLocalServiceError::RuntimeAuthorityUnavailable`] when
+    /// no component-authority file was configured, or
+    /// [`CampaignLocalServiceError::Runtime`] for attachment failure.
+    pub fn prepare_runtime(
+        &self,
+        executor_stream: UnixStream,
+        config: &CanonicalCampaignRuntimeConfig,
+    ) -> Result<PreparedCanonicalCampaignRuntime, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        let planner_authority = self
+            .planner_authority
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::RuntimeAuthorityUnavailable)?;
+        prepare_canonical_campaign_runtime(
+            Arc::clone(&self.repository),
+            planner_authority.clone(),
+            executor_stream,
+            config,
+        )
+        .map_err(Into::into)
+    }
+
     /// Binds the managed endpoint and consumes pre-bind import authority.
     ///
     /// # Errors
@@ -311,10 +359,40 @@ impl PreparedCampaignLocalService {
     /// Returns [`CampaignLocalServiceError`] when endpoint acquisition or
     /// listener construction fails.
     pub fn bind(self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.bind_inner(None)
+    }
+
+    /// Binds the managed endpoint and starts one prepared canonical runtime.
+    ///
+    /// The runtime must have been prepared by this exact repository owner.
+    /// Endpoint binding completes before the runtime thread starts. Runtime
+    /// exit subsequently stops the service listener, and service shutdown
+    /// cancels and joins the runtime before repository ownership is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError`] when the runtime belongs to
+    /// another repository, endpoint binding fails, or the fixed runtime thread
+    /// cannot start.
+    pub fn bind_with_runtime(
+        self,
+        runtime: PreparedCanonicalCampaignRuntime,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        if !runtime.uses_repository(&self.repository) {
+            return Err(CampaignLocalServiceError::RuntimeRepositoryMismatch);
+        }
+        self.bind_inner(Some(runtime))
+    }
+
+    fn bind_inner(
+        self,
+        runtime: Option<PreparedCanonicalCampaignRuntime>,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
         let Self {
             endpoint,
             server: server_config,
             repository,
+            planner_authority: _,
             policy,
             mode,
             state,
@@ -327,8 +405,12 @@ impl PreparedCampaignLocalService {
             Arc::new(CampaignLocalAuthorizer { policy, mode }),
             server_config,
         )?;
+        let runtime = runtime
+            .map(PreparedCanonicalCampaignRuntime::start)
+            .transpose()?;
         Ok(CampaignLocalService {
             server,
+            runtime,
             _state: state,
         })
     }
@@ -345,6 +427,7 @@ impl PreparedCampaignLocalService {
 /// Exclusive owner of one durable local CampaignService incarnation.
 pub struct CampaignLocalService {
     server: CampaignLoopbackServer<UnixPeerCampaignPolicy, CampaignLocalAuthorizer>,
+    runtime: Option<AttachedCanonicalCampaignRuntime>,
     _state: CampaignStateOwner,
 }
 
@@ -386,11 +469,51 @@ impl CampaignLocalService {
     pub fn serve(self) -> Result<CampaignLoopbackServerReport, CampaignLocalServiceError> {
         let Self {
             server,
+            runtime,
             _state: state,
         } = self;
+        let monitor = runtime
+            .as_ref()
+            .map(|runtime| {
+                let completion = runtime.completion_handle();
+                let shutdown = server.shutdown_handle();
+                thread::Builder::new()
+                    .name(String::from("crucible-campaign-runtime-monitor"))
+                    .spawn(move || {
+                        completion.wait();
+                        shutdown.shutdown();
+                    })
+            })
+            .transpose();
+        let monitor = match monitor {
+            Ok(monitor) => monitor,
+            Err(source) => {
+                let runtime_result = runtime
+                    .map(AttachedCanonicalCampaignRuntime::shutdown_and_join)
+                    .transpose()
+                    .map_err(CampaignLocalServiceError::Runtime);
+                drop(state);
+                runtime_result?;
+                return Err(CampaignLocalServiceError::RuntimeMonitorSpawn { source });
+            }
+        };
         let result = server.serve().map_err(CampaignLocalServiceError::Listener);
+        let runtime_result = runtime
+            .map(AttachedCanonicalCampaignRuntime::shutdown_and_join)
+            .transpose()
+            .map(|_| ())
+            .map_err(CampaignLocalServiceError::Runtime);
+        if let Some(monitor) = monitor {
+            monitor
+                .join()
+                .map_err(|_| CampaignLocalServiceError::RuntimeMonitorPanicked)?;
+        }
         drop(state);
-        result
+        match (result, runtime_result) {
+            (_, Err(error)) => Err(error),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(report), Ok(())) => Ok(report),
+        }
     }
 }
 
@@ -436,6 +559,27 @@ pub enum CampaignLocalServiceError {
     /// Verifier-backed immutable artifact import failed.
     #[error(transparent)]
     Artifact(#[from] CrucibleArtifactError),
+    /// Runtime attachment was requested in read-only service mode.
+    #[error("campaign runtime attachment is unavailable in read-only mode")]
+    RuntimeReadOnly,
+    /// Runtime attachment was requested without a planner authority.
+    #[error("campaign runtime attachment requires component authorities")]
+    RuntimeAuthorityUnavailable,
+    /// A prepared runtime belongs to another repository instance.
+    #[error("campaign runtime belongs to another repository instance")]
+    RuntimeRepositoryMismatch,
+    /// Canonical planner/executor runtime preparation, start, or execution failed.
+    #[error(transparent)]
+    Runtime(#[from] CanonicalCampaignRuntimeError),
+    /// The bounded runtime monitor thread could not be created.
+    #[error("campaign runtime monitor thread could not be created")]
+    RuntimeMonitorSpawn {
+        /// Underlying operating-system failure.
+        source: io::Error,
+    },
+    /// The bounded runtime monitor thread escaped through an invariant panic.
+    #[error("campaign runtime monitor thread panicked")]
+    RuntimeMonitorPanicked,
     /// The fixed listener could not be configured or failed while serving.
     #[error(transparent)]
     Listener(#[from] CampaignLoopbackListenerError),

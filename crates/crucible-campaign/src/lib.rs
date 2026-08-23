@@ -124,10 +124,11 @@ pub use observation::{
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_FRONTIER_OFFERS_CAPABILITY,
-    CampaignPlanningBundle, CanonicalFrontierPlanner, MAX_PLANNER_COMPONENT_MESSAGE_BYTES,
-    MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, MAX_RETAINED_PLANNER_REQUEST_BYTES, PlannerClient,
-    PlannerClientError, PlannerEngineOutput, PlannerExecutionSupervisor, PlannerRequest,
-    PlannerResponse, PlannerService, PurePlannerEngine, SupervisedPlannerExecution,
+    CampaignPlanningBundle, CanonicalFrontierPlanner, CanonicalFrontierPlannerBasis,
+    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS,
+    MAX_RETAINED_PLANNER_REQUEST_BYTES, PlannerClient, PlannerClientError, PlannerEngineOutput,
+    PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerService, PurePlannerEngine,
+    SupervisedPlannerExecution,
 };
 pub use policy::{
     BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,

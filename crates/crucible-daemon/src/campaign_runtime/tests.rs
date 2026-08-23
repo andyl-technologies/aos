@@ -137,9 +137,12 @@ fn driver_failure_stops_and_is_returned_to_the_owner() {
         CampaignRuntimeConfig::default(),
     )
     .expect("start runtime");
+    let completion = runtime.completion_handle();
     entered_rx
         .recv_timeout(TEST_TIMEOUT)
         .expect("failing step entered");
+    completion.wait();
+    assert!(completion.is_finished());
 
     assert!(matches!(
         runtime.shutdown_and_join(),

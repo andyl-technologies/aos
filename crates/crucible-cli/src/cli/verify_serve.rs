@@ -2,6 +2,9 @@
 
 use super::*;
 
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::net::UnixStream;
+
 #[path = "artifact_capture.rs"]
 mod artifact_capture;
 pub(super) use artifact_capture::*;
@@ -1096,13 +1099,119 @@ pub(super) fn open_local_campaign_service(
         .prepare()
         .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
     apply_campaign_import_manifests(&prepared, &args.campaign_import_manifest)?;
-    let service = prepared
-        .bind()
-        .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
+    let runtime = match (
+        args.campaign_runtime.as_deref(),
+        args.campaign_executor_socket.as_deref(),
+    ) {
+        (Some(campaign), Some(executor_socket)) => {
+            let stream = connect_campaign_executor(executor_socket)?;
+            let planner = crucible_daemon::CanonicalPlannerProcessConfig::for_current_executable(
+                Duration::from_secs(30),
+            )
+            .map_err(|error| {
+                serve_error(format!("campaign planner configuration error: {error}"))
+            })?;
+            let runtime_config =
+                crucible_daemon::CanonicalCampaignRuntimeConfig::canonical_defaults(
+                    crucible_campaign::CampaignName::new(campaign).map_err(|error| {
+                        serve_error(format!("campaign runtime name error: {error}"))
+                    })?,
+                    planner,
+                )
+                .map_err(|error| {
+                    serve_error(format!("campaign runtime configuration error: {error}"))
+                })?;
+            Some(
+                prepared
+                    .prepare_runtime(stream, &runtime_config)
+                    .map_err(|error| {
+                        serve_error(format!("campaign runtime attachment error: {error}"))
+                    })?,
+            )
+        }
+        (None, None) => None,
+        _ => {
+            return Err(usage_error(
+                "--campaign-runtime and --campaign-executor-socket must be provided together",
+            ));
+        }
+    };
+    let service = match runtime {
+        Some(runtime) => prepared.bind_with_runtime(runtime),
+        None => prepared.bind(),
+    }
+    .map_err(|error| serve_error(format!("campaign service bind error: {error}")))?;
     Ok(Some(PreparedLocalCampaignService {
         service,
         socket_path: socket.clone(),
     }))
+}
+
+pub(super) fn connect_campaign_executor(path: &Path) -> Result<UnixStream, CliError> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if !path.is_absolute()
+        || bytes.is_empty()
+        || bytes.len() > 4_095
+        || bytes.contains(&0)
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(serve_error("campaign executor socket path is invalid"));
+    }
+    let before = fs::symlink_metadata(path).map_err(|error| {
+        serve_error(format!(
+            "campaign executor socket metadata error for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let user_id = rustix::process::geteuid().as_raw();
+    let group_id = rustix::process::getegid().as_raw();
+    if !before.file_type().is_socket()
+        || before.uid() != user_id
+        || before.gid() != group_id
+        || before.mode() & 0o7777 != 0o600
+    {
+        return Err(serve_error(
+            "campaign executor socket is not an exact-owner mode-0600 Unix socket",
+        ));
+    }
+
+    let stream = UnixStream::connect(path).map_err(|error| {
+        serve_error(format!(
+            "campaign executor connection error for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let after = fs::symlink_metadata(path).map_err(|error| {
+        serve_error(format!(
+            "campaign executor socket revalidation error for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let peer = rustix::net::sockopt::socket_peercred(&stream).map_err(|error| {
+        serve_error(format!(
+            "campaign executor peer authentication error: {error}"
+        ))
+    })?;
+    if after.dev() != before.dev()
+        || after.ino() != before.ino()
+        || !after.file_type().is_socket()
+        || after.uid() != user_id
+        || after.gid() != group_id
+        || after.mode() & 0o7777 != 0o600
+        || peer.uid.as_raw() != user_id
+        || peer.gid.as_raw() != group_id
+    {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        return Err(serve_error(
+            "campaign executor socket or authenticated peer changed during connection",
+        ));
+    }
+    Ok(stream)
 }
 
 struct RunningLocalCampaignService {
@@ -1314,6 +1423,25 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
         return Err(usage_error(
             "--campaign-socket, --campaign-state, and --campaign-policy must be provided together",
         ));
+    }
+    if args.campaign_runtime.is_some() != args.campaign_executor_socket.is_some() {
+        return Err(usage_error(
+            "--campaign-runtime and --campaign-executor-socket must be provided together",
+        ));
+    }
+    if let Some(campaign) = args.campaign_runtime.as_deref() {
+        if args.campaign_socket.is_none() || args.campaign_component_authority.is_none() {
+            return Err(usage_error(
+                "--campaign-runtime requires the complete campaign profile and --campaign-component-authority",
+            ));
+        }
+        if args.read_only {
+            return Err(usage_error(
+                "--campaign-runtime cannot be combined with --read-only",
+            ));
+        }
+        crucible_campaign::CampaignName::new(campaign)
+            .map_err(|error| usage_error(format!("--campaign-runtime is invalid: {error}")))?;
     }
     if args.campaign_socket.is_some()
         && (args.campaign_socket_mode == 0

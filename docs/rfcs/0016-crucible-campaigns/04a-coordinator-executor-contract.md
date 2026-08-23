@@ -947,7 +947,8 @@ daemon constructs the repository with those exact planner and debugger
 authorities; malformed, exposed, replaced, zero, or equal key material fails
 before any state-directory or socket mutation. Omitting the file leaves the
 control/query service usable but does not authorize planner or debugger
-component acceptance; production runtime attachment will require it.
+component acceptance; runtime attachment therefore rejects the profile before
+executor I/O when the file is omitted.
 The state root retains a stable owner-only exclusive lock across the complete
 listener lifetime, creates or validates private `objects/` and `refs/`
 subdirectories, and rejects a second cooperating daemon even if it names a
@@ -955,7 +956,22 @@ different socket. Its directory identity is rechecked before the path-backed
 stores become reachable. `crucible serve` enables this composition only when
 `--campaign-socket`, `--campaign-state`, and `--campaign-policy` are supplied
 together; `--campaign-component-authority` is valid only with that profile,
-and `--campaign-socket-mode` is octal and defaults to `600`. SIGINT,
+and `--campaign-socket-mode` is octal and defaults to `600`. One explicit
+single-host attachment is enabled by supplying both
+`--campaign-runtime NAME` and `--campaign-executor-socket PATH`. It attaches
+only the named existing campaign, requires the writable component-authority
+profile, and uses the packaged canonical planner worker. Before publishing the
+fixed four-object planner basis or starting the runtime thread, the daemon
+connects to an absolute dot-free executor path whose socket inode is exact-owner
+mode `0600`, authenticates the connected peer's effective UID/GID with
+`SO_PEERCRED`, rechecks the path identity, performs `DescribeExecutor`, and
+requires the executor's exact lineage compatibility, resource ceiling, and
+slot ceiling. The reviewed default serves at most 1,024 planner positions and
+16 MiB per planner invocation, scans at most 1,024 attempts per executor step,
+and caps admitted worker slots at 256. Enumeration, dynamic attachment, and
+multiple attached campaigns remain future work.
+
+SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both
 services and joins the campaign workers before releasing either lock.
 `--read-only` also wraps the campaign authorizer and denies Create, Derive,

@@ -11,6 +11,8 @@
 //! runtime-state records; [`campaign_bootstrap`] composes durable directory
 //! storage, strict policy, managed endpoint, and listener ownership;
 //! [`campaign_endpoint`] owns the exact local Unix socket namespace;
+//! [`campaign_attachment`] composes one packaged planner and checked local
+//! executor with a named durable campaign;
 //! [`campaign_runtime`] owns one sticky, bounded, long-lived supervisor thread;
 //! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
@@ -54,6 +56,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod assignment_ledger;
+pub mod campaign_attachment;
 pub mod campaign_bootstrap;
 pub mod campaign_endpoint;
 pub mod campaign_gc;
@@ -91,6 +94,13 @@ pub use assignment_ledger::{
     AssignmentRetentionInventoryError, AssignmentRetentionRoot, AssignmentRetentionSummary,
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger, MemoryAssignmentLedger,
+};
+pub use campaign_attachment::{
+    AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
+    CanonicalCampaignRuntimeConfigError, CanonicalCampaignRuntimeError,
+    DEFAULT_CANONICAL_EXECUTOR_SCAN_LIMIT, DEFAULT_CANONICAL_PLANNER_INPUT_BYTES,
+    DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT, PreparedCanonicalCampaignRuntime,
+    prepare_canonical_campaign_runtime,
 };
 pub use campaign_bootstrap::{
     CampaignLocalService, CampaignLocalServiceConfig, CampaignLocalServiceError,
@@ -132,11 +142,11 @@ pub use campaign_retention::{
     visit_local_campaign_retention_roots,
 };
 pub use campaign_runtime::{
-    CampaignRuntime, CampaignRuntimeConfig, CampaignRuntimeConfigError, CampaignRuntimeDriver,
-    CampaignRuntimeJoinError, CampaignRuntimeReport, CampaignRuntimeStartError,
-    CampaignRuntimeStepDisposition, CampaignRuntimeWake, DEFAULT_CAMPAIGN_RUNTIME_POLL_INTERVAL,
-    MAX_CAMPAIGN_RUNTIME_IMMEDIATE_BURST, MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL,
-    MIN_CAMPAIGN_RUNTIME_POLL_INTERVAL,
+    CampaignRuntime, CampaignRuntimeCompletion, CampaignRuntimeConfig, CampaignRuntimeConfigError,
+    CampaignRuntimeDriver, CampaignRuntimeJoinError, CampaignRuntimeReport,
+    CampaignRuntimeStartError, CampaignRuntimeStepDisposition, CampaignRuntimeWake,
+    DEFAULT_CAMPAIGN_RUNTIME_POLL_INTERVAL, MAX_CAMPAIGN_RUNTIME_IMMEDIATE_BURST,
+    MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL, MIN_CAMPAIGN_RUNTIME_POLL_INTERVAL,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
