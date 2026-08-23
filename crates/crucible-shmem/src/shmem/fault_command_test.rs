@@ -407,3 +407,72 @@ fn result_transport_accepts_unknown_kind_only_for_rejection() {
         )))
     );
 }
+
+#[test]
+fn result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer() {
+    let ring = RingHeader::new();
+    let arena_header = FaultPayloadArenaHeader::new();
+    let mut slots = vec![FaultResultSlotV1::new(); 2];
+    let mut arena = vec![0_u8; 32];
+    let payload = b"result-evidence";
+    let before = hash(b"before");
+    let result = FaultResultHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation as u16,
+        status: FaultResultStatus::Applied,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 21,
+        observed_icount: 9,
+        applied_icount: 9,
+        capability_version: 1,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        before_hash: before,
+        after_hash: hash(b"after"),
+        evidence_hash: hash(b"evidence"),
+        result_payload_hash: hash(payload),
+        result_offset: 0,
+        result_length: 0,
+    };
+    enqueue_fault_result(
+        &ring,
+        &mut slots,
+        &arena_header,
+        &mut arena,
+        8_192,
+        result,
+        payload,
+    )
+    .unwrap_or_else(|error| panic!("enqueue result: {error}"));
+
+    let read_before = ring.read_index();
+    assert_eq!(
+        dequeue_fault_result_with_buffer(
+            &ring,
+            &slots,
+            &arena_header,
+            &arena,
+            8_192,
+            Vec::with_capacity(payload.len() - 1),
+        ),
+        Err(FaultTransportError::PayloadBufferTooSmall {
+            capacity: payload.len() - 1,
+            requested: payload.len(),
+        })
+    );
+    assert_eq!(ring.read_index(), read_before);
+
+    let buffer = Vec::with_capacity(payload.len());
+    let capacity = buffer.capacity();
+    let dequeued =
+        dequeue_fault_result_with_buffer(&ring, &slots, &arena_header, &arena, 8_192, buffer)
+            .unwrap_or_else(|error| panic!("dequeue into reserved storage: {error}"));
+    assert!(matches!(
+        dequeued,
+        BufferedFaultResultPoll::Ready(DequeuedFaultResult::Valid {
+            payload: observed,
+            ..
+        }) if observed == payload && observed.capacity() == capacity
+    ));
+    assert_eq!(ring.read_index(), ring.write_index());
+}
