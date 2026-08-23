@@ -89,18 +89,20 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
             .is_some_and(|errno| *errno == rustix::io::Errno::EXIST)
 }
 
-/// Reads one native secret from an owner-private, non-symlink regular file.
+/// Reads one native secret from a non-symlink regular file in a trusted directory.
 ///
 /// The opened file's device/inode is compared with the path metadata, closing
 /// the check/open replacement race without relying on a host-specific command.
-/// On Unix, any group/other permission bit is rejected. Ownership by either
-/// the effective user or root is accepted so systemd's root-owned
-/// `LoadCredential=` mounts can be consumed by an unprivileged service.
+/// On Unix, the secret itself cannot grant group/other access. Its parent may
+/// grant read or traversal access, but cannot be group/other-writable because
+/// that would permit replacement. Ownership by either the effective user or
+/// root is accepted so systemd's root-owned `LoadCredential=` mounts can be
+/// consumed by an unprivileged service.
 ///
 /// # Errors
 ///
 /// Returns an error for a symlink, non-regular file, replacement race,
-/// group/other permissions, or I/O failure.
+/// insecure ownership or permissions, or I/O failure.
 pub fn read_secret_file(path: &Path) -> Result<Vec<u8>> {
     Ok(read_secret_file_zeroizing(path)?.to_vec())
 }
@@ -122,7 +124,7 @@ pub(crate) fn read_secret_file_zeroizing(path: &Path) -> Result<Zeroizing<Vec<u8
 
 #[cfg(unix)]
 fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    let (parent_fd, name) = open_private_secret_parent(path)?;
+    let (parent_fd, name) = open_secure_secret_parent(path)?;
     let fd = rustix::fs::openat(
         &parent_fd,
         name,
@@ -191,7 +193,7 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 #[cfg(unix)]
-fn open_private_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr)> {
+fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr)> {
     let parent = path
         .parent()
         .context("secret path has no parent directory")?;
@@ -236,8 +238,8 @@ fn open_private_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std
     anyhow::ensure!(
         rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory
             && trusted_secret_owner(metadata.st_uid)
-            && metadata.st_mode & 0o077 == 0,
-        "secret parent {} must be an owner-private directory owned by root or the effective user",
+            && secret_parent_mode_is_secure(metadata.st_mode),
+        "secret parent {} must be a non-writable directory owned by root or the effective user",
         parent.display()
     );
     Ok((parent_fd, name))
@@ -251,6 +253,11 @@ fn trusted_secret_owner(owner: u32) -> bool {
 #[cfg(unix)]
 fn trusted_secret_owner_for(owner: u32, effective_user: u32) -> bool {
     owner == 0 || owner == effective_user
+}
+
+#[cfg(unix)]
+fn secret_parent_mode_is_secure(mode: u32) -> bool {
+    mode & 0o022 == 0
 }
 
 /// Writes `key` to `path` with `0600` permissions, creating parent dirs.
@@ -282,7 +289,7 @@ fn write_key_0600(path: &Path, key: &[u8]) -> Result<()> {
     }
     #[cfg(unix)]
     {
-        let (parent_fd, name) = open_private_secret_parent(path)?;
+        let (parent_fd, name) = open_secure_secret_parent(path)?;
         let temporary_name = format!(
             ".{}.{}.tmp",
             name.to_string_lossy(),
@@ -405,7 +412,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn secret_reader_rejects_hard_links_and_public_parents() {
+    fn secret_reader_rejects_hard_links_and_writable_parents() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = private_tempdir();
@@ -417,8 +424,22 @@ mod tests {
         assert!(read_secret_file(&key).is_err());
 
         fs::remove_file(&hard_link).unwrap();
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o775)).unwrap();
         assert!(read_secret_file(&key).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_reader_accepts_traversable_non_writable_parent() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = private_tempdir();
+        let key = dir.path().join("key");
+        fs::write(&key, [6_u8; KEY_LEN]).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(read_secret_file(&key).unwrap(), [6_u8; KEY_LEN]);
     }
 
     #[cfg(unix)]
