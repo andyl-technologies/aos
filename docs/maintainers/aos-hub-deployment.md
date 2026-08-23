@@ -17,7 +17,7 @@ values:
 | Concern | Staging | Production |
 | --- | --- | --- |
 | Public origin | `https://aos.staging.andyl.org` | `https://aos.andyl.org` |
-| Direct R2 CDN | `https://cdn.aos.staging.andyl.com` | Not configured |
+| Direct R2 CDN | `https://cdn.aos.staging.andyl.org` | Not configured |
 | Worker | `aos-hub-staging` | `aos-hub` |
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
@@ -133,11 +133,11 @@ OAuth, account, or provider failure cannot be mistaken for initial provisioning.
 ### Configure the direct staging CDN
 
 The direct CDN is not a hidden Worker deployment option. Connect
-`cdn.aos.staging.andyl.com` to the `aos-hub-staging-surfaces` bucket from the
+`cdn.aos.staging.andyl.org` to the `aos-hub-staging-surfaces` bucket from the
 Cloudflare R2 custom-domain UI or its provider API. Then model every AOS-visible
 part through the Hub API and Web UI:
 
-1. In **Settings -> Domains**, add `cdn.aos.staging.andyl.com`.
+1. In **Settings -> Domains**, add `cdn.aos.staging.andyl.org`.
 2. In **Settings -> Endpoints**, create an HTTPS external-ingress
    endpoint for that domain.
 3. In **Settings -> Gateways**, connect the endpoint to the default
