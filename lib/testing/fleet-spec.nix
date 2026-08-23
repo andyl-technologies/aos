@@ -198,6 +198,20 @@
         '';
       };
 
+      hostStoreMount = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Attach the host's /nix/store to this QEMU guest as the read-only 9p
+          filesystem tag `aos-host-store`. The guest chooses when and where to
+          mount it; fleet tests conventionally use /run/aos-host-store. This is
+          intended for publisher/build-source roles that need host-built store
+          paths without copying those closures into the VM image. It does not
+          register paths in the guest Nix database or expose them to other
+          fleet machines.
+        '';
+      };
+
       tpm = mkOption {
         type = types.bool;
         default = false;

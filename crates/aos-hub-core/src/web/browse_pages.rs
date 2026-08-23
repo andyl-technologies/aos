@@ -2585,6 +2585,7 @@ mod tests {
                     byte_size: 512,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             },
         }
     }
@@ -2630,8 +2631,8 @@ mod tests {
         assert!(default.contains("class=\"image-filter-fields\""));
         assert!(default.contains("class=\"image-filter-actions\""));
         assert!(default.contains("class=\"image-summary\""));
-        assert!(default.contains("class=\"image-checksum\""));
-        assert!(default.contains("data-copy-target=\"image-sha-0\""));
+        assert!(default.contains("class=\"hash-control\""));
+        assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
 
@@ -2994,7 +2995,7 @@ mod tests {
             pack_present: false,
         }];
         let html = releases_page(&registry(), None, &releases, 1, Instant::now(), &anon());
-        assert!(html.contains("<code>abc</code>"));
+        assert!(html.contains("<code aria-label=\"abc\">abc</code>"));
     }
 
     #[tokio::test]

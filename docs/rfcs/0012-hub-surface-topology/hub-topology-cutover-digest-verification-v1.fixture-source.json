@@ -83,7 +83,7 @@
         "source_node_id": "legacy/binding/example-local",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWJpbmRpbmcvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvYmluZGluZy9leGFtcGxlLWxvY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJzdG9yYWdlX2JpbmRpbmciLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbCJ9XQ"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWJpbmRpbmcvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvYmluZGluZy9leGFtcGxlLWxvY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJiaW5kaW5nIiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwifV0"
       },
       {
         "source_node_id": "legacy/binding/local/capabilities/1",
@@ -107,7 +107,7 @@
         "source_node_id": "legacy/boundary/public/1",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9uZXR3b3JrLWJvdW5kYXJ5L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvYm91bmRhcnkvcHVibGljLzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9ib3VuZGFyeS9wdWJsaWMvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoibmV0d29ya19ib3VuZGFyeSIsInRhcmdldF9zdGFibGVfaWQiOiJib3VuZGFyeS9wdWJsaWMvMSJ9XQ"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9uZXR3b3JrLWJvdW5kYXJ5L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvYm91bmRhcnkvcHVibGljLzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9ib3VuZGFyeS9wdWJsaWMvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoibmV0d29ya19wb2xpY3kiLCJ0YXJnZXRfc3RhYmxlX2lkIjoiYm91bmRhcnkvcHVibGljLzEifV0"
       },
       {
         "source_node_id": "legacy/cache/example-main",
@@ -173,13 +173,13 @@
         "source_node_id": "legacy/endpoint/cache-example/1",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9lbmRwb2ludC1nZW5lcmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9lbmRwb2ludCIsInRhcmdldF9zdGFibGVfaWQiOiJlbmRwb2ludC9jYWNoZS1leGFtcGxlLzEifV0"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9lbmRwb2ludC1nZW5lcmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJlbmRwb2ludCIsInRhcmdldF9zdGFibGVfaWQiOiJlbmRwb2ludC9jYWNoZS1leGFtcGxlLzEifV0"
       },
       {
         "source_node_id": "legacy/gateway/hub/1",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWdhdGV3YXkvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9nYXRld2F5L2h1Yi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZ2F0ZXdheS9odWIvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoic3RvcmFnZV9nYXRld2F5IiwidGFyZ2V0X3N0YWJsZV9pZCI6ImdhdGV3YXkvaHViLzEifV0"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWdhdGV3YXkvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9nYXRld2F5L2h1Yi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZ2F0ZXdheS9odWIvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoiZ2F0ZXdheSIsInRhcmdldF9zdGFibGVfaWQiOiJnYXRld2F5L2h1Yi8xIn1d"
       },
       {
         "source_node_id": "legacy/instance/production",
@@ -221,7 +221,7 @@
         "source_node_id": "legacy/route/cache-canonical",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvY2FjaGUtY2Fub25pY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCJ9XQ"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvY2FjaGUtY2Fub25pY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJyb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCJ9XQ"
       },
       {
         "source_node_id": "legacy/route/cache-canonical/configuration/1",
@@ -233,7 +233,7 @@
         "source_node_id": "legacy/route/registry-git",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktZ2l0IiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdCJ9XQ"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktZ2l0IiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJyb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdCJ9XQ"
       },
       {
         "source_node_id": "legacy/route/registry-git/configuration/1",
@@ -245,7 +245,7 @@
         "source_node_id": "legacy/route/registry-web",
         "expected_mapping_edge_count": 1,
         "actual_mapping_edge_count": 1,
-        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktd2ViIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYiJ9XQ"
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktd2ViIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJyb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYiJ9XQ"
       },
       {
         "source_node_id": "legacy/route/registry-web/configuration/1",

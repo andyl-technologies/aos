@@ -95,6 +95,7 @@
       # bypassing fleet-spec validation.
       extraModules = m.extraModules or [];
       extraClosures = m.extraClosures or [];
+      hostStoreMount = m.hostStoreMount or false;
       metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
@@ -341,7 +342,7 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -407,6 +408,7 @@
                 tpm = mb.tpm;
                 expect_agent = mb.expectAgent;
                 extra_disks = mb.extraDisks;
+                host_store_mount = mb.hostStoreMount;
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
@@ -625,6 +627,10 @@
               -initrd "''${INITRD_${mb.name}}" \
               -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
               -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
+              ${lib.optionalString mb.hostStoreMount ''
+              -fsdev local,id=aos_host_store,path=/nix/store,security_model=none,readonly=on \
+              -device virtio-9p-pci,fsdev=aos_host_store,mount_tag=aos-host-store \
+            ''}
               ${lib.optionalString (mb.metadataISO != null) ''
               -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
               -device virtio-scsi-pci,id=scsi0 \

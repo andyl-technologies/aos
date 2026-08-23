@@ -2467,6 +2467,99 @@ mod tests {
         assert!(content.contains("curl"));
     }
 
+    #[tokio::test]
+    async fn extract_packages_verifies_sha256_full_pack_with_loose_floor() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        let cache_dir = tmp.path().join("cache.git");
+        let pack_dir = tmp.path().join("packs");
+        let output_dir = tmp.path().join("extracted");
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+        assert!(
+            git(&work_dir)
+                .args(["init", "--object-format=sha256"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let _ = git(&work_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(&work_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+        assert!(
+            git(&work_dir)
+                .args(["checkout", "-b", "stable"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+
+        let package_dir = work_dir.join("packages").join("a");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        let package_path = package_dir.join("aos.toml");
+        tokio::fs::write(
+            &package_path,
+            "[package]\nname = \"aos\"\n[[versions]]\nversion = \"test-1\"\n",
+        )
+        .await
+        .unwrap();
+        let _ = commit_all(&work_dir, "publish test-1").await;
+        let expected = "[package]\nname = \"aos\"\n[[versions]]\nprevious = \"test-1\"\nversion = \"test-2\"\n";
+        tokio::fs::write(&package_path, expected).await.unwrap();
+        let expected_commit = commit_all(&work_dir, "publish test-2").await;
+
+        let pack = crate::registry::pack::full_pack(&work_dir, &expected_commit, &pack_dir)
+            .await
+            .unwrap();
+        ensure_repo(&cache_dir, "unused").await.unwrap();
+        crate::registry::pack::index_pack(&cache_dir, &pack)
+            .await
+            .unwrap();
+
+        // AOS dumb-HTTP origins retain every object loose. The consumer's
+        // graph walk must identify any packed object that libgit2 reconstructed
+        // under the wrong SHA-256 identity and replace it from that floor.
+        let source_objects = repo::objects_dir(&work_dir).unwrap();
+        let cache_objects = repo::objects_dir(&cache_dir).unwrap();
+        loop {
+            let missing =
+                repo::missing_objects_blocking(&cache_dir, std::slice::from_ref(&expected_commit))
+                    .unwrap();
+            if missing.is_empty() {
+                break;
+            }
+            for oid in missing {
+                let relative = Path::new(&oid[..2]).join(&oid[2..]);
+                let target = cache_objects.join(&relative);
+                tokio::fs::create_dir_all(target.parent().unwrap())
+                    .await
+                    .unwrap();
+                tokio::fs::copy(source_objects.join(relative), target)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        extract_packages(&cache_dir, &expected_commit, &output_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(output_dir.join("a").join("aos.toml"))
+                .await
+                .unwrap(),
+            expected,
+        );
+    }
+
     /// Init a non-bare repo with a configured identity at `dir`.
     async fn init_repo(dir: &Path) {
         tokio::fs::create_dir_all(dir).await.unwrap();

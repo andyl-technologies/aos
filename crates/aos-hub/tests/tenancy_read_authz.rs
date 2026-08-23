@@ -383,7 +383,7 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     assert_eq!(status, StatusCode::OK, "public placement list: {resp}");
     let placement = &resp["placements"][0];
     assert_eq!(placement["name"], "primary");
-    assert_eq!(placement["storageBindingName"], "origin");
+    assert_eq!(placement["bindingName"], "origin");
     assert_eq!(placement["spec"]["kind"], "complete");
     assert_eq!(placement["spec"]["desiredState"], "active");
     assert_eq!(placement["spec"]["desiredReadEnabled"], true);
@@ -399,7 +399,7 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     );
     assert!(placement["resourceVersion"].is_string());
     assert!(placement.get("id").is_none());
-    assert!(placement.get("storageBindingId").is_none());
+    assert!(placement.get("bindingId").is_none());
     assert!(placement.get("partitionRuleJson").is_none());
 
     let (status, _) = rpc(
@@ -723,7 +723,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     let create = serde_json::json!({
         "surface": { "registrySlug": "placement-owner/private" },
         "name": "replica-west",
-        "storageBindingId": binding_stable_id.clone(),
+        "bindingId": binding_stable_id.clone(),
         "prefix": "registry/private-west",
         "kind": "complete",
         "desiredState": "active",
@@ -767,7 +767,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     .await;
     assert_eq!(status, StatusCode::OK, "create placement: {resp}");
     let created = &resp["placement"];
-    assert_eq!(created["storageBindingName"], "origin");
+    assert_eq!(created["bindingName"], "origin");
     assert_eq!(created["spec"]["kind"], "complete");
     assert_eq!(created["spec"]["desiredState"], "active");
     assert_eq!(created["spec"]["desiredReadEnabled"], true);
@@ -780,7 +780,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     assert_eq!(created["observation"]["state"], "provisioning");
     assert_eq!(created["observation"]["completeness"], "unknown");
     assert!(created.get("id").is_none());
-    assert!(created.get("storageBindingId").is_none());
+    assert!(created.get("bindingId").is_none());
     assert!(created.get("partitionRuleJson").is_none());
     let version = created["resourceVersion"].as_str().unwrap().to_string();
 
@@ -802,7 +802,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "same-location",
-            "storageBindingId": binding_stable_id.clone(),
+            "bindingId": binding_stable_id.clone(),
             "prefix": "registry/private-west",
             "kind": "complete",
             "desiredState": "active",
@@ -827,7 +827,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "cacheSlug": "private-cache-write" },
             "name": "cache-replica",
-            "storageBindingId": binding_stable_id.clone(),
+            "bindingId": binding_stable_id.clone(),
             "prefix": "cache/private-replica",
             "kind": "complete",
             "desiredState": "active",
@@ -849,7 +849,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "cold-archive",
-            "storageBindingId": binding_stable_id.clone(),
+            "bindingId": binding_stable_id.clone(),
             "prefix": "registry/cold-archive",
             "kind": "archive",
             "desiredState": "active",
@@ -1321,7 +1321,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     let shard = serde_json::json!({
         "surface": { "registrySlug": "placement-owner/private" },
         "name": "shard-a",
-        "storageBindingId": binding_stable_id.clone(),
+        "bindingId": binding_stable_id.clone(),
         "prefix": "registry/shard-a",
         "kind": "shard",
         "desiredState": "active",
@@ -1351,7 +1351,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "shard-invalid-range",
-            "storageBindingId": binding_stable_id.clone(),
+            "bindingId": binding_stable_id.clone(),
             "prefix": "registry/shard-invalid-range",
             "kind": "shard",
             "desiredState": "active",
@@ -1377,7 +1377,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "shard-valid-range",
-            "storageBindingId": binding_stable_id.clone(),
+            "bindingId": binding_stable_id.clone(),
             "prefix": "registry/shard-valid-range",
             "kind": "shard",
             "desiredState": "active",
@@ -1407,7 +1407,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "missing-read-flag",
-            "storageBindingId": binding_stable_id,
+            "bindingId": binding_stable_id,
             "prefix": "registry/missing-read-flag",
             "kind": "complete",
             "desiredState": "active",
@@ -1760,5 +1760,5 @@ async fn list_bindings_requires_storage_management_authority() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "storage manager: {resp}");
-    assert!(resp["storageBindings"][0]["spec"]["localRootPath"].is_null());
+    assert!(resp["bindings"][0]["spec"]["localRootPath"].is_null());
 }
