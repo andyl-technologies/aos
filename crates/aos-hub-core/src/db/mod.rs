@@ -7651,6 +7651,7 @@ impl Database {
                      observed_at = ?5,
                      resource_version = resource_version + 1
                  WHERE placement_id = ?2 AND resource_version = ?4
+                   AND pending_publication_id IS NULL
                    AND EXISTS (SELECT 1 FROM surface_placements p
                      JOIN registry_publications pub ON pub.registry_id = p.registry_id
                      JOIN registry_publication_placements pp
@@ -7678,7 +7679,7 @@ impl Database {
                    AND p.resource_version = ?3
                    AND pp.state IN ('preparing', 'writing_pointers')
                    AND pub.state = 'writing_pointers'
-                   AND w.resource_version = ?4 + 1
+                   AND w.resource_version IN (?4, ?4 + 1)
                    AND w.mutable_publication_id IS NULL
                    AND w.pending_publication_id = ?1",
                 &vals![
@@ -29475,6 +29476,16 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
+        let current_retry = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                advanced.watermark_resource_version.unwrap(),
+                5,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(
             advanced.watermark_pending_publication_id.as_deref(),
@@ -29486,6 +29497,14 @@ source_nar_hash = ""
         );
         assert_eq!(
             raced_retry.watermark_pending_publication_id,
+            advanced.watermark_pending_publication_id
+        );
+        assert_eq!(
+            current_retry.watermark_resource_version,
+            advanced.watermark_resource_version
+        );
+        assert_eq!(
+            current_retry.watermark_pending_publication_id,
             advanced.watermark_pending_publication_id
         );
     }
