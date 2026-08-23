@@ -1882,8 +1882,12 @@ path back to its controls.
 Public prepared-run-directory construction first admits the command's exact
 resource profile against the sealed child contract, then opens the directory
 without following its final path component, retains the exact regular VMState
-inode, and treats the original path as diagnostic only. The authority stores
-that resource basis;
+inode, and treats the original path as diagnostic only. The process contract
+and prepared directory share one private lifecycle token in addition to the
+numeric resource basis; a directory admitted for another attempt is rejected
+even when both attempts have identical ceilings. Exact-checkpoint
+materialization likewise requires that contract before path access. The
+authority stores that complete basis;
 guarded spawn requires an exact match before revalidation or descriptor
 allocation, preventing a directory admitted for one ceiling from being reused
 under another. Guarded spawn requires that pinned authority,
