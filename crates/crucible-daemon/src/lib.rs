@@ -40,7 +40,8 @@
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
 //! [`planner_loopback`] owns
-//! the strict local pure-planner component transport.
+//! the strict local pure-planner component transport; [`planner_process`]
+//! owns the killable packaged canonical-planner worker.
 //! Future modules split session hosting, API transport, and diagnostics.
 
 #![forbid(unsafe_code)]
@@ -72,6 +73,7 @@ pub mod executor_worker;
 #[cfg(target_os = "linux")]
 pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
+pub mod planner_process;
 pub mod repository_admission;
 
 pub use assignment_ledger::{
@@ -226,5 +228,10 @@ pub use planner_loopback::{
     LoopbackPlannerProtocolError, LoopbackPlannerServerError, LoopbackPlannerService,
     LoopbackPlannerTimeouts, serve_loopback_planner_once,
     serve_loopback_planner_once_with_timeouts,
+};
+pub use planner_process::{
+    CANONICAL_PLANNER_WORKER_ARGUMENT, CanonicalPlannerProcessCancellation,
+    CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
+    serve_canonical_planner_process_once,
 };
 pub use repository_admission::RepositoryAttemptAdmission;

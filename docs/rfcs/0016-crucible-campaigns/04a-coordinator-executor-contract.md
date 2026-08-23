@@ -1107,6 +1107,31 @@ over-budget or hung engine; the in-process fake supervisor and one-request
 loopback server are conformance fixtures, not production supervision. Planner
 fuel claims in the proposal remain untrusted diagnostics. The checked
 coordinator client verifies the request digest and planner authority again.
+
+The built-in `crucible-canonical-frontier` planner has an initial single-host
+production supervisor. The authority-bearing parent starts the packaged
+`crucible` executable with the exact private argument
+`__crucible-campaign-planner-worker-v1`, clears its environment, and exchanges
+one `crucible.planner.process-frame` version 1 request. Its 16-byte header is
+`CRUCPP01`, one byte of kind (`1 request`, `2 proposal`, or `3 rejection`),
+three zero reserved bytes, and a big-endian `u32` body length. Request and
+proposal bodies use the existing canonical component schemas and are at most
+64 MiB; rejection text is at most 4 KiB and captured standard error is at most
+64 KiB. The configured executable is an absolute protected regular file whose
+device and inode are checked before and after spawn under the local
+operator-owned executable namespace contract.
+
+The parent owns a finite 1-ms-to-60-s wall deadline, sticky cancellation,
+bounded concurrent pipe drains, deterministic input-page fuel measurement,
+proposal validation, and the planner authority key. Deadline or cancellation
+kills and reaps the child before the call returns. The child owns no repository
+or planner authority and can return only an unauthenticated proposal. This
+private process protocol is distinct from the planner loopback component
+adapter: loopback proves direct/RPC message equivalence, while the process
+supervisor supplies killability and parent-owned metering for this built-in
+engine. Attaching that supervisor to the long-lived campaign coordinator loop
+remains an implementation-plan gate.
+
 Direct and Unix-loopback paths use the same checked client. The loopback transport uses nonzero absolute
 read/write deadlines capped at one hour, checks the body bound before
 allocation, and shuts down both stream directions after any framing, canonical,

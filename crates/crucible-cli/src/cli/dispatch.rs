@@ -15,6 +15,9 @@ pub(super) const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
 // crucible-lint: allow rust-allow -- the test harness builds the binary root without invoking its imported entrypoint.
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn main() {
+    if run_internal_canonical_planner_worker() {
+        return;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -30,6 +33,31 @@ pub(super) fn main() {
         eprintln!("crucible: {error}");
         std::process::exit(error.exit_code());
     }
+}
+
+fn run_internal_canonical_planner_worker() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref()
+        != Some(std::ffi::OsStr::new(
+            crucible_daemon::CANONICAL_PLANNER_WORKER_ARGUMENT,
+        ))
+    {
+        return false;
+    }
+    if arguments.next().is_some() {
+        eprintln!("crucible: canonical planner worker received an unexpected argument");
+        std::process::exit(2);
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if let Err(error) =
+        crucible_daemon::serve_canonical_planner_process_once(stdin.lock(), stdout.lock())
+    {
+        eprintln!("crucible: canonical planner worker failed: {error}");
+        std::process::exit(3);
+    }
+    true
 }
 
 pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
