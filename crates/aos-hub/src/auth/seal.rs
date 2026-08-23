@@ -23,7 +23,7 @@
 
 use std::fs;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rand::Rng as _;
@@ -93,11 +93,13 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
 ///
 /// The opened file's device/inode is compared with the path metadata, closing
 /// the check/open replacement race without relying on a host-specific command.
-/// On Unix, the secret itself cannot grant group/other access. Its parent may
-/// grant read or traversal access, but cannot be group/other-writable because
-/// that would permit replacement. Ownership by either the effective user or
-/// root is accepted so systemd's root-owned `LoadCredential=` mounts can be
-/// consumed by an unprivileged service.
+/// On Unix, the secret itself cannot grant group/other access. The sole
+/// exception is systemd's ACL-backed `0440` representation inside the exact
+/// directory named by `$CREDENTIALS_DIRECTORY`. A parent may grant read or
+/// traversal access, but cannot be group/other-writable because that would
+/// permit replacement. Ownership by either the effective user or root is
+/// accepted so `LoadCredential=` mounts can be consumed by an unprivileged
+/// service.
 ///
 /// # Errors
 ///
@@ -150,7 +152,7 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         path.display()
     );
     anyhow::ensure!(
-        metadata.st_mode & 0o077 == 0,
+        secret_file_mode_is_secure(path, metadata.st_mode),
         "secret file {} grants group/other permissions",
         path.display()
     );
@@ -260,6 +262,18 @@ fn secret_parent_mode_is_secure(mode: u32) -> bool {
     mode & 0o022 == 0
 }
 
+#[cfg(unix)]
+fn secret_file_mode_is_secure(path: &Path, mode: u32) -> bool {
+    if mode & 0o077 == 0 {
+        return true;
+    }
+
+    let is_systemd_credential = std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(PathBuf::from)
+        .is_some_and(|directory| path.parent() == Some(directory.as_path()));
+    is_systemd_credential && mode & 0o077 == 0o040
+}
+
 /// Writes `key` to `path` with `0600` permissions, creating parent dirs.
 ///
 /// # Errors
@@ -364,6 +378,28 @@ mod tests {
         assert!(trusted_secret_owner_for(802, 802));
         assert!(trusted_secret_owner_for(0, 802));
         assert!(!trusted_secret_owner_for(803, 802));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_credential_mode_exception_is_narrow() {
+        let path = Path::new("/run/credentials/aos-hub.service/key");
+        let previous = std::env::var_os("CREDENTIALS_DIRECTORY");
+        std::env::set_var("CREDENTIALS_DIRECTORY", "/run/credentials/aos-hub.service");
+
+        assert!(secret_file_mode_is_secure(path, 0o100400));
+        assert!(secret_file_mode_is_secure(path, 0o100440));
+        assert!(!secret_file_mode_is_secure(path, 0o100460));
+        assert!(!secret_file_mode_is_secure(path, 0o100444));
+        assert!(!secret_file_mode_is_secure(
+            Path::new("/var/lib/aos-hub/key"),
+            0o100440
+        ));
+
+        match previous {
+            Some(value) => std::env::set_var("CREDENTIALS_DIRECTORY", value),
+            None => std::env::remove_var("CREDENTIALS_DIRECTORY"),
+        }
     }
 
     #[test]
