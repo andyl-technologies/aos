@@ -453,13 +453,29 @@ fn signal_pidfd(
 /// only that stop notification; QEMU remains held until the paired `SIGCONT`.
 fn observe_pidfd_stopped(
     pidfd: &std::os::fd::OwnedFd,
+    cancel: &AtomicBool,
+    timed_out: &AtomicBool,
 ) -> Result<(), BoundedSchedulerPreemptionError> {
-    let status = waitid(
-        WaitId::PidFd(pidfd.as_fd()),
-        WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
-    )
-    .map_err(|source| BoundedSchedulerPreemptionError::StopObservation { source })?
-    .ok_or(BoundedSchedulerPreemptionError::StopObservationLost)?;
+    let status = loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(BoundedSchedulerPreemptionError::FirstStopObservationAbandoned);
+        }
+        if timed_out.load(Ordering::Acquire) {
+            return Err(BoundedSchedulerPreemptionError::WallTimeout);
+        }
+        if let Some(status) = waitid(
+            WaitId::PidFd(pidfd.as_fd()),
+            WaitIdOptions::STOPPED
+                | WaitIdOptions::EXITED
+                | WaitIdOptions::NOWAIT
+                | WaitIdOptions::NOHANG,
+        )
+        .map_err(|source| BoundedSchedulerPreemptionError::StopObservation { source })?
+        {
+            break status;
+        }
+        thread::sleep(BOUNDED_PREEMPTION_INTERVAL);
+    };
     if !status.stopped() {
         return Err(BoundedSchedulerPreemptionError::TargetExitedBeforeStop);
     }
@@ -512,7 +528,7 @@ fn apply_bounded_scheduler_preemption_with_cancel(
             }
             let mut resume = ResumeGuard::new(Arc::clone(&pidfd));
             signal_pidfd(&pidfd, Signal::STOP)?;
-            observe_pidfd_stopped(&pidfd)?;
+            observe_pidfd_stopped(&pidfd, cancel, &timed_out)?;
             let stopped_at = Instant::now();
             if timed_out.load(Ordering::Acquire) {
                 return Err(BoundedSchedulerPreemptionError::WallTimeout);
@@ -748,6 +764,28 @@ mod tests {
         assert!(matches!(
             error,
             BoundedSchedulerPreemptionError::InvalidPid { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stop_observation_honors_timeout_without_a_state_change() -> Result<(), Box<dyn Error>> {
+        let target = TestTarget::spawn()?;
+        let raw_pid = i32::try_from(target.pid())
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or("test target PID was not representable")?;
+        let pidfd = pidfd_open(raw_pid, PidfdFlags::empty())?;
+        let cancel = AtomicBool::new(false);
+        let timed_out = AtomicBool::new(true);
+
+        let error = observe_pidfd_stopped(&pidfd, &cancel, &timed_out)
+            .err()
+            .ok_or("stop observation ignored an active timeout")?;
+
+        assert!(matches!(
+            error,
+            BoundedSchedulerPreemptionError::WallTimeout
         ));
         Ok(())
     }
