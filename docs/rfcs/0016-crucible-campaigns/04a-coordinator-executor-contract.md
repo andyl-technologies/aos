@@ -1965,31 +1965,43 @@ process and filesystem authority to quarantine, and dropping a live wrapper
 performs that transfer. A pre-canceled or mismatched installation is rolled back
 before the factory returns an error.
 
-The QEMU host crate now contains the crate-internal ext4 project-quota
-transaction needed by that owner. It accepts pinned filesystem and fresh run-
-directory descriptors plus an exclusively allocated nonzero project ID,
-requires active project quotas and a completely unused quota record, installs
-equal hard and soft block/inode limits, synchronizes and reads back the quota,
-then assigns the directory's project ID and inheritance flag. The generic quota
-interface counts 1,024-byte blocks, so a non-aligned admitted byte ceiling is
-rounded down and can never be exceeded. Release is ordered after process reap:
-the empty directory is restored to its original project attributes before the
-zero-use quota record is cleared, synchronized, and read back. Every partial
-install or release error retains the pinned authority, and an unowned drop
-leaves the kernel limit active fail-closed. The transaction does not allocate
-project IDs or run-directory names and is not yet reachable from the public
-launch path; the daemon-incarnation allocator, nondroppable combined owner, and
-an ext4 project-quota enforcement VM gate remain mandatory before wiring.
+The QEMU host crate now contains both the crate-internal ext4 project-quota
+transaction and its daemon-incarnation storage owner. The transaction accepts
+pinned filesystem and fresh run-directory descriptors plus an exclusively
+allocated nonzero project ID, requires active project quotas and a completely
+unused quota record, installs equal hard and soft block/inode limits,
+synchronizes and reads back the quota, then assigns the directory's project ID
+and inheritance flag. The generic quota interface counts 1,024-byte blocks, so
+a non-aligned admitted byte ceiling is rounded down and can never be exceeded.
+
+The storage factory validates and exclusively locks one private, empty,
+supervisor-owned mode-`0700` ext4 root before allocation. It uses a bounded
+operator-reserved project-ID range and a fixed-width daemon-incarnation name
+sequence. One allocation creates and pins the child, installs quota, transfers
+the directory to the configured non-root QEMU user/group that is distinct from
+every supervisor credential, authenticates quota usage and ownership, and
+synchronizes the parent before exposure. A dirty root
+at daemon restart fails closed instead of silently reclaiming an old attempt.
+Release is ordered after process reap: the empty directory is restored to its
+original project attributes before the zero-use quota record is cleared,
+synchronized, and read back; the exact named inode is then removed and its
+parent synchronized before the project ID returns to the pool. Every partial
+create or release error retains the pinned directory, shared root-lock
+description, quota state, and project-ID lease for exact retry. Dropping an
+unfinished owner leaks that authority and keeps the ID reserved fail-closed.
+Recursive artifact cleanup, a nondroppable combined process/storage quarantine
+owner, and a real ext4 project-quota enforcement VM gate remain mandatory before
+this internal owner is wired into public guarded launch.
 
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
 guard, and the daemon guard now composes cancellation, quantum accounting, and
 all-or-quarantine cleanup around a host owner. The Linux host owner still must
-bind that interface to the nondroppable cgroup owner, a real aggregate
-filesystem-quota reservation, exclusive run-directory namespace ownership
-through QEMU artifact open, and active-node failure handoff. That Linux adapter
-and final session wiring remain mandatory before the guarded path may launch a
-campaign QEMU. A process-only Linux facade now validates a daemon-incarnation
+bind that interface to the nondroppable cgroup owner and the new lifecycle-bound
+storage owner, preserve their shared attempt identity through QEMU artifact
+open, and implement active-node failure handoff. That Linux adapter and final
+session wiring remain mandatory before the guarded path may launch a campaign
+QEMU. A process-only Linux facade now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
 delegated root;
 it creates fixed-width unique child names, exposes only the sealed contract and
@@ -1997,7 +2009,7 @@ sticky signal, and completes or quarantines the underlying owner. A partial
 setup poisons that allocator and retains authority fail-closed rather than
 allowing another launch. Raw cgroup controls and quarantine implementation
 remain crate-internal, and the process facade cannot be used as a complete
-resource guard until the quota/run-directory binding lands.
+resource guard until the process/storage composition lands.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

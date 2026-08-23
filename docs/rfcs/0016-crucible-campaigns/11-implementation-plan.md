@@ -328,16 +328,22 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   descriptor allocation. Exact-checkpoint materialization now requires the
   same contract before path access.
   The writable ceiling also supplies a conservative per-file limit; aggregate
-  enforcement now has a crate-internal ext4 project-quota transaction. It
-  requires a fresh pinned directory and exclusively allocated nonzero project
-  ID, installs synchronized/read-back hard block and inode limits before
-  assigning the inheritable project ID, rounds non-aligned byte ceilings down
-  to the kernel's 1,024-byte quota unit, and retains cleanup authority after
-  every partial failure. Normal release restores the empty directory before
-  clearing and reauthenticating a zero-use quota record. Project-ID allocation,
-  the nondroppable combined process/quota/run-directory owner, and a real ext4
-  enforcement VM gate remain open before this transaction can be wired into
-  guarded launch.
+  enforcement now has a crate-internal ext4 project-quota transaction and
+  daemon-incarnation storage owner. The owner locks a dedicated private empty
+  ext4 root, allocates from a bounded operator-reserved project-ID range, creates
+  fixed-width unique child names, installs synchronized/read-back hard block and
+  inode limits, assigns the inheritable project ID, transfers exact mode-`0700`
+  ownership to the non-root QEMU identity that is distinct from every
+  supervisor credential, and synchronizes the parent before exposure.
+  Non-aligned byte ceilings round down to the kernel's 1,024-byte
+  quota unit. Normal release restores the empty directory, clears and
+  reauthenticates a zero-use quota record, removes the exact named inode,
+  synchronizes the root, and only then recycles the project ID. Partial create
+  and release failures retain the directory, shared root lock, quota, and ID
+  lease for exact retry; a dirty restart root and an unfinished drop both fail
+  closed. Bounded artifact removal, the nondroppable combined process/storage
+  quarantine owner, and a real ext4 enforcement VM gate remain open before this
+  owner can be wired into guarded launch.
   A prepared run-directory authority now pins the directory and exact regular
   VMState inode without following final symlinks. Guarded spawn reauthenticates
   the entry before allocation, changes directory by descriptor after cgroup and
@@ -446,9 +452,10 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and publication, version-5 ledger persistence, restart reauthentication,
   explicit incomplete-promotion revert, and the final paused-root CAS are
   implemented without holding the supervisor actor across QEMU or store work.
-  Concrete run-directory ownership, invocation by the full executor flight,
-  the real-node guarded launcher, and the production process guard remain open;
-  `NotRun` is still fail-closed. The fixed worker pool and its
+  The crate-internal quota/run-directory owner is implemented. Its composition
+  with the process owner, invocation by the full executor flight, the real-node
+  guarded launcher, and the production combined guard remain open; `NotRun` is
+  still fail-closed. The fixed worker pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:

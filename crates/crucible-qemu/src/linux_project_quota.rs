@@ -199,6 +199,25 @@ impl LinuxProjectQuotaReservation {
             })
     }
 
+    /// Reauthenticates current project usage against the installed hard limits.
+    ///
+    /// The attempt-storage owner uses this after changing the run directory's
+    /// user and group ownership. Ownership changes may update quota accounting,
+    /// so the directory is not exposed until the resulting usage is read back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxProjectQuotaError`] when the quota record cannot be read
+    /// or its current byte or inode usage exceeds the installed ceiling.
+    pub(crate) fn verify_usage(&self) -> Result<(), LinuxProjectQuotaError> {
+        verify_project_usage_within_limit(
+            self.filesystem()?,
+            &self.path,
+            self.project_id,
+            self.limits,
+        )
+    }
+
     /// Restores the directory attributes and clears the quota after reap.
     ///
     /// The caller must already own the exclusive run-directory namespace and
@@ -281,6 +300,27 @@ impl LinuxProjectQuotaReservation {
     }
 }
 
+/// Validates an operator-owned root before it becomes an allocation namespace.
+///
+/// # Errors
+///
+/// Returns [`LinuxProjectQuotaError`] when `directory` is not an ext4
+/// directory or project-quota state cannot be queried through it.
+pub(crate) fn validate_project_quota_root(
+    directory: &OwnedFd,
+    path: &Path,
+) -> Result<(), LinuxProjectQuotaError> {
+    validate_ext4_filesystem(directory, directory, path)?;
+    project_quota_info(directory, path)?;
+    let attributes = get_project_attributes(directory, path)?;
+    if attributes.fsx_projid != 0 || attributes.fsx_xflags & FS_XFLAG_PROJINHERIT != 0 {
+        return Err(LinuxProjectQuotaError::DirectoryAlreadyAssigned {
+            path: path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 impl Drop for LinuxProjectQuotaReservation {
     fn drop(&mut self) {
         if self.released {
@@ -330,6 +370,15 @@ impl LinuxProjectQuotaInstallError {
     pub(crate) fn into_cleanup(mut self) -> Option<LinuxProjectQuotaReservation> {
         self.cleanup.take().map(|cleanup| *cleanup)
     }
+
+    /// Splits the failure into its diagnostic and optional cleanup authority.
+    #[must_use = "retain partial project-quota authority for cleanup or quarantine"]
+    pub(crate) fn into_parts(
+        mut self,
+    ) -> (LinuxProjectQuotaError, Option<LinuxProjectQuotaReservation>) {
+        let cleanup = self.cleanup.take().map(|cleanup| *cleanup);
+        (self.source, cleanup)
+    }
 }
 
 /// Failed release that retains the installed project quota.
@@ -352,6 +401,12 @@ impl LinuxProjectQuotaReleaseError {
     #[must_use = "retry release or transfer the project-quota authority to quarantine"]
     pub(crate) fn into_reservation(self) -> LinuxProjectQuotaReservation {
         *self.reservation
+    }
+
+    /// Splits the failure into its diagnostic and retained reservation.
+    #[must_use = "retry release or transfer the project-quota authority to quarantine"]
+    pub(crate) fn into_parts(self) -> (LinuxProjectQuotaError, LinuxProjectQuotaReservation) {
+        (self.source, *self.reservation)
     }
 }
 
