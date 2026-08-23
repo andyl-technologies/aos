@@ -167,6 +167,77 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn guarded_image_helper_uses_the_attempt_contract_and_pinned_directory()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let executable = env::current_exe()?;
+    let args = [
+        std::ffi::OsString::from("--exact"),
+        std::ffi::OsString::from("spawn::tests::pre_exec_vmstate_name_matches_the_launch_contract"),
+    ];
+
+    run_guarded_image_tool(
+        &executable,
+        &args,
+        "run contained image-tool probe",
+        &prepared,
+        &contract,
+    )?;
+
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+    Ok(())
+}
+
+#[test]
+fn guarded_image_helper_observes_sticky_cancellation_before_exec() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    write_eventfd(cancellation.as_raw_fd(), 1)?;
+    let contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let executable = env::current_exe()?;
+
+    for _ in 0..2 {
+        let error = match run_guarded_image_tool(
+            &executable,
+            &[],
+            "run canceled image-tool probe",
+            &prepared,
+            &contract,
+        ) {
+            Err(error) => error,
+            Ok(()) => panic!("sticky cancellation must reject every helper before exec"),
+        };
+        assert!(error.child.is_none());
+        assert!(matches!(
+            error.source,
+            QemuSpawnError::Io { source, .. }
+                if source.raw_os_error() == Some(libc::ECANCELED)
+        ));
+    }
+
+    let mut placements = [0_u8; 4];
+    std::fs::File::from(cgroup_read).read_exact(&mut placements)?;
+    assert_eq!(&placements, b"0\n0\n");
+    Ok(())
+}
+
+#[test]
 fn canceled_pre_exec_contract_stays_canceled_across_spawns() -> Result<(), Box<dyn Error>> {
     let (cgroup_read, cgroup_write) = pipe_pair()?;
     let cancellation = event_fd_for_test()?;
@@ -616,6 +687,117 @@ fn exact_root_overlay_materialization_commits_the_checkpoint_root_basis()
             actual,
         }) if expected == other && actual == binding
     ));
+    Ok(())
+}
+
+#[test]
+fn replacement_artifacts_are_reflinked_with_one_local_snapshot_binding()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let source_directory = tempfile::tempdir()?;
+    let destination_directory = tempfile::tempdir()?;
+    let source_vmstate = b"paused source VMState";
+    let source_overlay = b"paused source root overlay";
+    std::fs::write(
+        source_directory
+            .path()
+            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        source_vmstate,
+    )?;
+    std::fs::write(
+        source_directory
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        source_overlay,
+    )?;
+    std::fs::File::create(
+        destination_directory
+            .path()
+            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
+    )?;
+    let source =
+        QemuPreparedRunDirectory::open_for_launch(&command, source_directory.path(), &contract)?;
+    let mut destination = QemuPreparedRunDirectory::open_for_launch(
+        &command,
+        destination_directory.path(),
+        &contract,
+    )?;
+    let binding = QemuVmStateBinding::from_replacement_snapshot_digest(
+        ContentHash::from_canonical_material("replacement-snapshot", "generation-two").bytes,
+    );
+
+    destination.clone_replacement_artifacts_from(&source, binding)?;
+
+    destination.require_exact_vmstate(binding)?;
+    destination.require_exact_root_overlay(binding)?;
+    destination.revalidate()?;
+    assert_eq!(
+        std::fs::read(
+            destination_directory
+                .path()
+                .join(crate::DEFAULT_VMSTATE_FILE_NAME)
+        )?,
+        source_vmstate
+    );
+    assert_eq!(
+        std::fs::read(
+            destination_directory
+                .path()
+                .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME)
+        )?,
+        source_overlay
+    );
+    Ok(())
+}
+
+#[test]
+fn replacement_clone_rejects_a_different_attempt_before_destination_writes()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let source_contract = wide_test_process_contract()?;
+    let destination_contract = wide_test_process_contract()?;
+    let source_directory = tempfile::tempdir()?;
+    let destination_directory = tempfile::tempdir()?;
+    std::fs::write(
+        source_directory
+            .path()
+            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        b"source VMState",
+    )?;
+    std::fs::write(
+        source_directory
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        b"source overlay",
+    )?;
+    let destination_vmstate = destination_directory
+        .path()
+        .join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&destination_vmstate)?;
+    let source = QemuPreparedRunDirectory::open_for_launch(
+        &command,
+        source_directory.path(),
+        &source_contract,
+    )?;
+    let mut destination = QemuPreparedRunDirectory::open_for_launch(
+        &command,
+        destination_directory.path(),
+        &destination_contract,
+    )?;
+    let binding = QemuVmStateBinding::from_replacement_snapshot_digest([7; 32]);
+
+    assert!(matches!(
+        destination.clone_replacement_artifacts_from(&source, binding),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
+    assert_eq!(std::fs::metadata(destination_vmstate)?.len(), 0);
+    assert!(
+        !destination_directory
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME)
+            .exists()
+    );
     Ok(())
 }
 

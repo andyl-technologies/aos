@@ -88,13 +88,14 @@ pub use ninep_io_servicer::{
     QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence,
 };
 pub use node_step_gate::{
-    QemuGuardedExactNodeLaunch, QemuLiveExactSnapshotReport, QemuLiveNodeIdentity,
-    QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
-    QemuLiveNodeStepQuantum, QemuLiveNodeStepReport, QemuLiveNodeStepSchedule,
-    QemuLiveRetainedNetworkSnapshotReport, launch_qemu_live_node,
+    QemuGuardedExactNodeLaunch, QemuGuardedFreshNodeLaunch, QemuLiveExactSnapshotReport,
+    QemuLiveNodeIdentity, QemuLiveNodeLifecycleFaultReport, QemuLiveNodeStepGateConfig,
+    QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
+    QemuLiveNodeStepSchedule, QemuLiveRetainedNetworkSnapshotReport, launch_qemu_live_node,
     launch_qemu_live_node_exact_snapshot, launch_qemu_live_node_exact_snapshot_guarded,
     launch_qemu_live_node_exact_snapshot_paused,
-    launch_qemu_live_node_exact_snapshot_paused_guarded, launch_qemu_live_node_restored,
-    run_qemu_live_exact_snapshot_gate, run_qemu_live_node_lifecycle_fault_gate,
-    run_qemu_live_node_step_gate, run_qemu_live_retained_network_snapshot_gate,
+    launch_qemu_live_node_exact_snapshot_paused_guarded, launch_qemu_live_node_guarded,
+    launch_qemu_live_node_restored, run_qemu_live_exact_snapshot_gate,
+    run_qemu_live_node_lifecycle_fault_gate, run_qemu_live_node_step_gate,
+    run_qemu_live_retained_network_snapshot_gate,
 };

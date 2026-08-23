@@ -16,6 +16,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use rustix::fs::{FileType, Mode, OFlags, fstat, fsync, open, openat};
 use thiserror::Error;
@@ -35,6 +37,9 @@ const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
+const GUARDED_IMAGE_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+const GUARDED_IMAGE_TOOL_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const GUARDED_IMAGE_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Owned pre-exec contract for one attempt-contained child process.
 ///
@@ -452,6 +457,21 @@ impl QemuPreparedRunDirectory {
         }
         validate_guarded_launch_resources(command, contract)
     }
+
+    fn validate_helper_basis(
+        &self,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        if self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
+            || self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_requirements(self.launch_resources, contract)?;
+        self.revalidate_identity().map(|_| ())
+    }
 }
 
 fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
@@ -810,6 +830,26 @@ pub struct QemuSpawnedChild {
     resources: QemuSpawnHostResources,
 }
 
+/// Failed guarded image preparation with optional unreaped helper ownership.
+///
+/// Callers must transfer an unreaped helper into their attempt-wide process
+/// owner before dropping the error. Errors without a child attest that no
+/// helper was spawned or that every spawned helper was synchronously reaped.
+#[derive(Debug, Error)]
+#[error("{source}")]
+pub struct QemuGuardedImagePreparationError {
+    pub(super) source: QemuSpawnError,
+    pub(super) child: Option<QemuNodeChild>,
+}
+
+impl QemuGuardedImagePreparationError {
+    /// Takes the unique wait authority for an unreaped image-tool helper.
+    #[must_use]
+    pub fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
+        self.child.take()
+    }
+}
+
 impl QemuSpawnedChild {
     /// Consumes the spawn result into its node child and retained host resources.
     #[must_use]
@@ -848,6 +888,44 @@ pub enum QemuSpawnError {
         /// Trimmed qemu-img diagnostic output.
         stderr: String,
     },
+    /// A guarded image-tool helper exited unsuccessfully.
+    #[error("guarded qemu-img operation `{operation}` failed with {status}")]
+    GuardedImageTool {
+        /// Stable preparation operation.
+        operation: &'static str,
+        /// Rendered process exit status.
+        status: String,
+    },
+    /// A guarded image-tool helper exceeded its absolute execution deadline.
+    #[error("guarded qemu-img operation `{operation}` exceeded its execution deadline")]
+    GuardedImageToolTimeout {
+        /// Stable preparation operation.
+        operation: &'static str,
+    },
+    /// A disk-backed fresh launch omitted its immutable root image.
+    #[error("fresh disk-backed QEMU preparation requires one root image")]
+    FreshRootImageMissing,
+    /// A diskless fresh launch was paired with an unexpected root image.
+    #[error("diskless fresh QEMU preparation received an unexpected root image")]
+    FreshRootImageUnexpected,
+    /// Guarded fresh preparation requires a path immune to cwd changes.
+    #[error("guarded qemu-img path must be absolute: {path}")]
+    FreshImageToolPath {
+        /// Rejected adjacent image-tool path.
+        path: PathBuf,
+    },
+    /// The immutable root image has no bytes.
+    #[error("fresh QEMU root image is empty: {path}")]
+    FreshRootImageEmpty {
+        /// Root-image path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// Fresh image-tool output has not been completely sealed.
+    #[error("fresh QEMU generation artifacts are not ready: {path}")]
+    FreshArtifactsNotReady {
+        /// Descriptor-pinned generation path used only for diagnostics.
+        path: PathBuf,
+    },
     /// The guarded run directory does not contain its pre-provisioned VMState image.
     #[error("guarded QEMU launch requires pre-provisioned VMState container {path}")]
     MissingPreparedVmState {
@@ -869,6 +947,36 @@ pub enum QemuSpawnError {
     /// The command, admitted ceiling, or attempt lifecycle differs from preparation.
     #[error("prepared QEMU run directory is bound to a different launch admission")]
     PreparedLaunchAdmissionChanged,
+    /// A replacement destination was already populated or partially updated.
+    #[error("replacement QEMU generation destination is not empty: {path}")]
+    ReplacementDestinationNotEmpty {
+        /// Descriptor-pinned destination path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// A replacement source lacks a complete stable writable artifact.
+    #[error("replacement QEMU generation source is not ready: {path}")]
+    ReplacementSourceNotReady {
+        /// Descriptor-pinned source path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The complete replacement artifact pair exceeds the aggregate quota.
+    #[error(
+        "replacement artifacts use {vmstate_bytes} VMState bytes and {root_overlay_bytes} root-overlay bytes, above maximum {maximum}"
+    )]
+    ReplacementArtifactsTooLarge {
+        /// Logical VMState bytes.
+        vmstate_bytes: u64,
+        /// Logical root-overlay bytes.
+        root_overlay_bytes: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        maximum: u64,
+    },
+    /// A retained replacement artifact changed during descriptor-bound cloning.
+    #[error("replacement QEMU artifact changed during cloning: {path}")]
+    ReplacementArtifactChanged {
+        /// Descriptor-pinned generation path used only for diagnostics.
+        path: PathBuf,
+    },
     /// The exact VMState image has an invalid declared byte length.
     #[error("prepared exact-VMState length {length} is outside the admitted maximum {maximum}")]
     PreparedVmStateLength {
@@ -1298,6 +1406,125 @@ fn spawn_process_with_resources(
     command
         .spawn()
         .map_err(|source| QemuSpawnError::Io { operation, source })
+}
+
+fn run_guarded_image_tool(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) -> Result<(), QemuGuardedImagePreparationError> {
+    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+        return Err(QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        });
+    }
+    let expected_parent_pid = unsafe {
+        // SAFETY: `getpid` has no preconditions.
+        libc::getpid()
+    };
+    let contract = ChildProcessContractRaw {
+        cgroup_procs: process_contract.cgroup_procs.as_raw_fd(),
+        cancellation_event: process_contract.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: process_contract.maximum_writable_bytes,
+        credentials: process_contract.credentials,
+    };
+    let directory = PreparedRunDirectoryRaw {
+        directory: run_directory.directory.as_raw_fd(),
+        vmstate_device: run_directory.vmstate_identity.device,
+        vmstate_inode: run_directory.vmstate_identity.inode,
+    };
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        // SAFETY: the closure uses only async-signal-safe scalar syscalls and
+        // captures raw descriptor numbers plus copyable credentials.
+        command.pre_exec(move || {
+            install_attempt_process_contract(contract)?;
+            install_prepared_run_directory(directory)?;
+            if let Some(credentials) = contract.credentials {
+                install_child_credentials(credentials)?;
+            }
+            set_parent_death_signal(expected_parent_pid)
+        });
+    }
+    let child = command
+        .spawn()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source: QemuSpawnError::Io { operation, source },
+            child: None,
+        })?;
+    let mut child = QemuNodeChild::new(child);
+    let started = guarded_image_tool_started();
+    loop {
+        match child.try_wait_natural_exit() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(QemuGuardedImagePreparationError {
+                    source: QemuSpawnError::GuardedImageTool {
+                        operation,
+                        status: status.to_string(),
+                    },
+                    child: None,
+                });
+            }
+            Ok(None) if guarded_image_tool_elapsed(started) < GUARDED_IMAGE_TOOL_TIMEOUT => {
+                thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
+            }
+            Ok(None) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::GuardedImageToolTimeout { operation },
+                ));
+            }
+            Err(error) => {
+                return Err(cleanup_failed_image_tool(
+                    child,
+                    QemuSpawnError::Io {
+                        operation,
+                        source: io::Error::other(error.to_string()),
+                    },
+                ));
+            }
+        }
+    }
+}
+
+/// Starts a host-only image-helper deadline outside canonical state.
+// crucible-lint: allow clippy-disallowed-method -- host time only bounds an operational helper and never enters modeled state.
+#[allow(clippy::disallowed_methods)]
+fn guarded_image_tool_started() -> Instant {
+    Instant::now()
+}
+
+/// Measures a host-only image-helper deadline outside canonical state.
+// crucible-lint: allow clippy-disallowed-method -- host time only bounds an operational helper and never enters modeled state.
+#[allow(clippy::disallowed_methods)]
+fn guarded_image_tool_elapsed(started: Instant) -> Duration {
+    started.elapsed()
+}
+
+fn cleanup_failed_image_tool(
+    mut child: QemuNodeChild,
+    source: QemuSpawnError,
+) -> QemuGuardedImagePreparationError {
+    match child.force_kill_and_reap_failed_helper(GUARDED_IMAGE_TOOL_REAP_TIMEOUT) {
+        Ok(()) => QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        },
+        Err(_) => QemuGuardedImagePreparationError {
+            source,
+            child: Some(child),
+        },
+    }
 }
 
 #[derive(Clone, Copy)]
