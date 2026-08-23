@@ -398,8 +398,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   final drain and reap before synchronizing, reauthenticating, and lending a
   bounded positional VMState reader with no directory or mutation authority.
   The daemon now adapts that reader into a reopenable CAS source with one
-  independent positional cursor per open. Turning it into the linear captured-
-  checkpoint token remains part of concrete session wiring. The daemon now
+  independent positional cursor per open. The guarded session itself now turns
+  that source into the linear captured-checkpoint token, records the successful
+  capture as its backend reap attestation, and releases only the still-installed
+  host guard during finalization. Concrete real-node factory and driver wiring
+  remain open. The daemon now
   prepares and durably
   publishes
   a registered exact-checkpoint root over canonical snapshot metadata and a

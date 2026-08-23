@@ -138,10 +138,11 @@ pub trait QemuCrucibleAttemptSession: QemuVmRealizationExecutor {
     /// Captures one exact paused checkpoint under the active resource guard.
     ///
     /// Modeled drivers do not receive this authority. The returned capture owns
-    /// a reopenable, byte-stable VMState source. The lifecycle owner may
-    /// therefore reap the paused process through [`Self::finish`] before the
-    /// worker pool performs no-write preparation and durable publication,
-    /// while the supervisor keeps the execution reservation charged.
+    /// a reopenable, byte-stable VMState source only after the live process has
+    /// completed its final observable drain and reap. [`Self::finish`] then
+    /// releases the still-installed host resource guard before the worker pool
+    /// performs no-write preparation and durable publication, while the
+    /// supervisor keeps the execution reservation charged.
     ///
     /// # Errors
     ///

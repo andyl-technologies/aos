@@ -5,6 +5,7 @@
 
 use std::{
     collections::BTreeMap,
+    io::Write,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -18,9 +19,8 @@ use crucible::{
     RuntimeState, ScenarioDef, SchedulerState,
 };
 use crucible_campaign::ExecutionRetentionIntent;
-use crucible_cas::content_store::BlobHandle;
 use crucible_qemu::{
-    QemuLiveBackendShutdown, QemuRealizedNodeBackend, QemuVmRealizationKind,
+    QemuCapturedVmState, QemuLiveBackendShutdown, QemuRealizedNodeBackend, QemuVmRealizationKind,
     QemuVmRealizationOperation,
 };
 
@@ -123,6 +123,7 @@ struct FakeExecutor {
     guarded_error: bool,
     failed_realization_reap_error: bool,
     capture_error: bool,
+    capture_leaves_active: bool,
     resume_checkpoint: Option<ExactCheckpointId>,
     resume_initial: Option<ContentHash>,
     resume_post_selection: Option<ContentHash>,
@@ -320,15 +321,25 @@ impl QemuGuardedLiveRealizationExecutor<TrackingGuard> for FakeExecutor {
         Ok(runtime)
     }
 
-    fn capture_live_exact_snapshot_guarded(
+    fn capture_exact_checkpoint_artifact_guarded(
         &mut self,
         guard: &mut TrackingGuard,
         checkpoint: Checkpoint,
-    ) -> Result<CapturedExactCheckpoint, QemuVmRealizationError> {
+    ) -> Result<(QemuVmSnapshot, QemuCapturedVmState), QemuVmRealizationError> {
         guard.check_operational_boundary()?;
-        QemuVmLiveRealizationExecutor::capture_live_exact_snapshot(self, checkpoint).map(
-            |snapshot| CapturedExactCheckpoint::new(snapshot, BlobHandle::from_bytes(vec![0; 64])),
-        )
+        let snapshot =
+            QemuVmLiveRealizationExecutor::capture_live_exact_snapshot(self, checkpoint)?;
+        if self.capture_leaves_active {
+            return Ok((snapshot, fake_captured_vmstate()?));
+        }
+        let shutdown = QemuVmLiveRealizationExecutor::shutdown_live_backend(self)?;
+        if !shutdown.observation_boundary_unchanged() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "capture fake exact checkpoint artifact",
+                message: String::from("final drain changed the sealed observation boundary"),
+            });
+        }
+        Ok((snapshot, fake_captured_vmstate()?))
     }
 
     fn shutdown_live_backend_guarded(
@@ -399,6 +410,7 @@ struct SessionBehavior {
     replace_cancellation: bool,
     fail_on_check: Option<usize>,
     capture_error: bool,
+    capture_leaves_active: bool,
 }
 
 struct TrackingGuardFactory {
@@ -859,7 +871,7 @@ fn post_spawn_realization_failure_requires_reap_attestation_before_release() {
 }
 
 #[test]
-fn exact_checkpoint_capture_remains_guarded_until_explicit_finish() {
+fn exact_checkpoint_capture_reaps_before_explicit_guard_release() {
     let resources = resource_limits(1);
     let counters = TestCounters::default();
     let mut factory = session_factory(resources, counters.clone(), SessionBehavior::default());
@@ -887,10 +899,20 @@ fn exact_checkpoint_capture_remains_guarded_until_explicit_finish() {
 
     assert_eq!(snapshot.snapshot().checkpoint(), &checkpoint);
     assert_eq!(snapshot.vmstate_bytes(), 64);
+    assert_eq!(
+        snapshot
+            .vmstate_source()
+            .read_all(128)
+            .expect("read captured VMState"),
+        vec![0x5a; 64]
+    );
     assert_eq!(counters.captures.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     session.finish().expect("finish captured session");
     assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
 }
 
@@ -1028,6 +1050,94 @@ fn failed_exact_checkpoint_capture_shuts_down_before_releasing_the_guard() {
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }
 
+#[test]
+fn post_reap_capture_failure_releases_guard_without_a_second_shutdown() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            shutdown_boundary_changed: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    assert!(matches!(
+        session.capture_exact_checkpoint(checkpoint),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    session
+        .finish()
+        .expect("release guard after post-reap capture rejection");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn capture_source_is_rejected_until_backend_reap_is_attested() {
+    let resources = resource_limits(1);
+    let counters = TestCounters::default();
+    let mut factory = session_factory(
+        resources,
+        counters.clone(),
+        SessionBehavior {
+            capture_leaves_active: true,
+            ..SessionBehavior::default()
+        },
+    );
+    let context = execution_context(resources);
+    let (runtime, request) = replay_fixture();
+    let mut session = factory
+        .begin_attempt(&context)
+        .expect("begin exact session");
+    let runtime =
+        QemuVmRealizationExecutor::replay_one_quantum(&mut session, runtime, request.clone())
+            .expect("install fake live backend");
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        &request.to,
+        Some(&request.from),
+        crucible::VirtualTime::default(),
+        runtime.node_icounts,
+        crucible::CheckpointKind::Fat,
+        runtime.node_blobs,
+    )
+    .expect("build exact checkpoint");
+
+    assert!(matches!(
+        session.capture_exact_checkpoint(checkpoint),
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 0);
+    session
+        .finish()
+        .expect("reap backend after rejecting premature capture source");
+    assert_eq!(counters.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.guarded_shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+}
+
 fn session_factory(
     installed: AttemptResourceLimits,
     counters: TestCounters,
@@ -1046,6 +1156,7 @@ fn session_factory(
             guarded_error: behavior.guarded_error,
             failed_realization_reap_error: behavior.failed_realization_reap_error,
             capture_error: behavior.capture_error,
+            capture_leaves_active: behavior.capture_leaves_active,
             resume_checkpoint: None,
             resume_initial: None,
             resume_post_selection: None,
@@ -1068,6 +1179,31 @@ fn execution_context(resources: AttemptResourceLimits) -> AttemptExecutionContex
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
     )
+}
+
+fn fake_captured_vmstate() -> Result<QemuCapturedVmState, QemuVmRealizationError> {
+    let bytes = vec![0x5a; 64];
+    let mut file = tempfile::tempfile().map_err(|source| QemuVmRealizationError::Executor {
+        operation: "create fake captured VMState",
+        message: source.to_string(),
+    })?;
+    file.write_all(&bytes)
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "write fake captured VMState",
+            message: source.to_string(),
+        })?;
+    file.sync_all()
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "synchronize fake captured VMState",
+            message: source.to_string(),
+        })?;
+    Ok(QemuCapturedVmState::from_unvalidated_test_file(
+        file,
+        u64::try_from(bytes.len()).map_err(|_| QemuVmRealizationError::Executor {
+            operation: "size fake captured VMState",
+            message: String::from("fixture length does not fit u64"),
+        })?,
+    ))
 }
 
 fn replay_fixture() -> (RuntimeState, QemuVmReplayRequest) {
