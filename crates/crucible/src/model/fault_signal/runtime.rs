@@ -21,7 +21,9 @@ pub use error::FaultRuntimeError;
 pub use observation::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 2;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 3;
+
+const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v1\0";
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -687,7 +689,7 @@ impl ResolvedEffectTrace {
     ///
     /// Returns [`FaultRuntimeError::CheckpointEncoding`] when serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
-        let mut bytes = Vec::new();
+        let mut bytes = RESOLVED_EFFECT_TRACE_MAGIC.to_vec();
         ciborium::ser::into_writer(self, &mut bytes)
             .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
         Ok(bytes)
@@ -703,9 +705,15 @@ impl ResolvedEffectTrace {
         bytes: &[u8],
         resource_limits: FaultResourceLimits,
     ) -> Result<Self, FaultRuntimeError> {
-        let trace: Self =
-            ciborium::de::from_reader(bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        let payload = bytes
+            .strip_prefix(RESOLVED_EFFECT_TRACE_MAGIC)
+            .ok_or(FaultRuntimeError::VersionOrIdentityMismatch)?;
+        let trace: Self = ciborium::de::from_reader(payload)
+            .map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
         trace.validate(resource_limits)?;
+        if trace.canonical_bytes()?.as_slice() != bytes {
+            return Err(FaultRuntimeError::CheckpointEncoding);
+        }
         Ok(trace)
     }
 

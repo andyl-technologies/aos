@@ -5,6 +5,8 @@ use super::*;
 struct RefineCoordinateActions {
     retired_instructions: u64,
     expected_prepared_retired: Option<u64>,
+    live_precondition: ContentHash,
+    commits: usize,
     prepared: Option<PreparedActionBatch>,
 }
 
@@ -20,9 +22,35 @@ impl FaultActionSink for RefineCoordinateActions {
                     .all(|action| action.coordinate.retired_instructions == Some(expected))
             );
         }
+        if let Some(action) = actions.iter().find(|action| {
+            action
+                .expected_precondition
+                .is_some_and(|expected| expected != self.live_precondition)
+        }) {
+            let expected = action
+                .expected_precondition
+                .unwrap_or_else(|| panic!("mismatched replay action must carry a precondition"));
+            return Err(Box::new(RejectedActionBatch {
+                error: FaultRuntimeError::ReplayPreconditionMismatch {
+                    action: action.id(),
+                    expected,
+                    observed: self.live_precondition,
+                },
+                observations: vec![FaultObservation {
+                    semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                    kind: FaultObservationKind::EffectRejected,
+                    coordinate: action.coordinate,
+                    binding: Some(action.binding.clone()),
+                    target: Some(action.target.clone()),
+                    opportunity: action.opportunity,
+                    evidence: self.live_precondition,
+                }],
+                rejected_action: Some(action.id()),
+            }));
+        }
         let mut prepared = prepared_actions(actions);
         for result in &mut prepared.results {
-            result.precondition = Some(ContentHash::from_bytes(b"refined-coordinate-precondition"));
+            result.precondition = Some(self.live_precondition);
         }
         self.prepared = Some(prepared.clone());
         Ok(prepared)
@@ -32,6 +60,7 @@ impl FaultActionSink for RefineCoordinateActions {
         &mut self,
         transaction: ContentHash,
     ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        self.commits += 1;
         let mut prepared = self
             .prepared
             .take()
@@ -76,6 +105,10 @@ fn node_service_effect() -> EffectRequest {
     .unwrap_or_else(|error| panic!("invalid node service effect: {error}"))
 }
 
+fn recorded_precondition() -> ContentHash {
+    ContentHash::from_bytes(b"refined-coordinate-precondition")
+}
+
 #[test]
 fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
     let program = constant_program(
@@ -98,6 +131,44 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
     )
     .unwrap_or_else(|error| panic!("invalid coordinate binding: {error}"));
     let seed = ContentHash::from_bytes(b"refined-coordinate-seed");
+
+    let mut preview_runtime = FaultBindingRuntime::new(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid coordinate preview: {error}"));
+    let preview = preview_runtime
+        .preview_boundary_traced(coordinate(0), 0, &mut AcceptActions::default(), None)
+        .unwrap_or_else(|error| panic!("coordinate preview failed: {error}"));
+    assert_eq!(preview.actions.len(), 1);
+    assert_eq!(preview.actions[0].coordinate.retired_instructions, None);
+
+    let mut unrefined_runtime = FaultBindingRuntime::new(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid unrefined coordinate runtime: {error}"));
+    assert!(matches!(
+        unrefined_runtime.evaluate_boundary_traced(
+            coordinate(0),
+            0,
+            &mut AcceptActions::default(),
+            None,
+            &mut Vec::new(),
+        ),
+        Err(BindingRuntimeError::AdapterCommit(
+            FaultRuntimeError::IncompleteAdapterState
+        ))
+    ));
+
     let mut recorder = FaultBindingRuntime::new(
         &program,
         vec![binding.clone()],
@@ -115,6 +186,8 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             &mut RefineCoordinateActions {
                 retired_instructions: 73,
                 expected_prepared_retired: None,
+                live_precondition: recorded_precondition(),
+                commits: 0,
                 prepared: None,
             },
             None,
@@ -156,7 +229,7 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid coordinate replay: {error}"));
-    let mut mismatched_trace = trace;
+    let mut mismatched_trace = trace.clone();
     assert!(matches!(
         replay.evaluate_boundary_traced(
             coordinate(0),
@@ -164,6 +237,8 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             &mut RefineCoordinateActions {
                 retired_instructions: 74,
                 expected_prepared_retired: Some(73),
+                live_precondition: recorded_precondition(),
+                commits: 0,
                 prepared: None,
             },
             Some(&mut mismatched_trace),
@@ -177,14 +252,14 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
 
     let mut matching_replay = FaultBindingRuntime::new(
         &program,
-        vec![binding],
+        vec![binding.clone()],
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         seed,
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid matching coordinate replay: {error}"));
-    let mut matching_trace = mismatched_trace;
+    let mut matching_trace = trace.clone();
     matching_replay
         .evaluate_boundary_traced(
             coordinate(0),
@@ -192,6 +267,8 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
             &mut RefineCoordinateActions {
                 retired_instructions: 73,
                 expected_prepared_retired: Some(73),
+                live_precondition: recorded_precondition(),
+                commits: 0,
                 prepared: None,
             },
             Some(&mut matching_trace),
@@ -199,4 +276,36 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         )
         .unwrap_or_else(|error| panic!("matching coordinate replay failed: {error}"));
     assert_eq!(matching_trace.cursor, 1);
+
+    let mut recomputed_trace = trace;
+    recomputed_trace.mode = FaultReplayMode::RecomputedCause;
+    let mut divergent_replay = FaultBindingRuntime::new(
+        &program,
+        vec![binding],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid divergent-state replay: {error}"));
+    let mut divergent_sink = RefineCoordinateActions {
+        retired_instructions: 73,
+        expected_prepared_retired: Some(73),
+        live_precondition: ContentHash::from_bytes(b"divergent-live-precondition"),
+        commits: 0,
+        prepared: None,
+    };
+    assert!(matches!(
+        divergent_replay.evaluate_boundary_traced(
+            coordinate(0),
+            0,
+            &mut divergent_sink,
+            Some(&mut recomputed_trace),
+            &mut Vec::new(),
+        ),
+        Err(BindingRuntimeError::AdapterRejected(rejected))
+            if matches!(rejected.error, FaultRuntimeError::ReplayPreconditionMismatch { .. })
+    ));
+    assert_eq!(divergent_sink.commits, 0);
+    assert_eq!(recomputed_trace.cursor, 0);
 }
