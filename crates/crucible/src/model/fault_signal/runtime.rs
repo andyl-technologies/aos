@@ -694,8 +694,8 @@ impl ResolvedEffectTrace {
             .strip_prefix(RESOLVED_EFFECT_TRACE_MAGIC)
             .ok_or(FaultRuntimeError::VersionOrIdentityMismatch)?;
         checkpoint_codec::admit_input(bytes, resource_limits)?;
-        trace_codec::preflight(payload, resource_limits)?;
-        let trace = trace_codec::decode(payload, resource_limits)?;
+        let scratch_bytes = trace_codec::preflight(payload, resource_limits)?;
+        let trace = trace_codec::decode(payload, resource_limits, scratch_bytes)?;
         trace.validate(resource_limits)?;
         if trace_codec::encode(&trace, resource_limits)?.as_slice() != bytes {
             return Err(FaultRuntimeError::CheckpointEncoding);

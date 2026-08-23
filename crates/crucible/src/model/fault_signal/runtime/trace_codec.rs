@@ -22,8 +22,24 @@ pub(super) fn encode(
 pub(super) fn decode(
     payload: &[u8],
     limits: FaultResourceLimits,
+    scratch_bytes: usize,
 ) -> Result<ResolvedEffectTrace, FaultRuntimeError> {
-    let wire: TraceWire = ciborium::de::from_reader(payload).map_err(map_decode_error)?;
+    let _budget = super::super::fallible_decode::DecodeBudgetGuard::enter(limits);
+    let scratch_requested = u64::try_from(scratch_bytes)
+        .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+    let mut scratch = Vec::new();
+    scratch.try_reserve_exact(scratch_bytes).map_err(|_| {
+        resource(
+            "fat_checkpoint_bytes",
+            0,
+            scratch_requested,
+            limits.fat_checkpoint_bytes,
+            FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes,
+        )
+    })?;
+    scratch.resize(scratch_bytes, 0);
+    let wire: TraceWire =
+        ciborium::de::from_reader_with_buffer(payload, &mut scratch).map_err(map_decode_error)?;
     let count = u64::try_from(wire.work_items.values.len())
         .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
     let mut work_items = Vec::new();
@@ -54,7 +70,7 @@ pub(super) fn decode(
 pub(super) fn preflight(
     payload: &[u8],
     limits: FaultResourceLimits,
-) -> Result<(), FaultRuntimeError> {
+) -> Result<usize, FaultRuntimeError> {
     let mut cursor = CborCursor::new(payload);
     let fields = cursor.map_len()?;
     let mut records = 0_u64;
@@ -106,7 +122,7 @@ pub(super) fn preflight(
     if cursor.offset != payload.len() {
         return Err(FaultRuntimeError::CheckpointEncoding);
     }
-    Ok(())
+    Ok(cursor.max_scalar_bytes)
 }
 
 trait BoundField {
@@ -148,22 +164,27 @@ impl<'de, T: Deserialize<'de>, F: BoundField> Deserialize<'de> for BoundedVec<T,
             ) -> Result<Self::Value, A::Error> {
                 let hint = sequence.size_hint().unwrap_or(0);
                 let requested = u64::try_from(hint).unwrap_or(u64::MAX);
-                if requested > F::MAX {
+                let configured = super::super::fallible_decode::configured(F::FIELD, F::MAX);
+                let current = super::super::fallible_decode::collection_current(F::FIELD);
+                if current
+                    .checked_add(requested)
+                    .is_none_or(|total| total > configured || total > F::MAX)
+                {
                     return Err(serde::de::Error::custom(resource_message(
                         F::FIELD,
-                        0,
+                        current,
                         requested,
-                        F::MAX,
+                        configured,
                         F::MAX,
                     )));
                 }
                 let mut values = Vec::new();
-                values.try_reserve_exact(hint.min(1024)).map_err(|_| {
+                values.try_reserve_exact(hint).map_err(|_| {
                     serde::de::Error::custom(resource_message(
                         F::FIELD,
-                        0,
-                        requested.min(1024),
-                        F::MAX,
+                        current,
+                        requested,
+                        configured,
                         F::MAX,
                     ))
                 })?;
@@ -173,9 +194,10 @@ impl<'de, T: Deserialize<'de>, F: BoundField> Deserialize<'de> for BoundedVec<T,
                         if sequence.next_element::<IgnoredAny>()?.is_some() {
                             return Err(serde::de::Error::custom(resource_message(
                                 F::FIELD,
-                                current,
+                                super::super::fallible_decode::collection_current(F::FIELD)
+                                    .saturating_add(current),
                                 1,
-                                F::MAX,
+                                configured,
                                 F::MAX,
                             )));
                         }
@@ -185,9 +207,10 @@ impl<'de, T: Deserialize<'de>, F: BoundField> Deserialize<'de> for BoundedVec<T,
                         values.try_reserve(1).map_err(|_| {
                             serde::de::Error::custom(resource_message(
                                 F::FIELD,
-                                current,
+                                super::super::fallible_decode::collection_current(F::FIELD)
+                                    .saturating_add(current),
                                 1,
-                                F::MAX,
+                                configured,
                                 F::MAX,
                             ))
                         })?;
@@ -197,6 +220,8 @@ impl<'de, T: Deserialize<'de>, F: BoundField> Deserialize<'de> for BoundedVec<T,
                     };
                     values.push(value);
                 }
+                super::super::fallible_decode::commit_collection(F::FIELD, requested)
+                    .map_err(serde::de::Error::custom)?;
                 Ok(BoundedVec {
                     values,
                     field: PhantomData,
@@ -289,7 +314,7 @@ fn resource_message(
     configured: u64,
     hard: u64,
 ) -> String {
-    format!("crucible-resource-limit|{field}|{current}|{requested}|{configured}|{hard}")
+    super::super::fallible_decode::resource_message(field, current, requested, configured, hard)
 }
 
 fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
@@ -304,6 +329,7 @@ fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
         return FaultRuntimeError::CheckpointEncoding;
     };
     let field = match field {
+        "fat_checkpoint_bytes" => "fat_checkpoint_bytes",
         "thin_replay_events" => "thin_replay_events",
         "resolved_effect_records" => "resolved_effect_records",
         _ => return FaultRuntimeError::CheckpointEncoding,
@@ -329,11 +355,16 @@ fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
 struct CborCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
+    max_scalar_bytes: usize,
 }
 
 impl<'a> CborCursor<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            bytes,
+            offset: 0,
+            max_scalar_bytes: 0,
+        }
     }
 
     fn map_len(&mut self) -> Result<u64, FaultRuntimeError> {
@@ -358,6 +389,7 @@ impl<'a> CborCursor<'a> {
             return Err(FaultRuntimeError::CheckpointEncoding);
         }
         let length = self.argument(initial & 0x1f)?;
+        self.observe_scalar(length)?;
         self.take(length)
     }
 
@@ -370,7 +402,10 @@ impl<'a> CborCursor<'a> {
         let argument = self.argument(initial & 0x1f)?;
         match major {
             0 | 1 | 7 => Ok(()),
-            2 | 3 => self.take(argument).map(|_| ()),
+            2 | 3 => {
+                self.observe_scalar(argument)?;
+                self.take(argument).map(|_| ())
+            }
             4 => {
                 for _ in 0..argument {
                     self.skip_value(depth + 1)?;
@@ -428,5 +463,11 @@ impl<'a> CborCursor<'a> {
             .ok_or(FaultRuntimeError::CheckpointEncoding)?;
         self.offset = end;
         Ok(value)
+    }
+
+    fn observe_scalar(&mut self, length: u64) -> Result<(), FaultRuntimeError> {
+        let length = usize::try_from(length).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        self.max_scalar_bytes = self.max_scalar_bytes.max(length);
+        Ok(())
     }
 }

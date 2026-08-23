@@ -189,9 +189,9 @@ shape-line|crates/crucible/src/model/fault_signal/evaluator.rs|1983
 shape-line|crates/crucible/src/model/fault_signal/evaluator/codec.rs|667
 shape-line|crates/crucible/src/model/fault_signal/evaluator/math.rs|2067
 shape-line|crates/crucible/src/model/fault_signal/evaluator_test.rs|630
-shape-line|crates/crucible/src/model/fault_signal/mod.rs|1988
+shape-line|crates/crucible/src/model/fault_signal/mod.rs|1925
 shape-line|crates/crucible/src/model/fault_signal/network_effect.rs|1233
-shape-line|crates/crucible/src/model/fault_signal/node_effect.rs|1503
+shape-line|crates/crucible/src/model/fault_signal/node_effect.rs|1381
 shape-line|crates/crucible/src/model/fault_signal/opportunity.rs|1689
 shape-line|crates/crucible/src/model/fault_signal/plan.rs|2300
 shape-line|crates/crucible/src/model/fault_signal/plan_test.rs|1281

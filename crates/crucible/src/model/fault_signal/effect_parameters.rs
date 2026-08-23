@@ -299,7 +299,7 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let value = super::fallible_decode::deserialize_string(deserializer)?;
         Self::parse(value, HARD_EFFECT_PAYLOAD_BYTES).map_err(serde::de::Error::custom)
     }
 }
@@ -359,7 +359,7 @@ impl<'de> serde::Deserialize<'de> for OperationSet {
     where
         D: serde::Deserializer<'de>,
     {
-        let values = <Vec<FaultOperation> as serde::Deserialize>::deserialize(deserializer)?;
+        let values = super::fallible_decode::deserialize_vec(deserializer)?;
         Self::new(values).map_err(serde::de::Error::custom)
     }
 }
@@ -395,7 +395,7 @@ impl<'de> serde::Deserialize<'de> for ObjectIdSet {
     where
         D: serde::Deserializer<'de>,
     {
-        let values = <Vec<FaultObjectId> as serde::Deserialize>::deserialize(deserializer)?;
+        let values = super::fallible_decode::deserialize_vec(deserializer)?;
         Self::new(values).map_err(serde::de::Error::custom)
     }
 }
