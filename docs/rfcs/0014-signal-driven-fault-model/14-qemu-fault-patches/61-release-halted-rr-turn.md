@@ -79,10 +79,12 @@ contends on the BSP's lock. The BSP emits `B`, releases the lock, executes
 parks forever. A passing `P` therefore proves an AP acquired the lock at the
 helper-marked zero-instruction handoff, before the BSP's next guest instruction;
 eventual rotation at the ordinary 4096-instruction quantum cannot satisfy the
-gate: a non-distributable test QEMU replaces only the still-partial early-yield
-branch with an exact abort marker, retains the ordinary HLT and full-quantum
-paths, and must hit that marker while running the same live guest. If the
-critical PAUSE merely exhausted the ordinary quantum, the negative run would
-instead finish and fail the gate. The remaining APs acquire and release in turn
+gate: after issuing the `AAAB` console prefix, the guest writes a test marker
+immediately before the critical PAUSE. A non-distributable test QEMU arms only
+that CPU/site and aborts only if the marked PAUSE takes the still-partial
+early-yield branch; earlier startup/contention PAUSEs cannot satisfy the marker.
+It retains the ordinary HLT and full-quantum paths. If the critical PAUSE merely
+exhausted the ordinary quantum, the marker is cleared without abort and the
+negative run fails the gate. The remaining APs acquire and release in turn
 before the BSP emits `R`.
 INIT/SIPI delivery or an unrelated interrupt cannot false-green this evidence.
