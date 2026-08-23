@@ -547,6 +547,14 @@ socket; attachment rechecks its inode and exact peer UID/GID around capability
 negotiation before starting planner or executor work. Restart reopens the same
 object/ref directories while stale-socket recovery remains exact-owner
 conditional.
+The separately hosted executor endpoint has one coupled lifecycle owner: a
+shutdown closes assignment admission, signals active attempts, interrupts
+connections, and joins both connection and semantic workers. Terminal semantic
+worker failure closes the listener instead of leaving an apparently live but
+unusable socket. Dropping the unserved owner retains the socket namespace until
+the same semantic join completes. Concrete QEMU worker selection and its daemon
+flags remain an implementation gate before this endpoint is exposed as
+production porcelain.
 `--read-only` applies to both APIs and cannot be bypassed by a mutation grant in
 the campaign policy.
 

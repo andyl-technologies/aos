@@ -33,6 +33,8 @@
 //! fixed worker threads and their short supervisor reconciliation phases;
 //! [`executor_server`] owns the bounded authenticated Unix listener that lends
 //! cloneable executor-service handles to fixed connection workers;
+//! [`executor_service`] couples both owners into one fail-closed daemon
+//! lifecycle;
 //! [`exact_checkpoint_store`] owns durable streamed exact-checkpoint roots;
 //! [`exact_checkpoint_restore`] authenticates exact-pin selections or durable
 //! attempt-resume roots and streams their VMState into fail-closed guarded
@@ -81,6 +83,7 @@ pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_pool;
 pub mod executor_server;
+pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
 #[cfg(target_os = "linux")]
@@ -216,15 +219,19 @@ pub use executor_loopback::{
     serve_loopback_executor_once_with_timeouts,
 };
 pub use executor_pool::{
-    LocalExecutorPoolConfigError, LocalExecutorPoolReport, LocalExecutorPoolService,
-    LocalExecutorPoolServiceError, LocalExecutorPoolShutdownError, LocalExecutorWorkerPool,
-    MAX_LOCAL_EXECUTOR_WORKERS,
+    LocalExecutorPoolCompletion, LocalExecutorPoolConfigError, LocalExecutorPoolReport,
+    LocalExecutorPoolService, LocalExecutorPoolServiceError, LocalExecutorPoolShutdown,
+    LocalExecutorPoolShutdownError, LocalExecutorWorkerPool, MAX_LOCAL_EXECUTOR_WORKERS,
 };
 pub use executor_server::{
     ExecutorLoopbackListenerError, ExecutorLoopbackServer, ExecutorLoopbackServerConfig,
     ExecutorLoopbackServerConfigError, ExecutorLoopbackServerReport,
     ExecutorLoopbackServerShutdown, MAX_EXECUTOR_LISTENER_WORKERS,
     MAX_EXECUTOR_PENDING_CONNECTIONS, UnixPeerExecutorIdentity,
+};
+pub use executor_service::{
+    ExecutorLocalService, ExecutorLocalServiceError, ExecutorLocalServiceReport,
+    ExecutorLocalServiceShutdown,
 };
 pub use executor_supervisor::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,

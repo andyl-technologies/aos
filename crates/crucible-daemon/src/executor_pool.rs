@@ -8,7 +8,7 @@
 
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -331,6 +331,22 @@ where
         self.service.clone()
     }
 
+    /// Returns a cloneable sticky shutdown authority for this pool incarnation.
+    #[must_use]
+    pub fn shutdown_handle(&self) -> LocalExecutorPoolShutdown<L, V> {
+        LocalExecutorPoolShutdown {
+            shared: Arc::clone(&self.service.shared),
+        }
+    }
+
+    /// Returns a cloneable signal that completes after every worker exits.
+    #[must_use]
+    pub fn completion_handle(&self) -> LocalExecutorPoolCompletion {
+        LocalExecutorPoolCompletion {
+            state: Arc::clone(&self.service.shared.completion),
+        }
+    }
+
     /// Signals all active executions and prevents new assignment admission.
     pub fn request_shutdown(&self) {
         self.service.shared.request_shutdown();
@@ -370,6 +386,61 @@ where
             .lock()
             .map_err(|_| LocalExecutorPoolShutdownError::SupervisorPoisoned)?;
         Ok(self.service.shared.report(executor.supervisor()))
+    }
+}
+
+/// Cloneable sticky shutdown authority for one local executor worker pool.
+pub struct LocalExecutorPoolShutdown<L, V> {
+    shared: Arc<SharedExecutor<L, V>>,
+}
+
+impl<L, V> Clone for LocalExecutorPoolShutdown<L, V> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+impl<L, V> LocalExecutorPoolShutdown<L, V> {
+    /// Signals every active execution and prevents new assignment admission.
+    pub fn shutdown(&self) {
+        self.shared.request_shutdown();
+    }
+
+    /// Returns whether this pool has entered a terminal lifecycle state.
+    #[must_use]
+    pub fn is_shutdown(&self) -> bool {
+        self.shared.state.load(Ordering::Acquire) != POOL_RUNNING
+    }
+}
+
+/// Cloneable completion signal for one local executor worker-pool incarnation.
+#[derive(Clone)]
+pub struct LocalExecutorPoolCompletion {
+    state: Arc<PoolCompletionState>,
+}
+
+impl LocalExecutorPoolCompletion {
+    /// Returns whether every fixed worker thread has exited.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.state.is_finished()
+    }
+
+    /// Blocks until every fixed worker exits or synchronization is poisoned.
+    ///
+    /// Poison is treated as terminal completion so a containing service fails
+    /// closed instead of retaining a listener for a broken executor owner.
+    pub fn wait(&self) {
+        let Ok(wait) = self.state.wait.lock() else {
+            return;
+        };
+        drop(
+            self.state
+                .changed
+                .wait_while(wait, |_| !self.state.is_finished()),
+        );
     }
 }
 
@@ -532,6 +603,7 @@ struct SharedExecutor<L, V> {
     ready: Condvar,
     state: AtomicU8,
     worker_count: usize,
+    completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
 }
 
@@ -549,6 +621,7 @@ impl<L, V> SharedExecutor<L, V> {
             ready: Condvar::new(),
             state: AtomicU8::new(POOL_RUNNING),
             worker_count,
+            completion: Arc::new(PoolCompletionState::new(worker_count)),
             counters: PoolCounters::default(),
         }
     }
@@ -633,6 +706,59 @@ impl<L, V> SharedExecutor<L, V> {
     }
 }
 
+struct PoolCompletionState {
+    finished_workers: AtomicUsize,
+    worker_count: usize,
+    wait: Mutex<()>,
+    changed: Condvar,
+}
+
+impl PoolCompletionState {
+    fn new(worker_count: usize) -> Self {
+        Self {
+            finished_workers: AtomicUsize::new(0),
+            worker_count,
+            wait: Mutex::new(()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished_workers.load(Ordering::Acquire) >= self.worker_count
+    }
+
+    fn worker_finished(&self) {
+        let _wait = match self.wait.lock() {
+            Ok(wait) => wait,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _ =
+            self.finished_workers
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |finished| {
+                    Some(finished.saturating_add(1).min(self.worker_count))
+                });
+        self.changed.notify_all();
+    }
+}
+
+struct WorkerCompletion {
+    state: Arc<PoolCompletionState>,
+}
+
+impl WorkerCompletion {
+    fn new(state: &Arc<PoolCompletionState>) -> Self {
+        Self {
+            state: Arc::clone(state),
+        }
+    }
+}
+
+impl Drop for WorkerCompletion {
+    fn drop(&mut self) {
+        self.state.worker_finished();
+    }
+}
+
 #[derive(Default)]
 struct PoolCounters {
     executions: AtomicU64,
@@ -655,6 +781,7 @@ fn worker_loop<L, V, W>(
     V: AttemptAdmissionValidator + Send + Sync + 'static,
     W: LocalAttemptWorker,
 {
+    let _completion = WorkerCompletion::new(&shared.completion);
     loop {
         let Some(queued) = take_next_queued(&shared) else {
             return;

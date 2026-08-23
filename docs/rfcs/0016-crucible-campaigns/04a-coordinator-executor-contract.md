@@ -1527,8 +1527,15 @@ non-group/other-writable parent, same-owner stale-socket, configured-mode, and
 exact-inode conditional-teardown rules as the campaign endpoint. Distinct
 lifetime lock files let both endpoints share one secure directory without
 sharing namespace authority. The managed endpoint guard remains owned until
-listener join. Production worker selection and daemon flag wiring remain
-separate bootstrap responsibilities.
+listener join. One coupled local-service owner obtains the listener's component
+service only from its exact semantic worker pool. Sticky service shutdown first
+closes assignment admission and signals active execution cancellation, then
+interrupts socket work; listener exit always shuts down and joins every
+semantic worker. Conversely, terminal completion of all semantic workers closes
+the listener, and a poisoned worker result takes precedence over an ordinary
+listener stop. Dropping an owner before serving performs the same synchronous
+worker join before releasing the endpoint namespace. Production QEMU worker
+selection and daemon flag wiring remain separate bootstrap responsibilities.
 
 The single-host daemon persists two bounded operational record families:
 

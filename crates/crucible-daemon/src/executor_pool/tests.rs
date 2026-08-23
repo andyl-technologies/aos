@@ -4,8 +4,10 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef};
@@ -21,13 +23,13 @@ use crucible_campaign::{
     ControlRequest, CoverageProjection, DaemonEpoch, ExactRational, ExecutionRetentionIntent,
     ExecutorCapabilitySet, ExecutorClient, ExecutorCompatibilityProfile, ExecutorControlService,
     ExecutorDescription, ExecutorMaterializationCapability, ExecutorRejection,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, ExplorerPolicy,
-    FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, MeasurementSet, Observation, ObservationCandidate,
-    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
+    PropertyVerdictSet, Proposal, PuctPolicy, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId, SelectableDeclaration,
+    Selection, SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -39,8 +41,10 @@ use super::*;
 use crate::{
     AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
     AttemptExecutionInput, AttemptExecutionModel, AttemptExecutionProduct, AttemptWorkResult,
-    AttemptWorkerFailure, ExactCheckpointStore, ExecutorCapacity, MemoryAssignmentLedger,
-    RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    AttemptWorkerFailure, ExactCheckpointStore, ExecutorCapacity, ExecutorLocalService,
+    ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig,
+    LoopbackExecutorService, MemoryAssignmentLedger, RepositoryAttemptAdmission,
+    RepositoryAttemptWorker, UnixPeerExecutorIdentity,
 };
 
 struct TestDurableBackend {
@@ -135,6 +139,19 @@ struct BlockingWorker {
     entered: Arc<AtomicUsize>,
 }
 
+#[derive(Default)]
+struct DelayedCancellationState {
+    entered: bool,
+    canceled: bool,
+    release: bool,
+}
+
+type SharedDelayedCancellationState = Arc<(Mutex<DelayedCancellationState>, Condvar)>;
+
+struct DelayedCancellationWorker {
+    state: SharedDelayedCancellationState,
+}
+
 impl LocalAttemptWorker for BlockingWorker {
     type Error = &'static str;
 
@@ -146,6 +163,35 @@ impl LocalAttemptWorker for BlockingWorker {
         AttemptWorkResult::new(
             queued,
             Err(AttemptWorkerFailure::Canceled("shutdown cancellation")),
+        )
+    }
+}
+
+impl LocalAttemptWorker for DelayedCancellationWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        let (state, changed) = self.state.as_ref();
+        {
+            let mut state = state.lock().expect("delayed worker state");
+            state.entered = true;
+            changed.notify_all();
+        }
+        while !queued.cancellation().is_canceled() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut state = state.lock().expect("delayed worker state");
+        state.canceled = true;
+        changed.notify_all();
+        while !state.release {
+            state = changed.wait(state).expect("delayed worker wake");
+        }
+        drop(state);
+        AttemptWorkResult::new(
+            queued,
+            Err(AttemptWorkerFailure::Canceled(
+                "delayed shutdown cancellation",
+            )),
         )
     }
 }
@@ -517,6 +563,141 @@ fn worker_panic_fails_closed_and_releases_exact_reservation() {
         pool.shutdown_and_join(),
         Err(LocalExecutorPoolShutdownError::WorkerPanicked)
     ));
+}
+
+#[test]
+fn coupled_service_shutdown_interrupts_listener_and_joins_semantic_worker() {
+    let epoch = DaemonEpoch::from_bytes([0x73; 16]).expect("epoch");
+    let worker_state = Arc::new((
+        Mutex::new(DelayedCancellationState::default()),
+        Condvar::new(),
+    ));
+    let pool = pool(
+        epoch,
+        vec![DelayedCancellationWorker {
+            state: Arc::clone(&worker_state),
+        }],
+    );
+    let (directory, socket, listener, peer) = managed_executor_endpoint("coupled-shutdown");
+    let service = ExecutorLocalService::from_managed_listener(
+        listener,
+        pool,
+        peer,
+        ExecutorLoopbackServerConfig::default(),
+    )
+    .expect("coupled local executor");
+    let shutdown = service.shutdown_handle();
+    let serving = thread::spawn(move || service.serve());
+
+    let stream = UnixStream::connect(&socket).expect("connect executor client");
+    let mut client = LoopbackExecutorService::new(stream).expect("executor client");
+    assert!(matches!(
+        client
+            .submit_attempt(&request(epoch, 0x74))
+            .expect("submit blocked execution")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    wait_for_delayed_worker(&worker_state, |state| state.entered);
+
+    shutdown.shutdown();
+    wait_for_delayed_worker(&worker_state, |state| state.canceled);
+    assert!(socket.exists());
+    {
+        let (state, changed) = worker_state.as_ref();
+        let mut state = state.lock().expect("delayed worker state");
+        state.release = true;
+        changed.notify_all();
+    }
+    let report = serving
+        .join()
+        .expect("service thread")
+        .expect("clean coupled shutdown");
+    assert!(shutdown.is_shutdown());
+    assert_eq!(report.listener().accepted_connections(), 1);
+    assert_eq!(report.pool().executions(), 1);
+    assert_eq!(report.pool().terminal_stops(), 1);
+    assert_eq!(report.pool().active(), 0);
+    assert!(!socket.exists());
+    drop(directory);
+}
+
+#[test]
+fn dropping_unserved_coupled_owner_retains_endpoint_until_semantic_join() {
+    let epoch = DaemonEpoch::from_bytes([0x77; 16]).expect("epoch");
+    let worker_state = Arc::new((
+        Mutex::new(DelayedCancellationState::default()),
+        Condvar::new(),
+    ));
+    let pool = pool(
+        epoch,
+        vec![DelayedCancellationWorker {
+            state: Arc::clone(&worker_state),
+        }],
+    );
+    let mut direct = pool.service();
+    direct
+        .submit_attempt(&request(epoch, 0x78))
+        .expect("submit direct execution before binding");
+    wait_for_delayed_worker(&worker_state, |state| state.entered);
+
+    let (directory, socket, listener, peer) = managed_executor_endpoint("coupled-drop");
+    let service = ExecutorLocalService::from_managed_listener(
+        listener,
+        pool,
+        peer,
+        ExecutorLoopbackServerConfig::default(),
+    )
+    .expect("coupled local executor");
+    let dropping = thread::spawn(move || drop(service));
+
+    wait_for_delayed_worker(&worker_state, |state| state.canceled);
+    assert!(socket.exists());
+    {
+        let (state, changed) = worker_state.as_ref();
+        let mut state = state.lock().expect("delayed worker state");
+        state.release = true;
+        changed.notify_all();
+    }
+    dropping.join().expect("coupled owner drop");
+    assert!(!socket.exists());
+    drop(directory);
+}
+
+#[test]
+fn terminal_worker_failure_closes_listener_and_precedes_listener_result() {
+    let epoch = DaemonEpoch::from_bytes([0x75; 16]).expect("epoch");
+    let pool = pool(epoch, vec![PanickingWorker]);
+    let (directory, socket, listener, peer) = managed_executor_endpoint("coupled-panic");
+    let service = ExecutorLocalService::from_managed_listener(
+        listener,
+        pool,
+        peer,
+        ExecutorLoopbackServerConfig::default(),
+    )
+    .expect("coupled local executor");
+    let shutdown = service.shutdown_handle();
+    let serving = thread::spawn(move || service.serve());
+
+    let stream = UnixStream::connect(&socket).expect("connect executor client");
+    let mut client = LoopbackExecutorService::new(stream).expect("executor client");
+    assert!(matches!(
+        client
+            .submit_attempt(&request(epoch, 0x76))
+            .expect("accept panicking execution")
+            .disposition(),
+        SubmitAttemptDisposition::Accepted { .. }
+    ));
+    wait_until(Duration::from_secs(2), || shutdown.is_shutdown());
+
+    assert!(matches!(
+        serving.join().expect("service thread"),
+        Err(ExecutorLocalServiceError::Pool(
+            LocalExecutorPoolShutdownError::WorkerPanicked
+        ))
+    ));
+    assert!(!socket.exists());
+    drop(directory);
 }
 
 #[test]
@@ -950,6 +1131,51 @@ where
 {
     LocalExecutorWorkerPool::start(capability(epoch), store(), checkpoint_store(), workers)
         .expect("worker pool")
+}
+
+fn managed_executor_endpoint(
+    label: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    crate::ManagedExecutorLoopbackListener,
+    UnixPeerExecutorIdentity,
+) {
+    let directory = tempfile::tempdir().expect("endpoint directory");
+    let socket = directory.path().join(format!("{label}.sock"));
+    let user_id = rustix::process::geteuid().as_raw();
+    let group_id = rustix::process::getegid().as_raw();
+    let listener = ExecutorLoopbackEndpointConfig::new(&socket, user_id, group_id, 0o600)
+        .expect("endpoint configuration")
+        .bind()
+        .expect("managed endpoint");
+    (
+        directory,
+        socket,
+        listener,
+        UnixPeerExecutorIdentity::new(user_id, group_id),
+    )
+}
+
+fn wait_for_delayed_worker(
+    state: &SharedDelayedCancellationState,
+    predicate: impl Fn(&DelayedCancellationState) -> bool,
+) {
+    let (state, changed) = state.as_ref();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut state = state.lock().expect("delayed worker state");
+    while !predicate(&state) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "delayed worker timed out");
+        let (next, timeout) = changed
+            .wait_timeout(state, remaining)
+            .expect("delayed worker wake");
+        state = next;
+        assert!(
+            !timeout.timed_out() || predicate(&state),
+            "delayed worker timed out"
+        );
+    }
 }
 
 fn checkpoint_store() -> Arc<ExactCheckpointStore> {
