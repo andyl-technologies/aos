@@ -8,10 +8,12 @@
 mod app_random_selectable;
 mod reseed;
 
-pub(crate) use app_random_selectable::is_app_random_model_selection;
 pub use app_random_selectable::{
     AppRandomSelectable, AppRandomSelectableError, app_random_stream_belongs_to_node,
     validate_app_random_model_selection,
+};
+pub(crate) use app_random_selectable::{
+    is_app_random_model_selection, is_app_random_schedule_decision,
 };
 
 use std::collections::BTreeMap;

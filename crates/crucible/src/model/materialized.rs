@@ -22,6 +22,12 @@ impl RngStreamId {
         Self::new(DECISION_RNG_NAME_HASH_DOMAIN, name)
     }
 
+    /// Returns whether this stream uses the default decision-RNG domain.
+    #[must_use]
+    pub fn is_default_domain(&self) -> bool {
+        self.domain == DECISION_RNG_NAME_HASH_DOMAIN
+    }
+
     /// Builds a node-scoped stream id.
     #[must_use]
     pub fn for_node(name: impl Into<String>) -> Self {

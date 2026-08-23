@@ -1,11 +1,16 @@
-//! Integrated exploration of recorded application-randomness requests.
+//! Lazy typed branching of recorded application-randomness choices.
 //!
-//! Draw sites come only from causal [`Decision::AppRandom`] observations already
-//! present in a recorded schedule. Branches replace the observed served value at
-//! its original prefix, preserving the scenario draw cap instead of appending a
-//! second response for the same request.
+//! Live app-random requests are recorded as an exact [`Decision::RngDraw`]
+//! followed by a campaign [`Decision::Selection`]. Branching consumes one
+//! validated [`ChoiceDiscovery`] at that exact parent and emits only typed
+//! campaign selections. The legacy raw [`Decision::AppRandom`] schedule form
+//! remains readable for replay, but has no branch-generation entry point.
+
+use crucible_campaign::{ChoiceDiscovery, Selection, SelectionOrigin};
+use thiserror::Error;
 
 use super::*;
+use crate::{AppRandomSelectable, AppRandomSelectableError, SelectionDecision};
 
 /// Maximum deterministic alternatives sampled for one recorded draw.
 pub const MAX_APP_RANDOM_SAMPLES_PER_DRAW: u8 = 64;
@@ -35,16 +40,16 @@ impl AppRandomSampleBudget {
     }
 }
 
-/// Configuration for recorded app-random branch generation.
+/// Configuration for one lazy app-random branch point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AppRandomBranchConfig {
-    /// Validated number of alternatives sampled for each recorded draw.
+    /// Validated number of alternatives sampled for the recorded draw.
     pub samples_per_draw: AppRandomSampleBudget,
     /// Seed for deterministic value sampling.
     pub seed: Seed,
 }
 
-/// One recorded app-random request site available for branch exploration.
+/// One recorded typed app-random request site available for branch exploration.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AppRandomDrawSite {
     /// Node requesting random data.
@@ -57,147 +62,174 @@ pub struct AppRandomDrawSite {
     pub width: u8,
 }
 
-/// Result of app-random branch expansion.
+/// Result of one lazy typed app-random branch expansion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AppRandomBranchRun {
-    /// Sites derived from recorded causal decisions.
-    pub observed_sites: Vec<AppRandomDrawSite>,
-    /// Alternative decisions considered for branching.
+    /// Exact request site expanded by this call.
+    pub observed_site: AppRandomDrawSite,
+    /// Typed campaign selections considered for branching.
     pub decisions: Vec<Decision>,
     /// Frontier report for the generated children.
     pub report: FrontierReductionReport,
 }
 
-/// Derives unique draw sites from recorded app-random decisions.
-#[must_use]
-pub fn app_random_draw_sites_from_schedule(schedule: &Schedule) -> Vec<AppRandomDrawSite> {
-    observed_app_random_draws(schedule).into_keys().collect()
+/// Failure while resolving or expanding one typed app-random branch point.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AppRandomBranchError {
+    /// The exact parent does not end immediately after the request's RNG draw.
+    #[error("typed app-random branch parent does not end in an RNG draw")]
+    MissingParentDraw,
+    /// The schedule draw and selection evidence name different raw draws.
+    #[error("typed app-random selection evidence does not match its parent RNG draw")]
+    ParentDrawMismatch,
+    /// The supplied records do not form the standardized producer contract.
+    #[error(transparent)]
+    Selectable(#[from] AppRandomSelectableError),
+    /// Graph materialization or frontier enumeration failed.
+    #[error(transparent)]
+    Engine(#[from] EngineError),
 }
 
-/// Generates seeded alternatives for the app-random draws recorded in `schedule`.
-#[must_use]
+/// Generates typed campaign alternatives for one exact app-random branch point.
+///
+/// `parent` must end with the [`Decision::RngDraw`] paired with `observed`.
+/// `discovery` supplies the authenticated declaration, domain, and opportunity
+/// emitted by the live producer. The returned decisions replace only the
+/// observed selection; they retain the draw in the immutable prefix and bind
+/// every alternative to the exact parent branch point.
+///
+/// # Errors
+///
+/// Returns [`AppRandomBranchError`] when the parent/draw pairing is malformed,
+/// the discovery is not the standardized app-random contract, or the observed
+/// model sample cannot be reproduced.
 pub fn app_random_branch_decisions(
-    schedule: &Schedule,
+    parent: &Configuration,
+    observed: &SelectionDecision,
+    discovery: &ChoiceDiscovery,
     config: &AppRandomBranchConfig,
-) -> Vec<Decision> {
-    observed_app_random_draws(schedule)
-        .into_iter()
-        .flat_map(|(site, observed_value)| alternatives_for_site(&site, observed_value, config))
-        .collect()
+) -> Result<Vec<Decision>, AppRandomBranchError> {
+    let (selectable, observed_value) = resolve_app_random_site(parent, observed, discovery)?;
+    alternatives_for_site(parent, &selectable, observed_value, config)
+}
+
+fn resolve_app_random_site(
+    parent: &Configuration,
+    observed: &SelectionDecision,
+    discovery: &ChoiceDiscovery,
+) -> Result<(AppRandomSelectable, u64), AppRandomBranchError> {
+    let Some(Decision::RngDraw(draw)) = parent.schedule.decisions().last() else {
+        return Err(AppRandomBranchError::MissingParentDraw);
+    };
+    let selection = observed
+        .selection()
+        .map_err(AppRandomSelectableError::from)?;
+    let SelectionOrigin::ModelSample(evidence) = selection.origin() else {
+        return Err(AppRandomSelectableError::NotModelSample.into());
+    };
+    if evidence.draw() != draw.value {
+        return Err(AppRandomBranchError::ParentDrawMismatch);
+    }
+    let selectable = AppRandomSelectable::from_model_sample_records(
+        draw.stream.clone(),
+        &selection,
+        discovery.declaration(),
+        discovery.opportunity(),
+        discovery.domain(),
+    )?;
+    let observed = selectable.apply_selection(&selection, parent)?;
+    Ok((selectable, observed.value))
 }
 
 impl TemporalGraph {
-    /// Branches recorded app-random observations over bounded seeded alternatives.
+    /// Lazily branches one validated app-random choice at its exact parent.
     ///
-    /// Each alternative replaces one observed response at its original schedule
-    /// prefix. A schedule with no app-random observations produces no graph
-    /// mutations or children.
+    /// The caller chooses one branch point; this method never scans or eagerly
+    /// expands every draw in a retained schedule. A zero-sample budget records
+    /// no graph mutation.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::AppRandomDrawCapExceeded`] if a reconstructed
-    /// prefix violates the scenario draw cap, or another [`EngineError`] when a
-    /// prefix or child cannot be recorded.
+    /// Returns [`AppRandomBranchError`] when the parent/draw/discovery basis is
+    /// invalid, or graph checkpointing and frontier enumeration fail.
     pub fn branch_app_random(
         &mut self,
-        frontier: &Configuration,
+        parent: &Configuration,
+        observed: &SelectionDecision,
+        discovery: &ChoiceDiscovery,
         config: &AppRandomBranchConfig,
-    ) -> Result<AppRandomBranchRun, EngineError> {
-        let observed_sites = app_random_draw_sites_from_schedule(&frontier.schedule);
-        let mut decisions = Vec::new();
-        let mut report = FrontierReductionReport::default();
-        let mut expanded_sites = BTreeSet::new();
-        for (index, observed) in frontier.schedule.decisions().iter().enumerate() {
-            let Decision::AppRandom(observed) = observed else {
-                continue;
-            };
-            let site = site_from_decision(observed);
-            if !expanded_sites.insert(site.clone()) {
-                continue;
-            }
-            let alternatives = alternatives_for_site(&site, observed.value, config);
-            if alternatives.is_empty() {
-                continue;
-            }
-            let parent = Configuration {
-                def: frontier.def.clone(),
-                schedule: Schedule::from_decisions(
-                    frontier.schedule.decisions()[..index].iter().cloned(),
-                ),
-            };
-            self.record_checkpoint_closure(&parent)?;
-            let branch = self.enumerate_frontier_reduced(
-                &parent,
-                alternatives.clone(),
-                FrontierReductionPolicy::none(),
-            )?;
-            decisions.extend(alternatives);
-            report.explored.extend(branch.explored);
-            report.covered.extend(branch.covered);
+    ) -> Result<AppRandomBranchRun, AppRandomBranchError> {
+        let (selectable, observed_value) = resolve_app_random_site(parent, observed, discovery)?;
+        let decisions = alternatives_for_site(parent, &selectable, observed_value, config)?;
+        let observed_site = site_from_selectable(&selectable);
+        if decisions.is_empty() {
+            return Ok(AppRandomBranchRun {
+                observed_site,
+                decisions,
+                report: FrontierReductionReport::default(),
+            });
         }
+
+        self.record_checkpoint_closure(parent)?;
+        let report = self.enumerate_frontier_reduced(
+            parent,
+            decisions.clone(),
+            FrontierReductionPolicy::none(),
+        )?;
         Ok(AppRandomBranchRun {
-            observed_sites,
+            observed_site,
             decisions,
             report,
         })
     }
 }
 
-fn observed_app_random_draws(schedule: &Schedule) -> BTreeMap<AppRandomDrawSite, u64> {
-    let mut observed = BTreeMap::new();
-    for decision in schedule.decisions() {
-        if let Decision::AppRandom(random) = decision {
-            observed
-                .entry(site_from_decision(random))
-                .or_insert(random.value);
-        }
-    }
-    observed
-}
-
-fn site_from_decision(random: &AppRandomDecision) -> AppRandomDrawSite {
+fn site_from_selectable(selectable: &AppRandomSelectable) -> AppRandomDrawSite {
     AppRandomDrawSite {
-        node: random.node.clone(),
-        stream: random.stream.clone(),
-        request_id: random.request_id,
-        width: random.width.min(64),
+        node: selectable.node().clone(),
+        stream: selectable.stream().clone(),
+        request_id: selectable.request_id(),
+        width: selectable.width(),
     }
 }
 
 fn alternatives_for_site(
-    site: &AppRandomDrawSite,
+    parent: &Configuration,
+    selectable: &AppRandomSelectable,
     observed_value: u64,
     config: &AppRandomBranchConfig,
-) -> Vec<Decision> {
-    let mask = width_mask(site.width);
+) -> Result<Vec<Decision>, AppRandomBranchError> {
+    let mask = width_mask(selectable.width());
+    let site = site_from_selectable(selectable);
+    let mut sample_prefix = Vec::new();
+    sample_prefix.extend_from_slice(&config.seed.bytes());
+    append_len_prefixed(&mut sample_prefix, site.node.name.as_bytes());
+    append_len_prefixed(&mut sample_prefix, site.stream.domain.as_bytes());
+    append_len_prefixed(&mut sample_prefix, site.stream.name.as_bytes());
+    sample_prefix.extend_from_slice(&site.request_id.to_be_bytes());
+    sample_prefix.push(site.width);
+
     let mut values = BTreeSet::new();
     let mut alternatives = Vec::new();
     for sample in 0..u64::from(config.samples_per_draw.get()) {
-        let material = format!(
-            "seed={}\nnode={}\nstream_domain={}\nstream_name={}\nrequest_id={}\nwidth={}\nsample={sample}",
-            config.seed.to_hex(),
-            site.node.name,
-            site.stream.domain,
-            site.stream.name,
-            site.request_id,
-            site.width
-        );
-        let value = content_hash_low_u64(ContentHash::from_canonical_material(
-            "crucible.app-random.branch.v2",
+        let mut material = sample_prefix.clone();
+        material.extend_from_slice(&sample.to_be_bytes());
+        let value = content_hash_low_u64(ContentHash::from_canonical_hex_bytes(
+            "crucible.app-random.branch.v3",
             &material,
         )) & mask;
         if value == observed_value || !values.insert(value) {
             continue;
         }
-        alternatives.push(Decision::AppRandom(AppRandomDecision {
-            node: site.node.clone(),
-            stream: site.stream.clone(),
-            request_id: site.request_id,
-            width: site.width,
-            value,
-        }));
+        let selection: Selection = selectable.branch_selection(parent, value)?;
+        alternatives.push(Decision::Selection(SelectionDecision::new(&selection)));
     }
-    alternatives
+    Ok(alternatives)
+}
+
+fn append_len_prefixed(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 const fn width_mask(width: u8) -> u64 {

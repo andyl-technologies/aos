@@ -100,7 +100,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 - [ ] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
   search surfaces to publish environment choice opportunities without weakening typed
   effect adapters.
-- [ ] **T-CAM-2.7** Route application randomness through the integer selectable
+- [x] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
 - [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
   integral choices, exercise a pending selection across checkpoint/replay, and
@@ -111,17 +111,21 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
-The current incremental checkpoint implements the pure application-random
-normalization and application contract, executor-side verification of uniform
-model samples, and live producer routing. The scheduler treats the plugin's
-legacy `AppRandom` result as untrusted transport, reproduces the served value
-from its named seeded stream, records canonical `RngDraw` plus `Selection`, and
-hands the self-contained discovery records to the quantum result. Standardized
-typed samples consume the existing scenario draw cap, and checkpoint relaunch
-recovers per-node positions from the authoritative named-stream cursor. The
-legacy raw-width branch generator and retained legacy schedule entries remain;
-therefore T-CAM-2.3 and T-CAM-2.7 intentionally remain unchecked until their
-migration/rejection policy and the real-guest flight land.
+The application-random path now implements the pure normalization and
+application contract, executor-side verification of uniform model samples, live
+producer routing, and lazy typed branch generation. The scheduler treats the
+plugin's legacy `AppRandom` result as untrusted transport, reproduces the served
+value from its named seeded stream, records canonical `RngDraw` plus
+`Selection`, and hands the self-contained discovery records to the quantum
+result. One exact-parent branch operation consumes those validated records
+and emits only `CampaignBranch` selections; the parallel raw-width generator is
+removed. Model samples and typed replacements consume the existing scenario
+draw cap, and checkpoint relaunch recovers per-node positions from the
+authoritative named-stream cursor. Retained legacy `AppRandom` schedule entries
+remain readable and replayable but are not branchable; re-execution through the
+live producer is the fail-closed conversion path. The broader legacy-decision
+migration policy and Phase 2 real-guest flight remain under T-CAM-2.3 and
+T-CAM-2.8 respectively.
 
 ## 11.5 Phase 3 — Measurements and objectives
 
