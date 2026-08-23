@@ -2,6 +2,76 @@
 
 use super::*;
 
+pub(super) fn retain_committed_evidence(
+    committed: &mut Vec<(ContentHash, CommittedQemuActionEvidence)>,
+    action: ContentHash,
+    evidence: CommittedQemuActionEvidence,
+) -> Result<(), FaultActionCommitError> {
+    if committed.iter().any(|(retained, _)| *retained == action) {
+        return Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ));
+    }
+    committed.push((action, evidence));
+    Ok(())
+}
+
+pub(super) fn finalize_staged_result(
+    results: &mut [PreparedActionResult],
+    action: ContentHash,
+    precondition: ContentHash,
+    coordinate: u64,
+    evidence: ContentHash,
+) -> Result<(), FaultActionCommitError> {
+    let result = results
+        .iter_mut()
+        .find(|result| result.action == action && result.precondition.is_none())
+        .ok_or(FaultActionCommitError::Fatal(
+            FaultRuntimeError::IncompleteAdapterState,
+        ))?;
+    result.precondition = Some(precondition);
+    result.observation.coordinate.retired_instructions = Some(coordinate);
+    result.observation.evidence = evidence;
+    Ok(())
+}
+
+pub(super) fn typed_command_header(
+    prepared: &PreparedTypedNodeAction,
+    coordinate: u64,
+    sequence: u64,
+    flags: u16,
+    expected_precondition_hash: [u8; 32],
+) -> Result<FaultCommandHeaderV1, FaultActionCommitError> {
+    let payload_length = u32::try_from(prepared.payload.len()).map_err(|_source| {
+        FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch)
+    })?;
+    Ok(FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: prepared.command_kind,
+        command_flags: flags,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: sequence,
+        target_node_hash: qemu_fault_target_hash(&prepared.node.name),
+        target_icount: coordinate,
+        authorization_ceiling_icount: coordinate,
+        binding_hash: ContentHash::from_canonical_material(
+            "crucible.fault-binding.v1",
+            prepared.action.binding.as_str(),
+        )
+        .bytes,
+        opportunity_hash: prepared
+            .action
+            .opportunity
+            .map_or([0; 32], |hash| hash.bytes),
+        expected_precondition_hash,
+        payload_hash: *blake3::hash(&prepared.payload).as_bytes(),
+        payload_offset: 0,
+        payload_length,
+    })
+}
+
 pub(super) fn memory_evidence_matches(
     evidence: &MemoryMutationEvidenceV1,
     payload: &MemoryMutationPayloadV1,
@@ -117,9 +187,12 @@ pub(super) fn result_evidence_hash(
     header: &crucible_shmem::FaultResultHeaderV1,
     payload: &[u8],
 ) -> ContentHash {
-    let mut material = header.encode().to_vec();
-    material.extend_from_slice(payload);
-    ContentHash::from_bytes(&material)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&header.encode());
+    hasher.update(payload);
+    ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    }
 }
 
 pub(super) fn verify_qemu_evidence_hash(
@@ -153,14 +226,4 @@ pub(super) fn transaction_observation(
         opportunity: action.opportunity,
         evidence,
     }
-}
-
-pub(super) fn transaction_observation_at(
-    action: &ResolvedBindingAction,
-    retired_instructions: u64,
-    evidence: ContentHash,
-) -> FaultObservation {
-    let mut observation = transaction_observation(action, evidence);
-    observation.coordinate.retired_instructions = Some(retired_instructions);
-    observation
 }

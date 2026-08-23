@@ -84,6 +84,12 @@ pub enum FaultTransportError {
         /// Rejected payload length.
         len: usize,
     },
+    /// The consumer could not allocate the owned payload before releasing it.
+    #[error("fault payload allocation failed for {requested} bytes")]
+    PayloadAllocationFailed {
+        /// Exact payload byte count requested from the allocator.
+        requested: usize,
+    },
     /// Producer and consumer indices describe more live entries than capacity.
     #[error("fault ring indices are corrupt: read={read} write={write} capacity={capacity}")]
     CorruptRingIndices {

@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "binding_runtime/refined_coordinate_test.rs"]
 mod refined_coordinate;
+#[path = "binding_runtime/rollback_test.rs"]
+mod rollback;
 
 struct NoArtifacts;
 #[derive(Default)]
@@ -11,12 +13,6 @@ struct AcceptActions {
     prepared: Option<PreparedActionBatch>,
 }
 struct RejectActions;
-#[derive(Default)]
-struct MismatchedActions {
-    prepared: bool,
-    aborted: bool,
-    committed: bool,
-}
 
 #[derive(Default)]
 struct CountingActions {
@@ -210,37 +206,6 @@ fn network_control_opportunities_only_match_their_typed_transform_contract() {
     ));
 }
 
-impl FaultActionSink for MismatchedActions {
-    fn prepare_batch(
-        &mut self,
-        _actions: &[ResolvedBindingAction],
-    ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
-        self.prepared = true;
-        Ok(PreparedActionBatch {
-            transaction: ContentHash::from_bytes(b"malformed-transaction"),
-            results: Vec::new(),
-        })
-    }
-
-    fn commit_batch(
-        &mut self,
-        transaction: ContentHash,
-    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
-        self.committed = true;
-        self.prepared = false;
-        Ok(PreparedActionBatch {
-            transaction,
-            results: Vec::new(),
-        })
-    }
-
-    fn abort_batch(&mut self, _transaction: ContentHash) -> Result<(), FaultRuntimeError> {
-        self.prepared = false;
-        self.aborted = true;
-        Ok(())
-    }
-}
-
 impl SignalArtifactProvider for NoArtifacts {
     fn inverse_cdf_table(
         &self,
@@ -431,7 +396,7 @@ fn persistent_activation_is_installed_once_and_retains_values() {
     .unwrap_or_else(|error| panic!("invalid test binding: {error}"));
     let mut runtime = FaultBindingRuntime::new(
         &program,
-        vec![binding],
+        vec![binding.clone()],
         &NoArtifacts,
         SignalBoundarySnapshot::default(),
         ContentHash::from_bytes(b"seed"),
@@ -906,52 +871,6 @@ fn adapter_rejection_rolls_back_the_entire_boundary() {
         .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("retry after rollback failed: {error}"));
     assert!(!accepted.actions.is_empty());
-}
-
-#[test]
-fn malformed_adapter_success_rolls_back_the_entire_boundary() {
-    let program = constant_program(
-        SignalValue::Bool(true),
-        SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)
-            .unwrap_or_else(|error| panic!("invalid test shape: {error}")),
-    );
-    let binding = FaultBinding::new(
-        object_id("binding-result-mismatch"),
-        vec![signal_id("output")],
-        BindingSampling::AtBoundary,
-        BindingMapping::ActiveWhenTrue { invert: false },
-        TargetSelector::Exact(target_set()),
-        [FaultPhase::Admit].into_iter().collect(),
-        availability_effect(),
-        None,
-        BindingSearchPolicy::Fixed,
-        observability(),
-        &program,
-    )
-    .unwrap_or_else(|error| panic!("invalid test binding: {error}"));
-    let mut runtime = FaultBindingRuntime::new(
-        &program,
-        vec![binding],
-        &NoArtifacts,
-        SignalBoundarySnapshot::default(),
-        ContentHash::from_bytes(b"seed"),
-        FaultResourceLimits::default(),
-    )
-    .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
-
-    let mut sink = MismatchedActions::default();
-    let result = runtime.evaluate_boundary(coordinate(0), 0, &mut sink);
-    assert!(sink.aborted);
-    assert!(!sink.committed);
-    assert!(matches!(result, Err(BindingRuntimeError::AdapterResult)));
-    assert!(!sink.prepared);
-    assert!(runtime.active().entries().is_empty());
-    assert!(runtime.states().values().all(|state| !state.active));
-    assert!(
-        runtime
-            .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
-            .is_ok()
-    );
 }
 
 #[test]

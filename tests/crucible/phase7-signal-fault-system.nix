@@ -88,6 +88,15 @@ in
             -p crucible \
             --lib \
             -- --list > "$crucible_lib_tests"
+          qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- --list > "$qemu_lib_tests"
 
           run_exact_crucible_test() {
             test_name="$1"
@@ -98,6 +107,19 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
+              --lib "$test_name" \
+              -- --exact --test-threads=1
+          }
+
+          run_exact_qemu_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$qemu_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
               --lib "$test_name" \
               -- --exact --test-threads=1
           }
@@ -176,6 +198,12 @@ in
             model::fault_signal::fallible_decode::tests::nested_sequence_allocation_uses_the_authored_fat_checkpoint_coordinate
           run_exact_crucible_test \
             model::fault_signal::execution_runtime::replay_tests::fault_runtime_checkpoint_preflights_authored_record_count_before_decode
+          run_exact_crucible_test \
+            model::fault_signal::binding_runtime::tests::rollback::malformed_adapter_success_rolls_back_the_entire_boundary
+          run_exact_crucible_test \
+            model::fault_signal::tests::allocation_free_vector_element_type_preserves_the_boxed_wire_shape
+          run_exact_qemu_test \
+            fault_action_sink::tests::staged_qemu_results_and_evidence_use_reserved_storage
 
           cargo test \
             --frozen \

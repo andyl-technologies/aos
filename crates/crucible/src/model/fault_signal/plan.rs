@@ -337,7 +337,7 @@ impl FaultSignalPlan {
             }
         }
         let expected_trajectory_shape = SignalShape {
-            value_type: SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+            value_type: SignalValueType::Vector3(SignalVectorElementType::I64),
             unit: SignalUnit::Millimetres,
             scale_decimal_exponent: 0,
         };

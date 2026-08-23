@@ -116,7 +116,7 @@ shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1817
 shape-line|crates/crucible-qemu/examples/crucible-qemu-fingerprint.rs|653
 shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|716
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1568
-shape-line|crates/crucible-qemu/src/fault_action_sink.rs|996
+shape-line|crates/crucible-qemu/src/fault_action_sink.rs|970
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/host_setup.rs|1643
@@ -182,9 +182,9 @@ shape-line|crates/crucible/src/model/exploration.rs|2471
 shape-line|crates/crucible/src/model/failure/material.rs|1398
 shape-line|crates/crucible/src/model/failure/model.rs|2637
 shape-line|crates/crucible/src/model/family.rs|1299
-shape-line|crates/crucible/src/model/fault_signal/authoring/signal_codec.rs|930
+shape-line|crates/crucible/src/model/fault_signal/authoring/signal_codec.rs|935
 shape-line|crates/crucible/src/model/fault_signal/authoring/target_resolution.rs|695
-shape-line|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|1562
+shape-line|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|1480
 shape-line|crates/crucible/src/model/fault_signal/evaluator.rs|1983
 shape-line|crates/crucible/src/model/fault_signal/evaluator/codec.rs|667
 shape-line|crates/crucible/src/model/fault_signal/evaluator/math.rs|2067
@@ -197,8 +197,8 @@ shape-line|crates/crucible/src/model/fault_signal/plan.rs|2300
 shape-line|crates/crucible/src/model/fault_signal/plan_test.rs|1281
 shape-line|crates/crucible/src/model/fault_signal/runtime.rs|930
 shape-line|crates/crucible/src/model/fault_signal/spatial.rs|2042
-shape-line|crates/crucible/src/model/fault_signal/trace.rs|1455
-shape-line|crates/crucible/src/model/fault_signal/trace_import.rs|1231
+shape-line|crates/crucible/src/model/fault_signal/trace.rs|1459
+shape-line|crates/crucible/src/model/fault_signal/trace_import.rs|1232
 shape-line|crates/crucible/src/model/fault_signal/validation.rs|1395
 shape-line|crates/crucible/src/model/material.rs|1385
 shape-line|crates/crucible/src/model/materialized.rs|1323

@@ -87,7 +87,7 @@ pub fn enqueue_fault_command(
 /// # Errors
 ///
 /// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, or arithmetic overflow.
+/// inconsistent reservation framing, allocation refusal, or arithmetic overflow.
 pub fn dequeue_fault_command(
     ring: &RingHeader,
     slots: &[FaultCommandSlotV1],
@@ -243,7 +243,7 @@ pub fn can_enqueue_fault_result(
 /// # Errors
 ///
 /// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, or arithmetic overflow.
+/// inconsistent reservation framing, allocation refusal, or arithmetic overflow.
 pub fn dequeue_fault_result(
     ring: &RingHeader,
     slots: &[FaultResultSlotV1],
@@ -463,10 +463,17 @@ pub(crate) fn copy_reserved_payload(
     let physical_end = physical_start
         .checked_add(payload_len)
         .ok_or(FaultTransportError::ArithmeticOverflow)?;
-    arena
+    let payload = arena
         .get(physical_start..physical_end)
-        .map(<[u8]>::to_vec)
-        .ok_or(FaultTransportError::CorruptReservation)
+        .ok_or(FaultTransportError::CorruptReservation)?;
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(payload_len).map_err(|_| {
+        FaultTransportError::PayloadAllocationFailed {
+            requested: payload_len,
+        }
+    })?;
+    owned.extend_from_slice(payload);
+    Ok(owned)
 }
 
 pub(crate) fn validate_envelope_reservation(
