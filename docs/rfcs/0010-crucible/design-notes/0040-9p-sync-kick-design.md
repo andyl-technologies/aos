@@ -50,7 +50,7 @@ package also builds hermetically from source.
 2. the host sub-node publishes and delivers a future completion horizon;
 3. the guest progresses past completion and closes its scheduler ceiling,
    either by retirement or by a published idle wake beyond the ceiling;
-4. a second run under host load reproduces the same modeled completion latency;
+4. a second run under bounded scheduler preemption reproduces the same modeled completion latency;
 5. delaying the due response's physical ring write changes only wall time.
 
 Both gates pass. The live run forwards Linux's `Tversion`, computes an

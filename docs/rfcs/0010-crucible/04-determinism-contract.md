@@ -863,7 +863,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   - Live per-vCPU uniformity evidence is provided by
     `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (frozen `-smp 4` pin,
     corroborated at `-smp 2`): every vCPU's register-file digest is sampled and is
-    byte-identical across two runs (the second under host CPU load) plus a restart
+    byte-identical across two runs (the second under bounded scheduler preemption) plus a restart
     probe, so the uniform `-cpu` pin and node-icount-derived per-vCPU TSC/RNG
     (E23) produce a deterministic, uniform per-vCPU architectural state.
     Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
@@ -876,7 +876,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     used by the plugin planner, and commands delivery to the other vCPU through
     the ABI-v5 mailbox and `qemu_plugin_inject_preemption`. The exact delivery,
     mailbox acknowledgement, terminal fingerprint, and host-observable schedule
-    repeat byte-identically under host CPU load and match `SimDouble`.
+    repeat byte-identically under bounded scheduler preemption and match `SimDouble`.
 - [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection

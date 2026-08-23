@@ -96,7 +96,7 @@ fn run() -> Result<(), String> {
             .with_fingerprint(QemuLaunchPluginSwitch::On)
             .with_accelerator()
             .with_console_capture()
-            .with_second_run_host_load(false);
+            .with_second_run_scheduler_preemption(false);
     let mut node = launch_qemu_live_node(
         &config,
         &capture_directory,

@@ -1013,7 +1013,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   discharge: a Linux guest's explicit sector write is computed by the host
   servicer, remains invisible until its future delivery icount, then crosses
   `SLOT_BLK_IO` and releases the guest. Delaying response publication by 100 ms
-  under host CPU load changes neither the modeled completion horizon nor the
+  under bounded scheduler preemption changes neither the modeled completion horizon nor the
   normalized request/delivery stream.
 - [x] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
   positive latency floor at the link, clamp sub-floor latency faults, trigger the

@@ -412,7 +412,7 @@ in
           grep -Fxq PASS "$ninep_result"
           grep -Fxq 'gate=gate:live-9p-io' "$ninep_result"
           grep -Fxq 'sim_leg_forwarded=true' "$ninep_result"
-          grep -Fxq 'deterministic_under_host_load=true' "$ninep_result"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$ninep_result"
 
           node_result=${liveNodeLifecycle}/result
           grep -Fxq PASS "$node_result"

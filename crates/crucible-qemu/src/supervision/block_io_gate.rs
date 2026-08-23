@@ -31,7 +31,7 @@ use crucible_shmem::{
     mmap_setup_region,
 };
 
-use self::support::{GateSendAuthorizer, HostLoad};
+use self::support::{GateSendAuthorizer, HostAdversary};
 use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
     QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
@@ -66,8 +66,6 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the block-I/O run.
 const GATE_MEMORY_MIB: u32 = 128;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while driving and servicing the guest.
 const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Consecutive no-progress polls (at [`PRIME_POLL_INTERVAL`]) before the drive
@@ -95,7 +93,7 @@ pub struct QemuLiveBlockIoGateConfig {
     device_size_bytes: u64,
     busy_ceiling_icount: u64,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
     transport_reset_probe: bool,
 }
 
@@ -120,7 +118,7 @@ impl QemuLiveBlockIoGateConfig {
             device_size_bytes: DEFAULT_DEVICE_SIZE_BYTES,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
             completion_timeout: Duration::from_secs(60),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
             transport_reset_probe: false,
         }
     }
@@ -160,10 +158,13 @@ impl QemuLiveBlockIoGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 
@@ -226,10 +227,10 @@ pub struct QemuLiveBlockIoReport {
     pub diagnostics: BlockIoDiagnosticsSnapshot,
     /// The reference run's node shut down cleanly.
     pub orderly_child_exit: bool,
-    /// The second run (under host CPU load) matched the first observation.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second run.
-    pub host_load_applied: bool,
+    /// The second run (under bounded scheduler preemption) matched the first observation.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second run.
+    pub scheduler_preemption_applied: bool,
     /// The second run delayed a due host response without changing observations.
     pub delayed_response_applied: bool,
     /// The host-wins leg finished COMPUTE before the guest reached completion.
@@ -284,8 +285,8 @@ pub fn run_qemu_live_block_io_gate(
             advance: probe.advance,
             diagnostics: probe.diagnostics,
             orderly_child_exit: probe.orderly_child_exit,
-            deterministic_under_host_load: false,
-            host_load_applied: false,
+            deterministic_under_scheduler_preemption: false,
+            scheduler_preemption_applied: false,
             delayed_response_applied: false,
             host_wins_race_proven: false,
             guest_wins_race_proven: false,
@@ -320,8 +321,8 @@ pub fn run_qemu_live_block_io_gate(
         advance: reference.advance,
         diagnostics: reference.diagnostics,
         orderly_child_exit: reference.orderly_child_exit,
-        deterministic_under_host_load: true,
-        host_load_applied: config.second_run_host_load,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied: config.second_run_scheduler_preemption,
         delayed_response_applied: guest_wins.race.guest_won_race,
         host_wins_race_proven: true,
         guest_wins_race_proven: true,
@@ -338,7 +339,7 @@ fn console_value<'a>(console: &'a str, prefix: &str) -> Option<&'a str> {
         .find_map(|line| line.trim().strip_prefix(prefix))
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Synchronous,
@@ -355,7 +356,7 @@ impl RunRole {
         }
     }
 
-    const fn applies_host_load(self) -> bool {
+    const fn applies_scheduler_preemption(self) -> bool {
         matches!(self, Self::GuestWins)
     }
 
@@ -396,8 +397,6 @@ fn run_one_scenario(
             source,
         }
     })?;
-
-    let host_load = HostLoad::start_if(role.applies_host_load() && config.second_run_host_load);
 
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
     if let Some(cmdline) = &config.kernel_cmdline {
@@ -458,6 +457,13 @@ fn run_one_scenario(
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveBlockIoGateError::SetupAckNotReady);
     }
+    // Begin the bounded worker adjacent to the block workload; package and
+    // process setup must not consume the finite preemption budget.
+    let host_adversary = HostAdversary::start_if(
+        role.applies_scheduler_preemption() && config.second_run_scheduler_preemption,
+        child.process_id(),
+    )
+    .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
     let mut console = config
         .transport_reset_probe
         .then(|| {
@@ -543,13 +549,16 @@ fn run_one_scenario(
     // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
     // if it is still alive, so no QEMU is orphaned on an early return.
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
+    if let Some(host_adversary) = host_adversary {
+        host_adversary
+            .finish()
+            .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
+    }
     let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
     drop(hot_path);
     drop(setup);
     drop(child);
-    drop(host_load);
-
     let canonical_log = canonical_block_io_log(&completion_log.delivered)?;
     Ok(BlockIoRunOutcome {
         advance,

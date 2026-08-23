@@ -9,7 +9,7 @@
   # fingerprint sample it publishes into its per-node slot at each boundary. The
   # sample carries every vCPU's register-file digest (exactly 0..N) plus the
   # authoritative round-robin cursor. The whole scenario runs twice (the second
-  # under host CPU load) and must reproduce byte-for-byte.
+  # under bounded scheduler preemption) and must reproduce byte-for-byte.
   #
   # This is the M3 live keystone: the Rust plugin drives a real multi-vCPU busy
   # guest deterministically at the frozen -smp 4 pin. It certifies live (both this
@@ -65,7 +65,7 @@ in
     # steadily through the sampled aggregate-icount targets before any idle park.
     GUEST_KERNEL_APPEND = "${s11Guest.kernelAppend} nohz=off";
     CRUCIBLE_FP_TIMEOUT_SECS = timeoutSecs;
-    CRUCIBLE_FP_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_FP_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
     CRUCIBLE_FP_PROBE_ICOUNT = probeIcount;
     CRUCIBLE_FP_SMP_VCPUS = smpVcpus;
     CRUCIBLE_FP_MEMORY_MIB = memoryMib;
@@ -144,7 +144,8 @@ in
           grep -Fxq 'rr_switch_quantum=4096' "$report"
           grep -Eq '^matching_final_fingerprint=[0-9a-f]{64}$' "$report"
           grep -Fxq 'deterministic_run_twice=true' "$report"
-          grep -Fxq 'second_run_host_load=true' "$report"
+          grep -Fxq 'second_run_scheduler_preemption=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Eq "^probe_prefix_equal_at_[0-9]+=true$" "$report"
           grep -Eq '^probe_count=[1-9][0-9]*$' "$report"
           # Full-component run-twice determinism (registers + RR cursor + RAM +

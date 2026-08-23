@@ -712,7 +712,7 @@ instruction-primary.
   - **Live corroboration (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a single
     live node (the Rust control plugin as sole time authority) is driven to a
     fixed ascending icount cadence and the whole scenario runs twice, the second
-    under deliberate host CPU load. Both runs produce a byte-identical
+    under bounded scheduler preemption. Both runs produce a byte-identical
     fingerprint stream whose per-vCPU retired-instruction counts and per-boundary
     aggregate icount are the time-derived fields — a bit-identical
     `(icount, virtual_time)` trajectory, since virtual time is the icount

@@ -1012,7 +1012,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
-        .with_second_run_host_load(false)
+        .with_second_run_scheduler_preemption(false)
         .with_process_generation(generation);
         if let Some(capabilities) = source
             .world()

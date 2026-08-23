@@ -46,7 +46,8 @@ in
           grep -Fq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' ${./phase2-qemu-live-plugin-fingerprint.nix}
           grep -Fxq PASS "${liveFingerprint}/result"
           grep -Fxq 'synchronous_oracle_enabled=false' "${liveFingerprint}/result"
-          grep -Fxq 'second_run_host_load=true' "${liveFingerprint}/result"
+          grep -Fxq 'second_run_scheduler_preemption=true' "${liveFingerprint}/result"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "${liveFingerprint}/result"
           grep -Fxq 'sample_count=5' "${liveFingerprint}/result"
           grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "${liveFingerprint}/result"
           grep -Fxq 'aggregate_icount_equals_target=true' "${liveFingerprint}/result"

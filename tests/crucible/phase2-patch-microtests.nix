@@ -146,7 +146,7 @@
           qemu_package=${qemuPackage}
           qemu_package_version=${qemuPackage.version}
           real_smp_vcpus=4
-          host_load_adversary=true
+          host_adversary=bounded-scheduler-preemption
           canonical_trace_byte_identical=true
           deterministic_ipi_evidence=true
           rcu_quiescence_bounded_by_rr_quantum=true
@@ -286,7 +286,7 @@
           qemu_package=${qemuPackage}
           qemu_package_version=${qemuPackage.version}
           real_smp_vcpus=4
-          host_load_adversary=true
+          host_adversary=bounded-scheduler-preemption
           canonical_trace_byte_identical=true
           deterministic_ipi_evidence=true
           zero_icount_startup_kick_preserved=true
