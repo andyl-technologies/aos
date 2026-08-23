@@ -17,11 +17,22 @@
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
   upgradeToplevel = fixture.consumerUpgradeSystem.config.system.build.toplevel;
+  upgradeImage = fixture.consumerUpgradeSystem.config.system.build.image.raw;
+  upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
+  upgradeImageInfo = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.info;
+  upgradeUki = fixture.consumerUpgradeSystem.config.system.build.uki;
   publisherClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixture.toolV1
       fixture.toolV2
       upgradeToplevel
+      upgradeImage
+      upgradeImageDisk
+      upgradeImageInfo
+      upgradeUki
+      pkgs.binutils
+      pkgs.sbsigntools
+      pkgs.systemd
     ];
     pname = "native-hub-publisher-closure-info";
   };
@@ -75,6 +86,10 @@ in {
       TOOL_V2 = "${fixture.toolV2}"
       HELPER_V2 = "${fixture.helperV2}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
+      UPGRADE_IMAGE = "${upgradeImage}"
+      UPGRADE_IMAGE_DISK = "${upgradeImageDisk}"
+      UPGRADE_IMAGE_INFO = "${upgradeImageInfo}"
+      UPGRADE_UKI = "${upgradeUki}"
       CLOSURE_INFO = "${publisherClosureInfo}"
       OPERATOR_PATH = ":".join(
           [
@@ -281,6 +296,10 @@ in {
           {NIX_STORE} --check-validity {TOOL_V2}
           {NIX_STORE} --check-validity {HELPER_V2}
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
+          {NIX_STORE} --check-validity {UPGRADE_IMAGE}
+          {NIX_STORE} --check-validity {UPGRADE_IMAGE_DISK}
+          {NIX_STORE} --check-validity {UPGRADE_IMAGE_INFO}
+          {NIX_STORE} --check-validity {UPGRADE_UKI}
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
           ! touch {TOOL_V1}/share/hub-tool/host-store-write-must-fail
       """), timeout=180)
@@ -754,21 +773,28 @@ in {
       for path in (TOOL_V2, HELPER_V2):
           consumer.succeed(f"{NIX_STORE} --check-validity {shlex.quote(path)}")
 
-      # Finally publish a locally built AOS toplevel as a sysroot package.
-      # This is a real system-scope APM upgrade over the Hub, followed by a
-      # live rollback and a final roll-forward.
+      # Finally publish a locally built AOS toplevel and its authenticated raw
+      # OTA image as a sysroot package. Stage it over the Hub, boot it through
+      # UEFI, then exercise durable image rollback and roll-forward.
       publication_system = publisher.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/publisher USER=publisher
-          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
           key="$HOME/.config/apm/keys/production-initial.key"
           rm -rf /tmp/publication-system
           mkdir -p /tmp/publication-system
+          set -- {UPGRADE_UKI}/*.efi
+          test "$#" -eq 1
+          candidate_uki="$1"
           {APR} release 3.0.0 --registry production \\
             --store-path {UPGRADE_TOPLEVEL} --name aos --version test-2 \\
             --sysroot --previous 0.1.0 \\
+            --image-payload {UPGRADE_IMAGE} \\
+            --image-disk {UPGRADE_IMAGE_DISK} \\
+            --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
+            --image-uki "$candidate_uki" --no-ca \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key "$key" \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
@@ -799,25 +825,63 @@ in {
           {APM} show aos --system --registry production 2>&1 | grep test-2 >/dev/null
           {APM} list --system --upgradable 2>&1 | grep test-2 >/dev/null
           {APM} upgrade --system --dry-run 2>&1 | grep test-2 >/dev/null
-          {APM} upgrade --system --live --yes 2>&1
+          {APM} upgrade --system --yes 2>&1
       """), timeout=1200)
       assert system_status == 0, (system_status, system_stdout, system_stderr)
       system_upgrade = system_stdout + system_stderr
       assert b"Downloading" in system_upgrade, system_upgrade
+      assert b"staged in slot" in system_upgrade, system_upgrade
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
+          grep -q 'VERSION_ID=0.1.0' /etc/os-release
+          {JQ} -e '.running == 1 and .default == 2 and .pending == 2' \\
+            /var/lib/profiles/image/state.json >/dev/null
+      """), timeout=1200)
+      consumer.reboot(timeout=600)
+      consumer.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service",
+          timeout=420,
+      )
+      consumer.wait_until_succeeds(
+          "systemctl is-active --quiet multi-user.target",
+          timeout=420,
+      )
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
           grep -q 'VERSION_ID=test-2' /etc/os-release
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-test-marker.service
           ! systemctl is-active --quiet aos-upgrade-removed.service
-          {APM} rollback --system --live
+          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+            /var/lib/profiles/image/state.json >/dev/null
+          {APM} rollback --system --image --generation 1
+      """), timeout=1200)
+      consumer.reboot(timeout=600)
+      consumer.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service",
+          timeout=420,
+      )
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
           grep -q 'VERSION_ID=0.1.0' /etc/os-release
           test ! -e /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-removed.service
-          {APM} upgrade --system --live --yes
+          {JQ} -e '.running == 1 and .default == 1 and .pending == null' \\
+            /var/lib/profiles/image/state.json >/dev/null
+          {APM} rollback --system --image --generation 2
+      """), timeout=1200)
+      consumer.reboot(timeout=600)
+      consumer.wait_until_succeeds(
+          "systemctl is-active --quiet aos-image-boot-commit.service",
+          timeout=420,
+      )
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
           grep -q 'VERSION_ID=test-2' /etc/os-release
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
+          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+            /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
     '';
 }
