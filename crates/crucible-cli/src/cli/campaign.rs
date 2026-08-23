@@ -55,6 +55,7 @@ const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v1";
 const CAMPAIGN_ACCEPTANCE_REPORT_SCHEMA: &str = "crucible.cli.campaign-acceptance.v1";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
+const MAX_CAMPAIGN_SELECTOR_PREDICATES: usize = 16;
 
 #[derive(Serialize)]
 struct CampaignHeadReport {
@@ -241,7 +242,7 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             render_campaign_acceptance(&report, cli.output_format())?
         }
         CampaignCommand::Branch(branch) => {
-            let report = if branch.selector.is_some() {
+            let report = if !branch.selector.is_empty() {
                 apply_campaign_selector_branch(&client, principal.clone(), branch)?
             } else if branch.all {
                 apply_campaign_all_branch(&client, principal.clone(), branch)?
@@ -356,14 +357,9 @@ fn prepare_campaign_command(
                     })?;
             Ok(Some(PreparedCampaignCommand::Derive(request)))
         }
-        CampaignCommand::Branch(branch) if branch.selector.is_some() => {
+        CampaignCommand::Branch(branch) if !branch.selector.is_empty() => {
             parse_campaign_branch_common_basis(branch)?;
-            parse_campaign_choice_selector(
-                branch
-                    .selector
-                    .as_deref()
-                    .ok_or_else(|| backend_error("campaign selector disappeared"))?,
-            )?;
+            parse_campaign_choice_selectors(&branch.selector)?;
             validate_campaign_selector_scan_limit(branch.selector_scan_limit)?;
             if let Some(instance) = &branch.instance {
                 validate_campaign_selector_atom(instance, "campaign choice instance")?;
@@ -665,12 +661,7 @@ where
     S: CampaignService,
     S::Error: CampaignServiceFailureSource,
 {
-    let selector = parse_campaign_choice_selector(
-        branch
-            .selector
-            .as_deref()
-            .ok_or_else(|| backend_error("campaign selector disappeared"))?,
-    )?;
+    let selectors = parse_campaign_choice_selectors(&branch.selector)?;
     let scan_limit = validate_campaign_selector_scan_limit(branch.selector_scan_limit)?;
     let common = parse_campaign_branch_common_basis(branch)?;
     let (opportunity, domain) = resolve_campaign_choice_selector(
@@ -678,7 +669,7 @@ where
         &principal,
         &common.campaign,
         common.expected,
-        &selector,
+        &selectors,
         branch.instance.as_deref(),
         scan_limit,
     )?;
@@ -700,7 +691,7 @@ fn resolve_campaign_choice_selector<S>(
     principal: &CampaignPrincipal,
     campaign: &CampaignName,
     snapshot: CampaignSnapshotId,
-    selector: &CampaignChoiceSelector,
+    selectors: &[CampaignChoiceSelector],
     instance: Option<&str>,
     scan_limit: usize,
 ) -> Result<(ChoiceOpportunityId, ChoiceDomainId), CliError>
@@ -767,7 +758,7 @@ where
             if instance.is_some_and(|expected| opportunity.instance() != expected) {
                 continue;
             }
-            if !campaign_choice_selector_matches(selector, declaration)? {
+            if !campaign_choice_selectors_match(selectors, declaration)? {
                 continue;
             }
             if matched
@@ -834,6 +825,20 @@ fn parse_campaign_choice_selector(value: &str) -> Result<CampaignChoiceSelector,
     Ok(CampaignChoiceSelector::Name(value.to_owned()))
 }
 
+fn parse_campaign_choice_selectors(
+    values: &[String],
+) -> Result<Vec<CampaignChoiceSelector>, CliError> {
+    if values.is_empty() || values.len() > MAX_CAMPAIGN_SELECTOR_PREDICATES {
+        return Err(usage_error(format!(
+            "campaign branch requires 1..={MAX_CAMPAIGN_SELECTOR_PREDICATES} selectors"
+        )));
+    }
+    values
+        .iter()
+        .map(|value| parse_campaign_choice_selector(value))
+        .collect()
+}
+
 fn validate_campaign_selector_atom(value: &str, label: &str) -> Result<(), CliError> {
     if value.is_empty()
         || value.len() > 512
@@ -871,6 +876,18 @@ fn campaign_choice_selector_matches(
             }),
         CampaignChoiceSelector::Tag(tag) => Ok(declaration.semantic_tags().contains(tag)),
     }
+}
+
+fn campaign_choice_selectors_match(
+    selectors: &[CampaignChoiceSelector],
+    declaration: &SelectableDeclaration,
+) -> Result<bool, CliError> {
+    for selector in selectors {
+        if !campaign_choice_selector_matches(selector, declaration)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn parse_campaign_branch_basis(
@@ -3103,7 +3120,7 @@ mod tests {
             parent: template.parent().to_string(),
             opportunity: Some(template.opportunity().to_string()),
             domain: Some(template.domain().to_string()),
-            selector: None,
+            selector: Vec::new(),
             instance: None,
             selector_scan_limit: 256,
             values: Vec::new(),
@@ -3156,7 +3173,11 @@ mod tests {
             parent: template.parent().to_string(),
             opportunity: None,
             domain: None,
-            selector: Some("product.network.retry".to_owned()),
+            selector: vec![
+                "product.network.retry".to_owned(),
+                "tag:network".to_owned(),
+                format!("id:{declaration_id}"),
+            ],
             instance: Some("network-retry".to_owned()),
             selector_scan_limit: 8,
             values: vec!["true".to_owned()],
@@ -3222,7 +3243,7 @@ mod tests {
             parent: template.parent().to_string(),
             opportunity: None,
             domain: None,
-            selector: Some("tag:network".to_owned()),
+            selector: vec!["tag:network".to_owned()],
             instance: None,
             selector_scan_limit: 8,
             values: vec!["true".to_owned()],
@@ -3254,6 +3275,13 @@ mod tests {
         assert!(validate_campaign_selector_scan_limit(0).is_err());
         assert!(
             validate_campaign_selector_scan_limit(MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS + 1).is_err()
+        );
+        assert!(
+            parse_campaign_choice_selectors(&vec![
+                String::from("tag:network");
+                MAX_CAMPAIGN_SELECTOR_PREDICATES + 1
+            ])
+            .is_err()
         );
     }
 
@@ -4108,6 +4136,8 @@ mod tests {
             &branch.parent,
             "--selector",
             "tag:network",
+            "--selector",
+            "name:product.network.retry",
             "--instance",
             "network-retry",
             "--selector-scan-limit",
@@ -4122,13 +4152,18 @@ mod tests {
                 command: CampaignCommand::Branch(CampaignBranchArgs {
                     opportunity: None,
                     domain: None,
-                    selector: Some(ref selector),
+                    selector: ref selectors,
                     instance: Some(ref instance),
                     selector_scan_limit: 32,
                     ..
                 }),
                 ..
-            }) if selector == "tag:network" && instance == "network-retry"
+            }) if selectors
+                == &[
+                    String::from("tag:network"),
+                    String::from("name:product.network.retry"),
+                ]
+                && instance == "network-retry"
         ));
         assert!(
             Cli::try_parse_from([
@@ -4463,7 +4498,7 @@ mod tests {
                 .expect("domain ID")
                 .to_string(),
             ),
-            selector: None,
+            selector: Vec::new(),
             instance: None,
             selector_scan_limit: 256,
             values: vec!["false".to_owned(), "true".to_owned()],

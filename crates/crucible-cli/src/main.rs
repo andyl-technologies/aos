@@ -434,9 +434,9 @@ struct CampaignBranchArgs {
         conflicts_with = "selector"
     )]
     domain: Option<String>,
-    /// Resolve one opportunity by declaration name, id:ID, or tag:TAG.
-    #[arg(long, value_name = "SELECTOR")]
-    selector: Option<String>,
+    /// Resolve one opportunity by conjunctive declaration names, IDs, or tags.
+    #[arg(long, value_name = "SELECTOR", action = ArgAction::Append)]
+    selector: Vec<String>,
     /// Optional exact opportunity instance filter used with --selector.
     #[arg(long, value_name = "INSTANCE", requires = "selector")]
     instance: Option<String>,

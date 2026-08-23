@@ -198,7 +198,8 @@ crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   [--proposals N] [--attempts N] [--stop CONDITION]
 crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
   --branch-point BRANCH_POINT --parent CONFIGURATION_ARTIFACT \
-  --selector NAME|name:NAME|id:SELECTABLE_ID|tag:TAG [--instance INSTANCE] \
+  --selector NAME|name:NAME|id:SELECTABLE_ID|tag:TAG [--selector SELECTOR ...] \
+  [--instance INSTANCE] \
   [--selector-scan-limit N] --value VALUE [--value VALUE ...] \
   [--proposals N] [--attempts N] [--stop CONDITION]
 crucible campaign branch NAME --expected SNAPSHOT --command COMMAND \
@@ -233,13 +234,16 @@ proof-bearing choice index and separately authorized opportunity and declaration
 bodies. A bare selector and `name:` match the declaration name, `id:` matches
 the exact content-addressed selectable declaration, and `tag:` matches one
 exact semantic tag. `--instance` optionally restricts the stable runtime
-instance. Resolution scans to authenticated EOF before accepting a match,
-rejects zero or multiple matches, and examines at most 256 opportunities by
-default or an explicit `--selector-scan-limit` within `1..=4096`. The selected
+instance. Between one and sixteen repeated `--selector` values form a
+conjunction, so operators can bind an exact declaration and require its
+expected semantic tags without widening the match. Resolution scans to
+authenticated EOF before accepting a match, rejects zero or multiple matches,
+and examines at most 256 opportunities by default or an explicit
+`--selector-scan-limit` within `1..=4096`. The selected
 effective domain is then fetched and exact-checked against the opportunity;
-`--opportunity` and `--domain` remain the unambiguous low-level form. Bounded
-multi-tag predicates and richer policy-file selector expressions remain future
-porcelain over the same records. Finite values are validated against the choice
+`--opportunity` and `--domain` remain the unambiguous low-level form. Richer
+policy-file selector expressions remain future porcelain over the same records.
+Finite values are validated against the choice
 opportunity at the named parent; they are pulled lazily under budget and do not
 immediately create VMs. `--all` is accepted only for a proven finite domain
 below the configured exhaustive-cardinality ceiling. A request may target one
