@@ -26,6 +26,7 @@
   secondRunSchedulerPreemption ? "1",
   smpVcpus ? "1",
   memoryMib ? "64",
+  requireSmpPauseRendezvous ? "0",
   customGuestKernel ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -69,6 +70,7 @@ in
     CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
+    CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS = requireSmpPauseRendezvous;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -122,6 +124,30 @@ in
             --features test-support \
             --example crucible-qemu-live-plugin-quantum
 
+          if [ "$CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS" = 1 ]; then
+            fingerprint_test='node::tests::stale_execution_fingerprint_requests_production_control_boundary'
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/live-plugin-quantum-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --features test-support \
+              --lib \
+              -- --list > "$TMPDIR/crucible-qemu-tests.list"
+            grep -Fxq "$fingerprint_test: test" "$TMPDIR/crucible-qemu-tests.list"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/live-plugin-quantum-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --features test-support \
+              --lib \
+              "$fingerprint_test" \
+              -- --exact
+          fi
+
           run_dir="$TMPDIR/live-plugin-quantum-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-plugin-quantum.result"
@@ -158,6 +184,9 @@ in
           grep -Fxq "smp_vcpus=$CRUCIBLE_QUANTUM_SMP_VCPUS" "$report"
           grep -Fxq "memory_mib=$CRUCIBLE_QUANTUM_MEMORY_MIB" "$report"
           grep -Fxq 'all_vcpus_halted_idle_observed=true' "$report"
+          if [ "$CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS" = 1 ]; then
+            grep -Fxq 'guest_smp_pause_rendezvous_observed=true' "$report"
+          fi
           # T-PLUG-4: the guest advanced through several busy boot quanta, each
           # stopping exactly at the host-published ceiling, and the two runs (the
           # second under bounded scheduler preemption) produced byte-identical idle observations.

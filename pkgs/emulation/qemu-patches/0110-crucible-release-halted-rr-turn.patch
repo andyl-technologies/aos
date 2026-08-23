@@ -41,22 +41,45 @@ index 219cadef1..f08eb93d9 100644
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 90840e631..47ec494bc 100644
+index 90840e631..3053e0318 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -658,6 +658,22 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -471,6 +471,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+     CPUState *cpu = *cpu_ptr;
+ 
+     while (true) {
++        bool guest_pause_yield;
+         int r;
+         uint64_t service_before;
+         uint64_t service_after;
+@@ -606,6 +607,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+             icount_prepare_for_run(cpu, *cpu_budget);
+         }
+         r = tcg_cpu_exec(cpu);
++        guest_pause_yield = cpu->crucible_guest_pause_yield;
++        cpu->crucible_guest_pause_yield = false;
++        if (guest_pause_yield && r != EXCP_INTERRUPT) {
++            error_report("crucible guest PAUSE returned "
++                         "unexpected exception %d", r);
++            abort();
++        }
+         if (icount_enabled()) {
+             icount_process_data(cpu);
+         }
+@@ -658,6 +666,23 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              return true;
          }
  
 +        /*
-+         * x86 PAUSE exits TCG as EXCP_INTERRUPT without setting an asynchronous
-+         * exit request.  Honor that guest-authored yield before loop-local CPU
-+         * selection so a partial serialized turn cannot starve another vCPU
-+         * waiting on the released lock.  Host kicks retain exit_request and do
-+         * not enter this path.
++         * The x86 PAUSE helper marks its own EXCP_INTERRUPT return. Honor that
++         * guest-authored yield before loop-local CPU selection so a partial
++         * serialized turn cannot starve another vCPU waiting on the released
++         * lock. Generic EXCP_INTERRUPT returns and host kicks do not carry the
++         * marker and cannot enter this path.
 +         */
 +        if (rr_crucible_sim_mode() &&
 +            !rr_crucible_sim_single_vcpu() &&
++            guest_pause_yield &&
 +            r == EXCP_INTERRUPT &&
 +            cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug &&
 +            icount_crucible_rr_current_vcpu() == cpu->cpu_index &&
@@ -67,7 +90,7 @@ index 90840e631..47ec494bc 100644
          if (!rr_crucible_sim_single_vcpu() &&
              icount_crucible_rr_cursor_position() == 0 &&
              qatomic_xchg(&rr_tcg_exec_state, RR_TCG_EXEC_IDLE) ==
-@@ -1116,10 +1132,23 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -1116,10 +1141,23 @@ static void *rr_cpu_thread_fn(void *arg)
                  suggested_cpu = first_cpu;
              }
              cpu = icount_crucible_rr_select_cpu(suggested_cpu);
@@ -95,6 +118,27 @@ index 90840e631..47ec494bc 100644
              }
              if (wrapped) {
                  cpu = NULL;
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index fea949d6e..f200149a7 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -479,6 +479,8 @@ struct qemu_work_item;
+  *   translation for application before the generated TB executes.
+  * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
+  *   generation succeeds or is discarded.
++ * @crucible_guest_pause_yield: Transient x86 PAUSE marker consumed immediately
++ *   after TCG returns to the serialized RR loop.
+  * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
+  *            AddressSpaces this CPU has)
+  * @num_ases: number of CPUAddressSpaces in @cpu_ases
+@@ -558,6 +560,7 @@ struct CPUState {
+     uint64_t crucible_page_table_walk_instruction_pc;
+     uint64_t crucible_register_before_icount;
+     bool crucible_register_instruction_active;
++    bool crucible_guest_pause_yield;
+     uint64_t random_seed;
+     sigjmp_buf jmp_env;
+ 
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
 index 84ff4dc3c..9a95b3a52 100644
 --- a/include/system/cpu-timers.h
@@ -156,4 +200,16 @@ index 9f13b2bc4..61022499c 100644
 +                     serialized_owner, cursor_position);
      }
      return allowed;
+ }
+diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
+index 970cd9a6b..9308f6a7b 100644
+--- a/target/i386/tcg/misc_helper.c
++++ b/target/i386/tcg/misc_helper.c
+@@ -115,6 +115,7 @@ G_NORETURN void helper_pause(CPUX86State *env)
+     helper_rechecking_single_step(env);
+ 
+     /* Just let another CPU run.  */
++    cs->crucible_guest_pause_yield = true;
+     cs->exception_index = EXCP_INTERRUPT;
+     cpu_loop_exit(cs);
  }

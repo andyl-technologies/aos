@@ -686,6 +686,13 @@ impl SchedulerSendAuthorizer for AllowAllSends {
 struct ImmediateRuntime;
 
 impl QemuHostIoRuntime for ImmediateRuntime {
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
     }
@@ -710,6 +717,13 @@ impl QemuHostIoRuntime for ImmediateRuntime {
 struct FailRestoreRuntime;
 
 impl QemuHostIoRuntime for FailRestoreRuntime {
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
     }

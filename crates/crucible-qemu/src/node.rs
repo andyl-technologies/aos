@@ -1967,6 +1967,37 @@ impl QemuNode {
     pub fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeError> {
         let timeout = self.async_policy.advance_completion_timeout;
         let deadline = HostSupervisionDeadline::start(timeout);
+        match self.channels.shmem_hot_path.execution_fingerprint() {
+            Ok(fingerprint) => return Ok(fingerprint),
+            Err(source) if source.is_retryable() => {
+                let remaining = deadline.remaining().ok_or_else(|| {
+                    QemuNodeError::from_channel(
+                        QemuNodeChannelPlane::ShmemHotPath,
+                        QemuNodeChannelError::bounded_await_timeout(
+                            "execution_fingerprint",
+                            format!(
+                                "plugin did not publish the current black-box fingerprint within {timeout:?}: {}",
+                                source.message
+                            ),
+                            timeout,
+                        ),
+                    )
+                })?;
+                self.host_io_runtime
+                    .publish_current_execution_fingerprint(remaining)
+                    .map_err(|source| {
+                        QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(
+                            source,
+                        ))
+                    })?;
+            }
+            Err(source) => {
+                return Err(QemuNodeError::from_channel(
+                    QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                ));
+            }
+        }
         loop {
             match self.channels.shmem_hot_path.execution_fingerprint() {
                 Ok(fingerprint) => return Ok(fingerprint),

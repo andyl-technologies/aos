@@ -82,29 +82,6 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionControl { source })
     }
 
-    /// Requests an exact QEMU main-loop control boundary for this VM slot.
-    ///
-    /// The caller must also ring the retained plugin eventfd and wait for the
-    /// returned even token's odd acknowledgement before consuming boundary
-    /// state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the configured slot is absent or
-    /// its control-boundary futex wake fails.
-    #[cfg(feature = "test-support")]
-    pub(crate) fn request_control_boundary(&self) -> Result<u32, QemuNodeChannelError> {
-        let slot = self
-            .region
-            .node_slot(self.config.vm_slot)
-            .map_err(|source| {
-                QemuNodeChannelError::new("request control boundary", source.to_string())
-            })?;
-        slot.request_control_boundary().map_err(|source| {
-            QemuNodeChannelError::new("request control boundary", source.to_string())
-        })
-    }
-
     /// Returns this VM's most recent plugin-published fingerprint sample.
     ///
     /// Reads the per-node fingerprint sample slot the plugin publishes at each

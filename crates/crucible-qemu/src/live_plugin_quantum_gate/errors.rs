@@ -72,6 +72,22 @@ pub enum LivePluginQuantumGateError {
     /// The plugin replied `SetupAck` with a non-ready status.
     #[error("quantum plugin refused to become schedulable after SetupAck")]
     SetupAckNotReady,
+    /// Connecting or draining the output-only guest evidence stream failed.
+    #[error("observe quantum guest SMP rendezvous failed: {source}")]
+    GuestEvidenceIo {
+        /// Underlying socket or console-drain error.
+        source: std::io::Error,
+    },
+    /// The guest did not emit the exact PAUSE-dependent SMP rendezvous proof.
+    #[error(
+        "quantum guest SMP rendezvous evidence mismatch: expected {expected:?}, observed {observed:?}"
+    )]
+    GuestSmpRendezvousMismatch {
+        /// Exact ordered evidence required from the configured vCPU count.
+        expected: Vec<u8>,
+        /// Complete bounded output observed from the guest.
+        observed: Vec<u8>,
+    },
     /// Mapping the completed shared-memory setup region failed.
     #[error("map quantum loaded-QEMU shared-memory region failed: {source}")]
     RegionMap {
