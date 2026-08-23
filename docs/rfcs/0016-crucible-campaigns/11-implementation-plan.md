@@ -351,9 +351,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   owner. Exact-limit mismatch and pre-cancellation roll back before admission;
   failed reap and live-owner drop transfer the complete host authority to
   quarantine. Linux composition of failed-child and active-node handoff into
-  the cgroup owner, aggregate filesystem quota, exclusive run-directory
-  namespace ownership through artifact open, the modeled attempt driver, and
-  concrete session wiring remain open. Real-node
+  the cgroup owner now has a sealed process-only facade: it validates its
+  daemon-incarnation namespace and operational bounds before root access,
+  creates unique fixed-width child names, exposes no raw cgroup controls, and
+  poisons itself while retaining authority after partial setup. Aggregate
+  filesystem quota and its exact run-directory binding, active-node handoff,
+  the modeled attempt driver, and concrete session wiring remain open. Real-node
   exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before

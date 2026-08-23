@@ -71,8 +71,8 @@ impl QemuAttemptHostResourceOwner for FakeHostOwner {
         self.installed
     }
 
-    fn child_process_contract(&self) -> &QemuChildProcessContract {
-        &self.process_contract
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        Ok(&self.process_contract)
     }
 
     fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {

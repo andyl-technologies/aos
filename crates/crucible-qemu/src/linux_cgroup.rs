@@ -8,10 +8,11 @@
 //! a non-root user and group distinct from every supervisor credential; the
 //! pre-exec path clears supplementary groups and installs those IDs after
 //! cgroup attachment. One attempt owner now composes normal watcher completion,
-//! direct-child retention, and nondroppable quarantine transfer. The authority
-//! remains crate-internal until aggregate quota, quantum charging, and daemon
-//! guard/session composition land. It does not own campaign semantics,
-//! VMState, or QEMU/plugin code.
+//! direct-child retention, and nondroppable quarantine transfer. Raw control
+//! and cleanup types remain crate-internal; [`crate::LinuxQemuAttemptProcessFactory`]
+//! exposes only the sealed process facade required by daemon composition. The
+//! process facade does not own aggregate quota, campaign semantics, VMState, or
+//! QEMU/plugin code.
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -33,6 +34,11 @@ use crate::{QemuNode, QemuNodeChild, QemuProcessIdentity, linux_process_identity
 
 mod attempt_owner;
 mod quarantine;
+
+pub(crate) use attempt_owner::{
+    LinuxQemuAttemptProcessOwner, LinuxQemuAttemptProcessOwnerError,
+    LinuxQemuAttemptProcessOwnerStatus,
+};
 
 const CPU_PERIOD_MICROS: u64 = 100_000;
 const MAX_CGROUP_CONTROL_BYTES: u64 = 4096;

@@ -24,7 +24,9 @@
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
 //! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
-//! the Linux post-setup node composition boundary; `quantum` owns the
+//! the Linux post-setup node composition boundary; `linux_attempt_process`
+//! exposes the sealed process-only facade over private cgroup authority;
+//! `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `unix_socket_path` keeps QEMU run-directory socket operations within the
 //! kernel pathname limit;
@@ -58,8 +60,10 @@ mod host_worker_pool;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
-// This sealed authority remains internal until direct-child reap/quarantine,
-// aggregate quota, quantum charging, and session wiring land.
+mod linux_attempt_process;
+#[cfg(target_os = "linux")]
+// Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
+// sealed process owner needed by the still-separate quota/session composition.
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
@@ -175,6 +179,12 @@ pub use launch::{
     QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
     probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+};
+#[cfg(target_os = "linux")]
+pub use linux_attempt_process::{
+    LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptProcessConfig,
+    LinuxQemuAttemptProcessFactory, LinuxQemuAttemptProcessOwner,
+    MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT, MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT,
 };
 #[cfg(target_os = "linux")]
 pub use live_coverage_gate::{

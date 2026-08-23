@@ -170,7 +170,7 @@ where
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         let result = self.executor.load_prepared_thin_snapshot_guarded(
-            self.guard.child_process_contract(),
+            self.guard.child_process_contract()?,
             config,
             snapshot,
             authorization,
@@ -189,7 +189,7 @@ where
         let result = self
             .executor
             .load_materialized_exact_snapshot_probe_guarded(
-                self.guard.child_process_contract(),
+                self.guard.child_process_contract()?,
                 config,
                 snapshot,
                 authorization,
@@ -204,7 +204,7 @@ where
     ) -> Result<crucible::RuntimeState, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         let result = self.executor.load_prepared_baked_genesis_guarded(
-            self.guard.child_process_contract(),
+            self.guard.child_process_contract()?,
             config,
             admission,
         );
@@ -501,7 +501,7 @@ where
 {
     check_resume_boundary(guard)?;
     let runtime = executor.resume_materialized_exact_snapshot_guarded(
-        guard.child_process_contract(),
+        guard.child_process_contract()?,
         configuration,
         snapshot,
     )?;
