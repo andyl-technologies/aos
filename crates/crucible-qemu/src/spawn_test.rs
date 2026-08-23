@@ -455,6 +455,15 @@ fn guarded_preparation_rejects_underprovisioned_launch_before_run_directory_acce
 #[test]
 fn materialization_preparation_rejects_before_run_directory_access() -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
+    let (_cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let contract = QemuChildProcessContract::from_unvalidated_test_descriptors(
+        cgroup_write,
+        cancellation,
+        u32::MAX,
+        1,
+        u64::MAX,
+    );
     let missing_run_directory = std::env::temp_dir().join(format!(
         "crucible-missing-materialization-run-directory-{}-{}",
         std::process::id(),
@@ -465,15 +474,35 @@ fn materialization_preparation_rejects_before_run_directory_access() -> Result<(
         QemuPreparedRunDirectory::open_for_materialization(
             &command,
             &missing_run_directory,
-            u32::MAX,
-            1,
-            u64::MAX,
+            &contract,
         ),
         Err(QemuSpawnError::LaunchResources {
             source: crate::QemuLaunchResourceError::ResidentBytes { admitted: 1, .. }
         })
     ));
     assert!(!missing_run_directory.exists());
+    Ok(())
+}
+
+#[test]
+fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let first_contract = wide_test_process_contract()?;
+    let second_contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &first_contract)?;
+
+    assert!(matches!(
+        spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+            &command,
+            &prepared,
+            4096,
+            &second_contract,
+        ),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
     Ok(())
 }
 

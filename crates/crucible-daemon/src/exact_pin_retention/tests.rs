@@ -530,6 +530,19 @@ fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard 
     }
 }
 
+fn materialization_process_contract() -> QemuChildProcessContract {
+    let (cgroup_procs, _cgroup_peer) = UnixStream::pair().expect("cgroup descriptor pair");
+    let (cancellation_event, _cancellation_peer) =
+        UnixStream::pair().expect("cancellation descriptor pair");
+    QemuChildProcessContract::from_unvalidated_test_descriptors(
+        cgroup_procs.into(),
+        cancellation_event.into(),
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    )
+}
+
 #[test]
 fn replay_validated_materialization_resumes_only_through_guarded_launcher() {
     let backend = Arc::new(TestDurableBackend::new());
@@ -583,9 +596,7 @@ fn replay_validated_materialization_resumes_only_through_guarded_launcher() {
     let mut prepared_run_directory = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("open materialization destination");
     let materialized = crate::materialize_selected_exact_checkpoint(
@@ -659,9 +670,7 @@ fn unvalidated_materialization_is_rejected_before_guarded_launch() {
     let mut prepared_run_directory = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("open materialization destination");
     let materialized = crate::materialize_selected_exact_checkpoint(
@@ -1079,9 +1088,7 @@ fn selected_checkpoint_materializes_authenticated_vmstate_for_exact_restore() {
     let mut prepared = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin materialization destination");
 
@@ -1110,9 +1117,7 @@ fn selected_checkpoint_materializes_authenticated_vmstate_for_exact_restore() {
     let mut reopened = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("reopen pinned destination after daemon restart");
     assert!(matches!(
@@ -1186,9 +1191,7 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
     let mut accepted = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &accepted_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin accepted materialization destination");
 
@@ -1221,9 +1224,7 @@ fn attempt_checkpoint_materialization_accepts_only_exact_start_boundaries() {
     let mut rejected = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &rejected_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin rejected materialization destination");
 
@@ -1263,9 +1264,7 @@ fn exact_restore_binding_distinguishes_same_metadata_with_different_vmstate() {
     let mut prepared = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin materialization destination");
     let cancellation = crate::ExecutionCancellation::default();
@@ -1371,9 +1370,7 @@ fn stale_exact_pin_selection_fails_before_vmstate_mutation() {
     let mut prepared = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin materialization destination");
 
@@ -1413,9 +1410,7 @@ fn canceled_exact_restore_fails_before_selection_or_vmstate_io() {
     let mut prepared = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin materialization destination");
     let cancellation = crate::ExecutionCancellation::default();
@@ -1455,9 +1450,7 @@ fn cancellation_after_vmstate_copy_begins_leaves_destination_unready() {
     let mut prepared = QemuPreparedRunDirectory::open_for_materialization(
         &command,
         &run_directory,
-        u32::MAX,
-        u64::MAX,
-        u64::MAX,
+        &materialization_process_contract(),
     )
     .expect("pin materialization destination");
     let cancellation = crate::ExecutionCancellation::default();

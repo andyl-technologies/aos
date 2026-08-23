@@ -319,8 +319,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   Public guarded preparation now rejects before run-directory access unless the
   command's fixed vCPU, guest-memory, and minimum writable-byte requirements fit
   the exact ceilings sealed into the child contract. The resulting pinned
-  authority retains that basis, and guarded spawn rejects a changed command
-  resource profile or ceiling before revalidation or descriptor allocation.
+  authority retains both that basis and the contract's private attempt-
+  lifecycle token. Guarded spawn rejects a changed command, resource profile,
+  ceiling, or equal-limit contract from another attempt before revalidation or
+  descriptor allocation. Exact-checkpoint materialization now requires the
+  same contract before path access.
   The writable ceiling also supplies a conservative per-file limit; aggregate
   enforcement remains the responsibility of the open filesystem quota
   composition.

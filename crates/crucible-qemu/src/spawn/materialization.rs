@@ -63,33 +63,24 @@ impl QemuPreparedRunDirectory {
     ///
     /// This operation does not grant process-launch authority. It accepts the
     /// execution ceiling already reserved by the daemon, validates the command
-    /// baseline before path access, and pins the destination so a retained
-    /// checkpoint can be streamed before the child contract is lent to spawn.
-    /// Guarded spawn later requires an unforgeable process contract carrying
-    /// the exact same ceiling and revalidates the command independently.
+    /// baseline before path access, and pins the destination to the exact
+    /// attempt lifecycle carried by `contract`. A retained checkpoint can then
+    /// be streamed before the same contract is lent to spawn. Guarded spawn
+    /// rejects a contract from another attempt even when every numeric ceiling
+    /// is identical.
     ///
     /// # Errors
     ///
     /// Returns [`QemuSpawnError`] before path access when the command exceeds
-    /// the supplied reservation. Otherwise returns an error when the path or
+    /// the supplied contract. Otherwise returns an error when the path or
     /// required VMState file cannot be pinned without following symlinks.
     pub fn open_for_materialization(
         command: &QemuLaunchCommand,
         path: impl AsRef<Path>,
-        maximum_vcpus: u32,
-        maximum_resident_bytes: u64,
-        maximum_writable_bytes: u64,
+        contract: &super::QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
-        let admitted_ceiling = (
-            maximum_vcpus,
-            maximum_resident_bytes,
-            maximum_writable_bytes,
-        );
-        command
-            .resource_requirements()
-            .validate_ceiling(admitted_ceiling.0, admitted_ceiling.1, admitted_ceiling.2)
-            .map_err(|source| QemuSpawnError::LaunchResources { source })?;
-        Self::open_admitted(command, path.as_ref(), admitted_ceiling)
+        super::validate_guarded_launch_resources(command, contract)?;
+        Self::open_admitted(command, path.as_ref(), contract)
     }
 
     /// Begins replacing the pinned VMState file with one exact snapshot image.

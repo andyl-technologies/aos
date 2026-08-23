@@ -14,6 +14,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use thiserror::Error;
@@ -44,7 +45,9 @@ const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
 /// child to the cgroup. The contract seals the exact admitted vCPU,
 /// resident-memory, and aggregate writable-byte ceilings so guarded launch can
 /// reject an incompatible command before touching the run directory or
-/// allocating child descriptors.
+/// allocating child descriptors. A private lifecycle token also binds every
+/// prepared run-directory authority to this exact contract rather than merely
+/// to another attempt with equal numeric limits.
 #[derive(Debug)]
 pub struct QemuChildProcessContract {
     cgroup_procs: OwnedFd,
@@ -53,6 +56,7 @@ pub struct QemuChildProcessContract {
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
     credentials: Option<QemuChildCredentials>,
+    attempt_binding: Arc<AttemptResourceBinding>,
 }
 
 /// Pinned authority over one pre-provisioned QEMU run directory.
@@ -63,10 +67,11 @@ pub struct QemuChildProcessContract {
 /// inode immediately before `exec`. It also retains the exact admitted command
 /// resource profile and contract ceiling. Replacement of the diagnostic path,
 /// replacement of its VMState entry before that boundary, or reuse under a
-/// different resource admission therefore fails closed. This authority does
-/// not make the directory namespace immutable: the production supervisor must
-/// exclude concurrent mutators until QEMU has opened every relative launch
-/// artifact and must enforce the separate aggregate quota.
+/// different resource admission or attempt lifecycle therefore fails closed.
+/// This authority does not make the directory namespace immutable: the
+/// production supervisor must exclude concurrent mutators until QEMU has
+/// opened every relative launch artifact and must enforce the separate
+/// aggregate quota.
 #[derive(Debug)]
 #[must_use = "guarded QEMU launch requires the pinned run-directory authority"]
 pub struct QemuPreparedRunDirectory {
@@ -77,8 +82,12 @@ pub struct QemuPreparedRunDirectory {
     vmstate_identity: PinnedFileIdentity,
     launch_resources: crate::QemuLaunchResourceRequirements,
     admitted_ceiling: (u32, u64, u64),
+    attempt_binding: Arc<AttemptResourceBinding>,
     vmstate_materialization: PreparedVmStateMaterialization,
 }
+
+#[derive(Debug)]
+struct AttemptResourceBinding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PinnedFileIdentity {
@@ -114,13 +123,13 @@ impl QemuPreparedRunDirectory {
         contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
         validate_guarded_launch_resources(command, contract)?;
-        Self::open_admitted(command, path.as_ref(), contract.admitted_resource_ceiling())
+        Self::open_admitted(command, path.as_ref(), contract)
     }
 
     fn open_admitted(
         command: &QemuLaunchCommand,
         path: &Path,
-        admitted_ceiling: (u32, u64, u64),
+        contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
         let path = path.to_owned();
         let directory = open(
@@ -161,7 +170,8 @@ impl QemuPreparedRunDirectory {
             vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
             vmstate,
             launch_resources: command.resource_requirements(),
-            admitted_ceiling,
+            admitted_ceiling: contract.admitted_resource_ceiling(),
+            attempt_binding: Arc::clone(&contract.attempt_binding),
             vmstate_materialization: PreparedVmStateMaterialization::Provisioned,
         })
     }
@@ -225,6 +235,7 @@ impl QemuPreparedRunDirectory {
     ) -> Result<(), QemuSpawnError> {
         if self.launch_resources != command.resource_requirements()
             || self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
         {
             return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
         }
@@ -410,6 +421,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes,
             maximum_writable_bytes,
             credentials: Some(credentials),
+            attempt_binding: Arc::new(AttemptResourceBinding),
         })
     }
 
@@ -449,6 +461,7 @@ impl QemuChildProcessContract {
             maximum_resident_bytes,
             maximum_writable_bytes,
             credentials: None,
+            attempt_binding: Arc::new(AttemptResourceBinding),
         }
     }
 }
@@ -618,7 +631,7 @@ pub enum QemuSpawnError {
         /// Original diagnostic path of the VMState container.
         path: PathBuf,
     },
-    /// The command or admitted ceiling differs from directory preparation.
+    /// The command, admitted ceiling, or attempt lifecycle differs from preparation.
     #[error("prepared QEMU run directory is bound to a different launch admission")]
     PreparedLaunchAdmissionChanged,
     /// The exact VMState image has an invalid declared byte length.
