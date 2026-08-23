@@ -585,7 +585,7 @@ in {
 
       # Exercise normal discovery, install, verification, dependency, file,
       # reinstall, removal, orphan and cleanup porcelain as one user profile.
-      install_output = consumer.succeed(textwrap.dedent(f"""
+      consumer.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
@@ -594,6 +594,11 @@ in {
             --channel stable --trust-key {shlex.quote(trust)}
           {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
+      """), timeout=600)
+      install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/consumer USER=consumer
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} search hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
           {APM} search hub --names-only --registry production 2>&1 | grep hub-tool >/dev/null
           {APM} show hub-tool --registry production 2>&1 | grep 1.0.0 >/dev/null
@@ -603,7 +608,9 @@ in {
           {APM} install hub-tool --registry production --download-only --yes
           {APM} install hub-tool --registry production --yes 2>&1
       """), timeout=600)
-      assert "Downloading" in install_output, install_output
+      assert install_status == 0, (install_status, install_stdout, install_stderr)
+      install_output = install_stdout + install_stderr
+      assert b"Downloading" in install_output, install_output
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
