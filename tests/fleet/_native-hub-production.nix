@@ -158,6 +158,9 @@
         listen = "0.0.0.0:8420";
         externalUrl = "http://hub:8420";
       };
+      # The server profile is default-deny. A production operator must admit
+      # the native listener explicitly when it is bound beyond loopback.
+      aos.firewall.allowedTCP = [8420];
       systemd.services.aos-hub.serviceConfig = {
         LoadCredential = [
           "route-reservation-keys:${routeKeys}/value"
