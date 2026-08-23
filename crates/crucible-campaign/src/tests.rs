@@ -390,6 +390,12 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(planner_loopback[1], "1");
     assert_eq!(planner_loopback[2], "crucible-daemon::planner_loopback");
     assert_eq!(planner_loopback[3], "component-message");
+    let planner_process = rows
+        .get("crucible.planner.process-frame")
+        .unwrap_or_else(|| panic!("missing planner process frame schema"));
+    assert_eq!(planner_process[1], "1");
+    assert_eq!(planner_process[2], "crucible-daemon::planner_process");
+    assert_eq!(planner_process[3], "component-message");
     let campaign_loopback = rows
         .get("crucible.campaign.loopback-frame")
         .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));

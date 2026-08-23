@@ -464,10 +464,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   pages in bounded portable state, and deterministically returns Continue,
   Issue, or NoWork only at the valid scan boundary. Accepted offer envelopes
   become retained-request children after zero-write semantic preflight, and
-  import/restart recompute the same source ordinal and value. A killable
-  production supervisor that enforces fuel, wall-clock, and cancellation
-  bounds, richer owner-built reward/novelty/finding projections, and complete
-  fixed-point PUCT ranking remain open. The first `CampaignService`
+  import/restart recompute the same source ordinal and value. The packaged
+  canonical planner now runs behind a versioned one-request process protocol:
+  a parent-owned supervisor measures deterministic page fuel, enforces a
+  finite wall deadline and sticky cancellation, drains bounded pipes, and
+  kills and reaps the authority-free worker before returning. Long-lived
+  coordinator attachment of that supervisor, richer owner-built
+  reward/novelty/finding projections, and complete fixed-point PUCT ranking
+  remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

@@ -101,6 +101,7 @@ crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gat
 crucible.executor.exact-checkpoint-root	2	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-message	gate:component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:component-contract
+crucible.planner.process-frame	1	crucible-daemon::planner_process	component-message	gate:component-contract
 crucible.campaign.loopback-frame	16	crucible-daemon::campaign_loopback	component-message	gate:component-contract
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:component-contract
 crucible.campaign-component-authorities	1	crucible-daemon::campaign_bootstrap	deployment-secret	gate:component-contract
