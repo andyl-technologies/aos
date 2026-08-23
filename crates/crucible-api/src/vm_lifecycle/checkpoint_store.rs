@@ -1,10 +1,10 @@
 //! Durable content-addressed closure store for exact production checkpoints.
 
 use super::*;
-use crucible::LocalDagStore;
 use crucible::model::FaultResourceLimits;
+use crucible::LocalDagStore;
 use std::collections::BTreeSet;
-use std::io::Read as _;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 mod io;
 use io::read_bounded_file;
@@ -15,6 +15,7 @@ const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const ARTIFACT_CHUNK_BYTES_U64: u64 = 4 * 1024 * 1024;
+const SPARSE_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const SMALL_CONTINUATION_MAX_BYTES: u64 = 268_435_456;
 const LARGE_CONTINUATION_MAX_BYTES: u64 = 1_610_612_800;
 
@@ -1397,16 +1398,22 @@ fn persist_file_object(
         .ok_or_else(|| store_error("checkpoint object path has no parent directory"))?;
     fs::create_dir_all(staging_directory)
         .map_err(|error| store_error(format!("create checkpoint object prefix: {error}")))?;
-    let staging = tempfile::Builder::new()
+    let mut staging = tempfile::Builder::new()
         .prefix(".object-")
         .tempfile_in(staging_directory)
         .map_err(|error| store_error(format!("stage checkpoint file object: {error}")))?;
-    fs::copy(source, staging.path()).map_err(|error| {
-        store_error(format!(
-            "copy checkpoint object {} into staging: {error}",
-            expected.to_hex()
-        ))
-    })?;
+    let source_length = fs::metadata(source)
+        .map_err(|error| store_error(format!("inspect checkpoint file object: {error}")))?
+        .len();
+    let source_file = File::open(source)
+        .map_err(|error| store_error(format!("open checkpoint file object: {error}")))?;
+    copy_sparse_authenticated(source_file, staging.as_file_mut(), source_length, expected)
+        .map_err(|error| {
+            store_error(format!(
+                "stream checkpoint object {} into staging: {error}",
+                expected.to_hex()
+            ))
+        })?;
     staging
         .as_file()
         .sync_all()
@@ -1580,9 +1587,36 @@ pub(super) fn materialize_checkpoint_artifact(
     destination: &Path,
     role: &str,
 ) -> Result<(), LifecycleApiError> {
+    let parent = destination.parent().ok_or_else(|| {
+        loop_factory_error(format!(
+            "exact checkpoint {role} destination has no parent directory"
+        ))
+    })?;
+    let mut staging = tempfile::Builder::new()
+        .prefix(".artifact-")
+        .tempfile_in(parent)
+        .map_err(|error| {
+            loop_factory_error(format!(
+                "stage exact checkpoint {role} under {}: {error}",
+                parent.display()
+            ))
+        })?;
+
     match &artifact.source {
         ProductionCheckpointArtifactSource::File(source) => {
-            fs::copy(source, destination).map_err(|error| {
+            let source_file = File::open(source).map_err(|error| {
+                loop_factory_error(format!(
+                    "open exact checkpoint {role} {}: {error}",
+                    source.display()
+                ))
+            })?;
+            copy_sparse_authenticated(
+                source_file,
+                staging.as_file_mut(),
+                artifact.length,
+                artifact.identity,
+            )
+            .map_err(|error| {
                 loop_factory_error(format!(
                     "materialize exact checkpoint {role} {} as {}: {error}",
                     source.display(),
@@ -1591,26 +1625,98 @@ pub(super) fn materialize_checkpoint_artifact(
             })?;
         }
         ProductionCheckpointArtifactSource::ChunkStore(directory) => {
-            let mut reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
-            let mut destination_file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(destination)
-                .map_err(|error| {
-                    loop_factory_error(format!(
-                        "create exact checkpoint {role} {}: {error}",
-                        destination.display()
-                    ))
-                })?;
-            std::io::copy(&mut reader, &mut destination_file)
-                .and_then(|_| destination_file.sync_all())
-                .map_err(|error| {
-                    loop_factory_error(format!(
-                        "materialize exact checkpoint {role} {}: {error}",
-                        destination.display()
-                    ))
-                })?;
+            let reader = ChunkSequenceReader::new(directory, &artifact.chunks)?;
+            copy_sparse_authenticated(
+                reader,
+                staging.as_file_mut(),
+                artifact.length,
+                artifact.identity,
+            )
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "materialize exact checkpoint {role} {}: {error}",
+                    destination.display()
+                ))
+            })?;
         }
+    }
+    staging.as_file().sync_all().map_err(|error| {
+        loop_factory_error(format!(
+            "flush exact checkpoint {role} {}: {error}",
+            destination.display()
+        ))
+    })?;
+    staging.persist_noclobber(destination).map_err(|error| {
+        loop_factory_error(format!(
+            "publish exact checkpoint {role} {}: {}",
+            destination.display(),
+            error.error
+        ))
+    })?;
+    sync_directory(parent).map_err(|error| loop_factory_error(error.to_string()))
+}
+
+fn copy_sparse_authenticated(
+    mut source: impl Read,
+    destination: &mut File,
+    expected_length: u64,
+    expected_identity: ContentHash,
+) -> Result<(), std::io::Error> {
+    let mut buffer = vec![0_u8; SPARSE_COPY_BUFFER_BYTES];
+    let mut hasher = blake3::Hasher::new();
+    let mut copied = 0_u64;
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let read_u64 = u64::try_from(read).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint copy length is not representable",
+            )
+        })?;
+        copied = copied.checked_add(read_u64).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint copy length overflowed",
+            )
+        })?;
+        if copied > expected_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "checkpoint artifact exceeds its declared length",
+            ));
+        }
+        let bytes = &buffer[..read];
+        hasher.update(bytes);
+        if bytes.iter().all(|byte| *byte == 0) {
+            let offset = i64::try_from(read).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "checkpoint sparse extent is not representable",
+                )
+            })?;
+            destination.seek(SeekFrom::Current(offset))?;
+        } else {
+            destination.write_all(bytes)?;
+        }
+    }
+    if copied != expected_length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "checkpoint artifact is shorter than its declared length",
+        ));
+    }
+    destination.set_len(expected_length)?;
+    let observed = ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    };
+    if observed != expected_identity {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "checkpoint artifact failed content authentication while streaming",
+        ));
     }
     Ok(())
 }
@@ -1904,6 +2010,9 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::MetadataExt as _;
+
     fn manifest() -> ClosureManifest {
         ClosureManifest {
             scenario: ContentHash::default(),
@@ -2026,6 +2135,101 @@ mod tests {
             .expect("published object should authenticate");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn file_artifact_materialization_streams_and_preserves_sparse_zero_extents() {
+        let root = tempfile::tempdir().expect("create sparse materialization fixture");
+        let source = root.path().join("source");
+        let restored = root.path().join("restored");
+        let length = 16 * 1024 * 1024_u64;
+        let mut source_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source)
+            .expect("create sparse source");
+        source_file.write_all(b"head").expect("write sparse head");
+        source_file
+            .seek(SeekFrom::Start(length - 4))
+            .expect("seek sparse tail");
+        source_file.write_all(b"tail").expect("write sparse tail");
+        source_file.sync_all().expect("flush sparse source");
+        drop(source_file);
+
+        let identity = hash_file(&source).expect("hash sparse source");
+        let artifact = ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::File(source.clone()),
+            identity,
+            length,
+            chunks: Vec::new(),
+        };
+        materialize_checkpoint_artifact(&artifact, &restored, "sparse test")
+            .expect("materialize sparse source");
+
+        assert_eq!(hash_file(&restored).expect("hash sparse result"), identity);
+        let metadata = fs::metadata(&restored).expect("inspect sparse result");
+        assert_eq!(metadata.len(), length);
+        assert!(metadata.blocks().saturating_mul(512) < length);
+
+        fs::remove_file(&restored).expect("remove sparse result");
+        let mut changed = OpenOptions::new()
+            .write(true)
+            .open(source)
+            .expect("reopen sparse source");
+        changed.write_all(b"fail").expect("change sparse source");
+        changed.sync_all().expect("flush changed sparse source");
+        assert!(
+            materialize_checkpoint_artifact(&artifact, &restored, "changed sparse test").is_err()
+        );
+        assert!(!restored.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn chunked_artifact_materialization_recreates_sparse_zero_extents() {
+        let root = tempfile::tempdir().expect("create sparse chunk fixture");
+        let source = root.path().join("source");
+        let restored = root.path().join("restored");
+        let object_directory = root.path().join("objects");
+        fs::create_dir(&object_directory).expect("create object directory");
+        let length = 16 * 1024 * 1024_u64;
+        let mut source_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source)
+            .expect("create sparse source");
+        source_file.write_all(b"head").expect("write sparse head");
+        source_file
+            .seek(SeekFrom::Start(length - 4))
+            .expect("seek sparse tail");
+        source_file.write_all(b"tail").expect("write sparse tail");
+        source_file.sync_all().expect("flush sparse source");
+        drop(source_file);
+
+        let identity = hash_file(&source).expect("hash sparse source");
+        let source_artifact = ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::File(source),
+            identity,
+            length,
+            chunks: Vec::new(),
+        };
+        let manifest = artifact_manifest(&source_artifact).expect("derive sparse chunk manifest");
+        persist_chunked_artifact(&object_directory, &manifest, &source_artifact)
+            .expect("persist sparse chunks");
+        let chunked = ProductionCheckpointArtifact {
+            source: ProductionCheckpointArtifactSource::ChunkStore(object_directory),
+            identity,
+            length,
+            chunks: manifest.chunks,
+        };
+        materialize_checkpoint_artifact(&chunked, &restored, "sparse chunk test")
+            .expect("materialize sparse chunks");
+
+        assert_eq!(hash_file(&restored).expect("hash sparse result"), identity);
+        let metadata = fs::metadata(&restored).expect("inspect sparse result");
+        assert_eq!(metadata.len(), length);
+        assert!(metadata.blocks().saturating_mul(512) < length);
+    }
+
     #[test]
     fn chunk_store_deduplicates_and_materializes_complete_artifacts() {
         let root = tempfile::tempdir().expect("create chunk-store fixture");
@@ -2073,6 +2277,7 @@ mod tests {
             .expect("corrupt first checkpoint chunk");
         fs::remove_file(&restored).expect("remove prior materialization");
         assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
+        assert!(!restored.exists());
         fs::write(&first_chunk, &bytes[..ARTIFACT_CHUNK_BYTES])
             .expect("restore first checkpoint chunk");
 
@@ -2083,6 +2288,7 @@ mod tests {
         fs::remove_file(last_chunk).expect("remove tail checkpoint chunk");
         assert!(!restored.exists());
         assert!(materialize_checkpoint_artifact(&chunked, &restored, "test").is_err());
+        assert!(!restored.exists());
     }
 
     #[test]

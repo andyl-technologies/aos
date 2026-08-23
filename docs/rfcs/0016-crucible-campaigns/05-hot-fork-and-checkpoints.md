@@ -260,11 +260,13 @@ keeps every running QEMU node paused after exact capture, hashes and streams the
 run-directory overlay and VMState directly through bounded chunk buffers into
 the content store, durably publishes the closure, then deletes the transient QMP
 snapshot and resumes only nodes that were running. It does not create a second
-full-file staging tree, and cleanup attempts every captured node even when one
-delete or resume fails. The remaining storage work is:
+full-file staging tree. Restore streams each authenticated file or chunk
+sequence through a fixed 1 MiB buffer into an atomic destination-side staging
+file, hashes the logical byte stream during that pass, and recreates zero runs
+as sparse extents before durable publication. A corrupt, short, long, or
+missing source leaves no partial destination. Cleanup attempts every captured
+node even when one delete or resume fails. The remaining storage work is:
 
-- stream source artifacts directly into the object backend;
-- preserve sparse extents where the backend supports them;
 - represent disk state as immutable backing plus changed overlay objects;
 - admit QEMU-emitted RAM dirty-page/extent manifests when the fork/snapshot
   capability is available;

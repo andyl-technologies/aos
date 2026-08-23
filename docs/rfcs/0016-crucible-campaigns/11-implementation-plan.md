@@ -824,7 +824,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [ ] **T-CAM-5.2** Implement canonical object envelopes, domain-separated
   logical IDs, child-reference walking, persistent Merkle collections, partial
   closure traversal, and typed corruption diagnostics.
-- [ ] **T-CAM-5.3** Remove full-file staging copies from the normal exact-closure
+- [x] **T-CAM-5.3** Remove full-file staging copies from the normal exact-closure
   publish/materialize path; stream with bounded buffers and preserve sparse
   extents where valid.
 - [ ] **T-CAM-5.4** Implement immutable disk backing plus child overlay
@@ -914,9 +914,12 @@ paused while it authenticates and streams the live generation's overlay and
 VMState directly into bounded content chunks. It publishes the closure before
 deleting transient QMP snapshots and resuming the originally running nodes, and
 it no longer copies both artifacts through an additional full-file staging
-tree. Sparse-extent preservation, immutable backing plus changed-overlay
-manifests, and `O(changed state)` capture remain open, so T-CAM-5.3 and
-T-CAM-5.4 remain unchecked.
+tree. Direct-file and chunk-sequence restore now use one fixed 1 MiB buffer,
+authenticate length and whole-object identity during the copy, recreate zero
+runs as sparse extents, publish the destination atomically, and leave no partial
+destination after corrupt or missing input. Immutable backing plus
+changed-overlay manifests and `O(changed state)` capture remain open, so
+T-CAM-5.4 remains unchecked.
 
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-continuity-v2`.
