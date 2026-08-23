@@ -7680,13 +7680,12 @@ impl Database {
                    AND pub.state = 'writing_pointers'
                    AND w.resource_version = ?4 + 1
                    AND w.mutable_publication_id IS NULL
-                   AND w.pending_publication_id = ?1 AND w.observed_at = ?5",
+                   AND w.pending_publication_id = ?1",
                 &vals![
                     publication_id,
                     placement_id,
                     expected_placement_version,
-                    expected_watermark_version,
-                    observed_at
+                    expected_watermark_version
                 ],
             )
             .await?
@@ -7709,9 +7708,9 @@ impl Database {
                     "SELECT 1 FROM registry_publication_placements pp
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                   AND pp.state = 'writing_pointers' AND pp.observed_at = ?3
+                   AND pp.state = 'writing_pointers'
                    AND pub.state = 'writing_pointers'",
-                    &vals![publication_id, placement_id, observed_at],
+                    &vals![publication_id, placement_id],
                 )
                 .await?
                 .is_none()
@@ -29412,6 +29411,83 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pointer_advance_accepts_a_raced_retry_for_the_same_publication() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("pointer-race", "Pointer Race").await.unwrap();
+        let binding_id = create_test_binding(&db, org_id, "primary", "/tmp/pointer-race").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(registry_id), "primary", "registry", 0);
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+
+        let publication_id = "pointerracepublication00000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        assert!(
+            db.advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
+                .await
+                .unwrap()
+        );
+
+        let watermark_version = placement.watermark_resource_version.unwrap();
+        let advanced = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                watermark_version,
+                3,
+            )
+            .await
+            .unwrap();
+        let raced_retry = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                watermark_version,
+                4,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            advanced.watermark_pending_publication_id.as_deref(),
+            Some(publication_id)
+        );
+        assert_eq!(
+            raced_retry.watermark_resource_version,
+            advanced.watermark_resource_version
+        );
+        assert_eq!(
+            raced_retry.watermark_pending_publication_id,
+            advanced.watermark_pending_publication_id
+        );
     }
 
     #[tokio::test]
