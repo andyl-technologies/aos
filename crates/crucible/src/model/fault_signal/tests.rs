@@ -2,6 +2,31 @@
 
 use super::*;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyBoxedSignalValueType {
+    I64,
+    Vector3(Box<LegacyBoxedSignalValueType>),
+}
+
+#[test]
+fn allocation_free_vector_element_type_preserves_the_boxed_wire_shape() {
+    let legacy = LegacyBoxedSignalValueType::Vector3(Box::new(LegacyBoxedSignalValueType::I64));
+    let current = SignalValueType::Vector3(SignalVectorElementType::I64);
+    let mut legacy_bytes = Vec::new();
+    ciborium::ser::into_writer(&legacy, &mut legacy_bytes)
+        .unwrap_or_else(|error| panic!("legacy vector type: {error}"));
+    let mut current_bytes = Vec::new();
+    ciborium::ser::into_writer(&current, &mut current_bytes)
+        .unwrap_or_else(|error| panic!("current vector type: {error}"));
+    assert_eq!(current_bytes, legacy_bytes);
+    assert_eq!(
+        ciborium::de::from_reader::<SignalValueType, _>(legacy_bytes.as_slice())
+            .unwrap_or_else(|error| panic!("legacy vector type decode: {error}")),
+        current
+    );
+}
+
 fn id(value: &str) -> SignalId {
     SignalId::parse(value).unwrap_or_else(|error| panic!("test id must parse: {error}"))
 }

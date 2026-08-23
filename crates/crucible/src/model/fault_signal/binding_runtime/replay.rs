@@ -239,14 +239,16 @@ pub(super) fn stage_resolved_replay_work_item(
     same_coordinate_sequence: u64,
     derivation_fingerprint: ContentHash,
     resource_limits: FaultResourceLimits,
+    current_records: usize,
 ) -> Result<ResolvedReplayWorkItem, BindingRuntimeError> {
     let requested = u64::try_from(actions.len())
         .map_err(|_| BindingRuntimeError::CountOverflow("resolved_effect_records"))?;
     let mut records = Vec::new();
     records.try_reserve_exact(actions.len()).map_err(|_| {
+        let current = u64::try_from(current_records).unwrap_or(u64::MAX);
         BindingRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
             field: "resolved_effect_records",
-            current: 0,
+            current,
             requested,
             configured: resource_limits.resolved_effect_records,
             hard: FaultResourceLimits::compiled_maximum().resolved_effect_records,

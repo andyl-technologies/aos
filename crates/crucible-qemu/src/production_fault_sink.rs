@@ -21,6 +21,7 @@ use crate::{QemuFaultActionSink, QemuNodeSet};
 struct PreparedProductionBatch {
     transaction: ContentHash,
     action_order: Vec<ContentHash>,
+    results: Vec<PreparedActionResult>,
     host_transaction: Option<ContentHash>,
     qemu_transaction: Option<ContentHash>,
 }
@@ -35,10 +36,14 @@ pub struct ProductionFaultActionSink<'a> {
 impl<'a> ProductionFaultActionSink<'a> {
     /// Binds the host device state and live QEMU node set for one transaction.
     #[must_use]
-    pub fn new(host: &'a mut HostFaultActionSink, nodes: &'a mut QemuNodeSet) -> Self {
+    pub fn new(
+        host: &'a mut HostFaultActionSink,
+        nodes: &'a mut QemuNodeSet,
+        resource_limits: crucible::model::FaultResourceLimits,
+    ) -> Self {
         Self {
             host,
-            qemu: QemuFaultActionSink::new(nodes),
+            qemu: QemuFaultActionSink::new(nodes, resource_limits),
             prepared: None,
         }
     }
@@ -46,7 +51,7 @@ impl<'a> ProductionFaultActionSink<'a> {
     /// Removes authenticated QEMU APPLY-result identities committed by the sink.
     pub(crate) fn take_qemu_commit_evidence(
         &mut self,
-    ) -> BTreeMap<ContentHash, CommittedQemuActionEvidence> {
+    ) -> Vec<(ContentHash, CommittedQemuActionEvidence)> {
         self.qemu.take_committed_evidence()
     }
 
@@ -153,6 +158,7 @@ impl FaultActionSink for ProductionFaultActionSink<'_> {
         self.prepared = Some(PreparedProductionBatch {
             transaction,
             action_order,
+            results: results.clone(),
             host_transaction: host_batch.map(|batch| batch.transaction),
             qemu_transaction: qemu_batch.map(|batch| batch.transaction),
         });
@@ -233,19 +239,35 @@ impl FaultActionSink for ProductionFaultActionSink<'_> {
             },
             None => None,
         };
-        let mut committed = host_batch
-            .iter()
-            .chain(qemu_batch.iter())
-            .flat_map(|batch| batch.results.iter().cloned())
-            .map(|result| (result.action, result))
-            .collect::<BTreeMap<_, _>>();
-        let results = reorder_results(&prepared.action_order, &mut committed)
-            .map_err(FaultActionCommitError::Fatal)?;
+        let mut host_results = host_batch.map_or_else(Vec::new, |batch| batch.results);
+        let mut qemu_results = qemu_batch.map_or_else(Vec::new, |batch| batch.results);
+        let mut results = prepared.results;
+        for (action, slot) in prepared.action_order.iter().zip(&mut results) {
+            let result = take_result(&mut host_results, *action)
+                .or_else(|| take_result(&mut qemu_results, *action))
+                .ok_or(FaultActionCommitError::Fatal(
+                    FaultRuntimeError::IncompleteAdapterState,
+                ))?;
+            *slot = result;
+        }
+        if !host_results.is_empty() || !qemu_results.is_empty() {
+            return Err(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ));
+        }
         Ok(PreparedActionBatch {
             transaction,
             results,
         })
     }
+}
+
+fn take_result(
+    results: &mut Vec<PreparedActionResult>,
+    action: ContentHash,
+) -> Option<PreparedActionResult> {
+    let index = results.iter().position(|result| result.action == action)?;
+    Some(results.swap_remove(index))
 }
 
 fn reorder_results(

@@ -274,8 +274,8 @@ pub(super) fn value_type_string(value: &SignalValueType) -> String {
         SignalValueType::ProbabilityMillionths => String::from("probability_millionths"),
         SignalValueType::Enum(schema) => format!("enum:{}", schema.as_str()),
         SignalValueType::Event(schema) => format!("event:{}", schema.as_str()),
-        SignalValueType::Vector2(element) => format!("vector2:{}", value_type_string(element)),
-        SignalValueType::Vector3(element) => format!("vector3:{}", value_type_string(element)),
+        SignalValueType::Vector2(element) => format!("vector2:{}", element.material()),
+        SignalValueType::Vector3(element) => format!("vector3:{}", element.material()),
         SignalValueType::Bytes => String::from("bytes"),
     }
 }
@@ -297,12 +297,16 @@ pub(super) fn parse_value_type(value: &str) -> Result<SignalValueType, FaultSign
             match kind {
                 "enum" => Ok(SignalValueType::Enum(SignalId::parse(parameter)?)),
                 "event" => Ok(SignalValueType::Event(SignalId::parse(parameter)?)),
-                "vector2" => Ok(SignalValueType::Vector2(Box::new(parse_value_type(
-                    parameter,
-                )?))),
-                "vector3" => Ok(SignalValueType::Vector3(Box::new(parse_value_type(
-                    parameter,
-                )?))),
+                "vector2" => Ok(SignalValueType::Vector2(
+                    parse_value_type(parameter)?.try_into().map_err(|_| {
+                        FaultSignalAuthoringError::InvalidValueType(value.to_owned())
+                    })?,
+                )),
+                "vector3" => Ok(SignalValueType::Vector3(
+                    parse_value_type(parameter)?.try_into().map_err(|_| {
+                        FaultSignalAuthoringError::InvalidValueType(value.to_owned())
+                    })?,
+                )),
                 _ => Err(FaultSignalAuthoringError::InvalidValueType(
                     value.to_owned(),
                 )),

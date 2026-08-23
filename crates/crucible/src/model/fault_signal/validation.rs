@@ -1258,8 +1258,7 @@ pub(super) fn validate_input_group(
                     left.output == right.output
                         && matches!(
                             left.output.value_type,
-                            SignalValueType::Vector3(ref element)
-                                if element.as_ref() == &SignalValueType::I64
+                            SignalValueType::Vector3(SignalVectorElementType::I64)
                         )
                         && left.output.unit == SignalUnit::Millidegrees
                         && node.output == left.output
@@ -1279,7 +1278,7 @@ pub(super) fn is_position_shape(shape: &SignalShape) -> bool {
     matches!(
         &shape.value_type,
         SignalValueType::Vector2(element) | SignalValueType::Vector3(element)
-            if element.as_ref() == &SignalValueType::I64
+            if *element == SignalVectorElementType::I64
     )
 }
 

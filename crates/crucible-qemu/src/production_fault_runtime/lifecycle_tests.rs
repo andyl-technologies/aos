@@ -149,7 +149,7 @@ fn fail_closed_lifecycle_accepts_an_explicit_missing_pre_exit_measurement() {
 #[test]
 fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
     let committed = |action: &ResolvedBindingAction, command_sequence: u64| {
-        BTreeMap::from([(
+        vec![(
             action.id(),
             CommittedQemuActionEvidence {
                 command_sequence,
@@ -157,7 +157,7 @@ fn qemu_action_ledger_retains_impulses_and_removed_rules_for_events() {
                 before_hash: [command_sequence as u8; 32],
                 after_hash: [command_sequence as u8 + 1; 32],
             },
-        )])
+        )]
     };
     let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));

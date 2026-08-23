@@ -874,11 +874,11 @@ fn put_value_type(output: &mut Vec<u8>, value: &SignalValueType) {
         }
         SignalValueType::Vector2(element) => {
             output.push(9);
-            put_value_type(output, element);
+            put_value_type(output, &element.value_type());
         }
         SignalValueType::Vector3(element) => {
             output.push(10);
-            put_value_type(output, element);
+            put_value_type(output, &element.value_type());
         }
         SignalValueType::Bytes => output.push(11),
     }
@@ -1176,12 +1176,16 @@ impl<'a> Reader<'a> {
             8 => Ok(SignalValueType::Event(
                 SignalId::parse(self.text()?).map_err(TraceError::Signal)?,
             )),
-            9 => Ok(SignalValueType::Vector2(Box::new(
-                self.value_type(depth + 1)?,
-            ))),
-            10 => Ok(SignalValueType::Vector3(Box::new(
-                self.value_type(depth + 1)?,
-            ))),
+            9 => Ok(SignalValueType::Vector2(
+                self.value_type(depth + 1)?
+                    .try_into()
+                    .map_err(|_| TraceError::MalformedCodec)?,
+            )),
+            10 => Ok(SignalValueType::Vector3(
+                self.value_type(depth + 1)?
+                    .try_into()
+                    .map_err(|_| TraceError::MalformedCodec)?,
+            )),
             11 => Ok(SignalValueType::Bytes),
             _ => Err(TraceError::MalformedCodec),
         }

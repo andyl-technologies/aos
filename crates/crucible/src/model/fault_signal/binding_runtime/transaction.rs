@@ -65,6 +65,9 @@ pub(super) fn prepare_actions(
     let prepared = match sink.prepare_batch(actions) {
         Ok(prepared) => prepared,
         Err(rejected) => {
+            if rejected.error == FaultRuntimeError::AdapterTransactionRollback {
+                return Err(BindingRuntimeError::AdapterAbort(rejected.error.clone()));
+            }
             if validate_rejected_batch(actions, &rejected) {
                 return Err(BindingRuntimeError::AdapterRejected(rejected));
             }

@@ -906,15 +906,19 @@ pub(super) fn parse_authored_signal_value(
             schema: schema.clone(),
             payload: parse_hex_value(value)?,
         },
-        SignalValueType::Vector2(element) => SignalValue::Vector2(parse_vector(value, element, 2)?),
-        SignalValueType::Vector3(element) => SignalValue::Vector3(parse_vector(value, element, 3)?),
+        SignalValueType::Vector2(element) => {
+            SignalValue::Vector2(parse_vector(value, *element, 2)?)
+        }
+        SignalValueType::Vector3(element) => {
+            SignalValue::Vector3(parse_vector(value, *element, 3)?)
+        }
         SignalValueType::Bytes => SignalValue::Bytes(parse_hex_value(value)?),
     })
 }
 
 pub(super) fn parse_vector(
     value: toml::Value,
-    element: &SignalValueType,
+    element: SignalVectorElementType,
     expected: usize,
 ) -> Result<Vec<SignalValue>, FaultSignalAuthoringError> {
     let toml::Value::Array(values) = value else {
@@ -923,8 +927,9 @@ pub(super) fn parse_vector(
     if values.len() != expected {
         return Err(FaultSignalAuthoringError::InvalidField("value"));
     }
+    let element = element.value_type();
     values
         .into_iter()
-        .map(|value| parse_authored_signal_value(value, element))
+        .map(|value| parse_authored_signal_value(value, &element))
         .collect()
 }
