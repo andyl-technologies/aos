@@ -147,7 +147,7 @@ impl<'a> QemuFaultActionSink<'a> {
         &mut self,
         action: &ResolvedBindingAction,
     ) -> Result<PreparedMemoryAction, FaultRuntimeError> {
-        let prepared = prepare_memory_action_payload(action)?;
+        let prepared = prepare_memory_action_payload(action, self.resource_limits)?;
         let encoded = prepared
             .payload
             .encode_preparation()
@@ -233,6 +233,7 @@ impl<'a> QemuFaultActionSink<'a> {
 
 fn prepare_memory_action_payload(
     action: &ResolvedBindingAction,
+    resource_limits: FaultResourceLimits,
 ) -> Result<MemoryActionPayload, FaultRuntimeError> {
     if action.kind != BindingActionKind::Apply || action.phase != FaultPhase::Boundary {
         return Err(FaultRuntimeError::AdapterActionMismatch);
@@ -268,13 +269,26 @@ fn prepare_memory_action_payload(
     {
         return Err(FaultRuntimeError::AdapterActionMismatch);
     }
+    resource_limits
+        .reserve("memory_mutation_bytes_per_effect", 0, *length_bytes)
+        .map_err(FaultRuntimeError::ResourceLimit)?;
     let length = usize::try_from(*length_bytes)
         .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
     let (transform, mask, values) = match mutation {
         MemoryMutationKind::BitFlip { mask } => {
             let pattern = mask.decode();
-            let mask = pattern.iter().copied().cycle().take(length).collect();
-            (MemoryMutationTransformKind::BitFlip, mask, Vec::new())
+            let mut expanded = Vec::new();
+            expanded.try_reserve_exact(length).map_err(|_| {
+                FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                    field: "memory_mutation_bytes_per_effect",
+                    current: 0,
+                    requested: *length_bytes,
+                    configured: resource_limits.memory_mutation_bytes_per_effect,
+                    hard: FaultResourceLimits::compiled_maximum().memory_mutation_bytes_per_effect,
+                })
+            })?;
+            expanded.extend(pattern.iter().copied().cycle().take(length));
+            (MemoryMutationTransformKind::BitFlip, expanded, Vec::new())
         }
         MemoryMutationKind::Replace { bytes } => (
             MemoryMutationTransformKind::Replace,
