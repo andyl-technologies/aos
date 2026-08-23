@@ -2009,13 +2009,18 @@ raw storage descriptor. Invocation by guarded launch, baked/thin image
 provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
 before this host owner is selected by the production executor.
 
-This authority is not yet wired into the production executor flight. The
-guarded launch/session path transfers a retained pre-install child into the
-abstract attempt guard, and the daemon guard composes cancellation, quantum
-accounting, descriptor-pinned preparation, and all-or-quarantine cleanup around
-the concrete combined Linux host owner. The full real-node factory, modeled
-driver, active-node failure handoff, and final session wiring remain mandatory
-before the guarded path may launch a campaign QEMU. A process-only Linux facade
+This authority is not yet selected by the production executor flight. The
+guarded launch/session path transfers retained pre-install and active-node
+children into the abstract attempt guard, and the daemon guard composes
+cancellation, quantum accounting, descriptor-pinned preparation, and
+all-or-quarantine cleanup around the concrete combined Linux host owner. A
+concrete exact-resume adapter obtains that one-shot prepared directory from the
+guard, streams and authenticates the durable exact root into its pinned VMState
+inode, constructs the root-bound real-node launcher, and exposes only the
+guarded live facade to the session. Fresh exact-cache, baked-genesis, and thin
+image provisioning, the modeled driver, and production worker/factory selection
+remain mandatory before the guarded path may launch a campaign QEMU. A
+process-only Linux facade
 now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
 delegated root;
@@ -2065,8 +2070,8 @@ reader as a reopenable CAS source with an independent positional cursor per
 open. The guarded live session now performs that conversion itself, records the
 successful capture as the backend reap attestation, and releases only the host
 resource guard during `finish`; it cannot accidentally issue a second shutdown
-or hand modeled code the opaque source. Concrete real-node session construction
-and the production worker flight remain open. The daemon then
+or hand modeled code the opaque source. The modeled driver and production
+worker/factory selection remain open. The daemon then
 prepares a no-write, content-addressed root over canonical snapshot metadata and
 the streamed opaque VMState child, stages that exact root in the assignment
 ledger before the first immutable write, publishes both children before the
@@ -2105,10 +2110,11 @@ than falling back. The comparison session owns one process/resource guard, uses
 disjoint launch capabilities for target and thin base, reaps each generation
 before replacement, and finishes before promotion writes. Any realization or
 cleanup failure quarantines the guard and leaves the raw root selected. The
-nondroppable child/cgroup/watcher worker now exists crate-internally; concrete
-failed-launch/active-node handoff into it, raw paused-root validation/promotion,
-and the complete pause/restart/resume flight remain mandatory before the full
-campaign/QEMU gate may claim completion.
+nondroppable child/cgroup/watcher worker now exists crate-internally, and the
+exact-resume adapter transfers both failed-launch and active-node child
+authority into the attempt guard before returning a failed realization. Raw
+paused-root validation/promotion and the complete pause/restart/resume flight
+remain mandatory before the full campaign/QEMU gate may claim completion.
 
 Coverage-enabled warm restore remains fail-closed in this implementation slice.
 Boot-barrier priming occurs before `loadvm`, while the current QEMU plugin emits

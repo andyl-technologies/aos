@@ -16,7 +16,7 @@ use crucible::model::{
 use crucible::{
     AdvanceOutcome, Backend, BackendError, BackendInput, Checkpoint, CheckpointKind, Configuration,
     ContentHash, EventLog, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, RuntimeState,
-    ScenarioDef, World,
+    ScenarioDef, SingleScheduler, World,
 };
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCommandId, CampaignLineage, CampaignMode, CampaignPolicy,
@@ -33,17 +33,19 @@ use crucible_qemu::{
     QemuCachedAncestor, QemuChildProcessContract, QemuFailedLaunchChildSource,
     QemuFaultCapabilityRequirement, QemuGuardedNodeRealizationLauncher,
     QemuGuardedThinNodeRealizationLauncher, QemuLaunchArtifact, QemuLaunchCommand,
-    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission, QemuNodeLauncher, QemuNodeRealizationExecutor,
-    QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuRealizedNodeBackend, QemuReplayOracleCheck,
-    QemuReplayOracleValidation, QemuReplayValidationNodeLauncher, QemuVmLaunchConfig,
-    QemuVmLiveRealizationExecutor, QemuVmRealizationError, QemuVmRealizationExecutor,
-    QemuVmRealizationKind, QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest,
-    QemuVmSnapshot, QemuVmStateBinding,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLiveHostIoRuntime,
+    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeFactoryRuntime,
+    QemuNodeLauncher, QemuNodeRealizationExecutor, QemuNodeRestorePlan, QemuPreparedRunDirectory,
+    QemuRealizedNodeBackend, QemuReplayOracleCheck, QemuReplayOracleValidation,
+    QemuReplayValidationNodeLauncher, QemuVmLaunchConfig, QemuVmLiveRealizationExecutor,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuVmStateBinding,
 };
 use crucible_shmem::{
     FAULT_REGISTER_CAPABILITY_IMPULSE, FAULT_REGISTER_CAPABILITY_VMSTATE, FaultCapabilityScope,
     FaultRegisterCapabilityManifestV1, FaultRegisterCapabilityRowV1, FaultRegisterGroupV1,
+    RegionConfig,
 };
 
 use super::*;
@@ -355,6 +357,8 @@ struct GuardedResumeGuard {
     process_contract: QemuChildProcessContract,
     finishes: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    preparations: Arc<AtomicUsize>,
+    prepared_run_directory: Option<QemuPreparedRunDirectory>,
     failed_children: Vec<crucible_qemu::QemuNodeChild>,
 }
 
@@ -509,6 +513,10 @@ impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
         &mut self,
         _command: &crucible_qemu::QemuLaunchCommand,
     ) -> Result<crucible_qemu::QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        if let Some(prepared) = self.prepared_run_directory.take() {
+            return Ok(prepared);
+        }
         Err(QemuVmRealizationError::Executor {
             operation: "prepare guarded resume test run directory",
             message: String::from("guarded resume test does not provision run directories"),
@@ -536,6 +544,8 @@ fn guarded_resume_guard(resources: AttemptResourceLimits) -> GuardedResumeGuard 
         ),
         finishes: Arc::new(AtomicUsize::new(0)),
         quarantines: Arc::new(AtomicUsize::new(0)),
+        preparations: Arc::new(AtomicUsize::new(0)),
+        prepared_run_directory: None,
         failed_children: Vec::new(),
     }
 }
@@ -659,6 +669,117 @@ fn replay_validated_materialization_resumes_only_through_guarded_launcher() {
         QemuVmRealizationKind::ExactSnapshotLoadvm { ref checkpoint }
             if checkpoint.id == validated.checkpoint().id
     ));
+}
+
+#[test]
+fn concrete_exact_resume_executor_requires_the_attempt_owned_run_directory_first() {
+    let checkpoints = ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), STORE_LIMIT)
+        .expect("checkpoint store");
+    let command = materialization_command();
+    let mut executor = crate::QemuExactResumeLiveRealizationExecutor::new(
+        checkpoints,
+        command,
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        RegionConfig::new(1, 8, 0),
+        0,
+        unused_exact_resume_runtime,
+    );
+    let initial = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-resume-executor",
+        "guard-first",
+    ));
+    let checkpoint =
+        ExactCheckpointId::try_from(crucible_cas::content_store::ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            2,
+            b"guard-first-checkpoint",
+        ))
+        .expect("checkpoint root");
+    let resources =
+        AttemptResourceLimits::new(1, 512 * 1024 * 1024, STORE_LIMIT, 16).expect("resource limits");
+    let mut guard = guarded_resume_guard(resources);
+    let preparations = Arc::clone(&guard.preparations);
+
+    let result = crate::QemuGuardedLiveRealizationExecutor::resume_exact_checkpoint_guarded(
+        &mut executor,
+        &mut guard,
+        checkpoint,
+        &initial,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare guarded resume test run directory",
+            ..
+        })
+    ));
+    assert_eq!(preparations.load(Ordering::SeqCst), 1);
+    assert!(!executor.live_backend_is_active());
+}
+
+#[test]
+fn concrete_exact_resume_executor_materializes_the_root_before_replay_admission() {
+    let backend = Arc::new(TestDurableBackend::new());
+    let fixture = fixture_with_backend("concrete-exact-resume", backend);
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.exact-pin-materialization",
+        "concrete-exact-resume",
+    ));
+    let command = materialization_command();
+    let resources = AttemptResourceLimits::new(1, 512 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 16)
+        .expect("resource limits");
+    let mut guard = guarded_resume_guard(resources);
+    let preparations = Arc::clone(&guard.preparations);
+    let temp = tempfile::tempdir().expect("exact resume run directory");
+    std::fs::write(
+        temp.path().join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME),
+        b"provisioned",
+    )
+    .expect("provision VMState inode");
+    guard.prepared_run_directory = Some(
+        QemuPreparedRunDirectory::open_for_materialization(
+            &command,
+            temp.path(),
+            &guard.process_contract,
+        )
+        .expect("pin exact resume run directory"),
+    );
+    let checkpoint = fixture.checkpoint;
+    let mut executor = crate::QemuExactResumeLiveRealizationExecutor::new(
+        fixture.checkpoints,
+        command,
+        NodeId {
+            name: String::from("vm-a"),
+        },
+        RegionConfig::new(1, 8, 0),
+        0,
+        unused_exact_resume_runtime,
+    );
+
+    let result = crate::QemuGuardedLiveRealizationExecutor::resume_exact_checkpoint_guarded(
+        &mut executor,
+        &mut guard,
+        checkpoint,
+        &configuration,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(QemuVmRealizationError::SavevmPolicy { .. })
+    ));
+    assert_eq!(preparations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        std::fs::read(temp.path().join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME))
+            .expect("read materialized VMState"),
+        vec![0x5a; 4096]
+    );
+    assert!(!executor.live_backend_is_active());
+    assert!(guard.failed_children.is_empty());
 }
 
 #[test]
@@ -1935,6 +2056,12 @@ fn materialization_command() -> QemuLaunchCommand {
     )
     .build()
     .expect("materialization command")
+}
+
+fn unused_exact_resume_runtime(
+    _configuration: &Configuration,
+) -> QemuNodeFactoryRuntime<SingleScheduler, QemuLiveHostIoRuntime> {
+    panic!("guard-first regression must fail before constructing a QEMU runtime")
 }
 
 fn policy(scenario: ScenarioDefId) -> CampaignPolicy {

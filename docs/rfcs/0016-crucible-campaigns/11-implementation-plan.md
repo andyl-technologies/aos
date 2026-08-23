@@ -389,9 +389,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   filesystem-quota reservation, exact run-directory binding, and nondroppable
   process/storage quarantine are now composed by the concrete Linux host owner.
   Descriptor-pinned exact-VMState destination preparation and its one-shot
-  daemon guard capability are now composed by that owner. Active-node handoff,
-  baked/thin image provisioning, the modeled attempt driver, and concrete
-  session wiring remain open. Real-node exact-
+  daemon guard capability are now composed by that owner. The concrete
+  exact-resume adapter obtains that authority from the guard, streams and
+  authenticates the durable root into the pinned inode, installs a root-bound
+  real-node launcher, and transfers failed-launch or active-node child authority
+  back to the guard on failure. Fresh exact-cache, baked/thin image provisioning,
+  the modeled attempt driver, and production worker/factory selection remain
+  open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes
@@ -401,8 +405,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   independent positional cursor per open. The guarded session itself now turns
   that source into the linear captured-checkpoint token, records the successful
   capture as its backend reap attestation, and releases only the still-installed
-  host guard during finalization. Concrete real-node factory and driver wiring
-  remain open. The daemon now
+  host guard during finalization. Modeled driver and production worker/factory
+  selection remain open. The daemon now
   prepares and durably
   publishes
   a registered exact-checkpoint root over canonical snapshot metadata and a
@@ -480,9 +484,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   with the process owner are implemented, including reap-before-storage release
   and nondroppable combined quarantine. The owner now lends a one-shot admitted,
   descriptor-pinned exact-VMState destination through the daemon guard.
-  Invocation by the full executor flight, baked/thin image provisioning, the
-  real-node guarded launcher, and production configuration remain open; `NotRun`
-  is still fail-closed. The fixed worker pool and its
+  The guarded exact-resume adapter now invokes the real-node launcher only after
+  root materialization through the attempt-owned directory. Fresh exact-cache,
+  baked/thin image provisioning, the full executor flight, and production
+  configuration remain open; `NotRun` is still fail-closed. The fixed worker
+  pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:

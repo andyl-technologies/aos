@@ -40,6 +40,8 @@
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
+//! [`qemu_exact_resume_executor`] owns concrete guarded real-node resume from a
+//! durable operational checkpoint root;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -78,6 +80,8 @@ pub mod executor_worker;
 pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
 pub mod planner_process;
+#[cfg(target_os = "linux")]
+pub mod qemu_exact_resume_executor;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
 
@@ -246,6 +250,8 @@ pub use planner_process::{
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
 };
+#[cfg(target_os = "linux")]
+pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,

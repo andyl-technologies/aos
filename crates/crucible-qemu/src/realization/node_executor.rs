@@ -827,6 +827,21 @@ where
         self.active_node.take()
     }
 
+    /// Transfers an unreaped real node's direct-child authority to quarantine.
+    ///
+    /// This operation deliberately destroys every modeled channel and live
+    /// backend capability before returning the nonduplicable child handle. The
+    /// caller must authenticate and retain that child in the exact attempt
+    /// process owner before releasing any resource enforcement.
+    #[must_use]
+    pub fn take_active_direct_child_for_quarantine(&mut self) -> Option<crate::QemuNodeChild>
+    where
+        L: QemuNodeLauncher<Node = QemuNode>,
+    {
+        self.take_active_node_for_quarantine()
+            .map(QemuNode::into_direct_child_for_quarantine)
+    }
+
     /// Takes a direct child retained after a post-spawn launch reap failure.
     ///
     /// The caller must authenticate the returned child against the exact
