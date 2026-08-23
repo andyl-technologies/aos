@@ -62,13 +62,18 @@ mod launch;
 #[cfg(target_os = "linux")]
 mod linux_attempt_process;
 #[cfg(target_os = "linux")]
+// The lifecycle-bound quota/run-directory owner is intentionally internal
+// until the daemon combines it with the process owner and quarantine worker.
+#[allow(dead_code)]
+mod linux_attempt_storage;
+#[cfg(target_os = "linux")]
 // Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
 // sealed process owner needed by the still-separate quota/session composition.
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
-// The real ext4 project-quota transaction is intentionally internal until the
-// combined process/filesystem attempt owner consumes it in the next slice.
+// Raw project-quota mutation stays internal; `linux_attempt_storage` owns its
+// allocation, naming, directory, and release lifecycle.
 #[allow(dead_code)]
 mod linux_project_quota;
 #[cfg(target_os = "linux")]
