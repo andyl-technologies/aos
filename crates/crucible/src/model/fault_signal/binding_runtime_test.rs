@@ -15,6 +15,7 @@ struct RejectActions;
 struct MismatchedActions {
     prepared: bool,
     aborted: bool,
+    committed: bool,
 }
 
 #[derive(Default)]
@@ -225,6 +226,7 @@ impl FaultActionSink for MismatchedActions {
         &mut self,
         transaction: ContentHash,
     ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        self.committed = true;
         self.prepared = false;
         Ok(PreparedActionBatch {
             transaction,
@@ -939,20 +941,17 @@ fn malformed_adapter_success_rolls_back_the_entire_boundary() {
 
     let mut sink = MismatchedActions::default();
     let result = runtime.evaluate_boundary(coordinate(0), 0, &mut sink);
-    assert!(!sink.aborted);
-    assert!(matches!(
-        result,
-        Err(BindingRuntimeError::AdapterCommit(
-            FaultRuntimeError::IncompleteAdapterState
-        ))
-    ));
-    assert!(matches!(
-        runtime.evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default()),
-        Err(BindingRuntimeError::Poisoned)
-    ));
+    assert!(sink.aborted);
+    assert!(!sink.committed);
+    assert!(matches!(result, Err(BindingRuntimeError::AdapterResult)));
     assert!(!sink.prepared);
     assert!(runtime.active().entries().is_empty());
     assert!(runtime.states().values().all(|state| !state.active));
+    assert!(
+        runtime
+            .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
+            .is_ok()
+    );
 }
 
 #[test]
