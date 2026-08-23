@@ -75,7 +75,7 @@ impl QemuAttemptHostResourceOwner for FakeHostOwner {
         Ok(&self.process_contract)
     }
 
-    fn prepare_run_directory(
+    fn prepare_generation_run_directory(
         &mut self,
         _command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {

@@ -294,10 +294,11 @@ impl LinuxQemuAttemptHostOwner {
         )
     }
 
-    /// Returns the exact pinned run-directory path for diagnostics.
+    /// Returns the exact pinned aggregate attempt-root path for diagnostics.
     ///
     /// Callers must not reopen this path as authority. Later launch composition
-    /// consumes the descriptor-pinned storage capability retained here.
+    /// consumes generation capabilities derived from the descriptor-pinned
+    /// aggregate storage authority retained here.
     ///
     /// # Errors
     ///
@@ -324,16 +325,17 @@ impl LinuxQemuAttemptHostOwner {
     /// Provisions and lends the descriptor-pinned run-directory authority.
     ///
     /// The exact launch profile is admitted before the retained storage owner
-    /// creates the empty exact-VMState destination. Raw directory and quota
-    /// authority never leave this combined owner, and the prepared capability
-    /// can be issued only once.
+    /// creates a fresh monotone generation directory and its empty exact-VMState
+    /// destination. Raw attempt-root and quota authority never leave this
+    /// combined owner. Every issued generation shares the one aggregate quota
+    /// and remains inside the owner's bounded cleanup tree.
     ///
     /// # Errors
     ///
     /// Returns a stable executor error when the launch basis, retained storage
-    /// identity, VMState policy, or one-shot lifecycle invariant fails. Host I/O
-    /// failures are reported as unavailable.
-    pub fn prepare_run_directory(
+    /// identity, monotone generation sequence, or VMState policy fails. Host
+    /// I/O failures are reported as unavailable.
+    pub fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
@@ -346,7 +348,7 @@ impl LinuxQemuAttemptHostOwner {
         };
         let contract = process.process_contract()?;
         storage
-            .prepare_run_directory(command, contract)
+            .prepare_generation_run_directory(command, contract)
             .map_err(|error| map_storage_error("prepare QEMU attempt run directory", &error))
     }
 

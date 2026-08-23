@@ -52,6 +52,7 @@ const MAX_PROJECT_ID_COUNT: u32 = 65_536;
 const MAX_QUOTACTL_PROJECT_ID: u32 = 0x7fff_ffff;
 const MAX_ATTEMPT_ARTIFACT_INODES: u64 = 65_536;
 const ROOT_SCAN_BUFFER_BYTES: usize = 4096;
+const GENERATION_NAME_PREFIX: &str = "generation-";
 
 /// Validated configuration for one daemon-incarnation attempt-storage root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,7 +294,7 @@ impl LinuxQemuAttemptStorageFactory {
             child_user_id: self.config.child_user_id,
             child_group_id: self.config.child_group_id,
             maximum_inodes: limits.maximum_inodes(),
-            prepared_run_directory_issued: false,
+            next_generation: Some(1),
             removed: false,
             released: false,
         };
@@ -319,7 +320,7 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
     child_user_id: u32,
     child_group_id: u32,
     maximum_inodes: u64,
-    prepared_run_directory_issued: bool,
+    next_generation: Option<u64>,
     removed: bool,
     released: bool,
 }
@@ -363,49 +364,52 @@ impl LinuxQemuAttemptStorageOwner {
             })
     }
 
-    /// Provisions and lends one descriptor-pinned guarded run directory.
+    /// Provisions and lends one descriptor-pinned generation run directory.
     ///
-    /// Resource admission is checked before VMState creation. The returned
-    /// authority owns only duplicated directory and VMState descriptors; quota,
-    /// cleanup, namespace-lock, and project-ID ownership remain here. Exactly
-    /// one prepared authority may be issued for an attempt.
+    /// Resource admission is checked before generation-directory creation. Each
+    /// successful call receives a fresh monotone child below the attempt root.
+    /// The returned authority owns only duplicated generation-directory and
+    /// VMState descriptors; the single aggregate quota, cleanup namespace,
+    /// project-ID lease, and every partially created generation remain here.
+    /// Issuance retains only the next ordinal, so its memory use is independent
+    /// of the number of generations and the inode quota remains the hard count
+    /// bound.
     ///
     /// # Errors
     ///
     /// Returns [`LinuxQemuAttemptStorageError`] when admission changes, the
-    /// directory identity is invalid, VMState provisioning or durability fails,
-    /// or a prepared authority was already issued.
-    pub(crate) fn prepare_run_directory(
+    /// attempt-root identity is invalid, the monotone generation sequence is
+    /// exhausted, or child-directory/VMState provisioning or durability fails.
+    pub(crate) fn prepare_generation_run_directory(
         &mut self,
         command: &QemuLaunchCommand,
         contract: &QemuChildProcessContract,
     ) -> Result<QemuPreparedRunDirectory, LinuxQemuAttemptStorageError> {
-        if self.prepared_run_directory_issued {
-            return Err(LinuxQemuAttemptStorageError::PreparedAuthorityIssued {
-                path: self.path.clone(),
-            });
-        }
         validate_guarded_launch_resources(command, contract)
             .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
         self.pin_directory()?;
         self.verify_named_directory()?;
 
-        let vmstate = provision_vmstate_file(
+        let generation = self.next_generation.ok_or_else(|| {
+            LinuxQemuAttemptStorageError::GenerationSequenceExhausted {
+                path: self.path.clone(),
+            }
+        })?;
+        self.next_generation = generation.checked_add(1);
+        let (path, directory) = create_generation_directory(
             self.directory()?,
             &self.path,
+            generation,
             self.child_user_id,
             self.child_group_id,
         )?;
-        let directory = duplicate_fd(
-            self.directory()?,
-            "lend pinned QEMU run directory",
-            &self.path,
-        )?;
+        let vmstate =
+            provision_vmstate_file(&directory, &path, self.child_user_id, self.child_group_id)?;
+        let directory = duplicate_fd(&directory, "lend pinned QEMU generation directory", &path)?;
         let prepared = QemuPreparedRunDirectory::from_admitted_descriptors(
-            command, &self.path, directory, vmstate, contract,
+            command, &path, directory, vmstate, contract,
         )
         .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
-        self.prepared_run_directory_issued = true;
         Ok(prepared)
     }
 
@@ -740,10 +744,10 @@ pub(crate) enum LinuxQemuAttemptStorageError {
         /// Stable cleanup diagnostic.
         message: &'static str,
     },
-    /// The one-shot descriptor-pinned run-directory authority was already issued.
-    #[error("QEMU attempt run-directory authority was already issued: {path}")]
-    PreparedAuthorityIssued {
-        /// Diagnostic run-directory path.
+    /// The monotone generation-directory sequence cannot advance.
+    #[error("QEMU attempt generation-directory sequence is exhausted: {path}")]
+    GenerationSequenceExhausted {
+        /// Diagnostic attempt-root path.
         path: PathBuf,
     },
     /// The exact-VMState container did not match its required empty-file policy.
@@ -1097,6 +1101,10 @@ fn attempt_name(namespace: &str, sequence: u64) -> String {
     format!("{namespace}-{sequence:016x}")
 }
 
+fn generation_name(generation: u64) -> String {
+    format!("{GENERATION_NAME_PREFIX}{generation:016x}")
+}
+
 fn validate_root_policy(root: &OwnedFd, path: &Path) -> Result<(), LinuxQemuAttemptStorageError> {
     let metadata = fstat(root)
         .map_err(|source| io_error("inspect QEMU attempt-storage root", path, source))?;
@@ -1129,6 +1137,40 @@ fn verify_directory_policy(
         });
     }
     Ok(())
+}
+
+/// Creates and authenticates one monotone child below the quota-bound attempt root.
+fn create_generation_directory(
+    attempt_directory: &OwnedFd,
+    attempt_path: &Path,
+    generation: u64,
+    child_user_id: u32,
+    child_group_id: u32,
+) -> Result<(PathBuf, OwnedFd), LinuxQemuAttemptStorageError> {
+    let name = generation_name(generation);
+    let path = attempt_path.join(&name);
+    mkdirat(
+        attempt_directory,
+        name.as_str(),
+        Mode::from_bits_truncate(0o700),
+    )
+    .map_err(|source| io_error("create QEMU generation directory", &path, source))?;
+
+    let directory = open_directory_at(attempt_directory, &name, &path)?;
+    fchmod(&directory, Mode::from_bits_truncate(0o700))
+        .map_err(|source| io_error("set QEMU generation-directory mode", &path, source))?;
+    fchown(
+        &directory,
+        Some(Uid::from_raw(child_user_id)),
+        Some(Gid::from_raw(child_group_id)),
+    )
+    .map_err(|source| io_error("assign QEMU generation-directory ownership", &path, source))?;
+    fsync(&directory)
+        .map_err(|source| io_error("synchronize QEMU generation directory", &path, source))?;
+    verify_directory_policy(&directory, &path, child_user_id, child_group_id)?;
+    fsync(attempt_directory)
+        .map_err(|source| io_error("synchronize QEMU generation creation", &path, source))?;
+    Ok((path, directory))
 }
 
 /// Creates or resumes policy installation for the empty exact-VMState destination.
@@ -1479,6 +1521,52 @@ mod tests {
     }
 
     #[test]
+    fn generation_directories_are_monotone_distinct_and_descriptor_pinned() {
+        let root = must_succeed(tempfile::tempdir(), "temporary attempt root");
+        let directory = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "pin attempt root",
+        );
+        let user = geteuid().as_raw();
+        let group = rustix::process::getegid().as_raw();
+
+        let (first_path, first) = must_succeed(
+            create_generation_directory(&directory, root.path(), 1, user, group),
+            "create first generation",
+        );
+        let (second_path, second) = must_succeed(
+            create_generation_directory(&directory, root.path(), 2, user, group),
+            "create second generation",
+        );
+        let first_identity = must_succeed(fstat(&first), "identify first generation");
+        let second_identity = must_succeed(fstat(&second), "identify second generation");
+        assert_eq!(first_path, root.path().join("generation-0000000000000001"));
+        assert_eq!(second_path, root.path().join("generation-0000000000000002"));
+        assert_ne!(first_identity.st_ino, second_identity.st_ino);
+
+        let first_vmstate = must_succeed(
+            provision_vmstate_file(&first, &first_path, user, group),
+            "provision first generation VMState",
+        );
+        let second_vmstate = must_succeed(
+            provision_vmstate_file(&second, &second_path, user, group),
+            "provision second generation VMState",
+        );
+        let first_vmstate_identity =
+            must_succeed(fstat(&first_vmstate), "identify first generation VMState");
+        let second_vmstate_identity =
+            must_succeed(fstat(&second_vmstate), "identify second generation VMState");
+        assert_ne!(
+            first_vmstate_identity.st_ino,
+            second_vmstate_identity.st_ino
+        );
+    }
+
+    #[test]
     fn cleanup_depth_is_bounded_by_inodes_instead_of_open_descriptors() {
         const DEPTH: usize = 300;
 
@@ -1586,6 +1674,8 @@ mod tests {
             attempt_name(&maximum_namespace, u64::MAX).len(),
             MAX_RUN_DIRECTORY_NAME_BYTES
         );
+        assert_eq!(generation_name(1), "generation-0000000000000001");
+        assert_eq!(generation_name(u64::MAX), "generation-ffffffffffffffff");
     }
 
     #[test]

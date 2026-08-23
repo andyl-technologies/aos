@@ -209,7 +209,7 @@ where
         }
 
         guard.check_operational_boundary()?;
-        let mut run_directory = guard.prepare_run_directory(&self.command)?;
+        let mut run_directory = guard.prepare_generation_run_directory(&self.command)?;
         let materialized = materialize_attempt_exact_checkpoint(
             &self.checkpoints,
             checkpoint,
