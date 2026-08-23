@@ -25,6 +25,12 @@ pub enum LivePluginQuantumGateError {
         /// Underlying filesystem error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed: {source}")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// The conservative deterministic launch profile was invalid.
     #[error("build deterministic launch profile failed: {source}")]
     LaunchProfile {

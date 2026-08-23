@@ -120,8 +120,6 @@ const GATE_MEMORY_MIB: u32 = 64;
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-node-step-qmp.sock";
 /// Stable crash-detector node identifier.
 const GATE_CRASH_NODE_ID: &str = "live-node-step";
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Bound on how many times one ceiling may be re-issued before the runner treats
 /// a stalled step as a wake defect rather than looping indefinitely.
 const MAX_REISSUES_PER_CEILING: u32 = 64;
@@ -235,7 +233,7 @@ pub struct QemuLiveNodeStepGateConfig {
     queue_capacity: u32,
     schedule: QemuLiveNodeStepSchedule,
     completion_timeout: Duration,
-    second_run_host_load: bool,
+    second_run_scheduler_preemption: bool,
     console_capture: bool,
     fault_capabilities: Option<crucible::model::WorldNodeFaultCapabilities>,
     exact_gate_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
@@ -313,7 +311,7 @@ impl QemuLiveNodeStepGateConfig {
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
             console_capture: false,
             fault_capabilities: None,
             exact_gate_fault_manifests: None,
@@ -366,7 +364,7 @@ impl QemuLiveNodeStepGateConfig {
             queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
-            second_run_host_load: true,
+            second_run_scheduler_preemption: true,
             console_capture: false,
             fault_capabilities: None,
             exact_gate_fault_manifests: None,
@@ -617,10 +615,13 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
-    /// Returns this configuration with host CPU load on the second run toggled.
+    /// Returns this configuration with bounded scheduler preemption on the second run toggled.
     #[must_use]
-    pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
-        self.second_run_host_load = second_run_host_load;
+    pub const fn with_second_run_scheduler_preemption(
+        mut self,
+        second_run_scheduler_preemption: bool,
+    ) -> Self {
+        self.second_run_scheduler_preemption = second_run_scheduler_preemption;
         self
     }
 
@@ -678,10 +679,10 @@ pub struct QemuLiveNodeStepReport {
     pub execution_fingerprint: ExecutionFingerprint,
     /// The QEMU child exited cleanly after the node's shutdown escalation.
     pub orderly_child_exit: bool,
-    /// The second run, under host CPU load, matched the first byte for byte.
-    pub deterministic_under_host_load: bool,
-    /// Host CPU load was actually applied during the second run.
-    pub host_load_applied: bool,
+    /// The second run, under bounded scheduler preemption, matched the first byte for byte.
+    pub deterministic_under_scheduler_preemption: bool,
+    /// Bounded scheduler preemption was actually applied during the second run.
+    pub scheduler_preemption_applied: bool,
     /// Every busy-window step's logical offset was zero.
     pub busy_window_logical_offset_zero: bool,
 }
@@ -762,8 +763,8 @@ pub struct QemuLiveNodeLifecycleFaultReport {
 /// Boots the diskless-firmware guest with the Rust control plugin and QMP,
 /// assembles a real [`QemuNode`] over the production host-I/O runtime, advances
 /// it through the schedule's busy-window ceilings, and repeats the whole run --
-/// the second time under host CPU load -- requiring the two runs to be
-/// byte-identical.
+/// the second time under bounded scheduler preemption -- requiring the
+/// two runs to be byte-identical.
 ///
 /// # Errors
 ///
@@ -777,11 +778,8 @@ pub fn run_qemu_live_node_step_gate(
     let ceilings = config.schedule.ceilings()?;
 
     let reference = run_one_scenario(config, &ceilings, RunRole::Reference)?;
-    let (second, host_load_applied) = if config.second_run_host_load {
-        (
-            run_one_scenario(config, &ceilings, RunRole::HostLoad)?,
-            true,
-        )
+    let (second, scheduler_preemption_applied) = if config.second_run_scheduler_preemption {
+        (run_one_scenario(config, &ceilings, RunRole::Hostile)?, true)
     } else {
         (run_one_scenario(config, &ceilings, RunRole::Repeat)?, false)
     };
@@ -797,8 +795,8 @@ pub fn run_qemu_live_node_step_gate(
         quanta: reference.quanta,
         execution_fingerprint: reference.fingerprint,
         orderly_child_exit: reference.orderly_child_exit,
-        deterministic_under_host_load: true,
-        host_load_applied,
+        deterministic_under_scheduler_preemption: true,
+        scheduler_preemption_applied,
         busy_window_logical_offset_zero,
     })
 }
@@ -1667,11 +1665,11 @@ pub fn launch_qemu_live_node_exact_snapshot_paused(
     )
 }
 
-/// Which scenario run this is, controlling the run subdirectory and host load.
+/// Which scenario run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -1679,13 +1677,13 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 }
 
@@ -1695,7 +1693,6 @@ fn run_one_scenario(
     role: RunRole,
 ) -> Result<NodeStepOutcome, QemuLiveNodeStepGateError> {
     let run_directory = config.run_directory.join(role.subdir());
-    let host_load = HostLoad::start_if(role.applies_host_load());
     let mut node = build_live_node(
         config,
         &run_directory,
@@ -1708,10 +1705,20 @@ fn run_one_scenario(
         true,
     )?;
 
+    // `build_live_node` has released the boot barrier. Spend the finite
+    // preemption budget only across the compared busy-window quanta.
+    let host_adversary =
+        HostAdversary::start_if(role.applies_scheduler_preemption(), node.process_id())
+            .map_err(|source| QemuLiveNodeStepGateError::SchedulerPreemption { source })?;
     let quanta = drive_busy_window_steps(&mut node, ceilings)?;
     let fingerprint = node
         .execution_fingerprint()
         .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?;
+    if let Some(host_adversary) = host_adversary {
+        host_adversary
+            .finish()
+            .map_err(|source| QemuLiveNodeStepGateError::SchedulerPreemption { source })?;
+    }
 
     let shutdown = node
         .shutdown_child()
@@ -1719,7 +1726,6 @@ fn run_one_scenario(
     let orderly_child_exit = shutdown.reaped && !shutdown.leaked;
 
     drop(node);
-    drop(host_load);
 
     Ok(NodeStepOutcome {
         quanta,

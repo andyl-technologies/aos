@@ -27,6 +27,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The bounded scheduler-preemption adversary could not run or clean up.
+    #[error("bounded scheduler-preemption adversary failed")]
+    SchedulerPreemption {
+        /// Underlying controller, signal, or watchdog error.
+        source: crate::BoundedSchedulerPreemptionError,
+    },
     /// A crash-safe exact-snapshot artifact could not be copied.
     #[error("copy exact-snapshot artifact from {source_path} to {destination_path} failed")]
     SnapshotArtifactCopy {

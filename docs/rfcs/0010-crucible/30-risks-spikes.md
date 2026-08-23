@@ -1661,7 +1661,7 @@ wiring, every local QEMU patch, the production trace plugin, and the Rust crates
 found the commanded preemption-injection surface, and consumed the production
 loaded-QEMU preemption gate. The S11 sim-mode prerequisite is green, and the
 live gate applies both a vCPU switch and deterministic interrupt twice, including
-a host-load run, so the result records
+a scheduler-preemption run, so the result records
 `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
 `known_preemption_injection_surface_found=true`,
 `preemption_injection_api_available=qemu_plugin_inject_preemption`,
@@ -1670,7 +1670,7 @@ a host-load run, so the result records
 `vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
 `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
 `commanded_preemption_choices_tested=2`,
-`commanded_preemption_reproducible=production_loaded_qemu_host_load_repeat`,
+`commanded_preemption_reproducible=production_loaded_qemu_scheduler_preemption_repeat`,
 `commanded_preemption_discriminating=model_race_plus_live_command_application`,
 `known_race_manifested_under_one_choice=modeled`,
 `known_race_absent_under_another_choice=modeled`,
@@ -1681,7 +1681,7 @@ a host-load run, so the result records
 `s11_result_status=PASS`, `s11_rr_switch_quantum=4096`,
 `s11_horizon_icount=4000000000`, `s11_extended_fingerprint_match=true`,
 `live_preemption_rr_switch_quantum=4096`,
-`live_preemption_deterministic_under_host_load=true`,
+`live_preemption_deterministic_under_scheduler_preemption=true`,
 `live_preemption_sim_double_schedule_matches=true`,
 `decision_preemption_exploration_enabled=true`, and `fallback_adopted=none`.
 The four discrimination fields advanced from `not_tested` to `modeled` once the
@@ -1694,7 +1694,7 @@ distinct replayable schedules. The model witness is
 and the production command-application witness is
 `gate:single-vm-fingerprint`. Together they demonstrate that the discriminating
 model decisions map to exact, acknowledged live vCPU-switch and interrupt
-commands and reproduce under host load.
+commands and reproduce under bounded scheduler preemption.
 
 **RISK-27** is resolved by `T-RISK-19` with the live
 commanded-preemption/throughput sweep:
@@ -1947,8 +1947,8 @@ never tolerated). Results live in the decision register (31).
   deterministic interleaving if no commanded surface is reliable. Phase 0 now
   finds the `qemu_plugin_inject_preemption` patch/API surface, composes the model
   known-race discrimination witness with the production loaded-QEMU gate, and
-  exercises exact acknowledged vCPU-switch and interrupt landing twice under
-  differing host load. `Decision::Preemption` exploration is therefore enabled
+  exercises exact acknowledged vCPU-switch and interrupt landing twice, with
+  and without bounded scheduler preemption. `Decision::Preemption` exploration is therefore enabled
   with no fallback. — resolves and satisfies [RISK-26]; satisfies [SCHED-46] and [DET-12];
   spec §30.11b.
 - [x] **T-RISK-19** Run **S13**: consume the non-fallback S12 result, sweep the

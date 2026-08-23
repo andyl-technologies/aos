@@ -27,7 +27,7 @@ in
     GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
     CRUCIBLE_BLOCK_IO_BUSY_CEILING = "10000000000";
     CRUCIBLE_BLOCK_IO_TIMEOUT_SECS = "120";
-    CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD = "0";
+    CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION = "0";
     CRUCIBLE_BLOCK_IO_RESET_PROBE = "1";
 
     phases = [

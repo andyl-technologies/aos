@@ -15,7 +15,7 @@
 //!
 //! Every cadence target precedes guest idle onset. A busy quantum stops exactly
 //! at the host-published ceiling, yielding instruction-exact guest state and
-//! byte-for-byte replay, including under deliberate host CPU load.
+//! byte-for-byte replay, including under bounded scheduler preemption.
 
 mod config;
 mod definition;
@@ -25,8 +25,6 @@ mod raw_dump;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +34,7 @@ use crate::single_vm_fingerprint::{
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, build_plugin_fingerprint_stream,
 };
 
+use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
 use crate::{
     CrucibleShmemNetworkDevice, LaunchProfileCandidate, QemuLaunchArtifact,
     QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
@@ -86,8 +85,6 @@ const DEFAULT_RUNNER_MEMORY_MIB: u32 = 64;
 /// on it. M3 raises the count to drive the multi-vCPU aggregate-icount clock and
 /// sample every vCPU's register file into the N-vCPU fingerprint.
 const DEFAULT_RUNNER_SMP_VCPUS: u16 = 1;
-/// Number of background threads used to stress host scheduling on the load run.
-const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while waiting on the plugin-owned boundary or teardown.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -156,7 +153,7 @@ impl PluginFingerprintRunner {
     ///
     /// The returned pairs are `(target_icount, sample)` in ascending order, one
     /// per requested target. `role` selects the run subdirectory and whether
-    /// deliberate host CPU load runs concurrently.
+    /// bounded scheduler preemption runs concurrently.
     fn run_to_targets(
         &self,
         role: RunRole,
@@ -198,14 +195,12 @@ impl PluginFingerprintRunner {
             }
         })?;
 
-        let host_load = HostLoad::start_if(role.applies_host_load());
-
         let mut candidate = LaunchProfileCandidate::default()
             .with_memory_mib(self.config.memory_mib)
             .with_smp_vcpus(self.config.smp_vcpus);
         if let Some(cmdline) = &self.config.kernel_cmdline {
             let cmdline = if self.config.second_run_divergence_control
-                && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                && matches!(role, RunRole::Hostile | RunRole::Repeat)
             {
                 format!("{cmdline} crucible_negative_control=1")
             } else {
@@ -313,11 +308,16 @@ impl PluginFingerprintRunner {
             QemuMappedQuantumShmemHotPath::new(hot_path_config, region, RunnerSendAuthorizer)
                 .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
 
+        // Start bounded QEMU preemption at the first fingerprint workload boundary,
+        // after launch/setup work that is outside the compared trajectory.
+        let host_adversary =
+            HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
+                .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let mut boundaries = Vec::with_capacity(targets.len());
         for &target in targets {
             if target == FRAME_DELIVERY_ICOUNT {
                 let payload = if self.config.second_run_divergence_control
-                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                    && matches!(role, RunRole::Hostile | RunRole::Repeat)
                 {
                     b"crucible-fingerprint-frame-negative-control-v1".to_vec()
                 } else {
@@ -334,7 +334,7 @@ impl PluginFingerprintRunner {
             }
             let preemption_sequence = if target == SIGNAL_EFFECT_BOUNDARY_ICOUNT {
                 let irq = if self.config.second_run_divergence_control
-                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                    && matches!(role, RunRole::Hostile | RunRole::Repeat)
                 {
                     0xf2
                 } else {
@@ -410,9 +410,13 @@ impl PluginFingerprintRunner {
         {
             validate_translation_prefetch_report(path, enabled)?;
         }
+        if let Some(host_adversary) = host_adversary {
+            host_adversary
+                .finish()
+                .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
+        }
         drop(setup);
         drop(child);
-        drop(host_load);
 
         Ok(PluginRunResult {
             boundaries,
@@ -768,28 +772,30 @@ impl SingleVmFingerprintRunner for PluginFingerprintRunner {
 }
 
 impl PluginFingerprintRunner {
-    /// Maps a run ordinal to its subdirectory and host-load role.
+    /// Maps a run ordinal to its subdirectory and scheduler-preemption role.
     ///
-    /// The second run applies deliberate host CPU load when enabled, which is
+    /// The second run applies bounded scheduler preemption when enabled, which is
     /// the run-twice determinism evidence: a plugin that owns icount-derived
     /// virtual time must produce a byte-identical stream regardless of host
     /// scheduling pressure.
     fn role_for(&self, ordinal: SingleVmFingerprintRunOrdinal) -> RunRole {
         match ordinal {
             SingleVmFingerprintRunOrdinal::First => RunRole::Reference,
-            SingleVmFingerprintRunOrdinal::Second if self.config.second_run_host_load => {
-                RunRole::HostLoad
+            SingleVmFingerprintRunOrdinal::Second
+                if self.config.second_run_scheduler_preemption =>
+            {
+                RunRole::Hostile
             }
             SingleVmFingerprintRunOrdinal::Second => RunRole::Repeat,
         }
     }
 }
 
-/// Which run this is, controlling the run subdirectory and host load.
+/// Which run this is, controlling the run subdirectory and scheduler preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
     Reference,
-    HostLoad,
+    Hostile,
     Repeat,
 }
 
@@ -802,57 +808,13 @@ impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
             Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
+            Self::Hostile => "run-scheduler-preemption",
             Self::Repeat => "run-repeat",
         }
     }
 
-    const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning plugin must produce
-/// an identical fingerprint whether or not the load is present.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
+    const fn applies_scheduler_preemption(self) -> bool {
+        matches!(self, Self::Hostile)
     }
 }
 

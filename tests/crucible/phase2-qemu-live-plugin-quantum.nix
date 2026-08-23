@@ -20,7 +20,7 @@
   idleHorizonMargin ? "40000000",
   minIdleSpeedup ? "4",
   quantumTimeoutSecs ? "250",
-  # Run the whole scenario twice, the second run under host CPU load, and require
+  # Run the whole scenario twice, the second run under bounded scheduler preemption, and require
   # byte-identical idle observations — the boot-phase clock-ownership determinism
   # evidence for T-PLUG-4.
   secondRunLoad ? "1",
@@ -66,7 +66,7 @@ in
     CRUCIBLE_QUANTUM_IDLE_HORIZON_MARGIN = idleHorizonMargin;
     CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP = minIdleSpeedup;
     CRUCIBLE_QUANTUM_TIMEOUT_SECS = quantumTimeoutSecs;
-    CRUCIBLE_QUANTUM_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_QUANTUM_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
     CRUCIBLE_QUANTUM_SMP_VCPUS = smpVcpus;
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     TASK_IDS = taskList;
@@ -160,14 +160,15 @@ in
           grep -Fxq 'all_vcpus_halted_idle_observed=true' "$report"
           # T-PLUG-4: the guest advanced through several busy boot quanta, each
           # stopping exactly at the host-published ceiling, and the two runs (the
-          # second under host CPU load) produced byte-identical idle observations.
+          # second under bounded scheduler preemption) produced byte-identical idle observations.
           grep -Eq '^boot_quantum_count=[1-9][0-9]*$' "$report"
-          grep -Fxq 'deterministic_under_host_load=true' "$report"
-          grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
+          grep -Fxq 'scheduler_preemption_applied=true' "$report"
+          grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           # T-HARN-4: the host records each completed production-plugin
           # quantum in the shared canonical schedule vocabulary, replays the
           # exact horizons through SimDouble, and compares the versioned byte
-          # encoding. The host-load run must reproduce the same schedule too.
+          # encoding. The scheduler-preemption run must reproduce the same schedule too.
           grep -Fxq 'sim_double_schedule_matches=true' "$report"
           grep -Eq '^host_observable_schedule_len=[1-9][0-9]*$' "$report"
           # T-PLUG-5/6 + T-TIME-6: the guest parked idle with a computed next
@@ -180,7 +181,7 @@ in
           # re-idled below the published ceiling, never self-extending past it. The
           # idle span is a real O(1) jump (idle_icount_span icount in
           # idle_wall_micros of wall time), byte-identical on the second,
-          # host-loaded run.
+          # scheduler-preemptioned run.
           grep -Fxq 'idle_jump_proven=true' "$report"
           grep -Eq '^idle_icount_span=[1-9][0-9]*$' "$report"
           grep -Eq '^idle_wall_micros=[0-9]+$' "$report"

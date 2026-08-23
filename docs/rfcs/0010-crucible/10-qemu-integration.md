@@ -1034,7 +1034,7 @@ determinism contract (04).
   `rr_position_in_quantum` per sample. Those components are in the compared digest
   (`per_vcpu_registers_match_run_twice`, `rr_cursor_matches_run_twice`, plus
   guest-RAM and device-state digests, all byte-identical over two runs, the second
-  under host load, plus a restart probe). The definition mints under the new
+  under bounded scheduler preemption, plus a restart probe). The definition mints under the new
   `crucible.qemu.rust-plugin-fingerprint.v2` domain. Mismatch localization to the
   first differing icount window is realized by the run-twice stream comparison and
   its bisection report (`SingleVmFingerprintGateError::Mismatch` names the first

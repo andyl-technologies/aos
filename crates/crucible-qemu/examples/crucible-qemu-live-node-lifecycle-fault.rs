@@ -43,7 +43,7 @@ fn run() -> Result<(), String> {
     }
 
     let mut config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
-        .with_second_run_host_load(false);
+        .with_second_run_scheduler_preemption(false);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
