@@ -169,7 +169,7 @@ pub use crucible_qemu_session::{
 #[cfg(target_os = "linux")]
 pub use exact_checkpoint_restore::{
     ExactCheckpointRestoreError, ExactCheckpointResumeError, MaterializedAttemptCheckpoint,
-    MaterializedExactCheckpoint, QemuGuardedReplayOracleSession,
+    MaterializedExactCheckpoint, QemuGuardedReplayOracleSession, captured_qemu_vmstate_blob,
     materialize_attempt_exact_checkpoint, materialize_selected_exact_checkpoint,
     realize_materialized_attempt_checkpoint_guarded, realize_materialized_exact_checkpoint_guarded,
 };

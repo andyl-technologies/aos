@@ -394,7 +394,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   session wiring remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
-  before paused VMState/host-I/O capture. The daemon now prepares and durably
+  before paused VMState/host-I/O capture. The real-node executor now completes
+  final drain and reap before synchronizing, reauthenticating, and lending a
+  bounded positional VMState reader with no directory or mutation authority.
+  The daemon now adapts that reader into a reopenable CAS source with one
+  independent positional cursor per open. Turning it into the linear captured-
+  checkpoint token remains part of concrete session wiring. The daemon now
+  prepares and durably
   publishes
   a registered exact-checkpoint root over canonical snapshot metadata and a
   bounded, streamed opaque VMState child, with no writes during preparation and
