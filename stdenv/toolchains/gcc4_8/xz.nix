@@ -58,6 +58,7 @@ in
         set -eu
         export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
         export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin"
+        export CONFIG_SHELL="${prev.bash}/bin/bash"
 
         cd "$TMPDIR"
         tar xzf ${xz-src}
@@ -177,13 +178,22 @@ in
         CFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include" \
         CPPFLAGS="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include" \
         LDFLAGS="-L${prev.glibc}/lib -B${prev.glibc}/lib -static" \
-        "$SRC/configure" \
+        "$CONFIG_SHELL" "$SRC/configure" \
           --prefix="$out" \
           --build=${hostPlatform.config} --host=${hostPlatform.config} \
           --disable-nls --disable-shared --enable-static \
           --disable-threads
         make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
         make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+
+        test -x "$out/bin/xz"
+        for script in xzdiff xzgrep xzless xzmore; do
+          test -x "$out/bin/$script"
+          test "$(head -n 1 "$out/bin/$script")" = "#!$CONFIG_SHELL"
+        done
+        printf 'aos xz bootstrap smoke\n' > "$TMPDIR/xz-smoke"
+        "$out/bin/xz" -c "$TMPDIR/xz-smoke" > "$TMPDIR/xz-smoke.xz"
+        "$out/bin/xz" -dc "$TMPDIR/xz-smoke.xz" | cmp - "$TMPDIR/xz-smoke"
 
         echo "XZ Utils 5.2.5 installed to $out"
       ''

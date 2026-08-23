@@ -2037,7 +2037,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(create["surface"]["cacheSlug"], "andyl/nix");
-        assert_eq!(create["storageBindingId"], "origin");
+        assert_eq!(create["bindingId"], "origin");
         assert_eq!(create["kind"], "complete");
         assert_eq!(create["desiredReadEnabled"], true);
         assert!(create.get("writeEnabled").is_none());

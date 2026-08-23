@@ -523,6 +523,13 @@ pub struct ImageDelivery {
     pub uki: ImageUkiIdentity,
     /// Separately content-bound canonical producer metadata.
     pub image_info: ImageInfoReference,
+    /// Store-backed directory carrying artifacts needed for an in-place A/B update.
+    ///
+    /// This is distinct from the regular-file disk output in the containing
+    /// [`SysrootImageEntry`]. It contains `root.img`, dm-verity metadata, and
+    /// the slot-specific UKIs authenticated by that entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_payload: Option<ImageStoreReference>,
 }
 
 impl ImageDelivery {
@@ -568,6 +575,7 @@ impl ImageDelivery {
                 byte_size: 0,
                 sha256: String::new(),
             },
+            update_payload: None,
         }
     }
 
@@ -675,7 +683,44 @@ impl ImageDelivery {
             "image compatible targets do not match format"
         );
         self.uki.validate()?;
-        self.image_info.validate(self.schema_version, &self.sha256)
+        self.image_info
+            .validate(self.schema_version, &self.sha256)?;
+        if let Some(payload) = &self.update_payload {
+            ensure!(
+                self.schema_version == 2,
+                "update payload must use store-backed delivery"
+            );
+            payload.validate("image update payload")?;
+        }
+        Ok(())
+    }
+}
+
+/// Authenticated identity of one artifact in the unified Nix-cache data plane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageStoreReference {
+    /// Canonical Nix store path restored from the cache.
+    pub store_path: String,
+    /// Hash of the artifact's uncompressed NAR.
+    pub nar_hash: String,
+    /// Size of the artifact's uncompressed NAR in bytes.
+    pub nar_size: u64,
+}
+
+impl ImageStoreReference {
+    /// Validates the complete Nix store identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store path, hash, or size is malformed.
+    pub fn validate(&self, label: &str) -> anyhow::Result<()> {
+        crate::store::store_path_hash(&self.store_path)
+            .with_context(|| format!("validating {label} store path"))?;
+        anyhow::ensure!(self.nar_size > 0, "{label} NAR size must be non-zero");
+        crate::store::NarBytes::from_hash(&self.nar_hash, self.nar_size)
+            .with_context(|| format!("validating {label} NAR identity"))?;
+        Ok(())
     }
 }
 
@@ -1044,6 +1089,7 @@ mod image_delivery_tests {
                 byte_size: 512,
                 sha256: info_sha256,
             },
+            update_payload: None,
         }
     }
 
@@ -1135,6 +1181,27 @@ nar_size = 1
 
         image.object_key = immutable_image_object_key(&image.sha256, &image.filename);
         assert!(image.validate("qcow2", "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[test]
+    fn store_backed_delivery_authenticates_update_payload_identity() {
+        let mut image = delivery("raw");
+        image.schema_version = 2;
+        image.object_key.clear();
+        image.image_info.object_key.clear();
+        image.image_info.store_path =
+            "/nix/store/11111111111111111111111111111111-image-info".to_string();
+        image.image_info.nar_hash = format!("sha256:{}", "1".repeat(52));
+        image.image_info.nar_size = 512;
+        image.update_payload = Some(ImageStoreReference {
+            store_path: "/nix/store/22222222222222222222222222222222-update-payload".to_string(),
+            nar_hash: format!("sha256:{}", "2".repeat(52)),
+            nar_size: 4096,
+        });
+        image.validate("raw", "2026.08", "x86_64-linux").unwrap();
+
+        image.update_payload.as_mut().unwrap().nar_size = 0;
+        assert!(image.validate("raw", "2026.08", "x86_64-linux").is_err());
     }
 
     #[test]
@@ -1350,18 +1417,18 @@ pub struct SysrootImageEntry {
     /// Versioned authenticated manifest for bounded offline restoration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_bundle: Option<RecoveryBundleManifest>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the root
+    /// Relative path inside the authenticated update payload to the root
     /// filesystem image consumed by `RootImage=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_image: Option<String>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the separate
+    /// Relative path inside the authenticated update payload to the separate
     /// dm-verity hash tree consumed by `RootVerity=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_verity: Option<String>,
     /// dm-verity root hash for [`SysrootImageEntry::root_image`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_hash: Option<String>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the PKCS#7
+    /// Relative path inside the authenticated update payload to the PKCS#7
     /// signature consumed by `RootHashSignature=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_hash_sig: Option<String>,

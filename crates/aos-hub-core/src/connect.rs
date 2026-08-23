@@ -3492,23 +3492,28 @@ mod tests {
     }
 
     #[test]
-    fn public_schema_has_no_pre_topology_binding_or_placement_contracts() {
+    fn public_schema_has_no_legacy_storage_binding_or_placement_contracts() {
         let schema = include_str!("../../aos-proto/src/proto/aos/hub/v1/hub.proto");
         for forbidden in [
-            "message Binding {",
-            "message CreateBindingRequest {",
-            "message ListBindingsRequest {",
+            "message StorageBinding {",
+            "message CreateStorageBindingRequest {",
+            "message ListStorageBindingsRequest {",
             "message CreatePlacementRequest {",
             "message UpdatePlacementRequest {",
             "message DeletePlacementRequest {",
             "message DrainPlacementRequest {",
             "message DrainPlacementResponse {",
             "message PlacementMutationPlan {",
-            "rpc CreateBinding(",
-            "rpc ListBindings(",
+            "rpc CreateStorageBinding(",
+            "rpc ListStorageBindings(",
         ] {
+            let remains = if forbidden.starts_with("message ") {
+                schema.lines().any(|line| line.trim() == forbidden)
+            } else {
+                schema.contains(forbidden)
+            };
             assert!(
-                !schema.contains(forbidden),
+                !remains,
                 "legacy public contract remains in descriptor source: {forbidden}"
             );
         }

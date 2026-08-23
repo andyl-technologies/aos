@@ -3902,12 +3902,16 @@ impl Database {
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
                     }
-                    catalog_artifacts.extend(
-                        entry
-                            .images
-                            .iter()
-                            .map(|image| ("image", image.store_path.as_str())),
-                    );
+                    for image in &entry.images {
+                        catalog_artifacts.push(("image", image.store_path.as_str()));
+                        if image.delivery.is_store_backed() {
+                            catalog_artifacts
+                                .push(("image", image.delivery.image_info.store_path.as_str()));
+                            if let Some(payload) = &image.delivery.update_payload {
+                                catalog_artifacts.push(("image", payload.store_path.as_str()));
+                            }
+                        }
+                    }
                     for (artifact_kind, store_path) in catalog_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
@@ -6639,6 +6643,10 @@ impl Database {
 
     /// Advances an active multipart upload into its idempotent completion phase.
     ///
+    /// A retry carrying the durable completion token renews the same logical
+    /// completion. A different request may only take ownership after the lease
+    /// expires.
+    ///
     /// # Errors
     ///
     /// Returns an error when the upload is not active/completing or persistence fails.
@@ -6663,6 +6671,7 @@ impl Database {
                  WHERE upload_id = ?1
                    AND ((state = 'active' AND completion_token IS NULL
                          AND completion_since IS NULL)
+                     OR (state = 'completing' AND completion_token = ?2)
                      OR (state = 'completing' AND completion_since <= ?4))",
                 &vals![upload_id, completion_token, claimed_at, steal_before],
             )
@@ -7662,6 +7671,7 @@ impl Database {
                      observed_at = ?5,
                      resource_version = resource_version + 1
                  WHERE placement_id = ?2 AND resource_version = ?4
+                   AND pending_publication_id IS NULL
                    AND EXISTS (SELECT 1 FROM surface_placements p
                      JOIN registry_publications pub ON pub.registry_id = p.registry_id
                      JOIN registry_publication_placements pp
@@ -7689,15 +7699,14 @@ impl Database {
                    AND p.resource_version = ?3
                    AND pp.state IN ('preparing', 'writing_pointers')
                    AND pub.state = 'writing_pointers'
-                   AND w.resource_version = ?4 + 1
+                   AND w.resource_version IN (?4, ?4 + 1)
                    AND w.mutable_publication_id IS NULL
-                   AND w.pending_publication_id = ?1 AND w.observed_at = ?5",
+                   AND w.pending_publication_id = ?1",
                 &vals![
                     publication_id,
                     placement_id,
                     expected_placement_version,
-                    expected_watermark_version,
-                    observed_at
+                    expected_watermark_version
                 ],
             )
             .await?
@@ -7720,9 +7729,9 @@ impl Database {
                     "SELECT 1 FROM registry_publication_placements pp
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                   AND pp.state = 'writing_pointers' AND pp.observed_at = ?3
+                   AND pp.state = 'writing_pointers'
                    AND pub.state = 'writing_pointers'",
-                    &vals![publication_id, placement_id, observed_at],
+                    &vals![publication_id, placement_id],
                 )
                 .await?
                 .is_none()
@@ -14134,6 +14143,21 @@ impl Database {
                         artifact_kind: "image".to_string(),
                         store_hash: store_hash_component(image_info_path),
                         store_path: image_info_path.to_string(),
+                    });
+                }
+                if let Some(update_payload_path) = image
+                    .get("delivery")
+                    .and_then(|delivery| delivery.get("update_payload"))
+                    .and_then(|payload| payload.get("store_path"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package_name.clone(),
+                        package_version: package_version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "image".to_string(),
+                        store_hash: store_hash_component(update_payload_path),
+                        store_path: update_payload_path.to_string(),
                     });
                 }
             }
@@ -24969,6 +24993,7 @@ mod tests {
                     byte_size: 512,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             }
         };
         let mut images = String::new();
@@ -29458,6 +29483,104 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn pointer_advance_accepts_a_raced_retry_for_the_same_publication() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("pointer-race", "Pointer Race").await.unwrap();
+        let binding_id = create_test_binding(&db, org_id, "primary", "/tmp/pointer-race").await;
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "registry",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+
+        let publication_id = "pointerracepublication00000000000001";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(64)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .advance_registry_publication(publication_id, "preparing", "writing_pointers", 2)
+            .await
+            .unwrap());
+
+        let watermark_version = placement.watermark_resource_version.unwrap();
+        let advanced = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                watermark_version,
+                3,
+            )
+            .await
+            .unwrap();
+        let raced_retry = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                watermark_version,
+                4,
+            )
+            .await
+            .unwrap();
+        let current_retry = db
+            .begin_registry_pointer_advance(
+                publication_id,
+                placement.id,
+                placement.resource_version,
+                advanced.watermark_resource_version.unwrap(),
+                5,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            advanced.watermark_pending_publication_id.as_deref(),
+            Some(publication_id)
+        );
+        assert_eq!(
+            raced_retry.watermark_resource_version,
+            advanced.watermark_resource_version
+        );
+        assert_eq!(
+            raced_retry.watermark_pending_publication_id,
+            advanced.watermark_pending_publication_id
+        );
+        assert_eq!(
+            current_retry.watermark_resource_version,
+            advanced.watermark_resource_version
+        );
+        assert_eq!(
+            current_retry.watermark_pending_publication_id,
+            advanced.watermark_pending_publication_id
+        );
+    }
+
+    #[tokio::test]
     async fn topology_v34_opens_and_rejects_xor_and_location_collisions() {
         let db = Database::open_in_memory().await.unwrap();
         let version: i64 = db
@@ -30745,6 +30868,52 @@ source_nar_hash = ""
                 .unwrap()
                 .len(),
             1
+        );
+
+        let first_completion = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-1",
+                200,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first_completion.completion_token.as_deref(),
+            Some("completion-token-1")
+        );
+        let retry = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-1",
+                201,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.completion_since, Some(201));
+        assert!(db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-2",
+                202,
+                0,
+            )
+            .await
+            .is_err());
+        let stolen = db
+            .begin_registry_publication_multipart_completion(
+                "multipart-upload-1",
+                "completion-token-2",
+                900,
+                300,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stolen.completion_token.as_deref(),
+            Some("completion-token-2")
         );
 
         db.finish_registry_publication_multipart_upload("multipart-upload-1", "aborted", 3)

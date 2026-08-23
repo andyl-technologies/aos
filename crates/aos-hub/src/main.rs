@@ -62,6 +62,9 @@ enum Command {
         /// Seconds between background re-index runs (0 disables).
         #[arg(long, default_value_t = 60)]
         reindex_interval: u64,
+        /// File containing the stable HS256 key used to sign access tokens.
+        #[arg(long, env = "HUB_JWT_SECRET_FILE")]
+        jwt_secret_file: Option<PathBuf>,
         /// File containing the shared HMAC key used by a trusted TLS/VPN/L7
         /// ingress adapter to authenticate delivery assertions.
         #[arg(long, env = "HUB_DELIVERY_ATTESTATION_KEY_FILE")]
@@ -388,6 +391,7 @@ async fn main() -> Result<()> {
             seed,
             external_url,
             reindex_interval,
+            jwt_secret_file,
             delivery_attestation_key_file,
             domain_probe_signer_manifest_file,
             route_publication_manifest_file,
@@ -470,6 +474,21 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if let Some(path) = jwt_secret_file {
+                let secret = aos_hub::auth::seal::read_secret_file(&path)
+                    .with_context(|| format!("reading JWT signing secret at {}", path.display()))?;
+                anyhow::ensure!(
+                    secret.len() >= 32,
+                    "JWT signing secret must contain at least 32 bytes"
+                );
+                app_state.auth = Arc::new(aos_hub::auth::extract::AuthState {
+                    db: Arc::clone(&app_state.db),
+                    jwt_keys: aos_hub::auth::jwt::JwtKeys::from_secret(&secret),
+                    access_token_ttl: app_state.auth.access_token_ttl,
+                    ratelimit: Arc::clone(&app_state.ratelimit),
+                    trusted_proxy: app_state.trusted_proxy,
+                });
+            }
             app_state.image_snapshots = Some(image_snapshots);
             if let Some(snapshots) = app_state.image_snapshots.clone() {
                 let snapshot_db = Arc::clone(&app_state.db);
