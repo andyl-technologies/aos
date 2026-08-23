@@ -225,8 +225,19 @@ in {
           test -r /run/aos-host-store/$(basename {CLOSURE_INFO})/registration
           while IFS= read -r store_path; do
             if [ ! -e "$store_path" ]; then
-              mkdir "$store_path"
-              {MOUNT} --bind "/run/aos-host-store/$(basename "$store_path")" "$store_path"
+              source_path="/run/aos-host-store/$(basename "$store_path")"
+              if [ -L "$source_path" ]; then
+                ln -s "$(readlink "$source_path")" "$store_path"
+              elif [ -d "$source_path" ]; then
+                mkdir "$store_path"
+                {MOUNT} --bind "$source_path" "$store_path"
+              elif [ -f "$source_path" ]; then
+                touch "$store_path"
+                {MOUNT} --bind "$source_path" "$store_path"
+              else
+                printf 'unsupported store object: %s\n' "$source_path" >&2
+                exit 1
+              fi
             fi
           done < "/run/aos-host-store/$(basename {CLOSURE_INFO})/store-paths"
           {NIX_STORE} --load-db \\
@@ -237,6 +248,7 @@ in {
           {NIX_STORE} --check-validity {HELPER_V2}
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
+          ! touch {TOOL_V1}/share/hub-tool/host-store-write-must-fail
       """), timeout=180)
 
       # Generate the real publisher signing identity before creating its Hub
