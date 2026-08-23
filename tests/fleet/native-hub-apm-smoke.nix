@@ -782,6 +782,8 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
+          export TMPDIR=/var/tmp/apr-release
+          mkdir -p "$TMPDIR"
           key="$HOME/.config/apm/keys/production-initial.key"
           rm -rf /tmp/publication-system
           mkdir -p /tmp/publication-system
