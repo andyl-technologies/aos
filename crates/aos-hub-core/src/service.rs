@@ -36876,6 +36876,7 @@ mod cache_upload_tests {
                     byte_size: 8,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             },
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),

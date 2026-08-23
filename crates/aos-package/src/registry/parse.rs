@@ -60,9 +60,10 @@ use crate::types::{
 // attestation fields and their helper impls such as `PlatformEntry::attestation`
 // and the `ReferenceField` accessors).
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-    ImageVerificationState, PackageHeader, PackageToml, PlatformEntry, ReferenceField,
-    ReferenceGate, VersionEntry, immutable_image_info_object_key, immutable_image_object_key,
+    ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageStoreReference,
+    ImageTarget, ImageUkiIdentity, ImageVerificationState, PackageHeader, PackageToml,
+    PlatformEntry, ReferenceField, ReferenceGate, VersionEntry, immutable_image_info_object_key,
+    immutable_image_object_key,
 };
 
 // ---------------------------------------------------------------------------

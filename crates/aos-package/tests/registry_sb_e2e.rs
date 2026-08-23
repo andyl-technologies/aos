@@ -78,6 +78,7 @@ fn delivery() -> ImageDelivery {
             byte_size: 1,
             sha256: info_sha256,
         },
+        update_payload: None,
     }
 }
 /// A second db cert digest fixture, used as the retired signer.
