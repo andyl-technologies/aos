@@ -620,6 +620,13 @@ pub async fn list(
     // Load profile metadata for install/upgrade/held checks.
     let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;
+    let running_sysroot = if config.scope == ProfileScope::System {
+        crate::sysroot::running_image_generation()
+            .ok()
+            .map(|generation| (generation.package_name, generation.version))
+    } else {
+        None
+    };
 
     // Installed state belongs to the registry that supplied the package. The
     // same package name can exist in multiple registries with different store
@@ -657,7 +664,9 @@ pub async fn list(
             let installed = installed_by_source_map
                 .get(&(name.to_string(), reg.config.name.clone()))
                 .copied();
-            let is_installed = installed.is_some();
+            let running_sysroot_version =
+                matching_running_sysroot_version(running_sysroot.as_ref(), name, meta);
+            let is_installed = installed.is_some() || running_sysroot_version.is_some();
             if is_installed {
                 listed_installed_sources.insert((name.to_string(), reg.config.name.clone()));
             }
@@ -669,11 +678,10 @@ pub async fn list(
                 .unwrap_or(false);
 
             // Determine upgradable: installed but registry has different store path hash.
-            let is_upgradable = if let Some(inst) = installed {
-                is_upgradable_installed_root(inst, meta)
-            } else {
-                false
-            };
+            let is_upgradable = installed.map_or_else(
+                || running_sysroot_version.is_some_and(|version| version != &meta.version),
+                |installed| is_upgradable_installed_root(installed, meta),
+            );
 
             // Apply filters.
             if installed_only && !is_installed {
@@ -740,14 +748,10 @@ pub async fn list(
                 base
             };
 
-            let display_version = if let Some(inst) = installed {
-                inst.apm
-                    .as_ref()
-                    .map(|a| a.version.clone())
-                    .unwrap_or_else(|| meta.version.clone())
-            } else {
-                meta.version.clone()
-            };
+            let display_version = installed
+                .and_then(|installed| installed.apm.as_ref().map(|apm| apm.version.clone()))
+                .or_else(|| running_sysroot_version.cloned())
+                .unwrap_or_else(|| meta.version.clone());
 
             entries.push((
                 name.to_string(),
@@ -1010,6 +1014,17 @@ fn is_upgradable_installed_root(installed: &InstalledMeta, registry_meta: &Packa
     }
 
     store_path_hash(&installed.store_path) != store_path_hash(&registry_meta.store_path)
+}
+
+/// Returns the running version when a registry entry represents that sysroot.
+fn matching_running_sysroot_version<'a>(
+    running: Option<&'a (String, String)>,
+    package_name: &str,
+    registry_meta: &PackageMeta,
+) -> Option<&'a String> {
+    running.and_then(|(running_name, version)| {
+        (registry_meta.sysroot && running_name == package_name).then_some(version)
+    })
 }
 
 /// Detect the current platform string (e.g. "x86_64-linux").
@@ -1418,6 +1433,22 @@ mod tests {
 
         assert_eq!(upgradable.len(), 1);
         assert_eq!(upgradable[0], "curl");
+    }
+
+    #[test]
+    fn running_sysroot_is_an_installed_upgrade_source() {
+        let tmp = TempDir::new().unwrap();
+        let registry = make_registry(&tmp, "production", 900, &[("curl", CURL_TOML)]);
+        let mut candidate = registry.get("curl").unwrap().clone();
+        candidate.name = "aos".to_string();
+        candidate.sysroot = true;
+        candidate.version = "test-2".to_string();
+        let running = ("aos".to_string(), "0.1.0".to_string());
+
+        let installed_version = matching_running_sysroot_version(Some(&running), "aos", &candidate);
+
+        assert_eq!(installed_version.map(String::as_str), Some("0.1.0"));
+        assert_ne!(installed_version, Some(&candidate.version));
     }
 
     #[test]
