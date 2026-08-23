@@ -794,7 +794,7 @@ in {
             --image-payload {UPGRADE_IMAGE} \\
             --image-disk {UPGRADE_IMAGE_DISK} \\
             --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
-            --image-uki "$candidate_uki" --no-ca \\
+            --image-uki "$candidate_uki" \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key "$key" \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
