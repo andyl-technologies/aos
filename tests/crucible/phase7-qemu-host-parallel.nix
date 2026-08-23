@@ -68,6 +68,17 @@ in
           vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
 
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-host-parallel-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --test host_worker_pool \
+            qemu_host_worker_allows_the_complete_network_retry_budget \
+            -- \
+            --exact
+
           cargo build \
             --frozen \
             --offline \

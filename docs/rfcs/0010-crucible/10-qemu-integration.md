@@ -912,8 +912,8 @@ determinism contract (04).
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
   Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
-  production Rust runner performs fresh exact-input launches, applies
-  adversarial host load to the second run, and compares a content-addressed
+  production Rust runner performs fresh exact-input launches, applies bounded
+  scheduler preemption to QEMU in the second run, and compares a content-addressed
   five-boundary stream containing periodic, real frame-delivery, and real
   signal-effect-boundary samples. Its negative control proves the complete diagnostic
   path: ordinal-aware fresh-run probes localize a real launch divergence to one

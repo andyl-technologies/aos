@@ -684,7 +684,7 @@ fn drive_and_service(
     options: DriveOptions,
     host_adversary: &mut Option<HostAdversary>,
 ) -> Result<(NinepIoAdvanceOutcome, bool), QemuLive9pIoGateError> {
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
             icount: Icount {
@@ -693,7 +693,7 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLive9pIoGateError::drive("start 9p-io drive quantum", source))?;
-    HostAdversary::begin_if_present(host_adversary)
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
         .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);
@@ -848,7 +848,7 @@ fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
     false
 }
 
-/// Requires the load run to reproduce the reference run's deterministic 9p
+/// Requires the scheduler-preempted run to reproduce the reference run's deterministic 9p
 /// observations.
 ///
 /// Only the *icount-domain* observations are compared: whether a 9p request and

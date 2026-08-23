@@ -163,6 +163,8 @@ pub struct QemuLiveNetworkIoReport {
     pub host_scheduler_preemption_applied: bool,
     /// Whether the controller was released only after a network quantum was pending.
     pub host_scheduler_preemption_pending_quantum: bool,
+    /// Number of guest TX frames transferred from quantum-completion ownership.
+    pub completion_owned_frames: usize,
     /// Number of bounded stop/continue perturbations applied to QEMU.
     pub host_scheduler_preemption_count: u32,
     /// Total configured stopped time across the bounded perturbations.
@@ -192,6 +194,7 @@ struct NetworkIoRunOutcome {
     scheduler_preemption:
         Option<crate::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
     scheduler_preemption_pending_quantum: bool,
+    completion_owned_frames: usize,
 }
 
 /// Runs reference and scheduler-preempted loaded-QEMU network certifications.
@@ -267,6 +270,9 @@ pub fn run_qemu_live_network_io_gate(
             == hostile_acknowledgement_offset_icount,
         host_scheduler_preemption_applied: hostile.scheduler_preemption.is_some(),
         host_scheduler_preemption_pending_quantum: hostile.scheduler_preemption_pending_quantum,
+        completion_owned_frames: reference
+            .completion_owned_frames
+            .min(hostile.completion_owned_frames),
         host_scheduler_preemption_count: hostile
             .scheduler_preemption
             .map_or(0, |report| report.perturbations),
