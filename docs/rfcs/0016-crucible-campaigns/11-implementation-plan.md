@@ -345,9 +345,13 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   synchronizes the root, and only then recycles the project ID. Partial create,
   cleanup, and release failures retain the directory, shared root lock, cleanup
   bound, quota, and ID lease for exact retry; a dirty restart root and an
-  unfinished drop both fail closed. The nondroppable combined process/storage
-  quarantine owner and a real ext4 enforcement VM gate remain open before this
-  owner can be wired into guarded launch.
+  unfinished drop both fail closed. A public sealed Linux host facade now pairs
+  the exact process and storage owners. It installs storage before exposing a
+  process contract, proves reap before synchronous storage cleanup, and
+  transfers both retained owners to a nondroppable detached worker with bounded
+  retry and panic parking. Descriptor-pinned VMState provisioning, guarded-
+  launch invocation, and a real ext4 enforcement VM gate remain open before the
+  production executor selects this owner.
   A prepared run-directory authority now pins the directory and exact regular
   VMState inode without following final symlinks. Guarded spawn reauthenticates
   the entry before allocation, changes directory by descriptor after cgroup and
@@ -379,12 +383,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   daemon-incarnation namespace and operational bounds before root access,
   creates unique fixed-width child names, exposes no raw cgroup controls, and
   poisons itself while retaining authority after partial setup. Aggregate
-  filesystem-quota reservation and its exact run-directory binding,
-  active-node handoff, the modeled attempt driver, and concrete session wiring
-  remain open. Real-node exact-checkpoint
-  capture is now an executor-owned, guard-retaining operation: it seals and
-  exact-binds configuration, node icount, and event-log continuation before
-  paused VMState/host-I/O capture. The daemon now prepares and durably publishes
+  filesystem-quota reservation, exact run-directory binding, and nondroppable
+  process/storage quarantine are now composed by the concrete Linux host owner.
+  Descriptor-pinned run-directory preparation, active-node handoff, the modeled
+  attempt driver, and concrete session wiring remain open. Real-node exact-
+  checkpoint capture is now an executor-owned, guard-retaining operation: it
+  seals and exact-binds configuration, node icount, and event-log continuation
+  before paused VMState/host-I/O capture. The daemon now prepares and durably
+  publishes
   a registered exact-checkpoint root over canonical snapshot metadata and a
   bounded, streamed opaque VMState child, with no writes during preparation and
   children-before-root durable receipts. The executor now persists
@@ -456,10 +462,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   and publication, version-5 ledger persistence, restart reauthentication,
   explicit incomplete-promotion revert, and the final paused-root CAS are
   implemented without holding the supervisor actor across QEMU or store work.
-  The crate-internal quota/run-directory owner is implemented. Its composition
-  with the process owner, invocation by the full executor flight, the real-node
-  guarded launcher, and the production combined guard remain open; `NotRun` is
-  still fail-closed. The fixed worker pool and its
+  The crate-internal quota/run-directory owner and its public sealed composition
+  with the process owner are implemented, including reap-before-storage release
+  and nondroppable combined quarantine. Invocation by the full executor flight,
+  the descriptor-pinned real-node guarded launcher, and production configuration
+  remain open; `NotRun` is still fail-closed. The fixed worker pool and its
   linear observation/checkpoint
   publication/reconciliation paths are implemented.
   The repository owner now also implements the core schema-v5 pin transaction:

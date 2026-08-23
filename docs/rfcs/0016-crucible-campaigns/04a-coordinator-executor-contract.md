@@ -1994,9 +1994,16 @@ project ID returns to the pool. Every partial create, cleanup, or release error
 retains the pinned directory, shared root-lock description, cleanup bound,
 quota state, and project-ID lease for monotone exact retry. Dropping an
 unfinished owner leaks that authority and keeps the ID reserved fail-closed. A
-nondroppable combined process/storage quarantine owner and a real ext4
-project-quota enforcement VM gate remain mandatory before this internal owner
-is wired into public guarded launch.
+nondroppable Linux host owner now pairs that storage authority with the exact
+cgroup process owner under one public sealed facade. Normal finish proves
+process reap before artifact cleanup. Any process or storage error transfers
+both retained owners to a detached worker; ordinary failures retry with bounded
+backoff, while an invariant panic parks the worker without dropping authority.
+Partial setup never exposes a child contract and either cleans the storage
+owner asynchronously or retains lower-level setup authority fail-closed. The
+descriptor-pinned VMState provisioning handoff, invocation by guarded launch,
+and a real ext4 project-quota enforcement VM gate remain mandatory before this
+host owner is selected by the production executor.
 
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
