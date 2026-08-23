@@ -101,8 +101,9 @@ pub use rpc_abi::{
 pub use vm_lifecycle::{
     ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
     ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, build_production_vm_lifecycle_loop,
+    ProductionVmLifecycleLoop, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchKind, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
+    ProductionVmNodeLease, build_production_vm_lifecycle_loop,
     build_production_vm_lifecycle_loop_from_checkpoint,
     build_production_vm_lifecycle_loop_from_checkpoint_with_launcher,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,

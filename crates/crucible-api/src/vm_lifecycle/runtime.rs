@@ -375,7 +375,7 @@ impl ProductionVmLifecycleLoop {
         candidate.debug_gateway = self.debug_gateway.take();
         candidate.debug_runtime_evidence = self.debug_runtime_evidence.clone();
         let mut previous = std::mem::replace(self, candidate);
-        let retired_world_cleanup = match previous.inner.shutdown() {
+        let retired_world_cleanup = match previous.shutdown() {
             Ok(_) => DebugRetiredWorldCleanup::Reaped,
             Err(error) => DebugRetiredWorldCleanup::DetachedCleanupPending {
                 diagnostic: error.to_string().chars().take(512).collect(),

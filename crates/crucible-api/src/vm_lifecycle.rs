@@ -491,6 +491,8 @@ pub struct ProductionVmLifecycleLoop {
     node_indexes: BTreeMap<NodeId, usize>,
     node_run_directories: BTreeMap<NodeId, PathBuf>,
     node_generations: BTreeMap<NodeId, u64>,
+    node_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
+    node_lease_cleanup_failed: bool,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
     run_manifest: ProductionRunManifest,
@@ -529,7 +531,8 @@ pub enum ProductionVmNodeLaunchKind<'a> {
 pub struct ProductionVmNodeLaunchRequest<'a> {
     launch: &'a ProductionLiveNodeStepGateConfig,
     run_directory: &'a Path,
-    node_name: &'a str,
+    node: &'a NodeId,
+    generation: u64,
     router_name: &'a str,
     crash_detector: &'a str,
     kind: ProductionVmNodeLaunchKind<'a>,
@@ -539,7 +542,8 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
     const fn new(
         launch: &'a ProductionLiveNodeStepGateConfig,
         run_directory: &'a Path,
-        node_name: &'a str,
+        node: &'a NodeId,
+        generation: u64,
         router_name: &'a str,
         crash_detector: &'a str,
         kind: ProductionVmNodeLaunchKind<'a>,
@@ -547,7 +551,8 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
         Self {
             launch,
             run_directory,
-            node_name,
+            node,
+            generation,
             router_name,
             crash_detector,
             kind,
@@ -566,10 +571,22 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
         self.run_directory
     }
 
+    /// Returns the exact scheduler node identity.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        self.node
+    }
+
     /// Returns the scheduler node name.
     #[must_use]
-    pub const fn node_name(&self) -> &str {
-        self.node_name
+    pub fn node_name(&self) -> &str {
+        &self.node.name
+    }
+
+    /// Returns the positive process generation being materialized.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Returns the deterministic router role name.
@@ -591,6 +608,126 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
     }
 }
 
+/// Exact lifecycle identity of one contained QEMU process generation.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProductionVmNodeGeneration {
+    node: NodeId,
+    generation: u64,
+}
+
+impl ProductionVmNodeGeneration {
+    /// Builds one positive node-generation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when `generation` is zero.
+    pub fn new(node: NodeId, generation: u64) -> Result<Self, LifecycleApiError> {
+        if generation == 0 {
+            return Err(loop_factory_error(
+                "production QEMU process generation must be positive",
+            ));
+        }
+        Ok(Self { node, generation })
+    }
+
+    /// Returns the exact scheduler node identity.
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the positive process generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// Linear containment lease retained for one launched QEMU generation.
+///
+/// A lease may own cgroup membership, filesystem-quota reservations, process
+/// identities, or other attempt-scoped accounting. Its `Drop` path must retain
+/// or transfer any unfinished authority to quarantine; dropping an unfinished
+/// lease must never claim that resources were released.
+pub trait ProductionVmNodeLease: Send {
+    /// Returns the exact node generation owned by this lease.
+    #[must_use]
+    fn identity(&self) -> &ProductionVmNodeGeneration;
+
+    /// Releases generation-specific authority after QEMU reap is attested.
+    ///
+    /// Implementations must be idempotent. An error must retain or transfer
+    /// remaining authority to quarantine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when containment release cannot be
+    /// attested after the corresponding QEMU process was reaped.
+    fn finish(&mut self) -> Result<(), LifecycleApiError>;
+}
+
+/// One live QEMU node paired with its exact linear containment lease.
+#[must_use = "a launched QEMU node and its containment lease must remain jointly owned"]
+pub struct ProductionVmNodeLaunch {
+    node: QemuNode,
+    lease: Box<dyn ProductionVmNodeLease>,
+}
+
+impl ProductionVmNodeLaunch {
+    /// Pairs a launched node with the lease for the exact request generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
+    /// different node or generation. The rejected node and lease are dropped
+    /// through their fail-closed ownership paths.
+    pub fn new<L>(
+        request: ProductionVmNodeLaunchRequest<'_>,
+        node: QemuNode,
+        lease: L,
+    ) -> Result<Self, LifecycleApiError>
+    where
+        L: ProductionVmNodeLease + 'static,
+    {
+        let expected =
+            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
+        if lease.identity() != &expected {
+            return Err(loop_factory_error(
+                "production QEMU node lease does not match its launch request",
+            ));
+        }
+        Ok(Self {
+            node,
+            lease: Box::new(lease),
+        })
+    }
+
+    fn node(&self) -> &QemuNode {
+        &self.node
+    }
+
+    fn node_mut(&mut self) -> &mut QemuNode {
+        &mut self.node
+    }
+
+    fn into_parts(self) -> (QemuNode, Box<dyn ProductionVmNodeLease>) {
+        (self.node, self.lease)
+    }
+
+    fn quarantine_and_finish(mut self) -> Result<(), SchedulerError> {
+        self.node.force_quarantine_and_reap().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("reap launched QEMU generation: {error}"),
+            }
+        })?;
+        self.lease
+            .finish()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("finish reaped QEMU generation lease: {error}"),
+            })
+    }
+}
+
 /// Attempt-owned authority for every QEMU generation in one production lifecycle.
 ///
 /// Implementations may install cgroup, filesystem-quota, cancellation, and
@@ -603,6 +740,10 @@ impl<'a> ProductionVmNodeLaunchRequest<'a> {
 pub trait ProductionVmNodeLauncher: Send {
     /// Launches one requested node generation.
     ///
+    /// Success returns the node and a linear containment lease whose identity
+    /// exactly matches the request. The lifecycle retains that lease until the
+    /// corresponding child has been reaped.
+    ///
     /// # Errors
     ///
     /// Returns [`LifecycleApiError`] when admission, process launch, exact
@@ -611,7 +752,7 @@ pub trait ProductionVmNodeLauncher: Send {
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
-    ) -> Result<QemuNode, LifecycleApiError>;
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
 
     /// Creates an independent authority for whole-world debugger replay.
     ///
@@ -645,11 +786,25 @@ pub trait ProductionVmNodeLauncher: Send {
 #[derive(Clone, Copy, Debug, Default)]
 struct PackagedProductionVmNodeLauncher;
 
+struct PackagedProductionVmNodeLease {
+    identity: ProductionVmNodeGeneration,
+}
+
+impl ProductionVmNodeLease for PackagedProductionVmNodeLease {
+    fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+}
+
 impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
-    ) -> Result<QemuNode, LifecycleApiError> {
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         let launched = match request.kind() {
             ProductionVmNodeLaunchKind::Fresh => launch_production_live_node(
                 request.launch(),
@@ -681,12 +836,15 @@ impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
                 snapshot,
             ),
         };
-        launched.map_err(|error| {
+        let node = launched.map_err(|error| {
             loop_factory_error(format!(
                 "launch QEMU node `{}` through packaged authority: {error}",
                 request.node_name()
             ))
-        })
+        })?;
+        let identity =
+            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
+        ProductionVmNodeLaunch::new(request, node, PackagedProductionVmNodeLease { identity })
     }
 
     fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
@@ -702,18 +860,69 @@ fn launch_production_node_generation(
     launcher: &mut dyn ProductionVmNodeLauncher,
     launch: &ProductionLiveNodeStepGateConfig,
     run_directory: &Path,
-    node_name: &str,
+    node: &NodeId,
+    generation: u64,
     crash_detector: &str,
     kind: ProductionVmNodeLaunchKind<'_>,
-) -> Result<QemuNode, LifecycleApiError> {
+) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+    ProductionVmNodeGeneration::new(node.clone(), generation)?;
     launcher.launch(ProductionVmNodeLaunchRequest::new(
         launch,
         run_directory,
-        node_name,
+        node,
+        generation,
         "crucible-router",
         crash_detector,
         kind,
     ))
+}
+
+fn finish_reaped_node_lease_map(
+    node_generations: &BTreeMap<NodeId, u64>,
+    node_leases: &mut BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
+    nodes: &[NodeId],
+) -> Result<(), SchedulerError> {
+    let mut first_error = None;
+    for node in nodes {
+        let Some(generation) = node_generations.get(node).copied() else {
+            if first_error.is_none() {
+                first_error = Some(format!(
+                    "reaped QEMU node `{}` has no authenticated generation",
+                    node.name
+                ));
+            }
+            continue;
+        };
+        let Some(mut lease) = node_leases.remove(node) else {
+            if first_error.is_none() {
+                first_error = Some(format!(
+                    "reaped QEMU node `{}` has no generation lease",
+                    node.name
+                ));
+            }
+            continue;
+        };
+        if lease.identity().node() != node || lease.identity().generation() != generation {
+            if first_error.is_none() {
+                first_error = Some(format!(
+                    "reaped QEMU node `{}` has a mismatched generation lease",
+                    node.name
+                ));
+            }
+            continue;
+        }
+        if let Err(error) = lease.finish()
+            && first_error.is_none()
+        {
+            first_error = Some(format!(
+                "finish reaped QEMU node `{}` generation {generation}: {error}",
+                node.name
+            ));
+        }
+    }
+    first_error.map_or(Ok(()), |message| {
+        Err(SchedulerError::BoundaryViolation { message })
+    })
 }
 
 mod config;
@@ -1191,6 +1400,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
     let mut node_indexes = BTreeMap::new();
     let mut node_run_directories = BTreeMap::new();
     let mut node_generations = BTreeMap::new();
+    let mut node_leases = BTreeMap::new();
     let mut node_service_states = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
@@ -1404,7 +1614,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     node_launcher.as_mut(),
                     &launch,
                     &node_directory,
-                    &vm.id.name,
+                    &vm.id,
+                    generation,
                     &crash_detector,
                     ProductionVmNodeLaunchKind::Exact {
                         snapshot: &target.snapshot,
@@ -1417,7 +1628,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
                     node_launcher.as_mut(),
                     &launch,
                     &node_directory,
-                    &vm.id.name,
+                    &vm.id,
+                    generation,
                     &crash_detector,
                     ProductionVmNodeLaunchKind::Exact {
                         snapshot: &target.snapshot,
@@ -1436,13 +1648,14 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 node_launcher.as_mut(),
                 &launch,
                 &node_directory,
-                &vm.id.name,
+                &vm.id,
+                generation,
                 &format!("lifecycle-{}", vm.id.name),
                 ProductionVmNodeLaunchKind::Fresh,
             ),
         };
-        let mut backend = launched?;
-        let observed = SimulationBackend::now(&backend).ticks;
+        let mut launched = launched?;
+        let observed = SimulationBackend::now(launched.node()).ticks;
         if let Some(target) = restore_target {
             let restored_configuration = restore_checkpoint
                 .as_ref()
@@ -1450,7 +1663,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
             if Some(target.configuration.id()) != restored_configuration
                 || target.counter != observed
             {
-                let _ = SimulationBackend::shutdown(&mut backend);
+                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "QEMU node `{}` restored at unauthenticated instruction boundary {observed}",
                     vm.id.name
@@ -1461,16 +1674,16 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
                 .and_then(|checkpoint| checkpoint.qemu_fingerprint(&vm.id))
             else {
-                let _ = SimulationBackend::shutdown(&mut backend);
+                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "exact checkpoint for `{}` has no authenticated QEMU fingerprint",
                     vm.id.name
                 )));
             };
-            let restored_fingerprint = match backend.execution_fingerprint() {
+            let restored_fingerprint = match launched.node_mut().execution_fingerprint() {
                 Ok(fingerprint) => fingerprint.hash,
                 Err(error) => {
-                    let _ = SimulationBackend::shutdown(&mut backend);
+                    let _ = launched.quarantine_and_finish();
                     return Err(loop_factory_error(format!(
                         "read restored QEMU fingerprint for `{}`: {error}",
                         vm.id.name
@@ -1478,7 +1691,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 }
             };
             if restored_fingerprint != expected_fingerprint {
-                let _ = SimulationBackend::shutdown(&mut backend);
+                let _ = launched.quarantine_and_finish();
                 return Err(loop_factory_error(format!(
                     "QEMU node `{}` restored with an unauthenticated execution fingerprint: expected {}, observed {}",
                     vm.id.name,
@@ -1487,7 +1700,7 @@ fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
         } else if initial_ticks.is_some_and(|initial| initial != observed) {
-            let _ = SimulationBackend::shutdown(&mut backend);
+            let _ = launched.quarantine_and_finish();
             return Err(loop_factory_error(format!(
                 "QEMU node `{}` primed at {observed}, expected {}",
                 vm.id.name,
@@ -1497,15 +1710,30 @@ fn build_production_vm_lifecycle_loop_with_restore(
         if restore_target.is_none() {
             initial_ticks.get_or_insert(observed);
         }
-        let process_identity = backend.process_identity().map_err(|error| {
-            loop_factory_error(format!(
-                "capture initial QEMU identity for `{}`: {error}",
-                vm.id.name
-            ))
-        })?;
+        let process_identity = match launched.node().process_identity() {
+            Ok(identity) => identity,
+            Err(error) => {
+                let containment = launched.quarantine_and_finish();
+                return Err(loop_factory_error(format!(
+                    "capture initial QEMU identity for `{}`: {error}; process containment: {}",
+                    vm.id.name,
+                    containment.map_or_else(
+                        |failure| failure.to_string(),
+                        |()| String::from("reaped and lease released")
+                    )
+                )));
+            }
+        };
+        let (backend, lease) = launched.into_parts();
         if backends.insert(vm.id.clone(), backend).is_some() {
             return Err(loop_factory_error(format!(
                 "duplicate QEMU node identity `{}`",
+                vm.id.name
+            )));
+        }
+        if node_leases.insert(vm.id.clone(), lease).is_some() {
+            return Err(loop_factory_error(format!(
+                "duplicate QEMU node lease identity `{}`",
                 vm.id.name
             )));
         }
@@ -1516,9 +1744,28 @@ fn build_production_vm_lifecycle_loop_with_restore(
             &run_directory.path().join("run-manifest.json"),
             &run_manifest,
         ) {
-            let _ = backends.shutdown();
+            let backend_cleanup = backends.shutdown();
+            let lease_cleanup = if backend_cleanup.is_ok() {
+                let nodes = node_leases.keys().cloned().collect::<Vec<_>>();
+                finish_reaped_node_lease_map(&node_generations, &mut node_leases, &nodes)
+            } else {
+                Ok(())
+            };
+            let launcher_cleanup = if backend_cleanup.is_ok() && lease_cleanup.is_ok() {
+                node_launcher.finish()
+            } else {
+                Ok(())
+            };
             return Err(loop_factory_error(format!(
-                "persist initial QEMU process ownership: {message}"
+                "persist initial QEMU process ownership: {message}; backend cleanup: {}; generation-lease cleanup: {}; launcher cleanup: {}",
+                backend_cleanup
+                    .map_or_else(|failure| failure.to_string(), |()| String::from("reaped")),
+                lease_cleanup.map_or_else(
+                    |failure| failure.to_string(),
+                    |()| String::from("released or retained")
+                ),
+                launcher_cleanup
+                    .map_or_else(|failure| failure.to_string(), |()| String::from("released"))
             )));
         }
     }
@@ -1833,6 +2080,8 @@ fn build_production_vm_lifecycle_loop_with_restore(
         node_indexes,
         node_run_directories,
         node_generations,
+        node_leases,
+        node_lease_cleanup_failed: false,
         node_service_states,
         lifecycle_journal,
         run_manifest,
@@ -1863,16 +2112,24 @@ fn build_production_vm_lifecycle_loop_with_restore(
             .assertion_state
             .restore_into(&mut lifecycle.assertion_evaluator, &prefix)
         {
-            let _ = lifecycle.inner.shutdown();
+            let cleanup = QuantumLoop::shutdown(&mut lifecycle);
             return Err(loop_factory_error(format!(
-                "restore host assertion continuation: {error}"
+                "restore host assertion continuation: {error}; lifecycle cleanup: {}",
+                cleanup.map_or_else(
+                    |failure| failure.to_string(),
+                    |_: Vec<_>| String::from("reaped and released")
+                )
             )));
         }
     }
     if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
-        let _ = lifecycle.inner.shutdown();
+        let cleanup = QuantumLoop::shutdown(&mut lifecycle);
         return Err(loop_factory_error(format!(
-            "capture initial debugger runtime evidence: {error}"
+            "capture initial debugger runtime evidence: {error}; lifecycle cleanup: {}",
+            cleanup.map_or_else(
+                |failure| failure.to_string(),
+                |_: Vec<_>| String::from("reaped and released")
+            )
         )));
     }
     Ok(lifecycle)

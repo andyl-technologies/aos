@@ -2071,14 +2071,24 @@ authority. Initial fresh/exact materialization and every modeled crash/restart
 replacement pass through that same authority; whole-world debugger replay must
 obtain an independent authority from it or fail closed. The authoritative
 lifecycle therefore no longer has a later direct-spawn path that can bypass an
-attempt guard after the first generation. Shutdown asks all retained nodes to
-reap before the authority attests aggregate release; a failed attestation stays
+attempt guard after the first generation. Every successful launch returns the
+live node together with a linear lease naming the exact scheduler `NodeId` and
+positive process generation. The lifecycle retains active and staged leases
+separately. A staged replacement cannot displace the active lease; the active
+lease is released only after the old child is attested reaped, and the staged
+lease becomes active only with the backend replacement commit. Failed staging
+reaps the staged child before releasing its lease, while lease-release failure
+is latched as a quarantine error: later shutdown attempts cannot attest
+aggregate release or reclaim capacity. Final shutdown
+asks all retained nodes to reap, releases each exact generation lease, and only
+then asks the aggregate launch authority to finish. A failed attestation stays
 observable and transfers the remaining authority to quarantine. Construction
-failure, unwind, or abandonment before that explicit finish must perform the
-same fail-closed transfer from the authority's drop path. The packaged
+failure, unwind, or abandonment before those explicit finishes must perform the
+same fail-closed transfer from the lease and authority drop paths. The packaged
 non-campaign lifecycle uses the existing launcher through the default
-authority. The campaign worker must still provide the Linux attempt-owned
-implementation and must not select that default. A
+authority and no-op generation leases. The campaign worker must still provide
+the Linux attempt-owned multi-generation implementation and must not select
+that default. A
 concrete exact-resume adapter obtains that one-shot prepared directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the

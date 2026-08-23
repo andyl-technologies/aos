@@ -16,11 +16,40 @@ struct FailingFinishLauncher {
     finish_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct RecordingNodeLease {
+    identity: ProductionVmNodeGeneration,
+    finish_calls: Arc<std::sync::atomic::AtomicUsize>,
+    finish_order: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+    fail: bool,
+}
+
+impl ProductionVmNodeLease for RecordingNodeLease {
+    fn identity(&self) -> &ProductionVmNodeGeneration {
+        &self.identity
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(order) = &self.finish_order {
+            order
+                .lock()
+                .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
+                .push("lease");
+        }
+        if self.fail {
+            Err(loop_factory_error("test node lease retained quarantine"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl ProductionVmNodeLauncher for FailingFinishLauncher {
     fn launch(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
-    ) -> Result<QemuNode, LifecycleApiError> {
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         Err(loop_factory_error("test launcher does not spawn"))
     }
 
@@ -32,6 +61,31 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
         self.finish_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(loop_factory_error("test launcher retained quarantine"))
+    }
+}
+
+struct RecordingFinishLauncher {
+    finish_order: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl ProductionVmNodeLauncher for RecordingFinishLauncher {
+    fn launch(
+        &mut self,
+        _request: ProductionVmNodeLaunchRequest<'_>,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not spawn"))
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        Err(loop_factory_error("test launcher does not admit replay"))
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.finish_order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
+            .push("launcher");
+        Ok(())
     }
 }
 
@@ -77,6 +131,107 @@ fn recorded_control_boundary_waits_until_every_node_reaches_the_exact_time() {
         ),
         RecordedControlBoundary::Bypassed
     );
+}
+
+#[test]
+fn reaped_generation_finishes_only_its_exact_linear_lease() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_or_else(|error| panic!("exact reaped lease should finish: {error}"));
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
+fn mismatched_generation_lease_fails_closed_without_release() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 4);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let error = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .err()
+        .unwrap_or_else(|| panic!("mismatched lease should fail closed"));
+
+    assert!(error.to_string().contains("mismatched generation lease"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
+fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let first = NodeId {
+        name: String::from("node-first"),
+    };
+    let second = NodeId {
+        name: String::from("node-second"),
+    };
+    let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(first.clone(), 2);
+    lifecycle.node_generations.insert(second.clone(), 5);
+    lifecycle.node_leases.insert(
+        first.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(first.clone(), 1)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&first_calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+    lifecycle.node_leases.insert(
+        second.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(second.clone(), 5)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&second_calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let error = lifecycle
+        .finish_reaped_node_leases(&[first.clone(), second.clone()])
+        .err()
+        .unwrap_or_else(|| panic!("mismatched first lease should fail closed"));
+
+    assert!(error.to_string().contains("mismatched generation lease"));
+    assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&first));
+    assert!(!lifecycle.node_leases.contains_key(&second));
 }
 
 fn initially_violated_scenario() -> ScenarioDefForm {
@@ -323,6 +478,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
         node_generations: BTreeMap::new(),
+        node_leases: BTreeMap::new(),
+        node_lease_cleanup_failed: false,
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,
@@ -379,6 +536,93 @@ fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
             .contains("test launcher retained quarantine")
     );
     assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
+    let source = initially_violated_scenario();
+    let lease_finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    lifecycle.node_generations.insert(node.clone(), 9);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node, 9)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls: Arc::clone(&lease_finish_calls),
+            finish_order: Some(Arc::clone(&order)),
+            fail: true,
+        }),
+    );
+    lifecycle.node_launcher = Box::new(RecordingFinishLauncher {
+        finish_order: Arc::clone(&order),
+    });
+
+    let error = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("failed generation-lease cleanup must reject shutdown"));
+
+    assert!(
+        error
+            .to_string()
+            .contains("test node lease retained quarantine")
+    );
+    assert_eq!(
+        lease_finish_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease"]
+    );
+
+    let repeated = QuantumLoop::shutdown(&mut lifecycle)
+        .err()
+        .unwrap_or_else(|| panic!("repeated shutdown must retain quarantine failure"));
+    assert!(repeated.to_string().contains("remains owned by quarantine"));
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease"]
+    );
+}
+
+#[test]
+fn lifecycle_finishes_generation_lease_before_aggregate_launcher() {
+    let source = initially_violated_scenario();
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    lifecycle.node_generations.insert(node.clone(), 11);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node, 11)
+                .unwrap_or_else(|error| panic!("test generation should validate: {error}")),
+            finish_calls,
+            finish_order: Some(Arc::clone(&order)),
+            fail: false,
+        }),
+    );
+    lifecycle.node_launcher = Box::new(RecordingFinishLauncher {
+        finish_order: Arc::clone(&order),
+    });
+
+    QuantumLoop::shutdown(&mut lifecycle)
+        .unwrap_or_else(|error| panic!("ordered cleanup should succeed: {error}"));
+
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease", "launcher"]
+    );
 }
 
 #[test]
