@@ -505,6 +505,16 @@ impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
         Ok(&self.process_contract)
     }
 
+    fn prepare_run_directory(
+        &mut self,
+        _command: &crucible_qemu::QemuLaunchCommand,
+    ) -> Result<crucible_qemu::QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare guarded resume test run directory",
+            message: String::from("guarded resume test does not provision run directories"),
+        })
+    }
+
     fn retain_failed_launch_child(&mut self, child: crucible_qemu::QemuNodeChild) {
         self.failed_children.push(child);
     }

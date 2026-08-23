@@ -12,10 +12,10 @@ use crucible::{
 };
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId, ObservationCandidate};
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLiveAttemptBackend,
-    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNodeChild,
-    QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
+    QemuBakedGenesisRestoreAdmission, QemuChildProcessContract, QemuLaunchCommand,
+    QemuLiveAttemptBackend, QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission,
+    QemuNodeChild, QemuPreparedRunDirectory, QemuVmLiveRealizationExecutor, QemuVmRealization,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmReplayRequest, QemuVmSnapshot,
 };
 
 use crate::{
@@ -139,6 +139,18 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// Returns an operational error after terminal cleanup has closed launch
     /// authority or when the host owner cannot authenticate the contract.
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError>;
+
+    /// Provisions and lends the descriptor-pinned run-directory capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error when the command exceeds the admitted
+    /// resources, storage identity or policy cannot be authenticated, or this
+    /// one-shot capability was already issued.
+    fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError>;
 
     /// Retains a direct child whose failed realization could not reap it.
     ///

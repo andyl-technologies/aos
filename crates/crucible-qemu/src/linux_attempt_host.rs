@@ -24,7 +24,10 @@ use crate::linux_attempt_storage::{
     LinuxQemuAttemptStorageOwner,
 };
 use crate::linux_project_quota::LinuxProjectQuotaError;
-use crate::{QemuChildProcessContract, QemuNodeChild, QemuVmRealizationError};
+use crate::{
+    QemuChildProcessContract, QemuLaunchCommand, QemuNodeChild, QemuPreparedRunDirectory,
+    QemuVmRealizationError,
+};
 
 const HOST_QUARANTINE_MIN_RETRY: Duration = Duration::from_millis(10);
 const HOST_QUARANTINE_MAX_RETRY: Duration = Duration::from_secs(1);
@@ -316,6 +319,35 @@ impl LinuxQemuAttemptHostOwner {
             .as_ref()
             .ok_or_else(|| missing_authority("lend QEMU child process contract"))?
             .process_contract()
+    }
+
+    /// Provisions and lends the descriptor-pinned run-directory authority.
+    ///
+    /// The exact launch profile is admitted before the retained storage owner
+    /// creates the empty exact-VMState destination. Raw directory and quota
+    /// authority never leave this combined owner, and the prepared capability
+    /// can be issued only once.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable executor error when the launch basis, retained storage
+    /// identity, VMState policy, or one-shot lifecycle invariant fails. Host I/O
+    /// failures are reported as unavailable.
+    pub fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        if self.terminal {
+            return Err(missing_authority("prepare QEMU attempt run directory"));
+        }
+        let (process, storage) = match (&self.process, &mut self.storage) {
+            (Some(process), Some(storage)) => (process, storage),
+            _ => return Err(missing_authority("prepare QEMU attempt run directory")),
+        };
+        let contract = process.process_contract()?;
+        storage
+            .prepare_run_directory(command, contract)
+            .map_err(|error| map_storage_error("prepare QEMU attempt run directory", &error))
     }
 
     /// Duplicates the narrow sticky process-cancellation capability.

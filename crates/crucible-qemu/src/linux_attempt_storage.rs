@@ -37,7 +37,11 @@ use crate::linux_project_quota::{
     LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
     validate_project_quota_root,
 };
-use crate::spawn::QemuChildCredentials;
+use crate::spawn::{QemuChildCredentials, validate_guarded_launch_resources};
+use crate::{
+    DEFAULT_VMSTATE_FILE_NAME, QemuChildProcessContract, QemuLaunchCommand,
+    QemuPreparedRunDirectory, QemuSpawnError,
+};
 
 const ATTEMPT_COUNTER_HEX_BYTES: usize = 16;
 const ATTEMPT_NAME_SEPARATOR_BYTES: usize = 1;
@@ -289,6 +293,7 @@ impl LinuxQemuAttemptStorageFactory {
             child_user_id: self.config.child_user_id,
             child_group_id: self.config.child_group_id,
             maximum_inodes: limits.maximum_inodes(),
+            prepared_run_directory_issued: false,
             removed: false,
             released: false,
         };
@@ -314,6 +319,7 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
     child_user_id: u32,
     child_group_id: u32,
     maximum_inodes: u64,
+    prepared_run_directory_issued: bool,
     removed: bool,
     released: bool,
 }
@@ -355,6 +361,52 @@ impl LinuxQemuAttemptStorageOwner {
             .ok_or_else(|| LinuxQemuAttemptStorageError::MissingAuthority {
                 path: self.path.clone(),
             })
+    }
+
+    /// Provisions and lends one descriptor-pinned guarded run directory.
+    ///
+    /// Resource admission is checked before VMState creation. The returned
+    /// authority owns only duplicated directory and VMState descriptors; quota,
+    /// cleanup, namespace-lock, and project-ID ownership remain here. Exactly
+    /// one prepared authority may be issued for an attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxQemuAttemptStorageError`] when admission changes, the
+    /// directory identity is invalid, VMState provisioning or durability fails,
+    /// or a prepared authority was already issued.
+    pub(crate) fn prepare_run_directory(
+        &mut self,
+        command: &QemuLaunchCommand,
+        contract: &QemuChildProcessContract,
+    ) -> Result<QemuPreparedRunDirectory, LinuxQemuAttemptStorageError> {
+        if self.prepared_run_directory_issued {
+            return Err(LinuxQemuAttemptStorageError::PreparedAuthorityIssued {
+                path: self.path.clone(),
+            });
+        }
+        validate_guarded_launch_resources(command, contract)
+            .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
+        self.pin_directory()?;
+        self.verify_named_directory()?;
+
+        let vmstate = provision_vmstate_file(
+            self.directory()?,
+            &self.path,
+            self.child_user_id,
+            self.child_group_id,
+        )?;
+        let directory = duplicate_fd(
+            self.directory()?,
+            "lend pinned QEMU run directory",
+            &self.path,
+        )?;
+        let prepared = QemuPreparedRunDirectory::from_admitted_descriptors(
+            command, &self.path, directory, vmstate, contract,
+        )
+        .map_err(LinuxQemuAttemptStorageError::LaunchPreparation)?;
+        self.prepared_run_directory_issued = true;
+        Ok(prepared)
     }
 
     /// Releases quota and removes the exact empty run directory after reap.
@@ -688,6 +740,18 @@ pub(crate) enum LinuxQemuAttemptStorageError {
         /// Stable cleanup diagnostic.
         message: &'static str,
     },
+    /// The one-shot descriptor-pinned run-directory authority was already issued.
+    #[error("QEMU attempt run-directory authority was already issued: {path}")]
+    PreparedAuthorityIssued {
+        /// Diagnostic run-directory path.
+        path: PathBuf,
+    },
+    /// The exact-VMState container did not match its required empty-file policy.
+    #[error("QEMU exact-VMState container policy did not verify: {path}")]
+    VmStatePolicy {
+        /// Diagnostic exact-VMState path.
+        path: PathBuf,
+    },
     /// The child identity is not isolated from the supervisor credentials.
     #[error("QEMU attempt-storage child credentials are not isolated: {source}")]
     ChildCredentials {
@@ -695,6 +759,9 @@ pub(crate) enum LinuxQemuAttemptStorageError {
         #[source]
         source: crate::QemuSpawnError,
     },
+    /// Descriptor-pinned guarded-launch preparation failed.
+    #[error("QEMU attempt run-directory preparation failed: {0}")]
+    LaunchPreparation(#[source] QemuSpawnError),
     /// The ext4 project-quota transaction failed.
     #[error(transparent)]
     ProjectQuota(#[from] LinuxProjectQuotaError),
@@ -1064,6 +1131,71 @@ fn verify_directory_policy(
     Ok(())
 }
 
+/// Creates or resumes policy installation for the empty exact-VMState destination.
+///
+/// Retrying an interrupted setup may reopen the same empty regular file and
+/// reapply its policy. Any file with content is treated as materialization state
+/// owned by another phase and is never silently reused.
+fn provision_vmstate_file(
+    directory: &OwnedFd,
+    directory_path: &Path,
+    child_user_id: u32,
+    child_group_id: u32,
+) -> Result<OwnedFd, LinuxQemuAttemptStorageError> {
+    let path = directory_path.join(DEFAULT_VMSTATE_FILE_NAME);
+    let create_flags =
+        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let vmstate = match openat(
+        directory,
+        DEFAULT_VMSTATE_FILE_NAME,
+        create_flags,
+        Mode::from_bits_truncate(0o600),
+    ) {
+        Ok(vmstate) => vmstate,
+        Err(rustix::io::Errno::EXIST) => openat(
+            directory,
+            DEFAULT_VMSTATE_FILE_NAME,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| io_error("reopen exact-VMState container", &path, source))?,
+        Err(source) => {
+            return Err(io_error("create exact-VMState container", &path, source));
+        }
+    };
+
+    let metadata = fstat(&vmstate)
+        .map_err(|source| io_error("inspect exact-VMState container", &path, source))?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile || metadata.st_size != 0 {
+        return Err(LinuxQemuAttemptStorageError::VmStatePolicy { path });
+    }
+
+    fchmod(&vmstate, Mode::from_bits_truncate(0o600))
+        .map_err(|source| io_error("set exact-VMState container mode", &path, source))?;
+    fchown(
+        &vmstate,
+        Some(Uid::from_raw(child_user_id)),
+        Some(Gid::from_raw(child_group_id)),
+    )
+    .map_err(|source| io_error("assign exact-VMState container ownership", &path, source))?;
+    fsync(&vmstate)
+        .map_err(|source| io_error("synchronize exact-VMState container", &path, source))?;
+    fsync(directory)
+        .map_err(|source| io_error("synchronize exact-VMState directory", &path, source))?;
+
+    let metadata = fstat(&vmstate)
+        .map_err(|source| io_error("verify exact-VMState container", &path, source))?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        || metadata.st_uid != child_user_id
+        || metadata.st_gid != child_group_id
+        || metadata.st_mode & 0o777 != 0o600
+        || metadata.st_size != 0
+    {
+        return Err(LinuxQemuAttemptStorageError::VmStatePolicy { path });
+    }
+    Ok(vmstate)
+}
+
 fn validate_empty_root(root: &OwnedFd, path: &Path) -> Result<(), LinuxQemuAttemptStorageError> {
     let scan = openat(
         root,
@@ -1301,6 +1433,49 @@ mod tests {
             0
         );
         assert!(outside.path().is_file(), "symlink target remains untouched");
+    }
+
+    #[test]
+    fn vmstate_provisioning_uses_the_pinned_directory_and_is_retryable() {
+        let root = must_succeed(tempfile::tempdir(), "temporary VMState root");
+        let diagnostic = root.path().join("attempt");
+        let retained = root.path().join("retained");
+        must_succeed(std::fs::create_dir(&diagnostic), "create attempt directory");
+        let directory = must_succeed(
+            open(
+                &diagnostic,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "pin attempt directory",
+        );
+        must_succeed(
+            std::fs::rename(&diagnostic, &retained),
+            "rename pinned attempt directory",
+        );
+        must_succeed(std::fs::create_dir(&diagnostic), "create path replacement");
+
+        let user = geteuid().as_raw();
+        let group = rustix::process::getegid().as_raw();
+        let first = must_succeed(
+            provision_vmstate_file(&directory, &diagnostic, user, group),
+            "provision descriptor-relative VMState",
+        );
+        let first_metadata = must_succeed(fstat(&first), "inspect first VMState descriptor");
+        let second = must_succeed(
+            provision_vmstate_file(&directory, &diagnostic, user, group),
+            "retry exact VMState provisioning",
+        );
+        let second_metadata = must_succeed(fstat(&second), "inspect second VMState descriptor");
+
+        assert_eq!(first_metadata.st_dev, second_metadata.st_dev);
+        assert_eq!(first_metadata.st_ino, second_metadata.st_ino);
+        assert_eq!(first_metadata.st_mode & 0o777, 0o600);
+        assert_eq!(first_metadata.st_uid, user);
+        assert_eq!(first_metadata.st_gid, group);
+        assert_eq!(first_metadata.st_size, 0);
+        assert!(retained.join(DEFAULT_VMSTATE_FILE_NAME).is_file());
+        assert!(!diagnostic.join(DEFAULT_VMSTATE_FILE_NAME).exists());
     }
 
     #[test]

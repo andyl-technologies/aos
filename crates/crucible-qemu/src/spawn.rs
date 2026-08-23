@@ -141,6 +141,25 @@ impl QemuPreparedRunDirectory {
             operation: "pin prepared QEMU run directory",
             source: source.into(),
         })?;
+        let vmstate = open_prepared_vmstate(&directory, &path)?;
+        Self::from_admitted_descriptors(command, &path, directory, vmstate, contract)
+    }
+
+    /// Constructs one prepared authority from already-pinned storage descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the launch profile exceeds the process
+    /// contract or either descriptor has the wrong file type.
+    pub(crate) fn from_admitted_descriptors(
+        command: &QemuLaunchCommand,
+        path: &Path,
+        directory: OwnedFd,
+        vmstate: OwnedFd,
+        contract: &QemuChildProcessContract,
+    ) -> Result<Self, QemuSpawnError> {
+        validate_guarded_launch_resources(command, contract)?;
+
         let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
             operation: "inspect prepared QEMU run directory",
             source: source.into(),
@@ -151,7 +170,6 @@ impl QemuPreparedRunDirectory {
                 "prepared QEMU run path is not a directory",
             ));
         }
-        let vmstate = open_prepared_vmstate(&directory, &path)?;
         let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuSpawnError::Io {
             operation: "inspect prepared exact-VMState container",
             source: source.into(),
@@ -164,7 +182,7 @@ impl QemuPreparedRunDirectory {
         }
 
         Ok(Self {
-            path,
+            path: path.to_owned(),
             directory_identity: PinnedFileIdentity::from_stat(&directory_metadata),
             directory,
             vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
@@ -761,7 +779,7 @@ pub fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     })
 }
 
-fn validate_guarded_launch_resources(
+pub(crate) fn validate_guarded_launch_resources(
     command: &QemuLaunchCommand,
     contract: &QemuChildProcessContract,
 ) -> Result<(), QemuSpawnError> {

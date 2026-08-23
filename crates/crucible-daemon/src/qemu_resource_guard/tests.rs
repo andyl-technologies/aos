@@ -75,6 +75,16 @@ impl QemuAttemptHostResourceOwner for FakeHostOwner {
         Ok(&self.process_contract)
     }
 
+    fn prepare_run_directory(
+        &mut self,
+        _command: &QemuLaunchCommand,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare fake QEMU run directory",
+            message: String::from("fake host does not provision run directories"),
+        })
+    }
+
     fn cancellation_signal(&self) -> Result<Self::CancellationSignal, QemuVmRealizationError> {
         Ok(FakeCancellationSignal {
             counters: Arc::clone(&self.counters),

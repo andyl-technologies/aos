@@ -2001,19 +2001,22 @@ both retained owners to a detached worker; ordinary failures retry with bounded
 backoff, while an invariant panic parks the worker without dropping authority.
 Partial setup never exposes a child contract and either cleans the storage
 owner asynchronously or retains lower-level setup authority fail-closed. The
-descriptor-pinned VMState provisioning handoff, invocation by guarded launch,
-and a real ext4 project-quota enforcement VM gate remain mandatory before this
-host owner is selected by the production executor.
+combined owner now admits the exact launch profile before creating an empty
+VMState destination through its retained run-directory descriptor, applies and
+reads back the child ownership/mode policy, synchronizes the file and directory,
+and issues exactly one descriptor-pinned prepared authority without exposing a
+raw storage descriptor. Invocation by guarded launch, baked/thin image
+provisioning, and a real ext4 project-quota enforcement VM gate remain mandatory
+before this host owner is selected by the production executor.
 
-This authority is not yet the production guard. The guarded launch/session
-path now transfers a retained pre-install child into the abstract attempt
-guard, and the daemon guard now composes cancellation, quantum accounting, and
-all-or-quarantine cleanup around a host owner. The Linux host owner still must
-bind that interface to the nondroppable cgroup owner and the new lifecycle-bound
-storage owner, preserve their shared attempt identity through QEMU artifact
-open, and implement active-node failure handoff. That Linux adapter and final
-session wiring remain mandatory before the guarded path may launch a campaign
-QEMU. A process-only Linux facade now validates a daemon-incarnation
+This authority is not yet wired into the production executor flight. The
+guarded launch/session path transfers a retained pre-install child into the
+abstract attempt guard, and the daemon guard composes cancellation, quantum
+accounting, descriptor-pinned preparation, and all-or-quarantine cleanup around
+the concrete combined Linux host owner. The full real-node factory, modeled
+driver, active-node failure handoff, and final session wiring remain mandatory
+before the guarded path may launch a campaign QEMU. A process-only Linux facade
+now validates a daemon-incarnation
 namespace, non-root child IDs, task and finish bounds before acquiring the
 delegated root;
 it creates fixed-width unique child names, exposes only the sealed contract and
