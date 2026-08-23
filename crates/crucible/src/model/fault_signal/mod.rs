@@ -44,6 +44,7 @@ mod tests;
 mod trace;
 mod trace_import;
 mod validation;
+mod value_type;
 mod wire;
 
 pub use adapter_runtime::*;
@@ -73,6 +74,7 @@ pub use storage_effect::*;
 pub use trace::*;
 pub use trace_import::*;
 use validation::*;
+pub use value_type::SignalVectorElementType;
 pub(crate) use wire::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
@@ -310,9 +312,9 @@ pub enum SignalValueType {
     /// Event from a named closed event schema.
     Event(SignalId),
     /// Two scalar quantities of `element`.
-    Vector2(Box<SignalValueType>),
+    Vector2(SignalVectorElementType),
     /// Three scalar quantities of `element`.
-    Vector3(Box<SignalValueType>),
+    Vector3(SignalVectorElementType),
     /// Bounded opaque bytes used only by registered event and trace schemas.
     Bytes,
 }
@@ -502,9 +504,7 @@ impl SignalShape {
             SignalValueType::ProbabilityMillionths => {
                 self.unit == SignalUnit::ProbabilityMillionths && self.scale_decimal_exponent == 0
             }
-            SignalValueType::Vector2(element) | SignalValueType::Vector3(element) => {
-                element.is_numeric() && !matches!(**element, SignalValueType::Ratio)
-            }
+            SignalValueType::Vector2(_) | SignalValueType::Vector3(_) => true,
             SignalValueType::I64
             | SignalValueType::U64
             | SignalValueType::Ratio
@@ -642,9 +642,9 @@ fn homogeneous_vector_type(values: &[SignalValue], vector2: bool) -> Option<Sign
         return None;
     }
     if vector2 {
-        Some(SignalValueType::Vector2(Box::new(first)))
+        Some(SignalValueType::Vector2(first.try_into().ok()?))
     } else {
-        Some(SignalValueType::Vector3(Box::new(first)))
+        Some(SignalValueType::Vector3(first.try_into().ok()?))
     }
 }
 

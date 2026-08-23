@@ -54,7 +54,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crucible::model::{FaultActionCommitError, FaultActionSink};
+use crucible::model::{FaultActionCommitError, FaultActionSink, FaultResourceLimits};
 use crucible::{
     AdvanceOutcome, BackendInput, BasicBlockCoverageConfig, Checkpoint, CheckpointKind,
     ContentHash, ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
@@ -1058,7 +1058,8 @@ fn prove_cross_adapter_rejection_rollback(
         fault_gate_invariant(format!("encode host state before rejection: {error}"))
     })?;
     let before_digest = host.state().digest();
-    let mut sink = ProductionFaultActionSink::new(&mut host, &mut nodes);
+    let mut sink =
+        ProductionFaultActionSink::new(&mut host, &mut nodes, FaultResourceLimits::default());
     let prepared = sink.prepare_batch(&actions).map_err(|error| {
         fault_gate_invariant(format!("prepare rejection transaction: {}", error.error))
     })?;

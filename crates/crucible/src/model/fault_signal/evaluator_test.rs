@@ -190,7 +190,7 @@ fn field_sample_uses_content_addressed_grid_and_explicit_position() {
         id: id("position"),
         domain: SignalDomain::VirtualTime,
         output: shape(
-            SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+            SignalValueType::Vector3(SignalVectorElementType::I64),
             SignalUnit::Millimetres,
         ),
         inputs: Vec::new(),

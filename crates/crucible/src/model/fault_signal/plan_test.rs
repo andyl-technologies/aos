@@ -890,7 +890,7 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
     assert!(Plan::empty().validate_for_world(&world).is_err());
 
     let shape = SignalShape::new(
-        SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+        SignalValueType::Vector3(SignalVectorElementType::I64),
         SignalUnit::Millimetres,
         0,
     )
@@ -913,7 +913,7 @@ fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
         .unwrap_or_else(|error| panic!("valid trajectory: {error}"));
 
     let wrong_shape = SignalShape::new(
-        SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+        SignalValueType::Vector3(SignalVectorElementType::I64),
         SignalUnit::Millimetres,
         -1,
     )

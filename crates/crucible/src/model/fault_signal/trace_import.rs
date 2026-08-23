@@ -497,8 +497,8 @@ fn parse_json_value(
                 payload,
             })
         }
-        SignalValueType::Vector2(element) => parse_json_vector(value, element, 2, true),
-        SignalValueType::Vector3(element) => parse_json_vector(value, element, 3, false),
+        SignalValueType::Vector2(element) => parse_json_vector(value, *element, 2, true),
+        SignalValueType::Vector3(element) => parse_json_vector(value, *element, 3, false),
         SignalValueType::Bytes => {
             let text = value.as_str().ok_or(TraceImportError::ValueShape)?;
             Ok(SignalValue::Bytes(parse_hex(text)?))
@@ -508,7 +508,7 @@ fn parse_json_value(
 
 fn parse_json_vector(
     value: &Value,
-    element: &SignalValueType,
+    element: SignalVectorElementType,
     length: usize,
     two: bool,
 ) -> Result<SignalValue, TraceImportError> {
@@ -516,9 +516,10 @@ fn parse_json_vector(
     if values.len() != length {
         return Err(TraceImportError::ValueShape);
     }
+    let element = element.value_type();
     let normalized = values
         .iter()
-        .map(|value| parse_json_value(value, element))
+        .map(|value| parse_json_value(value, &element))
         .collect::<Result<Vec<_>, _>>()?;
     if two {
         Ok(SignalValue::Vector2(normalized))
@@ -1136,7 +1137,7 @@ mod tests {
 
     #[test]
     fn text_import_preserves_basis_and_applies_spatial_redaction() {
-        let value_type = SignalValueType::Vector2(Box::new(SignalValueType::I64));
+        let value_type = SignalValueType::Vector2(SignalVectorElementType::I64);
         let mut import_options = options(value_type, SignalUnit::Millimetres, false);
         import_options.time_basis = TraceTimeBasis::DeviceTicks;
         import_options.redaction = Some(SpatialRedaction {
