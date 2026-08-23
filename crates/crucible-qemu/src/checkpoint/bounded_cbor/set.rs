@@ -26,6 +26,29 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
         self.values.iter()
     }
 
+    /// Reserves storage for later inserts without changing canonical contents.
+    pub(crate) fn try_reserve(&mut self, additional: usize) -> Result<(), BoundedCborError> {
+        let current = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+        let requested = u64::try_from(additional).unwrap_or(u64::MAX);
+        if current.saturating_add(requested) > MAX {
+            return Err(collection_resource(
+                "bounded CBOR set",
+                current,
+                requested,
+                MAX,
+            ));
+        }
+        self.values
+            .try_reserve(additional)
+            .map_err(|_| collection_resource("bounded CBOR set", current, requested, MAX))
+    }
+
+    /// Returns the admitted value capacity for precommit staging tests.
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.values.capacity()
+    }
+
     /// Inserts one value after fallibly admitting vector growth.
     ///
     /// # Errors
