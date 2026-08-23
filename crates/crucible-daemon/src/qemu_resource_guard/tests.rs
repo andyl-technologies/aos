@@ -386,9 +386,12 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
         owner.register_generation(generation("vm-a", 1)).is_err(),
         "one generation identity cannot be reused"
     );
+    let mut second_a = owner
+        .register_generation(generation("vm-a", 2))
+        .expect("one staged vm-a replacement");
     assert!(
-        owner.register_generation(generation("vm-a", 2)).is_err(),
-        "one scheduler node cannot retain two live generations"
+        owner.register_generation(generation("vm-a", 3)).is_err(),
+        "one scheduler node cannot retain a third generation"
     );
     assert!(
         owner.register_generation(generation("vm-c", 1)).is_err(),
@@ -397,9 +400,6 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
 
     first_a.finish().expect("release reaped vm-a generation");
     first_b.finish().expect("release reaped vm-b generation");
-    let mut second_a = owner
-        .register_generation(generation("vm-a", 2))
-        .expect("strictly newer vm-a generation");
     second_a
         .finish()
         .expect("release reaped replacement generation");
@@ -477,7 +477,6 @@ fn aborting_a_replacement_restores_the_previous_generation_fence() {
     let mut first = owner
         .register_generation(generation("vm-a", 1))
         .expect("first generation");
-    first.finish().expect("release first generation");
     owner
         .register_generation(generation("vm-a", 2))
         .expect("pending replacement")
@@ -491,6 +490,7 @@ fn aborting_a_replacement_restores_the_previous_generation_fence() {
     let mut retried = owner
         .register_generation(generation("vm-a", 2))
         .expect("exact replacement retry");
+    first.finish().expect("release reaped first generation");
     retried.finish().expect("release replacement retry");
     owner.finish().expect("release aggregate attempt resources");
 }

@@ -1,17 +1,23 @@
 //! Linear exact-VMState materialization for pinned QEMU run directories.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 
 use crucible::ContentHash;
 use rustix::fs::{Mode, OFlags, fchown, fstat, fsync, openat};
+use rustix::ioctl::{IntegerSetter, ioctl, opcode};
 use rustix::process::{Gid, Uid};
 
 use super::{QemuPreparedRunDirectory, QemuSpawnError};
 use crate::QemuLaunchCommand;
 
 const EXACT_VMSTATE_BINDING_DOMAIN: &str = "crucible.executor.exact-vmstate-restore-binding.v1";
+const REPLACEMENT_VMSTATE_BINDING_DOMAIN: &str =
+    "crucible.executor.replacement-vmstate-restore-binding.v1";
+const FICLONE: rustix::ioctl::Opcode = opcode::write::<libc::c_int>(0x94, 9);
 
 /// Operational binding from one exact-checkpoint root to materialized VMState.
 ///
@@ -28,6 +34,22 @@ impl QemuVmStateBinding {
     pub fn from_exact_checkpoint_root_digest(digest: [u8; 32]) -> Self {
         Self(ContentHash::from_canonical_hex_bytes(
             EXACT_VMSTATE_BINDING_DOMAIN,
+            &digest,
+        ))
+    }
+
+    /// Derives a binding for one locally captured replacement snapshot.
+    ///
+    /// Unlike an externally retained exact checkpoint, replacement artifacts
+    /// are cloned from descriptor-pinned files in the same attempt while the
+    /// lifecycle holds the source node at its authenticated capture boundary.
+    /// The snapshot digest therefore binds the two reflinked destination
+    /// inodes to that local capture transaction without pretending that it is
+    /// a complete repository checkpoint root.
+    #[must_use]
+    pub fn from_replacement_snapshot_digest(digest: [u8; 32]) -> Self {
+        Self(ContentHash::from_canonical_hex_bytes(
+            REPLACEMENT_VMSTATE_BINDING_DOMAIN,
             &digest,
         ))
     }
@@ -108,6 +130,110 @@ impl QemuPreparedRunDirectory {
     ) -> Result<Self, QemuSpawnError> {
         super::validate_guarded_launch_resources(command, contract)?;
         Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
+    }
+
+    /// Creates fresh QCOW2 VMState and root-overlay artifacts under containment.
+    ///
+    /// The image tool adjacent to `qemu_executable` runs under the same cgroup,
+    /// cancellation event, file ceiling, pinned directory, and unprivileged
+    /// credentials as the eventual QEMU process. Both invocations have a fixed
+    /// absolute deadline. Success reauthenticates and synchronizes the exact
+    /// named inodes before fresh launch becomes possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::QemuGuardedImagePreparationError`] when admission or
+    /// pinned-directory authentication fails, the root image has an invalid
+    /// size, either helper cannot be spawned, contained, completed, or reaped,
+    /// or the resulting artifacts violate the aggregate writable ceiling.
+    pub fn prepare_fresh_artifacts_guarded(
+        &mut self,
+        qemu_executable: &Path,
+        root_image: Option<&Path>,
+        contract: &super::QemuChildProcessContract,
+    ) -> Result<(), super::QemuGuardedImagePreparationError> {
+        let root_bytes = match (self.launch_resources.has_root_overlay(), root_image) {
+            (true, Some(root_image)) => {
+                let bytes = std::fs::metadata(root_image)
+                    .map_err(|source| super::QemuGuardedImagePreparationError {
+                        source: QemuSpawnError::Io {
+                            operation: "inspect fresh root image",
+                            source,
+                        },
+                        child: None,
+                    })?
+                    .len();
+                if bytes == 0 {
+                    return Err(super::QemuGuardedImagePreparationError {
+                        source: QemuSpawnError::FreshRootImageEmpty {
+                            path: root_image.to_owned(),
+                        },
+                        child: None,
+                    });
+                }
+                Some(bytes)
+            }
+            (true, None) => {
+                return Err(super::QemuGuardedImagePreparationError {
+                    source: QemuSpawnError::FreshRootImageMissing,
+                    child: None,
+                });
+            }
+            (false, Some(_)) => {
+                return Err(super::QemuGuardedImagePreparationError {
+                    source: QemuSpawnError::FreshRootImageUnexpected,
+                    child: None,
+                });
+            }
+            (false, None) => None,
+        };
+        let image_tool = qemu_executable.with_file_name("qemu-img");
+        if !image_tool.is_absolute() {
+            return Err(super::QemuGuardedImagePreparationError {
+                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
+                child: None,
+            });
+        }
+        let vmstate_bytes = self.launch_resources.minimum_writable_bytes();
+        let vmstate_args = [
+            OsString::from("create"),
+            OsString::from("-q"),
+            OsString::from("-f"),
+            OsString::from("qcow2"),
+            OsString::from(crate::DEFAULT_VMSTATE_FILE_NAME),
+            OsString::from(format!("{vmstate_bytes}B")),
+        ];
+        super::run_guarded_image_tool(
+            &image_tool,
+            &vmstate_args,
+            "create fresh VMState container",
+            self,
+            contract,
+        )?;
+
+        if let Some(root_bytes) = root_bytes {
+            let root_args = [
+                OsString::from("create"),
+                OsString::from("-q"),
+                OsString::from("-f"),
+                OsString::from("qcow2"),
+                OsString::from(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+                OsString::from(format!("{root_bytes}B")),
+            ];
+            super::run_guarded_image_tool(
+                &image_tool,
+                &root_args,
+                "create fresh root overlay",
+                self,
+                contract,
+            )?;
+        }
+
+        self.seal_fresh_artifacts()
+            .map_err(|source| super::QemuGuardedImagePreparationError {
+                source,
+                child: None,
+            })
     }
 
     /// Begins replacing the pinned VMState file with one exact snapshot image.
@@ -204,6 +330,154 @@ impl QemuPreparedRunDirectory {
         }
 
         self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+        let destination = File::from(self.create_root_overlay_destination()?);
+
+        Ok(QemuRootOverlayMaterialization {
+            prepared: self,
+            destination,
+            binding,
+            expected_bytes,
+            written_bytes: 0,
+        })
+    }
+
+    /// Reflinks one paused generation's writable artifacts into this generation.
+    ///
+    /// Both authorities must belong to the same attempt and exact launch
+    /// admission. The source and destination are addressed only through their
+    /// retained descriptors, and the kernel clone is followed by identity,
+    /// length, and durability checks before either destination is marked exact.
+    /// The caller supplies a binding derived from the authenticated local
+    /// replacement snapshot captured while the source node is paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when either authority changed, belongs to a
+    /// different attempt or launch profile, lacks a complete artifact, exceeds
+    /// the aggregate writable ceiling, the filesystem cannot reflink within the
+    /// attempt quota, or synchronization and post-clone authentication fail.
+    pub fn clone_replacement_artifacts_from(
+        &mut self,
+        source: &Self,
+        binding: QemuVmStateBinding,
+    ) -> Result<(), QemuSpawnError> {
+        if !std::sync::Arc::ptr_eq(&self.attempt_binding, &source.attempt_binding)
+            || self.launch_resources != source.launch_resources
+            || self.admitted_ceiling != source.admitted_ceiling
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent
+        {
+            return Err(QemuSpawnError::ReplacementDestinationNotEmpty {
+                path: self.path.clone(),
+            });
+        }
+        if source.vmstate_materialization == PreparedVmStateMaterialization::Updating
+            || source.root_overlay_materialization == PreparedRootOverlayMaterialization::Updating
+        {
+            return Err(QemuSpawnError::ReplacementSourceNotReady {
+                path: source.path.clone(),
+            });
+        }
+
+        let source_vmstate = source.revalidate_identity()?;
+        let vmstate_bytes = checked_artifact_length(
+            source_vmstate.st_size,
+            source.admitted_ceiling.2,
+            &source.path,
+        )?;
+        let (source_root, root_bytes) = if source.launch_resources.has_root_overlay() {
+            let metadata = source.revalidate_root_overlay_identity()?;
+            let bytes =
+                checked_artifact_length(metadata.st_size, source.admitted_ceiling.2, &source.path)?;
+            (source.root_overlay.as_ref(), bytes)
+        } else {
+            (None, 0)
+        };
+        if vmstate_bytes
+            .checked_add(root_bytes)
+            .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
+        {
+            return Err(QemuSpawnError::ReplacementArtifactsTooLarge {
+                vmstate_bytes,
+                root_overlay_bytes: root_bytes,
+                maximum: self.admitted_ceiling.2,
+            });
+        }
+
+        self.vmstate_materialization = PreparedVmStateMaterialization::Updating;
+        clone_file(
+            &source.vmstate,
+            &self.vmstate,
+            "reflink replacement VMState",
+        )?;
+        let destination_root = if let Some(source_root) = source_root {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+            let destination = self.create_root_overlay_destination()?;
+            clone_file(
+                source_root,
+                &destination,
+                "reflink replacement root overlay",
+            )?;
+            Some(destination)
+        } else {
+            None
+        };
+
+        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize replacement VMState",
+            source: source.into(),
+        })?;
+        if let Some(destination) = &destination_root {
+            fsync(destination).map_err(|source| QemuSpawnError::Io {
+                operation: "synchronize replacement root overlay",
+                source: source.into(),
+            })?;
+        }
+        fsync(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize replacement generation directory",
+            source: source.into(),
+        })?;
+
+        require_length(
+            self.revalidate_identity()?.st_size,
+            vmstate_bytes,
+            &self.path,
+        )?;
+        require_length(
+            source.revalidate_identity()?.st_size,
+            vmstate_bytes,
+            &source.path,
+        )?;
+        if root_bytes != 0 {
+            require_length(
+                self.revalidate_root_overlay_identity()?.st_size,
+                root_bytes,
+                &self.path,
+            )?;
+            require_length(
+                source.revalidate_root_overlay_identity()?.st_size,
+                root_bytes,
+                &source.path,
+            )?;
+        }
+
+        self.vmstate_materialization = PreparedVmStateMaterialization::Exact {
+            binding,
+            bytes: vmstate_bytes,
+        };
+        if root_bytes != 0 {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Exact {
+                binding,
+                bytes: root_bytes,
+            };
+        }
+        Ok(())
+    }
+
+    fn create_root_overlay_destination(&mut self) -> Result<OwnedFd, QemuSpawnError> {
         let destination = openat(
             &self.directory,
             crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
@@ -211,11 +485,11 @@ impl QemuPreparedRunDirectory {
             Mode::from_bits_truncate(0o600),
         )
         .map_err(|source| QemuSpawnError::Io {
-            operation: "create prepared exact root overlay",
+            operation: "create prepared root overlay",
             source: source.into(),
         })?;
         let metadata = fstat(&destination).map_err(|source| QemuSpawnError::Io {
-            operation: "inspect prepared exact root overlay",
+            operation: "inspect prepared root overlay",
             source: source.into(),
         })?;
         if let Some(credentials) = self.child_credentials {
@@ -225,37 +499,89 @@ impl QemuPreparedRunDirectory {
                 Some(Gid::from_raw(credentials.group_id)),
             )
             .map_err(|source| QemuSpawnError::Io {
-                operation: "assign prepared exact root-overlay ownership",
+                operation: "assign prepared root-overlay ownership",
                 source: source.into(),
             })?;
         }
         self.root_overlay_identity = Some(super::PinnedFileIdentity::from_stat(&metadata));
-        let destination =
-            File::from(
-                destination
-                    .try_clone()
-                    .map_err(|source| QemuSpawnError::Io {
-                        operation: "duplicate prepared exact root overlay",
-                        source,
-                    })?,
-            );
         self.root_overlay = Some(
             destination
                 .try_clone()
                 .map_err(|source| QemuSpawnError::Io {
-                    operation: "retain prepared exact root overlay",
+                    operation: "retain prepared root overlay",
                     source,
-                })?
-                .into(),
+                })?,
         );
+        Ok(destination)
+    }
 
-        Ok(QemuRootOverlayMaterialization {
-            prepared: self,
-            destination,
-            binding,
-            expected_bytes,
-            written_bytes: 0,
-        })
+    /// Requires the prepared files to be the provisioned fresh-generation pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when preparation was incomplete, exact bytes
+    /// were substituted, or either retained inode changed.
+    pub fn require_fresh_artifacts(&self) -> Result<(), QemuSpawnError> {
+        if self.vmstate_materialization != PreparedVmStateMaterialization::Provisioned
+            || (self.launch_resources.has_root_overlay()
+                && self.root_overlay_materialization
+                    != PreparedRootOverlayMaterialization::Provisioned)
+        {
+            return Err(QemuSpawnError::FreshArtifactsNotReady {
+                path: self.path.clone(),
+            });
+        }
+        self.revalidate().map(|_| ())
+    }
+
+    fn seal_fresh_artifacts(&mut self) -> Result<(), QemuSpawnError> {
+        let vmstate = self.revalidate_identity()?;
+        let vmstate_bytes =
+            checked_artifact_length(vmstate.st_size, self.admitted_ceiling.2, &self.path)?;
+        let root_bytes = if self.launch_resources.has_root_overlay() {
+            let root = super::open_prepared_root_overlay(&self.directory, &self.path)?;
+            let metadata = fstat(&root).map_err(|source| QemuSpawnError::Io {
+                operation: "inspect fresh root overlay",
+                source: source.into(),
+            })?;
+            let bytes =
+                checked_artifact_length(metadata.st_size, self.admitted_ceiling.2, &self.path)?;
+            self.root_overlay_identity = Some(super::PinnedFileIdentity::from_stat(&metadata));
+            self.root_overlay = Some(root);
+            bytes
+        } else {
+            0
+        };
+        if vmstate_bytes
+            .checked_add(root_bytes)
+            .is_none_or(|bytes| bytes > self.admitted_ceiling.2)
+        {
+            return Err(QemuSpawnError::ReplacementArtifactsTooLarge {
+                vmstate_bytes,
+                root_overlay_bytes: root_bytes,
+                maximum: self.admitted_ceiling.2,
+            });
+        }
+        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize fresh VMState container",
+            source: source.into(),
+        })?;
+        if let Some(root) = &self.root_overlay {
+            fsync(root).map_err(|source| QemuSpawnError::Io {
+                operation: "synchronize fresh root overlay",
+                source: source.into(),
+            })?;
+        }
+        fsync(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize fresh generation directory",
+            source: source.into(),
+        })?;
+        self.root_overlay_materialization = if self.launch_resources.has_root_overlay() {
+            PreparedRootOverlayMaterialization::Provisioned
+        } else {
+            PreparedRootOverlayMaterialization::Absent
+        };
+        Ok(())
     }
 
     /// Requires the pinned VMState file to contain one exact root binding.
@@ -316,6 +642,54 @@ impl QemuPreparedRunDirectory {
                 })
             }
         }
+    }
+}
+
+fn clone_file(
+    source: &OwnedFd,
+    destination: &OwnedFd,
+    operation: &'static str,
+) -> Result<(), QemuSpawnError> {
+    let source_fd = usize::try_from(source.as_raw_fd()).map_err(|error| QemuSpawnError::Io {
+        operation,
+        source: io::Error::new(io::ErrorKind::InvalidInput, error),
+    })?;
+    let request = unsafe {
+        // SAFETY: Linux FICLONE takes the source descriptor as an integer and
+        // clones its data into the ioctl destination. Both descriptors remain
+        // pinned and owned for the complete call.
+        IntegerSetter::<FICLONE>::new_usize(source_fd)
+    };
+    unsafe {
+        // SAFETY: `destination` is a live writable regular-file descriptor and
+        // `request` contains the live source regular-file descriptor.
+        ioctl(destination, request)
+    }
+    .map_err(|source| QemuSpawnError::Io {
+        operation,
+        source: source.into(),
+    })
+}
+
+fn checked_artifact_length(raw: i64, maximum: u64, path: &Path) -> Result<u64, QemuSpawnError> {
+    let bytes = u64::try_from(raw).map_err(|_| QemuSpawnError::ReplacementSourceNotReady {
+        path: path.to_owned(),
+    })?;
+    if bytes == 0 || bytes > maximum {
+        return Err(QemuSpawnError::ReplacementSourceNotReady {
+            path: path.to_owned(),
+        });
+    }
+    Ok(bytes)
+}
+
+fn require_length(raw: i64, expected: u64, path: &Path) -> Result<(), QemuSpawnError> {
+    if u64::try_from(raw).ok() == Some(expected) {
+        Ok(())
+    } else {
+        Err(QemuSpawnError::ReplacementArtifactChanged {
+            path: path.to_owned(),
+        })
     }
 }
 

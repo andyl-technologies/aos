@@ -2106,27 +2106,32 @@ failure, unwind, or abandonment before those explicit finishes must perform the
 same fail-closed transfer from the lease and authority drop paths. The daemon's
 attempt-generation owner now enforces this join around one resource guard. It
 retains at most one latest generation integer per bounded scenario node plus
-at most one active lease per node, rejects stale/reused identities, and releases
-the guard only when every exact lease finished. Dropping a lease or requesting
+at most the active lease and one staged successor per node, rejects a third,
+stale, or reused identity, and releases the guard only when every exact lease
+finished. Dropping a lease or requesting
 aggregate finish with a live lease permanently transfers the guard to
 quarantine; exact retry continues to report that terminal outcome. The packaged
 non-campaign lifecycle uses the existing launcher through the default
 authority and no-op generation leases. The campaign worker must still provide
 the Linux attempt-owned multi-generation implementation and must not select
-that default. The daemon now provides the first attempt-owned lifecycle
-adapter for exact generations. It admits the launch resource profile before
-creating a generation directory, streams and authenticates both the writable
-root overlay and VMState through descriptor-pinned linear transactions, binds
-both to the complete checkpoint-manifest identity, and then invokes only the
-guarded exact live-node entry point. A failure with no remaining child rolls
-back the pending generation fence so an exact retry can use the same lifecycle
-request. A failed synchronous reap instead transfers the direct child into the
-aggregate owner and makes that owner terminal/quarantined. Fresh `qemu-img`
-provisioning, source-bound replacement cloning, allowance for the staged/new
-lease while the prior generation lease remains retained, campaign-worker
-selection, and an independently admitted debugger world remain open; the
-adapter rejects those modes before process spawn rather than falling back to
-the packaged authority. A
+that default. The daemon now provides an attempt-owned lifecycle adapter for
+fresh, retained exact, and local replacement generations. It admits the launch
+resource profile before creating a generation directory. Fresh preparation
+runs both adjacent `qemu-img` invocations under the attempt cgroup, sticky
+cancellation, file ceiling, pinned directory, child credentials, parent-death
+rule, and fixed absolute deadline, then synchronizes and reauthenticates their
+named inodes. Retained exact preparation streams and authenticates both the
+writable root overlay and VMState through descriptor-pinned linear transactions
+and binds both to the complete checkpoint-manifest identity. Local replacement
+resolves the supplied source path only against the retained prior-generation
+capability, reflinks both writable files inside the same project quota, and
+binds them to the authenticated paused replacement snapshot. Every mode then
+invokes only its guarded live-node entry point. A failure with no remaining
+child rolls back the pending generation fence so the exact lifecycle request
+can retry. A failed synchronous reap instead transfers the direct QEMU or
+image-tool child into the aggregate owner and makes that owner terminal and
+quarantined. Campaign-worker selection and an independently admitted debugger
+world remain open; no unsupported mode falls back to the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the

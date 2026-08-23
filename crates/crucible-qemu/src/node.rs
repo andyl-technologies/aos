@@ -339,6 +339,30 @@ impl QemuNodeChild {
         self.reaped = true;
         Ok(())
     }
+
+    /// Force-kills and boundedly reaps one failed attempt helper process.
+    ///
+    /// A timeout deliberately leaves this wrapper unreaped so the caller can
+    /// transfer its unique direct-child wait authority into the attempt owner.
+    pub(crate) fn force_kill_and_reap_failed_helper(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(());
+        }
+        let _kill_result = self.child.kill();
+        match wait_child(&mut self.child, timeout)? {
+            QemuChildWait::Exited => {
+                self.reaped = true;
+                Ok(())
+            }
+            QemuChildWait::StillRunning => Err(QemuShutdownTargetError::new(
+                "reap failed QEMU helper",
+                "child remained alive after SIGKILL and the bounded wait",
+            )),
+        }
+    }
 }
 
 /// Bounded deadline for reaping a force-killed child in [`QemuNodeChild::drop`].

@@ -282,6 +282,18 @@ impl QemuLiveNodeStepGateConfig {
         )
     }
 
+    /// Returns the exact QEMU executable selected by this launch profile.
+    #[must_use]
+    pub fn qemu_executable(&self) -> &Path {
+        &self.qemu_executable
+    }
+
+    /// Returns the immutable root-image path selected by this launch profile.
+    #[must_use]
+    pub fn root_image(&self) -> Option<&Path> {
+        self.root_image.as_deref()
+    }
+
     /// Builds a node-step configuration with bounded defaults.
     ///
     /// The gate always launches the diskless-firmware guest profile, so a pinned
@@ -1678,6 +1690,58 @@ pub struct QemuGuardedExactNodeLaunch<'a> {
     snapshot: &'a QemuVmSnapshot,
 }
 
+/// Complete borrowed basis for one guarded fresh node launch.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuGuardedFreshNodeLaunch<'a> {
+    run_directory: &'a QemuPreparedRunDirectory,
+    process_contract: &'a QemuChildProcessContract,
+    identity: QemuLiveNodeIdentity<'a>,
+}
+
+impl<'a> QemuGuardedFreshNodeLaunch<'a> {
+    /// Seals the prepared storage, process contract, and scheduler-name basis.
+    #[must_use]
+    pub const fn new(
+        run_directory: &'a QemuPreparedRunDirectory,
+        process_contract: &'a QemuChildProcessContract,
+        identity: QemuLiveNodeIdentity<'a>,
+    ) -> Self {
+        Self {
+            run_directory,
+            process_contract,
+            identity,
+        }
+    }
+}
+
+/// Launches one freshly provisioned node through a pinned process contract.
+///
+/// The VMState container and optional root overlay must already have been
+/// created by the guarded image-tool path and sealed as fresh artifacts.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when fresh artifacts or launch
+/// admission changed, guarded white-box setup is unavailable, process spawn or
+/// setup fails, or mandatory failed-launch cleanup cannot be attested.
+pub fn launch_qemu_live_node_guarded(
+    config: &QemuLiveNodeStepGateConfig,
+    request: QemuGuardedFreshNodeLaunch<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    build_live_node_with_authority(
+        config,
+        request.run_directory.path(),
+        request.identity,
+        None,
+        true,
+        LiveNodeSpawnAuthority::Guarded {
+            run_directory: request.run_directory,
+            process_contract: request.process_contract,
+            vmstate_binding: None,
+        },
+    )
+}
+
 impl<'a> QemuGuardedExactNodeLaunch<'a> {
     /// Seals the pinned storage, process, checkpoint, and scheduler-name basis.
     #[must_use]
@@ -1747,7 +1811,7 @@ fn launch_qemu_live_node_exact_snapshot_guarded_inner(
         LiveNodeSpawnAuthority::Guarded {
             run_directory: request.run_directory,
             process_contract: request.process_contract,
-            vmstate_binding: request.vmstate_binding,
+            vmstate_binding: Some(request.vmstate_binding),
         },
     )
 }
@@ -1857,7 +1921,7 @@ enum LiveNodeSpawnAuthority<'a> {
     Guarded {
         run_directory: &'a QemuPreparedRunDirectory,
         process_contract: &'a QemuChildProcessContract,
-        vmstate_binding: QemuVmStateBinding,
+        vmstate_binding: Option<QemuVmStateBinding>,
     },
 }
 
@@ -1900,12 +1964,18 @@ fn build_live_node_with_authority(
             vmstate_binding,
             ..
         } => {
-            prepared
-                .require_exact_vmstate(*vmstate_binding)
-                .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-            if config.resource_requirements().has_root_overlay() {
+            if let Some(vmstate_binding) = vmstate_binding {
                 prepared
-                    .require_exact_root_overlay(*vmstate_binding)
+                    .require_exact_vmstate(*vmstate_binding)
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                if config.resource_requirements().has_root_overlay() {
+                    prepared
+                        .require_exact_root_overlay(*vmstate_binding)
+                        .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                }
+            } else {
+                prepared
+                    .require_fresh_artifacts()
                     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
             }
             if prepared.path() != config.run_directory() {

@@ -32,6 +32,13 @@ use crate::{
 /// Maximum distinct scheduler nodes retained by one attempt generation owner.
 pub const MAX_QEMU_ATTEMPT_GENERATION_NODES: usize = 65_536;
 
+/// Maximum simultaneously retained process generations for one scheduler node.
+///
+/// Terminal replacement deliberately stages one successor before the active
+/// child exits. No third generation may enter until one of those two exact
+/// leases is released or the process-free staged successor is rolled back.
+const MAX_QEMU_ATTEMPT_GENERATIONS_PER_NODE: usize = 2;
+
 /// Sticky process-cancellation capability owned independently of a host guard.
 ///
 /// Implementations must make cancellation visible to an already-minted child
@@ -497,11 +504,13 @@ where
 /// Attempt-wide guard owner with exact linear process-generation leases.
 ///
 /// The owner seals one resource guard behind a bounded generation registry.
-/// Each scheduler node may advance only to a strictly newer positive generation,
-/// while the live set contains at most one lease per active process. Finished
-/// leases leave only one latest-generation integer per scenario node. Dropping
-/// an unfinished lease poisons aggregate release; dropping this owner transfers
-/// the underlying guard to quarantine.
+/// Each scheduler node may advance only to a strictly newer positive generation.
+/// The live set retains at most the active generation and one staged successor,
+/// matching the lifecycle's replace-before-reap transaction without permitting
+/// an unbounded generation chain. Finished leases leave only one latest-
+/// generation integer per scenario node. Dropping an unfinished lease poisons
+/// aggregate release; dropping this owner transfers the underlying guard to
+/// quarantine.
 #[must_use = "finish the generation owner or transfer its guard to quarantine"]
 pub struct QemuAttemptGenerationResourceOwner<G>
 where
@@ -590,10 +599,15 @@ where
         }
         let node = identity.node().clone();
         let previous_generation = state.latest.get(&node).copied();
-        if state.active.iter().any(|active| active.node() == &node) {
+        let active_for_node = state
+            .active
+            .iter()
+            .filter(|active| active.node() == &node)
+            .count();
+        if active_for_node >= MAX_QEMU_ATTEMPT_GENERATIONS_PER_NODE {
             return Err(generation_error(format!(
-                "QEMU node `{}` already has an active generation lease",
-                node.name
+                "QEMU node `{}` already retains the active and staged generation leases",
+                node.name,
             )));
         }
         if let Some(latest) = state.latest.get(&node) {
