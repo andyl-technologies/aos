@@ -286,9 +286,18 @@ impl OwnedFaultExecutionRuntime {
         let evidence = ContentHash::from_bytes(b"checkpoint-capacity-preflight-evidence");
         let mut records = Vec::with_capacity(evaluation.actions.len());
         for action in &evaluation.actions {
+            let mut capacity_action = action.clone();
+            if capacity_action.effect.kind().descriptor().adapter == FaultAdapter::Node
+                && capacity_action.coordinate.retired_instructions.is_none()
+            {
+                // Preview cannot sample live QEMU. The capacity probe uses the
+                // widest concrete icount encoding so its synthetic node record
+                // remains valid and conservatively sizes the later live record.
+                capacity_action.coordinate.retired_instructions = Some(u64::MAX);
+            }
             records.push(
                 ResolvedEffectRecord::from_committed_action(
-                    action,
+                    &capacity_action,
                     opportunity,
                     same_coordinate_sequence,
                     derivation,

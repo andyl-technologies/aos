@@ -449,7 +449,7 @@ pub(super) fn production_checkpoint_identity(
         material.append(&identity.bytes)?;
     }
     Ok(ContentHash::from_canonical_hex_bytes(
-        "crucible.production-fault-runtime-checkpoint.v8",
+        "crucible.production-fault-runtime-checkpoint.v9",
         material.as_slice(),
     ))
 }

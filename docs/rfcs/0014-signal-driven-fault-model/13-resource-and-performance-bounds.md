@@ -200,7 +200,8 @@ or representation failure is a LIMIT-2 outcome carrying the exact current,
 requested, configured, and hard values rather than a process abort. The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
 block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
-production-runtime-v5, and VM-snapshot-v3 formats; VM snapshot identity uses the
+production-runtime-v6, and VM-snapshot-v3 formats; production runtime identity
+uses the v9 domain and VM snapshot identity uses the
 `exact-snapshot.v6` domain, so old policy identities cannot alias new artifacts.
 
 ## 13.8 Search and minimization limits

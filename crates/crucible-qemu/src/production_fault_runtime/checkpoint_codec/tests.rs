@@ -309,7 +309,7 @@ fn aggregate_identity_preserves_legacy_hex_material_hash() {
     assert_eq!(
         checkpoint.identity,
         ContentHash::from_canonical_material(
-            "crucible.production-fault-runtime-checkpoint.v8",
+            "crucible.production-fault-runtime-checkpoint.v9",
             &encoded,
         )
     );
@@ -471,7 +471,7 @@ fn aggregate_codec_rejects_pre_policy_version() {
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v4\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v5\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),

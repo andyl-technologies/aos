@@ -40,6 +40,7 @@ impl FaultBindingRuntime<'_> {
             let mut replayed = generated.to_vec();
             for (action, record) in replayed.iter_mut().zip(&records) {
                 action.coordinate = record.coordinate;
+                action.expected_precondition = record.precondition_digest;
             }
             return Ok(replayed);
         }

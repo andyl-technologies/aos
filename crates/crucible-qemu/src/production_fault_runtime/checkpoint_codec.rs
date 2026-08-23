@@ -29,7 +29,7 @@ mod resource;
 use preflight::preflight_checkpoint_payload;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v5\0";
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v6\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_EVENT_RECORDS: u64 = 1_073_741_824;
 
