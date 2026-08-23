@@ -1555,9 +1555,13 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   The BSP releases the lock, executes `PAUSE`, and immediately attempts to
   reacquire it. Reacquisition emits `F` and parks forever. A passing `P` before
   that next BSP instruction proves a waiter ran before the reacquire. A
-  non-distributable QEMU variant replaces only the still-partial early-yield
-  branch with an exact abort marker and must hit it in the same live workload;
-  ordinary 4096-instruction completion cannot satisfy that negative control.
+  non-distributable QEMU variant arms an exact abort marker only after the
+  guest has issued the `AAAB` prefix and immediately before the critical
+  release-site `PAUSE`. It aborts only if that marked PAUSE takes the
+  still-partial early-yield branch. Earlier startup/contention PAUSEs and an
+  ordinary 4096-instruction completion cannot satisfy that negative control;
+  the negative additionally requires the live gate's captured pre-abort UART
+  bytes to equal `AAAB`.
   The remaining APs acquire in turn before `R`, so INIT/SIPI delivery alone
   cannot satisfy the evidence.
   Structural checks require the halted-owner escape before the partial-turn

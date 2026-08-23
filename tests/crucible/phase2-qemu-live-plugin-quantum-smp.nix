@@ -38,12 +38,14 @@
     customGuestKernel = "${smpGuest}/smp-idle-guest.elf";
     qemuPackage = qemuEarlyPauseYieldTrap;
     pluginPackage = pluginEarlyPauseYieldTrap;
-    expectedQemuFailureMarker = "CRUCIBLE_TEST_EARLY_PAUSE_YIELD_REACHED";
+    expectedQemuFailureMarker = "CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED";
+    expectedQemuFailureEvidence = "guest evidence [65, 65, 65, 66]";
   };
 
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   idlePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch;
   haltedRrPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch;
+  earlyPauseTrapPatch = builtins.readFile ./fixtures/qemu-trap-early-pause-yield.patch;
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   quantumGate = builtins.readFile ./phase2-qemu-live-plugin-quantum.nix;
   nodeSource = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
@@ -127,6 +129,20 @@
     ++ lib.optional
     (hasInfix "cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug" haltedRrPatch)
     "pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch: guest PAUSE handoff is incorrectly conditional on late host work"
+    ++ failuresFor "tests/crucible/fixtures/qemu-trap-early-pause-yield.patch" earlyPauseTrapPatch [
+      {
+        label = "critical PAUSE test-only arm";
+        needle = "crucible_test_critical_pause_armed";
+      }
+      {
+        label = "critical PAUSE guest marker";
+        needle = "port == 0x80 && value == 0xa7";
+      }
+      {
+        label = "critical partial-yield abort marker";
+        needle = "CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED";
+      }
+    ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
       {
         label = "directed AP startup";
@@ -161,6 +177,21 @@
         needle = "lock cmpxchgw %cx, 0x7002";
       }
       {
+        label = "critical PAUSE negative armed after AAAB";
+        needle = "BSP has emitted B before the marker";
+      }
+      {
+        label = "critical PAUSE arm immediately precedes PAUSE";
+        needle = ''
+          movb $0xa7, %al
+                  outb %al, %dx
+                  xorw %ax, %ax
+                  movw $1, %cx
+                  movw $0, 0x7002
+                  pause
+        '';
+      }
+      {
         label = "PAUSE handoff failure marker";
         needle = "movb $'F', %al";
       }
@@ -189,6 +220,10 @@
       {
         label = "causal QEMU failure marker";
         needle = "EXPECTED_QEMU_FAILURE_MARKER";
+      }
+      {
+        label = "runtime QEMU failure evidence";
+        needle = "grep -Fq \"$EXPECTED_QEMU_FAILURE_EVIDENCE\" \"$stderr_report\"";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeSource [
@@ -247,7 +282,10 @@ in
             grep -Fxq 'guest_load_segments=compact-high-only' ${smpGuest}/evidence.env
             grep -Fxq PASS ${earlyPauseYieldNegative}/result
             grep -Fxq \
-              'expected_qemu_failure_marker=CRUCIBLE_TEST_EARLY_PAUSE_YIELD_REACHED' \
+              'expected_qemu_failure_marker=CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED' \
+              ${earlyPauseYieldNegative}/result
+            grep -Fxq \
+              'observed_qemu_failure_evidence=guest evidence [65, 65, 65, 66]' \
               ${earlyPauseYieldNegative}/result
 
             mkdir -p "$out"
@@ -264,7 +302,7 @@ in
             guest_pause_rr_handoff=canonical-cursor-zero
             guest_pause_classification=dedicated-transient-marker
             guest_pause_rendezvous=release-pause-immediate-reacquire-fails-before-ap-lock-chain
-            guest_pause_early_yield_negative=exact-branch-trap-observed
+            guest_pause_early_yield_negative=critical-arm-branch-trap-observed-after-AAAB
             guest_smp_pause_rendezvous_observed=true
             ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only

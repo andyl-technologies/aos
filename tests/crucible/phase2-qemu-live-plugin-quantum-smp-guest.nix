@@ -81,6 +81,16 @@
       all_aps_online:
         movb $'B', %al
         call serial_byte
+
+        /*
+         * This otherwise inert POST-port write arms only the test-only QEMU
+         * negative at the release-site PAUSE. Every AP has emitted A and the
+         * BSP has emitted B before the marker, so observing the trap proves
+         * the runtime console prefix reached AAAB and excludes startup PAUSEs.
+         */
+        movw $0x80, %dx
+        movb $0xa7, %al
+        outb %al, %dx
         xorw %ax, %ax
         movw $1, %cx
         movw $0, 0x7002
