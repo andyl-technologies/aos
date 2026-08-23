@@ -24,13 +24,13 @@ use self::support::{
 use super::network_io_servicer::{
     LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
     LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LiveNetworkIoSnapshot, QemuLiveNetworkIoServicer,
-    QemuLiveNetworkIoServicerError,
+    QemuLiveNetworkIoServicerError, is_live_network_ack, is_live_network_backpressure_ack,
 };
 use crate::{
     LaunchProfileCandidate, QemuHostPluginSetup, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
     QemuLaunchPluginSwitch, QemuLiveNodeStepGateConfig, QemuMappedQuantumShmemHotPath,
-    QemuNodeChild, QemuPluginIpcControlChannel, QemuQmpChannelConfig, QemuQuantumShmemConfig,
-    QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
+    QemuNodeChild, QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpChannelConfig,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
     run_qemu_live_retained_network_snapshot_gate, spawn_qemu_child_with_fds_in_directory,
 };
 use crucible::{BackendInput, Icount};
@@ -161,6 +161,8 @@ pub struct QemuLiveNetworkIoReport {
     pub acknowledgement_offset_equal: bool,
     /// Whether bounded scheduler preemption targeted QEMU during the second run.
     pub host_scheduler_preemption_applied: bool,
+    /// Whether the controller was released only after a network quantum was pending.
+    pub host_scheduler_preemption_pending_quantum: bool,
     /// Number of bounded stop/continue perturbations applied to QEMU.
     pub host_scheduler_preemption_count: u32,
     /// Total configured stopped time across the bounded perturbations.
@@ -189,6 +191,7 @@ struct NetworkIoRunOutcome {
     orderly_child_exit: bool,
     scheduler_preemption:
         Option<crate::bounded_scheduler_preemption::BoundedSchedulerPreemptionReport>,
+    scheduler_preemption_pending_quantum: bool,
 }
 
 /// Runs reference and scheduler-preempted loaded-QEMU network certifications.
@@ -263,6 +266,7 @@ pub fn run_qemu_live_network_io_gate(
         acknowledgement_offset_equal: reference_acknowledgement_offset_icount
             == hostile_acknowledgement_offset_icount,
         host_scheduler_preemption_applied: hostile.scheduler_preemption.is_some(),
+        host_scheduler_preemption_pending_quantum: hostile.scheduler_preemption_pending_quantum,
         host_scheduler_preemption_count: hostile
             .scheduler_preemption
             .map_or(0, |report| report.perturbations),

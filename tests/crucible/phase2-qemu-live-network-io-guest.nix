@@ -95,6 +95,14 @@ pkgs.mkDerivation {
                  memcmp(frame + PAYLOAD_OFFSET, payload, payload_len) == 0;
         }
 
+        static int addresses_match(const uint8_t *frame, ssize_t received,
+                                   const uint8_t destination[6],
+                                   const uint8_t source[6]) {
+          return received >= PAYLOAD_OFFSET &&
+                 memcmp(frame, destination, 6) == 0 &&
+                 memcmp(frame + 6, source, 6) == 0;
+        }
+
         static void build_frame(uint8_t frame[FRAME_LEN],
                                 const uint8_t destination[6],
                                 const uint8_t source[6],
@@ -170,45 +178,69 @@ pkgs.mkDerivation {
           }
 
           for (;;) {
-            ssize_t received = recv(fd, frame, sizeof(frame), 0);
+            struct sockaddr_ll incoming;
+            socklen_t incoming_len = sizeof(incoming);
+            memset(&incoming, 0, sizeof(incoming));
+            ssize_t received = recvfrom(fd, frame, sizeof(frame), 0,
+                                        (struct sockaddr *)&incoming,
+                                        &incoming_len);
             if (received < PAYLOAD_OFFSET || frame[12] != 0x88 ||
-                frame[13] != 0xb5) {
+                frame[13] != 0xb5 ||
+                incoming.sll_ifindex != index_request.ifr_ifindex ||
+                incoming.sll_pkttype == PACKET_OUTGOING) {
               continue;
             }
 
             const uint8_t *response_payload = 0;
             size_t response_payload_len = 0;
             unsigned int response_count = 1;
-            const uint8_t *response_destination = broadcast;
+            uint8_t response_destination[6];
+            memcpy(response_destination, broadcast, 6);
             const uint8_t router_mac[6] =
               {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
             if (payload_matches(frame, received, reply_payload,
-                                sizeof(reply_payload) - 1)) {
+                                sizeof(reply_payload) - 1) &&
+                addresses_match(frame, received, guest_mac, router_mac)) {
+              /*
+               * This is the certifying ACK branch. It is reachable only for
+               * a router-originated frame addressed to this exact NIC, so a
+               * reflected guest probe or a misrouted frame cannot satisfy the
+               * host's reply-receipt evidence.
+               */
               response_payload = ack_payload;
               response_payload_len = sizeof(ack_payload) - 1;
-              response_destination = router_mac;
+              memcpy(response_destination, router_mac, 6);
             } else if (payload_matches(frame, received, backpressure_payload,
-                                       sizeof(backpressure_payload) - 1)) {
+                                       sizeof(backpressure_payload) - 1) &&
+                       addresses_match(frame, received, broadcast,
+                                       router_mac)) {
               response_payload = backpressure_ack_payload;
               response_payload_len = sizeof(backpressure_ack_payload) - 1;
-              response_destination = router_mac;
+              memcpy(response_destination, router_mac, 6);
             } else if (payload_matches(frame, received, probe_payload,
-                                       sizeof(probe_payload) - 1)) {
+                                       sizeof(probe_payload) - 1) &&
+                       memcmp(frame, broadcast, 6) == 0 &&
+                       memcmp(frame + 6, guest_mac, 6) != 0) {
+              /* The two-VM world gate acknowledges only a peer's probe. */
               response_payload = ack_payload;
               response_payload_len = sizeof(ack_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
             } else if (payload_matches(frame, received, ack_payload,
                                        sizeof(ack_payload) - 1)) {
               response_payload = checkpoint_payload;
               response_payload_len = sizeof(checkpoint_payload) - 1;
               response_count = 4;
+              memcpy(response_destination, frame + 6, 6);
             } else if (payload_matches(frame, received, checkpoint_payload,
                                        sizeof(checkpoint_payload) - 1)) {
               response_payload = continuation_payload;
               response_payload_len = sizeof(continuation_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
             } else if (payload_matches(frame, received, continuation_payload,
                                        sizeof(continuation_payload) - 1)) {
               response_payload = checkpoint_payload;
               response_payload_len = sizeof(checkpoint_payload) - 1;
+              memcpy(response_destination, frame + 6, 6);
             } else {
               continue;
             }
@@ -249,6 +281,9 @@ pkgs.mkDerivation {
         guest_traffic_origin=guest-only
         guest_protocol=ethertype-88b5
         guest_interface=virtio-net-eth0
+        guest_receive_filter=eth0-non-outgoing
+        guest_reply_ack_binding=exact-router-source-and-guest-destination
+        guest_self_probe_acknowledgement=forbidden
         multi_guest_tx_order=deterministic-node-mac-stagger
         EVIDENCE
       '';

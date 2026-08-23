@@ -193,7 +193,7 @@ in
             bisection=required-on-mismatch
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             provisional_importer=crucible-qemu-fingerprint
-            production_real_qemu_runs=two-under-host-load
+            production_real_qemu_runs=reference-plus-bounded-scheduler-preemption
             postprocessing_mismatch_negatives=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-bounded-scheduler-preemption
             device_component_scope=current-non-ram-qemu-vmstate

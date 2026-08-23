@@ -308,9 +308,8 @@ impl PluginFingerprintRunner {
             QemuMappedQuantumShmemHotPath::new(hot_path_config, region, RunnerSendAuthorizer)
                 .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
 
-        // Start bounded QEMU preemption at the first fingerprint workload boundary,
-        // after launch/setup work that is outside the compared trajectory.
-        let host_adversary =
+        // Start at the first workload boundary, after excluded launch/setup work.
+        let mut adversary =
             HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
                 .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let mut boundaries = Vec::with_capacity(targets.len());
@@ -356,7 +355,8 @@ impl PluginFingerprintRunner {
             } else {
                 None
             };
-            let reached = self.drive_to_target(&mut hot_path, &mut child, &setup, target)?;
+            let reached =
+                self.drive_to_target(&mut hot_path, &mut child, &setup, target, &mut adversary)?;
             if let Some(expected) = preemption_sequence {
                 let observed = hot_path
                     .consumed_preemption_sequence()
@@ -393,6 +393,8 @@ impl PluginFingerprintRunner {
             None => None,
         };
 
+        HostAdversary::finish_if_present(&mut adversary)
+            .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         setup
             .assert_run_control_silent()
             .map_err(|source| channel_error("prove run control silence", source))?;
@@ -409,11 +411,6 @@ impl PluginFingerprintRunner {
             (self.config.translation_prefetch_experiment, &report_path)
         {
             validate_translation_prefetch_report(path, enabled)?;
-        }
-        if let Some(host_adversary) = host_adversary {
-            host_adversary
-                .finish()
-                .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         }
         drop(setup);
         drop(child);
@@ -466,6 +463,7 @@ impl PluginFingerprintRunner {
         child: &mut QemuNodeChild,
         setup: &crate::QemuHostPluginSetup,
         target: u64,
+        host_adversary: &mut Option<HostAdversary>,
     ) -> Result<u64, PluginFingerprintRunnerError> {
         let pending = QemuShmemHotPathChannel::start_quantum(
             hot_path,
@@ -480,6 +478,8 @@ impl PluginFingerprintRunner {
         setup
             .signal_plugin_wake()
             .map_err(|source| channel_error("wake plugin for next quantum", source))?;
+        HostAdversary::begin_if_present(host_adversary)
+            .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let reached = self.wait_for_target_boundary(hot_path, child, target)?;
         let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
             .map_err(|source| channel_error("finish quantum", source))?;

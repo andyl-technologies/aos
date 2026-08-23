@@ -1707,18 +1707,15 @@ fn run_one_scenario(
 
     // `build_live_node` has released the boot barrier. Spend the finite
     // preemption budget only across the compared busy-window quanta.
-    let host_adversary =
+    let mut host_adversary =
         HostAdversary::start_if(role.applies_scheduler_preemption(), node.process_id())
             .map_err(|source| QemuLiveNodeStepGateError::SchedulerPreemption { source })?;
-    let quanta = drive_busy_window_steps(&mut node, ceilings)?;
+    let quanta = drive_busy_window_steps(&mut node, ceilings, &mut host_adversary)?;
     let fingerprint = node
         .execution_fingerprint()
         .map_err(|source| QemuLiveNodeStepGateError::ExecutionFingerprint { source })?;
-    if let Some(host_adversary) = host_adversary {
-        host_adversary
-            .finish()
-            .map_err(|source| QemuLiveNodeStepGateError::SchedulerPreemption { source })?;
-    }
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| QemuLiveNodeStepGateError::SchedulerPreemption { source })?;
 
     let shutdown = node
         .shutdown_child()

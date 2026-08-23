@@ -931,7 +931,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     `PluginNetworkTx` before asserting byte-for-byte schedule equality, with the
     plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
     The installed production plugin gate records every completed busy, idle,
-    and idle-jump quantum in that same typed vocabulary, requires the host-load
+    and idle-jump quantum in that same typed vocabulary, requires the scheduler-preemption
     run to reproduce the schedule exactly, builds a `SimInstructionScript` from
     the live reached-icount sequence, replays the exact requested horizons
     through `SimDouble`, and compares the versioned, length-prefixed canonical
@@ -953,7 +953,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
   - Completed by the same live gate. The ordinary pass boots one unmodified
-    fixed guest twice and proves identical streams under second-run host load.
+    fixed guest twice and proves identical streams under bounded scheduler preemption.
     The negative-control pass forces a real QEMU divergence, performs
     ordinal-aware RESTART refinement to the exact first differing instruction,
     and emits both sides' complete architectural register bytes, paired

@@ -18,6 +18,7 @@ use crucible::{
     SchedulerConcurrentRunCandidate, SchedulerConcurrentRunSet, SimulationBackend, StepObservation,
     VirtualTime,
 };
+use crucible_shmem::MAX_FRAME_DELIVERY_ATTEMPTS;
 use thiserror::Error;
 
 /// Scheduler-computed key used to commit host-worker outcomes canonically.
@@ -466,7 +467,7 @@ fn execute_backend_run<B>(
 where
     B: SimulationBackend,
 {
-    const MAX_REISSUES: usize = 64;
+    const MAX_REISSUES: usize = MAX_FRAME_DELIVERY_ATTEMPTS as usize;
 
     let mut causal_decisions = Vec::new();
     let mut observable_events = Vec::new();

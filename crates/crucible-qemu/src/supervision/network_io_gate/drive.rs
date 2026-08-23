@@ -116,7 +116,7 @@ pub(super) fn run_once(
     // exchange. Six short stop/continue pairs perturb the exact QEMU process;
     // unlike CPU burners, the adversary consumes no synthetic CPU and owns an
     // independent two-second resume watchdog.
-    let scheduler_preemption = HostAdversary::start_if(
+    let mut scheduler_preemption = HostAdversary::start_if(
         matches!(role, RunRole::Hostile) && config.second_run_scheduler_preemption,
         child.process_id(),
     )
@@ -126,6 +126,7 @@ pub(super) fn run_once(
         backpressure_acknowledgement_icount,
         backpressure_retry_icount,
         delayed_reply_applied,
+        scheduler_preemption_pending_quantum,
     } = drive_exchange(
         &mut hot_path,
         &mut servicer,
@@ -137,10 +138,9 @@ pub(super) fn run_once(
             reply_wall_delay: role.delay(),
             backpressure_probe,
         },
+        &mut scheduler_preemption,
     )?;
-    let scheduler_preemption = scheduler_preemption
-        .map(|adversary| adversary.finish())
-        .transpose()
+    let scheduler_preemption = HostAdversary::finish_if_present(&mut scheduler_preemption)
         .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
     let snapshot = servicer.snapshot();
 
@@ -162,6 +162,7 @@ pub(super) fn run_once(
         delayed_reply_applied,
         orderly_child_exit,
         scheduler_preemption,
+        scheduler_preemption_pending_quantum,
     })
 }
 
@@ -178,6 +179,27 @@ struct DriveExchangeOutcome {
     backpressure_acknowledgement_icount: Option<u64>,
     backpressure_retry_icount: Option<u64>,
     delayed_reply_applied: bool,
+    scheduler_preemption_pending_quantum: bool,
+}
+
+/// Finishes one scheduler quantum and transfers every completion-owned guest
+/// frame into the sole deterministic router observation path.
+///
+/// `finish_quantum` drains the guest-to-router SPSC ring. Ignoring the returned
+/// frames would silently discard traffic at exactly the completion boundary,
+/// so every live-network completion goes through this helper.
+fn finish_and_service_network_quantum(
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    servicer: &mut QemuLiveNetworkIoServicer,
+    pending: QemuNodePendingQuantum,
+    operation: &'static str,
+) -> Result<(), QemuLiveNetworkIoGateError> {
+    let report = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
+        .map_err(|source| QemuLiveNetworkIoGateError::drive(operation, source))?;
+    servicer
+        .service_completed_frames_with_before_reply(report.emitted_frames, || {})
+        .map(|_step| ())
+        .map_err(|source| QemuLiveNetworkIoGateError::NetworkServicer { source })
 }
 
 fn drive_exchange(
@@ -186,6 +208,7 @@ fn drive_exchange(
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
     options: DriveExchangeOptions,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<DriveExchangeOutcome, QemuLiveNetworkIoGateError> {
     let DriveExchangeOptions {
         ceiling,
@@ -214,6 +237,11 @@ fn drive_exchange(
             QemuLiveNetworkIoGateError::drive("start probe-discovery quantum", source)
         })?,
     );
+    setup.signal_plugin_wake().map_err(|source| {
+        QemuLiveNetworkIoGateError::drive("wake pending network quantum", source)
+    })?;
+    let scheduler_preemption_pending_quantum = HostAdversary::begin_if_present(host_adversary)
+        .map_err(|source| QemuLiveNetworkIoGateError::SchedulerPreemption { source })?;
     let mut acknowledgement_icount = None;
     let mut backpressure_acknowledgement_icount = None;
     let mut delay_applied = false;
@@ -238,12 +266,7 @@ fn drive_exchange(
             backpressure_acknowledgement_icount = service_snapshot
                 .tx_frames
                 .iter()
-                .find(|frame| {
-                    frame
-                        .payload
-                        .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
-                        .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
-                })
+                .find(|frame| is_live_network_backpressure_ack(&frame.payload))
                 .map(|frame| frame.emit_icount);
         }
         let node_snapshot = servicer
@@ -295,12 +318,7 @@ fn drive_exchange(
                 backpressure_acknowledgement_icount = completed_snapshot
                     .tx_frames
                     .iter()
-                    .find(|frame| {
-                        frame
-                            .payload
-                            .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
-                            .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
-                    })
+                    .find(|frame| is_live_network_backpressure_ack(&frame.payload))
                     .map(|frame| frame.emit_icount);
             }
             if completed_snapshot.reply_delivery_icount.is_some()
@@ -359,9 +377,12 @@ fn drive_exchange(
         discovery_pending.ok_or_else(|| QemuLiveNetworkIoGateError::ProbeDiscoveryDidNotPark {
             evidence: String::from("probe-discovery quantum token is absent at completion"),
         })?;
-    QemuShmemHotPathChannel::finish_quantum(hot_path, discovery_pending).map_err(|source| {
-        QemuLiveNetworkIoGateError::drive("finish probe-discovery quantum", source)
-    })?;
+    finish_and_service_network_quantum(
+        hot_path,
+        servicer,
+        discovery_pending,
+        "finish probe-discovery quantum",
+    )?;
     let checkpoint =
         QemuShmemHotPathChannel::checkpoint_network_transport(hot_path).map_err(|source| {
             QemuLiveNetworkIoGateError::drive("inspect backpressure retry", source)
@@ -442,12 +463,7 @@ fn drive_exchange(
                 .tx_frames
                 .iter()
                 .rev()
-                .find(|frame| {
-                    frame
-                        .payload
-                        .windows(LIVE_NETWORK_ACK_PAYLOAD.len())
-                        .any(|window| window == LIVE_NETWORK_ACK_PAYLOAD)
-                })
+                .find(|frame| is_live_network_ack(&frame.payload))
                 .map(|frame| frame.emit_icount);
             break;
         }
@@ -475,6 +491,7 @@ fn drive_exchange(
         backpressure_acknowledgement_icount,
         backpressure_retry_icount,
         delayed_reply_applied: delay_applied,
+        scheduler_preemption_pending_quantum,
     })
 }
 

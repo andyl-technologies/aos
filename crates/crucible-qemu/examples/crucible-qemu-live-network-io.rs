@@ -98,6 +98,7 @@ fn run() -> Result<(), String> {
     println!("reply_latency_icount={}", option_u64(reply_latency_icount));
     println!("ack_emit_icount={}", observation_icount(acknowledgement));
     println!("acknowledgement_seen={}", report.acknowledgement_seen);
+    println!("guest_ack_causality=exact-router-source-destination-and-post-delivery");
     println!(
         "boot_backpressure_retained={}",
         report.boot_backpressure_retained
@@ -158,6 +159,10 @@ fn run() -> Result<(), String> {
     println!(
         "host_scheduler_preemption_count={}",
         report.host_scheduler_preemption_count
+    );
+    println!(
+        "host_scheduler_preemption_pending_quantum={}",
+        report.host_scheduler_preemption_pending_quantum
     );
     println!(
         "host_scheduler_preemption_requested_milliseconds={}",
