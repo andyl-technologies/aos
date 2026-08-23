@@ -403,6 +403,15 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(campaign_policy[1], "1");
     assert_eq!(campaign_policy[2], "crucible-daemon::campaign_policy");
     assert_eq!(campaign_policy[3], "deployment-config");
+    let component_authorities = rows
+        .get("crucible.campaign-component-authorities")
+        .unwrap_or_else(|| panic!("missing campaign component-authority schema"));
+    assert_eq!(component_authorities[1], "1");
+    assert_eq!(
+        component_authorities[2],
+        "crucible-daemon::campaign_bootstrap"
+    );
+    assert_eq!(component_authorities[3], "deployment-secret");
     let campaign_import = rows
         .get("crucible.campaign-import")
         .unwrap_or_else(|| panic!("missing local campaign import schema"));

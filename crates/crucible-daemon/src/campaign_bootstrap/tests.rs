@@ -73,6 +73,16 @@ campaign = "*"
     (directory, config)
 }
 
+fn write_component_authorities(path: &Path, planner: [u8; 32], debugger: [u8; 32]) {
+    let mut bytes = Vec::with_capacity(COMPONENT_AUTHORITY_FILE_BYTES);
+    bytes.extend_from_slice(COMPONENT_AUTHORITY_MAGIC);
+    bytes.extend_from_slice(&planner);
+    bytes.extend_from_slice(&debugger);
+    fs::write(path, bytes).expect("write component authorities");
+    fs::set_permissions(path, Permissions::from_mode(0o600))
+        .expect("secure component-authority mode");
+}
+
 #[test]
 fn read_only_mode_denies_policy_granted_mutation() {
     let (_directory, config) = fixture();
@@ -200,6 +210,87 @@ fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
     assert!(config.endpoint().path().exists());
     service.shutdown_handle().shutdown();
     service.serve().expect("serve pre-stopped service");
+}
+
+#[test]
+fn component_authorities_are_authenticated_before_repository_open() {
+    let (directory, config) = fixture();
+    let authority_path = directory.path().join("component-authorities.bin");
+    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
+    let configured = config
+        .clone()
+        .with_component_authority_path(&authority_path)
+        .expect("component-authority path");
+    assert_eq!(
+        configured.component_authority_path(),
+        Some(authority_path.as_path())
+    );
+
+    let prepared = configured.prepare().expect("prepare with authorities");
+    assert!(!configured.endpoint().path().exists());
+    let service = prepared.bind().expect("bind authority-backed service");
+    service.shutdown_handle().shutdown();
+    service.serve().expect("serve pre-stopped service");
+}
+
+#[test]
+fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
+    let (directory, config) = fixture();
+    let authority_path = directory.path().join("component-authorities.bin");
+    write_component_authorities(&authority_path, [0x31; 32], [0x31; 32]);
+    let configured = config
+        .clone()
+        .with_component_authority_path(&authority_path)
+        .expect("component-authority path");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    write_component_authorities(&authority_path, [0; 32], [0x73; 32]);
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    write_component_authorities(&authority_path, [0x31; 32], [0x73; 32]);
+    fs::set_permissions(&authority_path, Permissions::from_mode(0o640))
+        .expect("expose authority file");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+
+    fs::set_permissions(&authority_path, Permissions::from_mode(0o600))
+        .expect("restore authority mode");
+    let target = directory.path().join("component-authority-target.bin");
+    fs::rename(&authority_path, &target).expect("move authority target");
+    symlink(&target, &authority_path).expect("component-authority symlink");
+    assert!(matches!(
+        configured.prepare(),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
+    ));
+    assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
+    assert!(!config.state_directory().join(REF_DIRECTORY).exists());
+    assert!(!config.endpoint().path().exists());
+}
+
+#[test]
+fn component_authority_path_uses_the_deployment_path_profile() {
+    let (_directory, config) = fixture();
+    assert!(matches!(
+        config.with_component_authority_path("relative-authorities.bin"),
+        Err(CampaignLocalServiceError::InvalidComponentAuthorityPath)
+    ));
 }
 
 #[test]

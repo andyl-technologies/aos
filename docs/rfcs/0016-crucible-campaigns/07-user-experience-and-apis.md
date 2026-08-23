@@ -147,7 +147,11 @@ exclusive repository lock before it binds the CampaignService socket. It
 creates the first snapshot and named ref or exactly replays the
 authenticated genesis basis. `derive` similarly names one exact authenticated
 source snapshot and may activate an already imported compatible canonical
-policy. `start` attaches local execution resources and changes desired state
+policy. A runtime-capable local daemon also receives
+`--campaign-component-authority FILE`, the strict owner-only version-one
+planner/debugger authority bundle specified in §04a. The current control-only
+service may omit it; planner/debugger attachment must fail closed until it is
+present. `start` attaches local execution resources and changes desired state
 through a recorded command. `pause` stops new proposals/reservations and applies
 the selected active-attempt behavior. `stop --seal` prevents accidental future
 budget grants until an explicit unseal command.

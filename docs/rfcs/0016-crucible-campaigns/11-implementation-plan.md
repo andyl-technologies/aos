@@ -484,7 +484,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   message and are re-derived before publication. The daemon's local-service
   bootstrap now has an exclusive prepared-repository state that applies strict,
   bounded, exact-owner version-1 import manifests before socket bind; binding
-  consumes that import authority, and read-only service mode rejects it. Stored
+  consumes that import authority, and read-only service mode rejects it. The
+  same bootstrap can now authenticate an optional exact-owner mode-`0600`,
+  fixed-size version-1 planner/debugger authority bundle before state open and
+  construct the repository with distinct operational keys; omission explicitly
+  leaves component acceptance unavailable until start/runtime attachment is
+  composed. Stored
   generator closure validation streams within 4,096-record and 128-MiB
   aggregate-body bounds and does not rewrite imported records. Atomic
   name-based derivation now creates

@@ -17,6 +17,7 @@ use crucible_campaign::{
     CampaignAuthorizationError, CampaignHash, CampaignName, CampaignPrincipal,
     CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
     CandidateGeneratorSpec, CandidateGeneratorSpecId, ConfigurationArtifactId,
+    DebuggerAuthorityKey, PlannerAuthorityKey,
 };
 use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
@@ -32,6 +33,8 @@ const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
 const OBJECT_DIRECTORY: &str = "objects";
 const REF_DIRECTORY: &str = "refs";
 const MAX_DEPLOYMENT_PATH_BYTES: usize = 4_095;
+const COMPONENT_AUTHORITY_MAGIC: &[u8; 8] = b"CRUCCA01";
+const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 
 /// Complete deployment contract for one durable local campaign service.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +42,7 @@ pub struct CampaignLocalServiceConfig {
     endpoint: CampaignLoopbackEndpointConfig,
     state_directory: PathBuf,
     policy_path: PathBuf,
+    component_authority_path: Option<PathBuf>,
     mode: CampaignLocalServiceMode,
     server: CampaignLoopbackServerConfig,
 }
@@ -110,9 +114,35 @@ impl CampaignLocalServiceConfig {
             endpoint,
             state_directory,
             policy_path,
+            component_authority_path: None,
             mode,
             server,
         })
+    }
+
+    /// Configures one exact planner/debugger component-authority file.
+    ///
+    /// The file is a 72-byte version-one binary record containing the eight
+    /// bytes `CRUCCA01`, one 32-byte planner key, and one distinct 32-byte
+    /// debugger key. It must be an absolute, canonical deployment path. File
+    /// ownership, mode, identity, and contents are authenticated during
+    /// [`Self::prepare`] before repository state is opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignLocalServiceError::InvalidComponentAuthorityPath`]
+    /// when the path is relative, noncanonical, empty, contains NUL, or
+    /// exceeds 4,095 bytes.
+    pub fn with_component_authority_path(
+        mut self,
+        path: impl Into<PathBuf>,
+    ) -> Result<Self, CampaignLocalServiceError> {
+        let path = path.into();
+        if !valid_deployment_path(&path) {
+            return Err(CampaignLocalServiceError::InvalidComponentAuthorityPath);
+        }
+        self.component_authority_path = Some(path);
+        Ok(self)
     }
 
     /// Returns the managed Unix endpoint contract.
@@ -131,6 +161,12 @@ impl CampaignLocalServiceConfig {
     #[must_use]
     pub fn policy_path(&self) -> &Path {
         &self.policy_path
+    }
+
+    /// Returns the configured component-authority file, when present.
+    #[must_use]
+    pub fn component_authority_path(&self) -> Option<&Path> {
+        self.component_authority_path.as_deref()
     }
 
     /// Returns the exact read-only or read-write service mode.
@@ -162,6 +198,17 @@ impl CampaignLocalServiceConfig {
             self.endpoint.owner_user_id(),
             self.endpoint.owner_group_id(),
         )?);
+        let component_authorities = self
+            .component_authority_path
+            .as_deref()
+            .map(|path| {
+                load_component_authorities(
+                    path,
+                    self.endpoint.owner_user_id(),
+                    self.endpoint.owner_group_id(),
+                )
+            })
+            .transpose()?;
         let state = CampaignStateOwner::open(
             &self.state_directory,
             self.endpoint.owner_user_id(),
@@ -173,7 +220,13 @@ impl CampaignLocalServiceConfig {
             state.object_directory.clone(),
         ));
         let refs = Arc::new(DirectoryRefBackend::new(state.ref_directory.clone()));
-        let repository = Arc::new(CampaignRepository::new(blobs, refs));
+        let repository = match component_authorities {
+            Some((planner, debugger)) => Arc::new(
+                CampaignRepository::with_component_authorities(blobs, refs, planner, debugger)
+                    .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
+            ),
+            None => Arc::new(CampaignRepository::new(blobs, refs)),
+        };
         Ok(PreparedCampaignLocalService {
             endpoint: self.endpoint.clone(),
             server: self.server,
@@ -350,6 +403,9 @@ pub enum CampaignLocalServiceError {
     /// The deployment-policy path was relative, noncanonical, unbounded, or empty.
     #[error("campaign service policy path is invalid")]
     InvalidPolicyPath,
+    /// The component-authority path was relative, noncanonical, unbounded, or empty.
+    #[error("campaign service component-authority path is invalid")]
+    InvalidComponentAuthorityPath,
     /// The state root was not a secure exact-owner directory.
     #[error("campaign service state directory is invalid")]
     InvalidStateDirectory,
@@ -365,6 +421,9 @@ pub enum CampaignLocalServiceError {
     /// The policy was not a secure exact-owner regular file.
     #[error("campaign service policy file is invalid")]
     InvalidPolicyFile,
+    /// The component-authority file failed ownership, mode, identity, or body validation.
+    #[error("campaign service component-authority file is invalid")]
+    InvalidComponentAuthorityFile,
     /// The strict policy body was malformed or violated a policy invariant.
     #[error(transparent)]
     Policy(#[from] UnixPeerCampaignPolicyLoadError),
@@ -528,6 +587,71 @@ fn load_policy(
         return Err(UnixPeerCampaignPolicyLoadError::TooLarge.into());
     }
     UnixPeerCampaignPolicy::from_toml_bytes(&bytes).map_err(Into::into)
+}
+
+fn load_component_authorities(
+    path: &Path,
+    user_id: u32,
+    group_id: u32,
+) -> Result<(PlannerAuthorityKey, DebuggerAuthorityKey), CampaignLocalServiceError> {
+    let path_metadata = fs::symlink_metadata(path)
+        .map_err(|source| io_error("stat-component-authority-file", path, source))?;
+    if !path_metadata.is_file()
+        || path_metadata.uid() != user_id
+        || path_metadata.gid() != group_id
+        || path_metadata.mode() & 0o777 != 0o600
+        || path_metadata.len() != COMPONENT_AUTHORITY_FILE_BYTES as u64
+    {
+        return Err(CampaignLocalServiceError::InvalidComponentAuthorityFile);
+    }
+
+    let mut file: File = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|source| {
+        io_error(
+            "open-component-authority-file",
+            path,
+            io::Error::from_raw_os_error(source.raw_os_error()),
+        )
+    })?
+    .into();
+    let file_metadata = file
+        .metadata()
+        .map_err(|source| io_error("stat-open-component-authority-file", path, source))?;
+    if file_metadata.dev() != path_metadata.dev()
+        || file_metadata.ino() != path_metadata.ino()
+        || !file_metadata.is_file()
+        || file_metadata.uid() != user_id
+        || file_metadata.gid() != group_id
+        || file_metadata.mode() & 0o777 != 0o600
+        || file_metadata.len() != COMPONENT_AUTHORITY_FILE_BYTES as u64
+    {
+        return Err(CampaignLocalServiceError::InvalidComponentAuthorityFile);
+    }
+
+    let mut bytes = [0_u8; COMPONENT_AUTHORITY_FILE_BYTES];
+    file.read_exact(&mut bytes)
+        .map_err(|source| io_error("read-component-authority-file", path, source))?;
+    if &bytes[..COMPONENT_AUTHORITY_MAGIC.len()] != COMPONENT_AUTHORITY_MAGIC {
+        return Err(CampaignLocalServiceError::InvalidComponentAuthorityFile);
+    }
+    let planner_bytes: [u8; 32] = bytes[8..40]
+        .try_into()
+        .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?;
+    let debugger_bytes: [u8; 32] = bytes[40..72]
+        .try_into()
+        .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?;
+    let planner = PlannerAuthorityKey::from_bytes(planner_bytes)
+        .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?;
+    let debugger = DebuggerAuthorityKey::from_bytes(debugger_bytes)
+        .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?;
+    if planner_bytes == debugger_bytes {
+        return Err(CampaignLocalServiceError::InvalidComponentAuthorityFile);
+    }
+    Ok((planner, debugger))
 }
 
 fn prepare_subdirectory(
