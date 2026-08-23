@@ -65,6 +65,8 @@ in
             crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
           grep -Fq 'post_fault_fingerprint == pre_fault_fingerprint' \
             crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
+          grep -Fq 'pre_fault_sample.ram_digest == post_fault_sample.ram_digest' \
+            crates/crucible-qemu/examples/crucible-qemu-live-fault-hardware.rs
           grep -Fq 'self.pump_fault_commands(raw_icount)?;' \
             crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs
           control_pump_line=$(grep -n 'Fault-result polling uses this same control wake' \
@@ -130,6 +132,7 @@ in
           grep -Fxq 'clock_signal_actions=1' "$report"
           grep -Fxq 'memory_signal_actions=1' "$report"
           grep -Fxq 'same_icount_fault_fingerprint_changed=true' "$report"
+          grep -Fxq 'same_icount_ram_fingerprint_changed=true' "$report"
           grep -Eq '^same_icount_fault_fingerprint_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'accelerator_signal_actions=1' "$report"
           grep -Fxq 'clock_occurrences=1' "$report"
@@ -140,7 +143,7 @@ in
           mkdir -p "$out"
           cp "$report" "$out/result"
           printf 'attr_path=%s\n' "$ATTR_PATH" >> "$out/result"
-          printf 'proven=signal-driven-clock-mutation,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
+          printf 'proven=signal-driven-clock-mutation,signal-driven-memory-mutation,same-icount-post-fault-fingerprint,same-icount-ram-digest-mutation,signal-driven-accelerator-result-mutation,authenticated-fault-occurrences,fresh-plugin-vmstate-reconstruction,real-linux-clock-observation,real-virtio-pci-discovery,guest-dma,split-virtqueue,gpu-job,tpu-job,fpga-job,fault-free-event-reservation\n' >> "$out/result"
         '';
       }
     ];

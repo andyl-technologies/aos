@@ -1540,7 +1540,10 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   immediately after instruction accounting and before plugin callbacks,
   vmstop, scheduled fault dispatch, or host preemption can return from the
   batch. Host work at that same boundary is serviced after the canonical guest
-  transition. Ordinary accounting remains the sole handoff when the `PAUSE`
+  transition. An atomic handoff fence makes a colliding BQL control callback
+  relinquish its token; the RR writer commits the owner/cursor transition and
+  schedules a fresh boundary before any fingerprint or checkpoint request can
+  acknowledge it. Ordinary accounting remains the sole handoff when the `PAUSE`
   coincides with a completed quantum, and single-vCPU cursor behavior is
   unchanged.
 - **Micro-test:** the diskless live quantum guests deliberately reach their
@@ -1551,10 +1554,12 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   `AAABPPPR`: every AP publishes online and contends on a lock held by the BSP.
   The BSP releases the lock, executes `PAUSE`, and immediately attempts to
   reacquire it. Reacquisition emits `F` and parks forever. A passing `P` before
-  that next BSP instruction therefore proves a waiter ran at the helper-marked
-  zero-instruction handoff; eventual rotation at the ordinary 4096-instruction
-  quantum is too late and cannot satisfy the gate. The remaining APs acquire in
-  turn before `R`, so INIT/SIPI delivery alone cannot satisfy the evidence.
+  that next BSP instruction proves a waiter ran before the reacquire. A
+  non-distributable QEMU variant replaces only the still-partial early-yield
+  branch with an exact abort marker and must hit it in the same live workload;
+  ordinary 4096-instruction completion cannot satisfy that negative control.
+  The remaining APs acquire in turn before `R`, so INIT/SIPI delivery alone
+  cannot satisfy the evidence.
   Structural checks require the halted-owner escape before the partial-turn
   continuation.
 - **Inertness:** both branches are inside precise sim mode's RR loop. The idle

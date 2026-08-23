@@ -44,6 +44,15 @@ coincident with full-quantum completion is already represented by ordinary
 accounting and is not applied twice. Single-vCPU execution retains its prior
 cursor because no peer can be starved.
 
+The helper publishes an atomic handoff fence before leaving translated
+execution. A main-loop control callback that reaches the BQL first relinquishes
+its scheduling token and defers; the serialized RR writer commits the
+owner/cursor transition under the BQL, clears the fence, and schedules a fresh
+two-pass control boundary. A fingerprint or checkpoint request therefore cannot
+acknowledge the preceding partial owner while the RR writer is waiting for the
+BQL. PAUSE instructions with no colliding control callback do not schedule
+additional control work.
+
 The corresponding exact completed-turn handoff is also a safe register-capture
 boundary after the serialized owner advances. Single-threaded RR excludes
 concurrent vCPU execution, the committed cursor must be zero at the next owner,
@@ -70,5 +79,10 @@ contends on the BSP's lock. The BSP emits `B`, releases the lock, executes
 parks forever. A passing `P` therefore proves an AP acquired the lock at the
 helper-marked zero-instruction handoff, before the BSP's next guest instruction;
 eventual rotation at the ordinary 4096-instruction quantum cannot satisfy the
-gate. The remaining APs acquire and release in turn before the BSP emits `R`.
+gate: a non-distributable test QEMU replaces only the still-partial early-yield
+branch with an exact abort marker, retains the ordinary HLT and full-quantum
+paths, and must hit that marker while running the same live guest. If the
+critical PAUSE merely exhausted the ordinary quantum, the negative run would
+instead finish and fail the gate. The remaining APs acquire and release in turn
+before the BSP emits `R`.
 INIT/SIPI delivery or an unrelated interrupt cannot false-green this evidence.

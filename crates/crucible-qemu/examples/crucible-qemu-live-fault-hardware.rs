@@ -118,6 +118,9 @@ fn run() -> Result<(), String> {
     let pre_fault_fingerprint = node
         .execution_fingerprint()
         .map_err(|error| format!("capture pre-fault execution fingerprint: {error}"))?;
+    let pre_fault_sample = node
+        .fingerprint_sample()
+        .map_err(|error| format!("read pre-fault fingerprint components: {error}"))?;
     let mut nodes = QemuNodeSet::new();
     if nodes.insert(node_id.clone(), node).is_some() {
         return Err(String::from("live hardware node identity collided"));
@@ -176,14 +179,37 @@ fn run() -> Result<(), String> {
     let post_fault_fingerprint = node
         .execution_fingerprint()
         .map_err(|error| format!("capture post-fault execution fingerprint: {error}"))?;
+    let post_fault_sample = node
+        .fingerprint_sample()
+        .map_err(|error| format!("read post-fault fingerprint components: {error}"))?;
     if post_fault_icount != initial_icount {
         return Err(format!(
             "same-boundary clock fault advanced icount from {initial_icount} to {post_fault_icount}"
         ));
     }
+    if pre_fault_sample.sample_icount != initial_icount
+        || post_fault_sample.sample_icount != initial_icount
+    {
+        return Err(format!(
+            "same-boundary fingerprint samples were stamped pre={} post={} instead of {initial_icount}",
+            pre_fault_sample.sample_icount, post_fault_sample.sample_icount
+        ));
+    }
+    if pre_fault_sample.ram_bytes == 0 || pre_fault_sample.ram_bytes != post_fault_sample.ram_bytes
+    {
+        return Err(format!(
+            "same-boundary RAM coverage changed from {} to {} bytes",
+            pre_fault_sample.ram_bytes, post_fault_sample.ram_bytes
+        ));
+    }
     if post_fault_fingerprint == pre_fault_fingerprint {
         return Err(String::from(
             "same-icount guest-RAM mutation retained the pre-fault execution fingerprint",
+        ));
+    }
+    if pre_fault_sample.ram_digest == post_fault_sample.ram_digest {
+        return Err(String::from(
+            "same-icount guest-RAM mutation retained the pre-fault RAM digest",
         ));
     }
     if nodes.insert(node_id.clone(), node).is_some() {
@@ -418,6 +444,7 @@ fn run() -> Result<(), String> {
     println!("clock_signal_actions={clock_action_count}");
     println!("memory_signal_actions={memory_action_count}");
     println!("same_icount_fault_fingerprint_changed=true");
+    println!("same_icount_ram_fingerprint_changed=true");
     println!("same_icount_fault_fingerprint_icount={initial_icount}");
     println!("accelerator_signal_actions={}", opportunity.actions.len());
     println!("clock_occurrences={clock_occurrences}");
