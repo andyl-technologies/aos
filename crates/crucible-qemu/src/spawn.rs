@@ -26,8 +26,10 @@ use crate::{
 };
 
 mod materialization;
-use materialization::PreparedVmStateMaterialization;
-pub use materialization::{QemuVmStateBinding, QemuVmStateMaterialization};
+use materialization::{PreparedRootOverlayMaterialization, PreparedVmStateMaterialization};
+pub use materialization::{
+    QemuRootOverlayMaterialization, QemuVmStateBinding, QemuVmStateMaterialization,
+};
 
 const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
@@ -63,12 +65,13 @@ pub struct QemuChildProcessContract {
 /// Pinned authority over one pre-provisioned QEMU run directory.
 ///
 /// The authority opens the directory without following a final symlink and
-/// retains the exact regular VMState file named inside it. Guarded spawn uses
-/// the directory descriptor for `fchdir` and reauthenticates the named VMState
-/// inode immediately before `exec`. It also retains the exact admitted command
-/// resource profile and contract ceiling. Replacement of the diagnostic path,
-/// replacement of its VMState entry before that boundary, or reuse under a
-/// different resource admission or attempt lifecycle therefore fails closed.
+/// retains the exact regular VMState file and optional writable root overlay
+/// named inside it. Guarded spawn uses the directory descriptor for `fchdir`
+/// and reauthenticates every required named artifact immediately before
+/// `exec`. It also retains the exact admitted command resource profile and
+/// contract ceiling. Replacement of the diagnostic path, replacement of a
+/// retained artifact before that boundary, or reuse under a different resource
+/// admission or attempt lifecycle therefore fails closed.
 /// This authority does not make the directory namespace immutable: the
 /// production supervisor must exclude concurrent mutators until QEMU has
 /// opened every relative launch artifact and must enforce the separate
@@ -81,10 +84,14 @@ pub struct QemuPreparedRunDirectory {
     directory_identity: PinnedFileIdentity,
     vmstate: OwnedFd,
     vmstate_identity: PinnedFileIdentity,
+    root_overlay: Option<OwnedFd>,
+    root_overlay_identity: Option<PinnedFileIdentity>,
     launch_resources: crate::QemuLaunchResourceRequirements,
     admitted_ceiling: (u32, u64, u64),
+    child_credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
     vmstate_materialization: PreparedVmStateMaterialization,
+    root_overlay_materialization: PreparedRootOverlayMaterialization,
 }
 
 /// Reopen-independent read capability for one reaped QEMU VMState artifact.
@@ -164,15 +171,15 @@ impl QemuPreparedRunDirectory {
         path: impl AsRef<Path>,
         contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
-        validate_guarded_launch_resources(command, contract)?;
-        Self::open_admitted(command, path.as_ref(), contract)
+        Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
     }
 
-    fn open_admitted(
-        command: &QemuLaunchCommand,
+    pub(crate) fn open_for_requirements(
+        requirements: crate::QemuLaunchResourceRequirements,
         path: &Path,
         contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
+        validate_guarded_launch_requirements(requirements, contract)?;
         let path = path.to_owned();
         let directory = open(
             &path,
@@ -184,7 +191,7 @@ impl QemuPreparedRunDirectory {
             source: source.into(),
         })?;
         let vmstate = open_prepared_vmstate(&directory, &path)?;
-        Self::from_admitted_descriptors(command, &path, directory, vmstate, contract)
+        Self::from_admitted_descriptors(requirements, &path, directory, vmstate, contract)
     }
 
     /// Constructs one prepared authority from already-pinned storage descriptors.
@@ -194,13 +201,13 @@ impl QemuPreparedRunDirectory {
     /// Returns [`QemuSpawnError`] when the launch profile exceeds the process
     /// contract or either descriptor has the wrong file type.
     pub(crate) fn from_admitted_descriptors(
-        command: &QemuLaunchCommand,
+        requirements: crate::QemuLaunchResourceRequirements,
         path: &Path,
         directory: OwnedFd,
         vmstate: OwnedFd,
         contract: &QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
-        validate_guarded_launch_resources(command, contract)?;
+        validate_guarded_launch_requirements(requirements, contract)?;
 
         let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
             operation: "inspect prepared QEMU run directory",
@@ -222,6 +229,27 @@ impl QemuPreparedRunDirectory {
                 "exact-VMState container path is not a regular file",
             ));
         }
+        let root_overlay = open_optional_root_overlay(&directory)?;
+        let root_overlay_metadata =
+            root_overlay
+                .as_ref()
+                .map(fstat)
+                .transpose()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "inspect prepared root overlay",
+                    source: source.into(),
+                })?;
+        if root_overlay_metadata.as_ref().is_some_and(|metadata| {
+            FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        }) {
+            return Err(invalid_input(
+                "validate prepared root overlay",
+                "prepared root overlay path is not a regular file",
+            ));
+        }
+        let root_overlay_identity = root_overlay_metadata
+            .as_ref()
+            .map(PinnedFileIdentity::from_stat);
 
         Ok(Self {
             path: path.to_owned(),
@@ -229,8 +257,16 @@ impl QemuPreparedRunDirectory {
             directory,
             vmstate_identity: PinnedFileIdentity::from_stat(&vmstate_metadata),
             vmstate,
-            launch_resources: command.resource_requirements(),
+            root_overlay_materialization: if root_overlay.is_some() {
+                PreparedRootOverlayMaterialization::Provisioned
+            } else {
+                PreparedRootOverlayMaterialization::Absent
+            },
+            root_overlay,
+            root_overlay_identity,
+            launch_resources: requirements,
             admitted_ceiling: contract.admitted_resource_ceiling(),
+            child_credentials: contract.credentials,
             attempt_binding: Arc::clone(&contract.attempt_binding),
             vmstate_materialization: PreparedVmStateMaterialization::Provisioned,
         })
@@ -249,10 +285,34 @@ impl QemuPreparedRunDirectory {
             });
         }
         let retained_vmstate = self.revalidate_identity()?;
+        if self.root_overlay_materialization == PreparedRootOverlayMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        if self.launch_resources.has_root_overlay()
+            && self.root_overlay_materialization == PreparedRootOverlayMaterialization::Absent
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
         if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
             let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
             if actual != bytes {
                 return Err(QemuSpawnError::PreparedVmStateIncomplete {
+                    expected: bytes,
+                    actual,
+                });
+            }
+        }
+        if let PreparedRootOverlayMaterialization::Exact { bytes, .. } =
+            self.root_overlay_materialization
+        {
+            let retained = self.revalidate_root_overlay_identity()?;
+            let actual = u64::try_from(retained.st_size).unwrap_or(u64::MAX);
+            if actual != bytes {
+                return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
                     expected: bytes,
                     actual,
                 });
@@ -291,6 +351,39 @@ impl QemuPreparedRunDirectory {
             });
         }
         Ok(retained_vmstate)
+    }
+
+    fn revalidate_root_overlay_identity(&self) -> Result<rustix::fs::Stat, QemuSpawnError> {
+        let retained = self.root_overlay.as_ref().ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        let identity = self.root_overlay_identity.ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        let retained_metadata = fstat(retained).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect retained root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&retained_metadata) {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        let named = open_prepared_root_overlay(&self.directory, &self.path)?;
+        let named_metadata = fstat(&named).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect named root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&named_metadata) {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        Ok(retained_metadata)
     }
 
     /// Seals a positional read capability after the owning QEMU process is reaped.
@@ -379,6 +472,30 @@ fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, Qe
                 operation: "open prepared exact-VMState container",
                 source,
             }
+        }
+    })
+}
+
+fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
+    match openat(
+        directory,
+        crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(file) => Ok(Some(file)),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(source) => Err(QemuSpawnError::Io {
+            operation: "open optional prepared root overlay",
+            source: source.into(),
+        }),
+    }
+}
+
+fn open_prepared_root_overlay(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
+    open_optional_root_overlay(directory)?.ok_or_else(|| {
+        QemuSpawnError::PreparedRootOverlayNotReady {
+            path: path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
         }
     })
 }
@@ -782,6 +899,52 @@ pub enum QemuSpawnError {
         /// Root-derived binding whose authenticated bytes were committed.
         actual: QemuVmStateBinding,
     },
+    /// The root-overlay name no longer resolves to the retained regular file.
+    #[error("prepared root-overlay identity changed: {path}")]
+    PreparedRootOverlayChanged {
+        /// Original diagnostic path of the root overlay.
+        path: PathBuf,
+    },
+    /// The exact root overlay has an invalid declared byte length.
+    #[error(
+        "prepared exact root-overlay length {length} is outside the admitted maximum {maximum}"
+    )]
+    PreparedRootOverlayLength {
+        /// Declared exact checkpoint bytes.
+        length: u64,
+        /// Conservative aggregate writable-byte share.
+        maximum: u64,
+    },
+    /// The exact root-overlay destination already exists.
+    #[error("prepared exact root-overlay destination already exists: {path}")]
+    PreparedRootOverlayAlreadyExists {
+        /// Pinned root-overlay path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The exact root overlay is absent or remains incomplete.
+    #[error("prepared exact root-overlay materialization is not ready: {path}")]
+    PreparedRootOverlayNotReady {
+        /// Pinned root-overlay path used only for diagnostics.
+        path: PathBuf,
+    },
+    /// The materialized root overlay is shorter or longer than declared.
+    #[error("prepared exact root overlay is incomplete: expected {expected} bytes, found {actual}")]
+    PreparedRootOverlayIncomplete {
+        /// Declared complete checkpoint length.
+        expected: u64,
+        /// Bytes written or found in the pinned file.
+        actual: u64,
+    },
+    /// The committed root overlay belongs to another exact-checkpoint root.
+    #[error(
+        "prepared exact root-overlay binding mismatch: expected {expected:?}, found {actual:?}"
+    )]
+    PreparedRootOverlayBindingMismatch {
+        /// Root-derived binding requested by exact restore.
+        expected: QemuVmStateBinding,
+        /// Root-derived binding whose authenticated bytes were committed.
+        actual: QemuVmStateBinding,
+    },
     /// The guarded child would retain root or a supervisor credential.
     #[error(
         "QEMU child credentials must be non-root and distinct from the supervisor: {user_id}:{group_id}"
@@ -883,8 +1046,14 @@ pub(crate) fn validate_guarded_launch_resources(
     command: &QemuLaunchCommand,
     contract: &QemuChildProcessContract,
 ) -> Result<(), QemuSpawnError> {
-    command
-        .resource_requirements()
+    validate_guarded_launch_requirements(command.resource_requirements(), contract)
+}
+
+pub(crate) fn validate_guarded_launch_requirements(
+    requirements: crate::QemuLaunchResourceRequirements,
+    contract: &QemuChildProcessContract,
+) -> Result<(), QemuSpawnError> {
+    requirements
         .validate_ceiling(
             contract.maximum_vcpus,
             contract.maximum_resident_bytes,

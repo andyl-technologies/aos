@@ -62,7 +62,7 @@ pub fn run_qemu_live_exact_snapshot_gate(
     let mut capture_node = build_live_node(
         config,
         &capture_directory,
-        LiveNodeIdentity {
+        QemuLiveNodeIdentity {
             node: GATE_NODE,
             router: GATE_ROUTER,
             crash_detector: "live-exact-capture",

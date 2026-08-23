@@ -2113,7 +2113,20 @@ quarantine; exact retry continues to report that terminal outcome. The packaged
 non-campaign lifecycle uses the existing launcher through the default
 authority and no-op generation leases. The campaign worker must still provide
 the Linux attempt-owned multi-generation implementation and must not select
-that default. A
+that default. The daemon now provides the first attempt-owned lifecycle
+adapter for exact generations. It admits the launch resource profile before
+creating a generation directory, streams and authenticates both the writable
+root overlay and VMState through descriptor-pinned linear transactions, binds
+both to the complete checkpoint-manifest identity, and then invokes only the
+guarded exact live-node entry point. A failure with no remaining child rolls
+back the pending generation fence so an exact retry can use the same lifecycle
+request. A failed synchronous reap instead transfers the direct child into the
+aggregate owner and makes that owner terminal/quarantined. Fresh `qemu-img`
+provisioning, source-bound replacement cloning, allowance for the staged/new
+lease while the prior generation lease remains retained, campaign-worker
+selection, and an independently admitted debugger world remain open; the
+adapter rejects those modes before process spawn rather than falling back to
+the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState
 inode, constructs the root-bound real-node launcher, and exposes only the

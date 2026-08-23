@@ -461,10 +461,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   owner for that contract: it retains one latest generation per scenario node,
   rejects stale/reused generation identities, tracks at most one active linear
   lease per node, and quarantines the one attempt guard if any lease is dropped
-  or aggregate finish races a live generation. The
-  campaign worker's Linux implementation of that authority, fresh exact-cache,
-  baked/thin image provisioning, the modeled attempt driver, and production
-  worker/factory selection remain open. Real-node exact-
+  or aggregate finish races a live generation. A daemon lifecycle adapter now
+  implements the exact-generation subset: it provisions through that owner,
+  streams and authenticates the complete root-overlay and VMState artifacts,
+  seals both to the checkpoint-manifest identity, and launches only through the
+  guarded exact entry point. No-process failures roll back the pending
+  generation fence for exact retry; an unreaped child is retained before the
+  aggregate owner is quarantined. Fresh image-tool provisioning, source-bound
+  replacement cloning and staged-generation overlap, campaign-worker selection,
+  fresh exact-cache, baked/thin image provisioning, the modeled attempt driver,
+  and production worker/factory selection remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes

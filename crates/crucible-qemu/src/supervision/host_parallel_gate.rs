@@ -20,7 +20,7 @@ use crate::{
     QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError, QemuLiveNodeStepGateConfig,
 };
 
-use super::node_step_gate::{LiveNodeIdentity, build_live_node};
+use super::node_step_gate::{QemuLiveNodeIdentity, build_live_node};
 
 const HOST_PARALLEL_CEILING: u64 = 3_000_000;
 const HOST_PARALLEL_CURRENT: u64 = 1_000_000;
@@ -124,7 +124,7 @@ fn run_dispatch(
             build_live_node(
                 &worker_config,
                 &worker_directory,
-                LiveNodeIdentity {
+                QemuLiveNodeIdentity {
                     node: name,
                     router: "host-worker-router",
                     crash_detector: name,

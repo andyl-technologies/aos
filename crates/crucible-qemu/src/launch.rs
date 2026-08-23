@@ -464,6 +464,16 @@ pub struct QemuLaunchResourceRequirements {
 }
 
 impl QemuLaunchResourceRequirements {
+    pub(crate) const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
+        let mebibyte = 1024_u64 * 1024;
+        Self {
+            virtual_cpus: smp_vcpus as u32,
+            guest_memory_bytes: memory_mib as u64 * mebibyte,
+            minimum_writable_bytes: (memory_mib as u64 + 512) * mebibyte,
+            root_overlay,
+        }
+    }
+
     /// Returns the exact fixed virtual-CPU count.
     #[must_use]
     pub const fn virtual_cpus(self) -> u32 {
@@ -853,13 +863,11 @@ impl QemuLaunchCommandBuilder {
         }
 
         let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
-        let mebibyte = 1024_u64 * 1024;
-        let resource_requirements = QemuLaunchResourceRequirements {
-            virtual_cpus: u32::from(self.profile.smp_vcpus),
-            guest_memory_bytes: u64::from(self.profile.memory_mib) * mebibyte,
-            minimum_writable_bytes: vmstate_size_mib * mebibyte,
-            root_overlay: self.vm.root_image().is_some(),
-        };
+        let resource_requirements = QemuLaunchResourceRequirements::from_vm_shape(
+            self.profile.memory_mib,
+            self.profile.smp_vcpus,
+            self.vm.root_image().is_some(),
+        );
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");

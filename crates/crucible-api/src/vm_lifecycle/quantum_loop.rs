@@ -1376,6 +1376,11 @@ impl ProductionVmLifecycleLoop {
                     ),
                 });
             }
+            prepared.run_directory = launched.run_directory().to_path_buf();
+            prepared.launch = prepared
+                .launch
+                .clone()
+                .with_run_directory(&prepared.run_directory);
             prepared.replacement = Some(launched);
         }
         Ok(())

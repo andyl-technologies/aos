@@ -161,7 +161,7 @@ pub(super) struct PrimeGuestOutcome {
 pub(super) fn prime_guest_off_boot_barrier(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
-    identity: LiveNodeIdentity<'_>,
+    identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
     mut block: Option<&mut QemuLiveBlockIoServicer>,
     mut ninep: Option<&mut QemuLive9pIoServicer>,

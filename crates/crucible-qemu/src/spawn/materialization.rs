@@ -5,7 +5,8 @@ use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crucible::ContentHash;
-use rustix::fs::fstat;
+use rustix::fs::{Mode, OFlags, fchown, fstat, fsync, openat};
+use rustix::process::{Gid, Uid};
 
 use super::{QemuPreparedRunDirectory, QemuSpawnError};
 use crate::QemuLaunchCommand;
@@ -42,6 +43,17 @@ pub(super) enum PreparedVmStateMaterialization {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PreparedRootOverlayMaterialization {
+    Absent,
+    Provisioned,
+    Updating,
+    Exact {
+        binding: QemuVmStateBinding,
+        bytes: u64,
+    },
+}
+
 /// Linear writer for one authenticated exact-VMState materialization.
 ///
 /// The writer borrows its pinned run-directory authority for the complete
@@ -51,6 +63,21 @@ pub(super) enum PreparedVmStateMaterialization {
 #[derive(Debug)]
 #[must_use = "exact VMState materialization must be finished before guarded launch"]
 pub struct QemuVmStateMaterialization<'a> {
+    prepared: &'a mut QemuPreparedRunDirectory,
+    destination: File,
+    binding: QemuVmStateBinding,
+    expected_bytes: u64,
+    written_bytes: u64,
+}
+
+/// Linear writer for one authenticated exact root-overlay materialization.
+///
+/// The destination is created relative to the retained directory descriptor
+/// and remains pinned for guarded spawn. Dropping before [`Self::finish`]
+/// leaves the directory unlaunchable.
+#[derive(Debug)]
+#[must_use = "exact root-overlay materialization must be finished before guarded launch"]
+pub struct QemuRootOverlayMaterialization<'a> {
     prepared: &'a mut QemuPreparedRunDirectory,
     destination: File,
     binding: QemuVmStateBinding,
@@ -80,7 +107,7 @@ impl QemuPreparedRunDirectory {
         contract: &super::QemuChildProcessContract,
     ) -> Result<Self, QemuSpawnError> {
         super::validate_guarded_launch_resources(command, contract)?;
-        Self::open_admitted(command, path.as_ref(), contract)
+        Self::open_for_requirements(command.resource_requirements(), path.as_ref(), contract)
     }
 
     /// Begins replacing the pinned VMState file with one exact snapshot image.
@@ -140,6 +167,97 @@ impl QemuPreparedRunDirectory {
         })
     }
 
+    /// Begins materializing one exact root overlay into the pinned directory.
+    ///
+    /// The maximum overlay length is the admitted aggregate writable ceiling
+    /// after reserving the command's complete VMState baseline. The destination
+    /// is created without following or replacing a named inode and is retained
+    /// by descriptor through guarded spawn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the launch has no root overlay, the
+    /// declared length is zero or exceeds its conservative aggregate share, a
+    /// destination already exists, or descriptor-relative creation fails.
+    pub fn begin_exact_root_overlay_materialization(
+        &mut self,
+        binding: QemuVmStateBinding,
+        expected_bytes: u64,
+    ) -> Result<QemuRootOverlayMaterialization<'_>, QemuSpawnError> {
+        let maximum = self
+            .admitted_ceiling
+            .2
+            .saturating_sub(self.launch_resources.minimum_writable_bytes());
+        if !self.launch_resources.has_root_overlay()
+            || expected_bytes == 0
+            || expected_bytes > maximum
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayLength {
+                length: expected_bytes,
+                maximum,
+            });
+        }
+        if self.root_overlay_materialization != PreparedRootOverlayMaterialization::Absent {
+            return Err(QemuSpawnError::PreparedRootOverlayAlreadyExists {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+
+        self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+        let destination = openat(
+            &self.directory,
+            crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "create prepared exact root overlay",
+            source: source.into(),
+        })?;
+        let metadata = fstat(&destination).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect prepared exact root overlay",
+            source: source.into(),
+        })?;
+        if let Some(credentials) = self.child_credentials {
+            fchown(
+                &destination,
+                Some(Uid::from_raw(credentials.user_id)),
+                Some(Gid::from_raw(credentials.group_id)),
+            )
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "assign prepared exact root-overlay ownership",
+                source: source.into(),
+            })?;
+        }
+        self.root_overlay_identity = Some(super::PinnedFileIdentity::from_stat(&metadata));
+        let destination =
+            File::from(
+                destination
+                    .try_clone()
+                    .map_err(|source| QemuSpawnError::Io {
+                        operation: "duplicate prepared exact root overlay",
+                        source,
+                    })?,
+            );
+        self.root_overlay = Some(
+            destination
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "retain prepared exact root overlay",
+                    source,
+                })?
+                .into(),
+        );
+
+        Ok(QemuRootOverlayMaterialization {
+            prepared: self,
+            destination,
+            binding,
+            expected_bytes,
+            written_bytes: 0,
+        })
+    }
+
     /// Requires the pinned VMState file to contain one exact root binding.
     ///
     /// Exact-restore launchers call this after materialization and immediately
@@ -165,6 +283,36 @@ impl QemuPreparedRunDirectory {
             | PreparedVmStateMaterialization::Updating => {
                 Err(QemuSpawnError::PreparedVmStateNotReady {
                     path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+                })
+            }
+        }
+    }
+
+    /// Requires the pinned root overlay to carry one exact checkpoint binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the launch has no completed exact root
+    /// overlay or its bytes were materialized for another checkpoint root.
+    pub fn require_exact_root_overlay(
+        &self,
+        binding: QemuVmStateBinding,
+    ) -> Result<(), QemuSpawnError> {
+        match self.root_overlay_materialization {
+            PreparedRootOverlayMaterialization::Exact {
+                binding: actual, ..
+            } if actual == binding => Ok(()),
+            PreparedRootOverlayMaterialization::Exact {
+                binding: actual, ..
+            } => Err(QemuSpawnError::PreparedRootOverlayBindingMismatch {
+                expected: binding,
+                actual,
+            }),
+            PreparedRootOverlayMaterialization::Absent
+            | PreparedRootOverlayMaterialization::Provisioned
+            | PreparedRootOverlayMaterialization::Updating => {
+                Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                    path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
                 })
             }
         }
@@ -206,6 +354,44 @@ impl Write for QemuVmStateMaterialization<'_> {
     }
 }
 
+impl Write for QemuRootOverlayMaterialization<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let remaining = self.expected_bytes.saturating_sub(self.written_bytes);
+        let requested = u64::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "exact root-overlay write length cannot be represented",
+            )
+        })?;
+        if requested > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "exact root-overlay write exceeds the declared checkpoint length",
+            ));
+        }
+        let written = self.destination.write(bytes)?;
+        self.written_bytes = self
+            .written_bytes
+            .checked_add(u64::try_from(written).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "exact root-overlay write count cannot be represented",
+                )
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "exact root-overlay write overflow",
+                )
+            })?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.destination.flush()
+    }
+}
+
 impl QemuVmStateMaterialization<'_> {
     /// Authenticates and durably commits the complete materialized VMState.
     ///
@@ -234,6 +420,10 @@ impl QemuVmStateMaterialization<'_> {
                 operation: "synchronize materialized exact-VMState container",
                 source,
             })?;
+        fsync(&self.prepared.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize materialized exact-VMState directory",
+            source: source.into(),
+        })?;
         let metadata = fstat(&self.prepared.vmstate).map_err(|source| QemuSpawnError::Io {
             operation: "inspect materialized exact-VMState container",
             source: source.into(),
@@ -256,6 +446,58 @@ impl QemuVmStateMaterialization<'_> {
             });
         }
         self.prepared.vmstate_materialization = PreparedVmStateMaterialization::Exact {
+            binding: self.binding,
+            bytes: self.expected_bytes,
+        };
+        Ok(())
+    }
+}
+
+impl QemuRootOverlayMaterialization<'_> {
+    /// Authenticates and durably commits the complete root overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] if the caller wrote a different length,
+    /// synchronization fails, or the retained inode changes. Failure leaves the
+    /// prepared directory unlaunchable.
+    pub fn finish(mut self) -> Result<(), QemuSpawnError> {
+        if self.written_bytes != self.expected_bytes {
+            return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
+                expected: self.expected_bytes,
+                actual: self.written_bytes,
+            });
+        }
+        self.destination
+            .flush()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "flush materialized exact root overlay",
+                source,
+            })?;
+        self.destination
+            .sync_all()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "synchronize materialized exact root overlay",
+                source,
+            })?;
+        fsync(&self.prepared.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize materialized exact root-overlay directory",
+            source: source.into(),
+        })?;
+        let metadata = self.prepared.revalidate_root_overlay_identity()?;
+        let actual = u64::try_from(metadata.st_size).map_err(|_| {
+            QemuSpawnError::PreparedRootOverlayIncomplete {
+                expected: self.expected_bytes,
+                actual: u64::MAX,
+            }
+        })?;
+        if actual != self.expected_bytes {
+            return Err(QemuSpawnError::PreparedRootOverlayIncomplete {
+                expected: self.expected_bytes,
+                actual,
+            });
+        }
+        self.prepared.root_overlay_materialization = PreparedRootOverlayMaterialization::Exact {
             binding: self.binding,
             bytes: self.expected_bytes,
         };

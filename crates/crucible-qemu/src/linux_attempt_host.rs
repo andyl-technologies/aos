@@ -25,8 +25,8 @@ use crate::linux_attempt_storage::{
 };
 use crate::linux_project_quota::LinuxProjectQuotaError;
 use crate::{
-    QemuChildProcessContract, QemuLaunchCommand, QemuNodeChild, QemuPreparedRunDirectory,
-    QemuVmRealizationError,
+    QemuChildProcessContract, QemuLaunchResourceRequirements, QemuNodeChild,
+    QemuPreparedRunDirectory, QemuVmRealizationError,
 };
 
 const HOST_QUARANTINE_MIN_RETRY: Duration = Duration::from_millis(10);
@@ -337,7 +337,7 @@ impl LinuxQemuAttemptHostOwner {
     /// I/O failures are reported as unavailable.
     pub fn prepare_generation_run_directory(
         &mut self,
-        command: &QemuLaunchCommand,
+        requirements: QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
         if self.terminal {
             return Err(missing_authority("prepare QEMU attempt run directory"));
@@ -348,7 +348,7 @@ impl LinuxQemuAttemptHostOwner {
         };
         let contract = process.process_contract()?;
         storage
-            .prepare_generation_run_directory(command, contract)
+            .prepare_generation_run_directory(requirements, contract)
             .map_err(|error| map_storage_error("prepare QEMU attempt run directory", &error))
     }
 
