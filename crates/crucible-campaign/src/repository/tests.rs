@@ -573,6 +573,22 @@ fn admitted_observation_fixture(
     (genesis.snapshot_id(), admitted, observation)
 }
 
+fn choice_discovery_fixture(
+    repository: &CampaignRepository,
+    id: ChoiceOpportunityId,
+) -> ChoiceDiscovery {
+    let opportunity = repository
+        .load_choice_opportunity(id)
+        .expect("load discovered choice");
+    let declaration = repository
+        .load_selectable(opportunity.declaration())
+        .expect("load discovered declaration");
+    let domain = repository
+        .load_choice_domain(opportunity.domain())
+        .expect("load discovered domain");
+    ChoiceDiscovery::new(declaration, domain, opportunity).expect("choice discovery fixture")
+}
+
 fn planner_basis(
     repository: &CampaignRepository,
     name: &str,

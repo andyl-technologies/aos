@@ -1694,13 +1694,20 @@ plan/apply fences.
 
 The repository executor handoff is deliberately phased. First it validates the
 complete in-memory child-configuration, measurement, property, coverage,
-newly-discovered opportunity-body, and observation bundle plus every
-already-published dependency. An invalid bundle writes nothing. After the
-durable publishing root exists, it publishes immutable content-addressed
-objects without advancing a campaign ref. Only the coordinator may subsequently
-incorporate the authenticated observation through the snapshot owner
-transaction. Partial immutable writes remain recoverable under the publishing
-root and cannot create campaign meaning.
+newly-discovered choice records, and observation bundle plus every
+already-published dependency. Each discovery carries its exact
+`SelectableDeclarationV1`, `ChoiceDomainV1`, and `ChoiceOpportunityV1`; the
+repository requires their content-derived IDs and copied semantic contract to
+agree before publication. One candidate carries at most 65,530 discoveries and
+at most 128 MiB of unique canonical declaration, domain, and opportunity
+bodies. Shared records are charged once. An invalid bundle writes nothing.
+After the durable publishing root exists, the repository publishes those
+immutable content-addressed records without advancing a campaign ref. Only the
+coordinator may subsequently incorporate the authenticated observation through
+the snapshot owner transaction. Partial immutable writes remain recoverable
+under the publishing root and cannot create campaign meaning. This
+self-contained handoff lets a dynamic producer introduce a new choice contract
+without receiving ambient repository or mutable-ref authority.
 
 The single-host coordinator uses a bounded `CampaignExecutorDriver` to connect
 the snapshot claim projection to this component protocol. It retains at most
