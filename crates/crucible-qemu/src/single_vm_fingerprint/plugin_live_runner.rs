@@ -465,7 +465,7 @@ impl PluginFingerprintRunner {
         target: u64,
         host_adversary: &mut Option<HostAdversary>,
     ) -> Result<u64, PluginFingerprintRunnerError> {
-        let pending = QemuShmemHotPathChannel::start_quantum(
+        let mut pending = QemuShmemHotPathChannel::start_quantum(
             hot_path,
             ExecutionHorizon {
                 icount: Icount { retired: target },
@@ -478,7 +478,7 @@ impl PluginFingerprintRunner {
         setup
             .signal_plugin_wake()
             .map_err(|source| channel_error("wake plugin for next quantum", source))?;
-        HostAdversary::begin_if_present(host_adversary)
+        HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
             .map_err(|source| PluginFingerprintRunnerError::SchedulerPreemption { source })?;
         let reached = self.wait_for_target_boundary(hot_path, child, target)?;
         let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)

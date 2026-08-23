@@ -1724,7 +1724,10 @@ impl QemuNode {
     pub(crate) fn advance_to_ceiling_after_publish(
         &mut self,
         ceiling: Icount,
-        after_publish: impl FnOnce() -> Result<(), QemuNodeChannelError>,
+        after_publish: impl FnOnce(
+            &mut dyn QemuAsyncNodeStepTarget<PendingQuantum = QemuNodePendingQuantum>,
+            &mut QemuNodePendingQuantum,
+        ) -> Result<(), QemuNodeChannelError>,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
         if self.channels.shmem_hot_path.coverage_enabled() {
             return Err(QemuNodeError::CoverageEventLogRequired);
@@ -1741,7 +1744,7 @@ impl QemuNode {
             self.async_policy,
             &self.crash_detector,
             ExecutionHorizon { icount: ceiling },
-            after_publish,
+            |target, pending| after_publish(target, pending),
         )
         .map_err(QemuNodeError::from_async_driver)?;
         self.finish_advance_report(ceiling, report)

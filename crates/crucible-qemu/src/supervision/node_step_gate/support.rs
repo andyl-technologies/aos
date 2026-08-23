@@ -68,13 +68,14 @@ fn advance_to_busy_ceiling_with_adversary(
         .retired;
     loop {
         let outcome = node
-            .advance_to_ceiling_after_publish(Icount { retired: ceiling }, || {
-                HostAdversary::begin_if_present(host_adversary).map_err(|source| {
-                    QemuNodeChannelError::new(
-                        "release scheduler preemption over pending quantum",
-                        source.to_string(),
-                    )
-                })?;
+            .advance_to_ceiling_after_publish(Icount { retired: ceiling }, |target, pending| {
+                HostAdversary::certify_async_quantum_pending(host_adversary, target, pending)
+                    .map_err(|source| {
+                        QemuNodeChannelError::new(
+                            "certify scheduler preemption over pending quantum",
+                            source.to_string(),
+                        )
+                    })?;
                 Ok(())
             })
             .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
@@ -112,7 +113,7 @@ fn advance_to_busy_ceiling_with_adversary(
     }
 }
 
-/// Requires the load run to reproduce the reference run byte for byte.
+/// Requires the scheduler-preempted run to reproduce the reference byte for byte.
 pub(super) fn assert_runs_match(
     reference: &NodeStepOutcome,
     second: &NodeStepOutcome,

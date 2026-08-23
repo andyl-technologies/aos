@@ -611,7 +611,7 @@ fn drive_and_service(
     options: DriveOptions,
     host_adversary: &mut Option<HostAdversary>,
 ) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
-    let pending = QemuShmemHotPathChannel::start_quantum(
+    let mut pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
             icount: Icount {
@@ -620,7 +620,7 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLiveBlockIoGateError::drive("start block-io drive quantum", source))?;
-    HostAdversary::begin_if_present(host_adversary)
+    HostAdversary::certify_mapped_quantum_pending(host_adversary, hot_path, &mut pending)
         .map_err(|source| QemuLiveBlockIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);

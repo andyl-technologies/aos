@@ -115,6 +115,7 @@ shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|2139
 shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1817
 shape-line|crates/crucible-qemu/examples/crucible-qemu-fingerprint.rs|653
 shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|640
+shape-line|crates/crucible-qemu/src/bounded_scheduler_preemption.rs|765
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1568
 shape-line|crates/crucible-qemu/src/fault_action_sink.rs|886
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
