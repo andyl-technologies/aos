@@ -269,8 +269,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   a separate lifetime namespace lock and exact socket inode until join while
   reusing the campaign endpoint's path, owner, mode, stale-recovery, and safe
   teardown contract. Campaign and executor sockets can coexist in one secure
-  directory without sharing namespace authority. Concrete QEMU worker selection
-  and daemon flag wiring remain open.
+  directory without sharing namespace authority. A coupled executor-service
+  owner can obtain its component service only from the exact fixed semantic
+  pool; service shutdown closes admission, cancels active attempts, interrupts
+  connections, and joins both worker domains. Terminal semantic worker
+  completion closes the listener, and worker poison takes precedence over an
+  ordinary listener result. The unserved-owner drop backstop also joins the
+  semantic pool before releasing the endpoint namespace. Concrete QEMU worker
+  selection and daemon flag wiring remain open.
   A bounded `CampaignSupervisor` now composes one planner driver and one
   executor driver over the same repository, reloads exact lifecycle intent on
   every step, and performs at most one component operation. Running execution
