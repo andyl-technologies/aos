@@ -373,7 +373,23 @@ in {
           "--serves web --access public",
           token,
       )
-      reviewed(publisher, "route-enable", "route enable fleet-production", token)
+      routes = json.loads(
+          publisher.succeed(
+              hub_command("route list registry:acme/production", token)
+          )
+      )["data"]["routes"]
+      route = next(
+          candidate
+          for candidate in routes
+          if candidate["stable_id"] == "fleet-production"
+      )
+      reviewed(
+          publisher,
+          "route-enable",
+          "route enable fleet-production "
+          f"--if-version {shlex.quote(route['resource_version'])}",
+          token,
+      )
       publisher.wait_until_succeeds(
           hub_command(
               "route explain fleet-production --access-class nix_cache",
