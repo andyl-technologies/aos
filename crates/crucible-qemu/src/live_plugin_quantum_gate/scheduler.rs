@@ -207,7 +207,6 @@ fn wait_for_quantum_boundary(
     loop {
         let idle: QemuNodeIdleState = QemuShmemHotPathChannel::idle_state(hot_path)
             .map_err(|source| channel_error("poll idle state", source))?;
-        let current = idle.current_icount.retired;
         match classify_quantum_boundary(&idle, ceiling) {
             QuantumBoundary::Reached { icount } => {
                 return Ok(QuantumStop::ReachedCeiling { icount });
@@ -229,7 +228,10 @@ fn wait_for_quantum_boundary(
         if started.elapsed() >= config.completion_timeout() {
             return Err(LivePluginQuantumGateError::QuantumTimeout {
                 ceiling_icount: ceiling,
-                last_icount: current,
+                last_snapshot: hot_path
+                    .node_snapshot()
+                    .map_err(|source| channel_error("snapshot timed-out quantum", source))?,
+                last_deadline_icount: idle.next_deadline.map(|deadline| deadline.retired),
                 timeout: config.completion_timeout(),
             });
         }
