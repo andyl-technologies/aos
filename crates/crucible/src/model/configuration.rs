@@ -253,6 +253,7 @@ impl Configuration {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionDecision {
     canonical_selection: Vec<u8>,
+    app_random_model_sample: bool,
 }
 
 impl SelectionDecision {
@@ -261,6 +262,7 @@ impl SelectionDecision {
     pub fn new(selection: &crucible_campaign::Selection) -> Self {
         Self {
             canonical_selection: selection.canonical_bytes(),
+            app_random_model_sample: crate::decision::is_app_random_model_selection(selection),
         }
     }
 
@@ -281,6 +283,15 @@ impl SelectionDecision {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_selection
+    }
+
+    /// Returns whether this decision uses the standardized app-random model.
+    ///
+    /// The flag is derived from the canonical selection bytes and is not a
+    /// separate serialized field.
+    #[must_use]
+    pub const fn is_app_random_model_sample(&self) -> bool {
+        self.app_random_model_sample
     }
 
     /// Decodes the retained campaign selection.

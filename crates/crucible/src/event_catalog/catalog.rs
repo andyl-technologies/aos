@@ -85,6 +85,12 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
+        kind: "campaign_selection",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: &["canonical_selection"],
+    },
+    EventKindCatalogEntry {
         kind: "console_output",
         class: SchedulerEventLogClass::Observational,
         sources: &["node"],
@@ -436,6 +442,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "backend_input",
             "binding_activation",
             "binding_deactivation",
+            "campaign_selection",
             "control",
             "delivery_order",
             "effect_applied",

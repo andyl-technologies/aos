@@ -112,11 +112,16 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
 The current incremental checkpoint implements the pure application-random
-normalization and application contract plus executor-side verification of its
-uniform model samples. The live doorbell still records the legacy `RngDraw` and
-`AppRandom` pair, and the legacy raw-width branch generator remains available;
-therefore T-CAM-2.3 and T-CAM-2.7 intentionally remain unchecked until producer
-routing, retained-artifact migration/rejection, and the real-guest flight land.
+normalization and application contract, executor-side verification of uniform
+model samples, and live producer routing. The scheduler treats the plugin's
+legacy `AppRandom` result as untrusted transport, reproduces the served value
+from its named seeded stream, records canonical `RngDraw` plus `Selection`, and
+hands the self-contained discovery records to the quantum result. Standardized
+typed samples consume the existing scenario draw cap, and checkpoint relaunch
+recovers per-node positions from the authoritative named-stream cursor. The
+legacy raw-width branch generator and retained legacy schedule entries remain;
+therefore T-CAM-2.3 and T-CAM-2.7 intentionally remain unchecked until their
+migration/rejection policy and the real-guest flight land.
 
 ## 11.5 Phase 3 — Measurements and objectives
 

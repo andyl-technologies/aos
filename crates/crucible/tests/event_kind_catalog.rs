@@ -13,11 +13,11 @@ use crucible::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "256a2fbe140895c90d7ec8fa600902fd1247617c13074e2a736abbde481d4ae8";
+    "f9ed2b7a2132aac3b9cbd55d94cddfff98aabdd99a84dec16c57a36ca25f9e71";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
-    assert_eq!(EVENT_KIND_CATALOG_VERSION, 5);
+    assert_eq!(EVENT_KIND_CATALOG_VERSION, 6);
 
     let mut kinds = BTreeSet::new();
     let mut previous = "";
@@ -45,6 +45,7 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ("signal_state_transition", EventClass::Causal),
         ("binding_activation", EventClass::Causal),
         ("binding_deactivation", EventClass::Causal),
+        ("campaign_selection", EventClass::Causal),
         ("fault_opportunity", EventClass::Causal),
         ("effect_choice", EventClass::Causal),
         ("effect_combined", EventClass::Causal),

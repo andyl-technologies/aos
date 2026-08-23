@@ -196,13 +196,22 @@ impl QuantumLoop for SingleScheduler {
     fn append_backend_causal_decisions(
         &mut self,
         decisions: Vec<Decision>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         let original_len = self.configuration.schedule.decisions().len();
         let mut recorder = DecisionRecorder::from_seed_and_positions(
             self.configuration.clone(),
             self.decision_seed,
             &self.decision_rng_cursor,
         );
+        let mut discovered_choices = Vec::with_capacity(decisions.len());
         for decision in decisions {
             let Decision::AppRandom(expected) = decision else {
                 return Err(SchedulerError::BoundaryViolation {
@@ -211,32 +220,22 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 });
             };
-            let actual = recorder
-                .serve_app_random_request(
-                    expected.node.clone(),
-                    expected.stream.clone(),
-                    expected.request_id,
-                    expected.width,
-                )
+            let discovery = recorder
+                .normalize_app_random_request(expected)
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("live backend app-random decision was rejected: {error}"),
                 })?;
-            if actual != expected.value {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "live backend app-random value {} differs from seeded value {actual}",
-                        expected.value
-                    ),
-                });
-            }
-        }
-        for decision in &recorder.schedule().decisions()[original_len..] {
-            if let Decision::RngDraw(draw) = decision {
-                self.advance_decision_rng_cursor_for(draw.stream.clone());
-            }
+            discovered_choices.push(discovery);
         }
         let configuration = recorder.into_configuration();
         let recorded = configuration.schedule.decisions()[original_len..].to_vec();
+        let advanced_streams = recorded
+            .iter()
+            .filter_map(|decision| match decision {
+                Decision::RngDraw(draw) => Some(draw.stream.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let at = SimInstant {
             nanos: self
                 .frontier
@@ -244,8 +243,11 @@ impl QuantumLoop for SingleScheduler {
                 .ticks,
         };
         let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
+        for stream in advanced_streams {
+            self.advance_decision_rng_cursor_for(stream);
+        }
         self.configuration = configuration.clone();
-        Ok((recorded, configuration, append))
+        Ok((recorded, discovered_choices, configuration, append))
     }
 
     fn append_backend_network_outputs(

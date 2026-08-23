@@ -380,6 +380,11 @@ Application-controlled randomness is represented as an integer selectable with
 an explicit distribution. A convenience guest `random` API may construct such a
 domain, but raw byte width is not the exploration model.
 
+For campaign-enabled execution this section supersedes RFC-0010's live-schedule
+use of `Decision::AppRandom`. That variant remains a readable legacy schedule
+form and the plugin-to-host transport conjecture; it is not the canonical live
+campaign decision admitted by the scheduler.
+
 ```text
 random_u16(stream="backoff", instance=epoch)
   domain = integer [0, 65535]
@@ -416,12 +421,25 @@ These coordinates deliberately exclude schedule position and process-global
 occurrence counts, so unrelated decisions and RNG streams do not perturb an
 existing opportunity.
 
-The engine adapter now constructs and applies this typed contract, and the
-executor resolves the declaration, domain, and opportunity and verifies the
-exact low-bit mapping before accepting a model-sampled configuration. Other
-probability models remain fail-closed. Routing the live doorbell producer to
-emit this envelope, migrating retained legacy `AppRandom` entries, and removing
-the older raw-width branch generator remain required before T-CAM-2.3 and
+The engine adapter constructs and applies this typed contract, and the executor
+resolves the declaration, domain, and opportunity and verifies the exact
+low-bit mapping before accepting a model-sampled configuration. Other
+probability models remain fail-closed. At a live scheduler boundary the
+doorbell's untrusted legacy `AppRandom` transport record is accepted only when
+the scenario-seeded raw draw reproduces its served value. The canonical
+schedule then records `RngDraw` followed by the typed `Selection`, and the
+quantum outcome carries the exact declaration, domain, and opportunity as one
+self-contained discovery for observation publication. Event-kind catalog
+version 6 registers the causal `campaign_selection` kind with the single
+`canonical_selection` byte attribute, so the unified log admits the same strict
+selection bytes.
+
+Standardized model-sample selections consume the same scenario-hashed
+app-random draw cap as retained legacy `AppRandom` decisions. Checkpoint
+relaunch derives each node's continuation from the authoritative named-stream
+cursor, using the protocol's length-framed node component rather than opaque
+selection bytes. Migrating retained legacy `AppRandom` entries and removing the
+older raw-width branch generator remain required before T-CAM-2.3 and
 T-CAM-2.7 are complete.
 
 ## 02.10 Admission limits

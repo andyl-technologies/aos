@@ -75,15 +75,7 @@ pub(super) fn production_app_random_launch_config(
     if let Some(branch) = branch
         && let Some(seed) = branch.seed
     {
-        let prefix_draws = branch
-            .base
-            .schedule
-            .decisions()
-            .iter()
-            .filter(
-                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
-            )
-            .count() as u64;
+        let prefix_draws = app_random_request_count(&branch.base, node);
         config = config.with_branch_seed(seed, prefix_draws);
     }
     config
@@ -105,20 +97,17 @@ pub(super) fn production_app_random_checkpoint_config(
             message: format!("decode scheduler checkpoint configuration: {error}"),
         }
     })?;
-    let streams = configuration
-        .schedule
-        .decisions()
+    let decisions = configuration.schedule.decisions();
+    let streams = decisions
         .iter()
-        .filter_map(|decision| match decision {
-            Decision::AppRandom(random) if random.node == *node => Some(random.stream.clone()),
-            _ => None,
-        })
+        .enumerate()
+        .filter_map(|(index, _decision)| app_random_request_stream(decisions, index, node))
         .collect::<std::collections::BTreeSet<_>>();
     let positions = scheduler
         .future_decision_rng_state()
         .positions
         .iter()
-        .filter(|(stream, _position)| streams.contains(*stream))
+        .filter(|(stream, _position)| streams.contains(stream))
         .map(|(stream, position)| (stream.name.clone(), position.draws))
         .collect::<BTreeMap<_, _>>();
     let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
@@ -139,18 +128,36 @@ pub(super) fn production_app_random_checkpoint_config(
     if let Some(branch) = branch
         && let Some(seed) = branch.seed
     {
-        let prefix_draws = branch
-            .base
-            .schedule
-            .decisions()
-            .iter()
-            .filter(
-                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
-            )
-            .count() as u64;
+        let prefix_draws = app_random_request_count(&branch.base, node);
         config = config.with_branch_seed(seed, prefix_draws);
     }
     Ok(config)
+}
+
+fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64 {
+    let decisions = configuration.schedule.decisions();
+    decisions
+        .iter()
+        .enumerate()
+        .filter(|(index, _decision)| app_random_request_stream(decisions, *index, node).is_some())
+        .count() as u64
+}
+
+fn app_random_request_stream<'a>(
+    decisions: &'a [Decision],
+    index: usize,
+    node: &NodeId,
+) -> Option<&'a crucible::RngStreamId> {
+    match decisions.get(index)? {
+        Decision::AppRandom(random) if random.node == *node => Some(&random.stream),
+        Decision::Selection(selection) if selection.is_app_random_model_sample() => {
+            let Decision::RngDraw(draw) = decisions.get(index.checked_sub(1)?)? else {
+                return None;
+            };
+            crucible::app_random_stream_belongs_to_node(&draw.stream, node).then_some(&draw.stream)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn private_backend_gdbstub_path(node_directory: &Path) -> PathBuf {
@@ -362,6 +369,76 @@ mod tests {
             production_qemu_executable(configured, crucible::VmArchitecture::Aarch64),
             Path::new("/aos/bin/qemu-system-aarch64")
         );
+    }
+
+    #[test]
+    fn typed_app_random_checkpoint_restores_node_stream_cursors() {
+        let Ok(initial_shift) = Shift::new(0) else {
+            panic!("zero shift should be valid");
+        };
+        let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.production-app-random-checkpoint",
+            "scenario=typed-app-random-checkpoint",
+            Seed::from_u64(0x5eed),
+            8,
+        );
+        let runtime = SchedulerLivenessScenario::from_canonical_material(
+            "typed-app-random-checkpoint-runtime",
+            initial_shift,
+            8,
+            SimInstant { nanos: 8 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario.clone());
+        let Ok(mut scheduler) = SingleScheduler::new(runtime) else {
+            panic!("scheduler should build");
+        };
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream = crucible::RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+        let mut expected = scenario
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw = expected.next_u64();
+
+        let Ok((_recorded, discoveries, _configuration, _append)) =
+            QuantumLoop::append_backend_causal_decisions(
+                &mut scheduler,
+                vec![Decision::AppRandom(crucible::AppRandomDecision {
+                    node: node.clone(),
+                    stream: stream.clone(),
+                    request_id: 7,
+                    width: 8,
+                    value: raw & 0xff,
+                })],
+            )
+        else {
+            panic!("live app-random decision should normalize");
+        };
+        assert_eq!(discoveries.len(), 1);
+
+        let Ok(checkpoint) = scheduler.checkpoint() else {
+            panic!("scheduler should checkpoint");
+        };
+        let Ok(resumed) =
+            production_app_random_checkpoint_config(&checkpoint, &scenario, None, &node)
+        else {
+            panic!("typed app-random cursor should restore");
+        };
+        assert_eq!(resumed.draw_offset, 1);
+        assert_eq!(resumed.stream_positions.get(&stream.name), Some(&1));
+
+        let branch = ProductionVmBranchConfig {
+            base: scheduler.configuration().clone(),
+            frontier: scheduler.frontier(),
+            decisions: Vec::new(),
+            seed: Some(Seed::from_u64(0x00b1_2ac4)),
+        };
+        let relaunched = production_app_random_launch_config(&scenario, Some(&branch), &node);
+        assert_eq!(relaunched.branch_after_draws, Some(1));
     }
 
     #[test]

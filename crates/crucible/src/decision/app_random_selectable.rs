@@ -7,14 +7,16 @@
 //! the same exact opportunity without advancing the underlying RNG stream.
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational, IntegerDomain,
-    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
+    CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
+    ChoiceDomain, ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational,
+    IntegerDomain, IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
     ProbabilityModelId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
 };
 use crucible_protocol::WHITEBOX_DOORBELL_PROTOCOL_VERSION;
+use crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 use thiserror::Error;
 
 use crate::{AppRandomDecision, Configuration, NodeId, RngStreamId, ScenarioDef};
@@ -127,6 +129,20 @@ impl AppRandomSelectable {
     #[must_use]
     pub const fn opportunity(&self) -> &crucible_campaign::ChoiceOpportunity {
         &self.opportunity
+    }
+
+    /// Consumes this reconstruction into the records required for publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppRandomSelectableError`] if the reconstructed records no
+    /// longer form one exact producer contract.
+    pub fn into_discovery(self) -> Result<ChoiceDiscovery, AppRandomSelectableError> {
+        Ok(ChoiceDiscovery::new(
+            self.declaration,
+            self.domain,
+            self.opportunity,
+        )?)
     }
 
     /// Returns the uniform probability-model identity.
@@ -294,6 +310,29 @@ pub fn validate_app_random_model_selection(
     }
     selection.validate_model_replay(opportunity, domain, &model)?;
     Ok(())
+}
+
+/// Returns whether one default-domain app-random stream belongs to `node`.
+///
+/// This projection lets checkpoint/relaunch code recover per-node stream
+/// cursors from the authoritative scheduler cursor after live decisions have
+/// been normalized to opaque campaign selections.
+#[must_use]
+pub fn app_random_stream_belongs_to_node(stream: &RngStreamId, node: &NodeId) -> bool {
+    stream.domain == RngStreamId::from_name("").domain
+        && app_random_stream_name_belongs_to_node(&stream.name, &node.name)
+}
+
+pub(crate) fn is_app_random_model_selection(selection: &Selection) -> bool {
+    let SelectionOrigin::ModelSample(evidence) = selection.origin() else {
+        return false;
+    };
+    app_random_model_ids().contains(&evidence.model())
+}
+
+fn app_random_model_ids() -> &'static BTreeSet<ProbabilityModelId> {
+    static IDS: OnceLock<BTreeSet<ProbabilityModelId>> = OnceLock::new();
+    IDS.get_or_init(|| (1..=64).map(expected_model_id).collect())
 }
 
 /// Failure while constructing, validating, or applying app randomness.
