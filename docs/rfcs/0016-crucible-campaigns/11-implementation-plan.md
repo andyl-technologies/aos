@@ -328,8 +328,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   descriptor allocation. Exact-checkpoint materialization now requires the
   same contract before path access.
   The writable ceiling also supplies a conservative per-file limit; aggregate
-  enforcement remains the responsibility of the open filesystem quota
-  composition.
+  enforcement now has a crate-internal ext4 project-quota transaction. It
+  requires a fresh pinned directory and exclusively allocated nonzero project
+  ID, installs synchronized/read-back hard block and inode limits before
+  assigning the inheritable project ID, rounds non-aligned byte ceilings down
+  to the kernel's 1,024-byte quota unit, and retains cleanup authority after
+  every partial failure. Normal release restores the empty directory before
+  clearing and reauthenticating a zero-use quota record. Project-ID allocation,
+  the nondroppable combined process/quota/run-directory owner, and a real ext4
+  enforcement VM gate remain open before this transaction can be wired into
+  guarded launch.
   A prepared run-directory authority now pins the directory and exact regular
   VMState inode without following final symlinks. Guarded spawn reauthenticates
   the entry before allocation, changes directory by descriptor after cgroup and
@@ -361,9 +369,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   daemon-incarnation namespace and operational bounds before root access,
   creates unique fixed-width child names, exposes no raw cgroup controls, and
   poisons itself while retaining authority after partial setup. Aggregate
-  filesystem quota and its exact run-directory binding, active-node handoff,
-  the modeled attempt driver, and concrete session wiring remain open. Real-node
-  exact-checkpoint
+  filesystem-quota reservation and its exact run-directory binding,
+  active-node handoff, the modeled attempt driver, and concrete session wiring
+  remain open. Real-node exact-checkpoint
   capture is now an executor-owned, guard-retaining operation: it seals and
   exact-binds configuration, node icount, and event-log continuation before
   paused VMState/host-I/O capture. The daemon now prepares and durably publishes

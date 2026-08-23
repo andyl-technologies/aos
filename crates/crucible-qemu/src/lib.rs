@@ -67,6 +67,11 @@ mod linux_attempt_process;
 #[allow(dead_code)]
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
+// The real ext4 project-quota transaction is intentionally internal until the
+// combined process/filesystem attempt owner consumes it in the next slice.
+#[allow(dead_code)]
+mod linux_project_quota;
+#[cfg(target_os = "linux")]
 mod live_coverage_gate;
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;
