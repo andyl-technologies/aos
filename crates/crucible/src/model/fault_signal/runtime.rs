@@ -596,6 +596,7 @@ pub struct ResolvedReplayWorkItem {
 }
 
 impl ResolvedReplayWorkItem {
+    #[cfg(test)]
     pub(crate) fn new(
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,
@@ -621,7 +622,7 @@ impl ResolvedReplayWorkItem {
         Ok(item)
     }
 
-    fn validate(&self) -> Result<(), FaultRuntimeError> {
+    pub(crate) fn validate(&self) -> Result<(), FaultRuntimeError> {
         let opportunity_fields = [
             self.target.is_some(),
             self.operation.is_some(),

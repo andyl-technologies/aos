@@ -110,31 +110,67 @@ impl<'a> FaultBindingRuntime<'a> {
                         evaluation.actions.len(),
                     )?;
                 }
+                let replay_verification = if verify_replay_outcomes {
+                    replay
+                        .as_deref()
+                        .map(|trace| {
+                            verify_replay_action_shapes(
+                                trace,
+                                &evaluation.actions,
+                                coordinate,
+                                same_coordinate_sequence,
+                                opportunity,
+                            )
+                        })
+                        .transpose()?
+                } else {
+                    None
+                };
+                let staged_work_item = if recorded.is_some() {
+                    Some(stage_resolved_replay_work_item(
+                        &evaluation.actions,
+                        coordinate,
+                        opportunity,
+                        same_coordinate_sequence,
+                        recording_derivation_fingerprint,
+                        self.resource_limits,
+                    )?)
+                } else {
+                    None
+                };
+                if let Some(work_items) = recorded.as_deref_mut() {
+                    try_reserve_runtime(work_items, self.resource_limits, "thin_replay_events", 1)?;
+                }
+                try_reserve_runtime(
+                    &mut evaluation.observations,
+                    self.resource_limits,
+                    "event_records",
+                    evaluation.actions.len(),
+                )?;
                 // A preview runs only against the deterministic in-memory
                 // adapter ledger, which cannot sample QEMU's live icount. It
                 // may therefore retain a node action's virtual-time-only
                 // coordinate. Every committing path requires the backend
                 // refinement before recording or replay verification.
-                let results =
-                    prepare_and_commit(sink, &evaluation.actions, !verify_replay_outcomes)?;
-                if verify_replay_outcomes && let Some(trace) = replay.as_deref_mut() {
-                    verify_replay_results(
-                        trace,
-                        &evaluation.actions,
-                        &results,
-                        coordinate,
-                        same_coordinate_sequence,
-                        opportunity,
-                    )?;
+                let transaction = prepare_actions(sink, &evaluation.actions)?;
+                let results = commit_prepared_actions(
+                    sink,
+                    &evaluation.actions,
+                    transaction,
+                    !verify_replay_outcomes,
+                )?;
+                if let (Some(trace), Some(verification)) =
+                    (replay.as_deref_mut(), replay_verification)
+                {
+                    verify_replay_results(trace, &evaluation.actions, &results, verification)?;
                 }
-                if let Some(work_items) = recorded.as_deref_mut() {
-                    work_items.push(resolved_replay_work_item(
+                if let (Some(work_items), Some(staged)) =
+                    (recorded.as_deref_mut(), staged_work_item)
+                {
+                    work_items.push(finalize_resolved_replay_work_item(
+                        staged,
                         &evaluation.actions,
                         &results,
-                        coordinate,
-                        opportunity,
-                        same_coordinate_sequence,
-                        recording_derivation_fingerprint,
                     )?);
                 }
                 evaluation
