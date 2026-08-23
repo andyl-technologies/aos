@@ -18,8 +18,11 @@ mod transaction;
 
 pub use error::BindingRuntimeError;
 use mapping_codec::{mapped_values_digest, resolved_mapping_output_digest};
-use replay::{resolved_replay_work_item, verify_replay_results};
-use transaction::prepare_and_commit;
+use replay::{
+    finalize_resolved_replay_work_item, stage_resolved_replay_work_item,
+    verify_replay_action_shapes, verify_replay_results,
+};
+use transaction::{commit_prepared_actions, prepare_actions, prepare_and_commit};
 
 /// One mutation requested of the owning production adapter.
 #[derive(

@@ -156,18 +156,22 @@ fn locked_replay_retains_and_enforces_a_backend_refined_coordinate() {
         FaultResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid unrefined coordinate runtime: {error}"));
-    assert!(matches!(
-        unrefined_runtime.evaluate_boundary_traced(
-            coordinate(0),
-            0,
-            &mut AcceptActions::default(),
-            None,
-            &mut Vec::new(),
+    let unrefined_result = unrefined_runtime.evaluate_boundary_traced(
+        coordinate(0),
+        0,
+        &mut AcceptActions::default(),
+        None,
+        &mut Vec::new(),
+    );
+    assert!(
+        matches!(
+            unrefined_result,
+            Err(BindingRuntimeError::AdapterCommit(
+                FaultRuntimeError::IncompleteAdapterState
+            ))
         ),
-        Err(BindingRuntimeError::AdapterCommit(
-            FaultRuntimeError::IncompleteAdapterState
-        ))
-    ));
+        "unexpected unrefined result: {unrefined_result:?}"
+    );
 
     let mut recorder = FaultBindingRuntime::new(
         &program,

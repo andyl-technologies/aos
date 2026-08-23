@@ -129,14 +129,12 @@ pub(super) fn verify_replay_results(
     trace: &mut ResolvedEffectTrace,
     actions: &[ResolvedBindingAction],
     results: &[PreparedActionResult],
-    coordinate: FaultCoordinate,
-    same_coordinate_sequence: u64,
-    opportunity: Option<&FaultOpportunity>,
+    verification: ReplayActionVerification,
 ) -> Result<(), BindingRuntimeError> {
-    let item = trace
-        .work_item_for_context(coordinate, same_coordinate_sequence, opportunity)
-        .map_err(BindingRuntimeError::Runtime)?;
-    let consumed = item.is_some();
+    let item = verification
+        .consumed
+        .then(|| trace.work_items.get(trace.cursor))
+        .flatten();
     let records = item.map_or(&[][..], |item| item.records.as_slice());
     let matches = records.len() == actions.len()
         && actions.len() == results.len()
@@ -145,12 +143,6 @@ pub(super) fn verify_replay_results(
             .zip(actions)
             .zip(results)
             .all(|((record, action), result)| {
-                let action_matches = match trace.mode {
-                    FaultReplayMode::RecomputedCause => record.matches_recomputed_action(action),
-                    FaultReplayMode::LockedEffect => record.locked_action() == *action,
-                    FaultReplayMode::OutcomeOnlyNetwork(_) => opportunity
-                        .is_some_and(|opportunity| outcome_action(record, opportunity) == *action),
-                };
                 let coordinate_matches = match trace.mode {
                     FaultReplayMode::OutcomeOnlyNetwork(_) => {
                         result.observation.coordinate == action.coordinate
@@ -159,8 +151,7 @@ pub(super) fn verify_replay_results(
                         result.observation.coordinate == record.coordinate
                     }
                 };
-                action_matches
-                    && coordinate_matches
+                coordinate_matches
                     && result.precondition == record.precondition_digest
                     && result.observation.evidence == record.evidence_digest
             });
@@ -169,16 +160,59 @@ pub(super) fn verify_replay_results(
             FaultRuntimeError::ReplayMismatch {
                 index: trace.cursor,
                 expected: records.first().and_then(|record| record.opportunity),
-                observed: opportunity.map(FaultOpportunity::id).unwrap_or_default(),
+                observed: verification.observed,
             },
         ));
     }
-    if consumed {
+    if verification.consumed {
         trace
             .advance()
             .map_err(BindingRuntimeError::AdapterCommit)?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ReplayActionVerification {
+    consumed: bool,
+    observed: ContentHash,
+}
+
+pub(super) fn verify_replay_action_shapes(
+    trace: &ResolvedEffectTrace,
+    actions: &[ResolvedBindingAction],
+    coordinate: FaultCoordinate,
+    same_coordinate_sequence: u64,
+    opportunity: Option<&FaultOpportunity>,
+) -> Result<ReplayActionVerification, BindingRuntimeError> {
+    let observed = opportunity.map(FaultOpportunity::id).unwrap_or_default();
+    let item = trace
+        .work_item_for_context(coordinate, same_coordinate_sequence, opportunity)
+        .map_err(BindingRuntimeError::Runtime)?;
+    let records = item.map_or(&[][..], |item| item.records.as_slice());
+    let matches = records.len() == actions.len()
+        && records
+            .iter()
+            .zip(actions)
+            .all(|(record, action)| match trace.mode {
+                FaultReplayMode::RecomputedCause => record.matches_recomputed_action(action),
+                FaultReplayMode::LockedEffect => record.locked_action() == *action,
+                FaultReplayMode::OutcomeOnlyNetwork(_) => opportunity
+                    .is_some_and(|opportunity| outcome_action(record, opportunity) == *action),
+            });
+    if !matches {
+        return Err(BindingRuntimeError::Runtime(
+            FaultRuntimeError::ReplayMismatch {
+                index: trace.cursor,
+                expected: records.first().and_then(|record| record.opportunity),
+                observed,
+            },
+        ));
+    }
+    Ok(ReplayActionVerification {
+        consumed: item.is_some(),
+        observed,
+    })
 }
 
 fn outcome_action(
@@ -198,41 +232,80 @@ fn outcome_action(
     }
 }
 
-pub(super) fn resolved_replay_work_item(
+pub(super) fn stage_resolved_replay_work_item(
     actions: &[ResolvedBindingAction],
-    results: &[PreparedActionResult],
     coordinate: FaultCoordinate,
     opportunity: Option<&FaultOpportunity>,
     same_coordinate_sequence: u64,
     derivation_fingerprint: ContentHash,
+    resource_limits: FaultResourceLimits,
 ) -> Result<ResolvedReplayWorkItem, BindingRuntimeError> {
-    let mut records = Vec::with_capacity(actions.len());
-    for (action, result) in actions.iter().zip(results) {
+    let requested = u64::try_from(actions.len())
+        .map_err(|_| BindingRuntimeError::CountOverflow("resolved_effect_records"))?;
+    let mut records = Vec::new();
+    records.try_reserve_exact(actions.len()).map_err(|_| {
+        BindingRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+            field: "resolved_effect_records",
+            current: 0,
+            requested,
+            configured: resource_limits.resolved_effect_records,
+            hard: FaultResourceLimits::compiled_maximum().resolved_effect_records,
+        })
+    })?;
+    for action in actions {
+        records.push(
+            ResolvedEffectRecord::stage_from_action(
+                action,
+                opportunity,
+                same_coordinate_sequence,
+                derivation_fingerprint,
+            )
+            .map_err(FaultRuntimeError::Contract)
+            .map_err(BindingRuntimeError::Runtime)?,
+        );
+    }
+    Ok(ResolvedReplayWorkItem {
+        coordinate,
+        same_coordinate_sequence,
+        opportunity: opportunity.map(FaultOpportunity::id),
+        target: opportunity.map(|value| value.target().clone()),
+        operation: opportunity.map(FaultOpportunity::operation),
+        direction: opportunity.and_then(FaultOpportunity::direction),
+        phase: opportunity.map(FaultOpportunity::phase),
+        network_frame_key: opportunity.and_then(FaultOpportunity::network_frame_key),
+        network_producer_direction_key: opportunity
+            .and_then(FaultOpportunity::network_producer_direction_key),
+        derivation_fingerprint,
+        records,
+    })
+}
+
+pub(super) fn finalize_resolved_replay_work_item(
+    mut item: ResolvedReplayWorkItem,
+    actions: &[ResolvedBindingAction],
+    results: &[PreparedActionResult],
+) -> Result<ResolvedReplayWorkItem, BindingRuntimeError> {
+    if actions.len() != results.len() || item.records.len() != results.len() {
+        return Err(BindingRuntimeError::AdapterCommit(
+            FaultRuntimeError::IncompleteAdapterState,
+        ));
+    }
+    for ((record, action), result) in item.records.iter_mut().zip(actions).zip(results) {
         if !action.accepts_observation_coordinate(result.observation.coordinate) {
             return Err(BindingRuntimeError::AdapterCommit(
                 FaultRuntimeError::IncompleteAdapterState,
             ));
         }
-        let mut committed_action = action.clone();
-        committed_action.coordinate = result.observation.coordinate;
-        let record = ResolvedEffectRecord::from_committed_action(
-            &committed_action,
-            opportunity,
-            same_coordinate_sequence,
-            derivation_fingerprint,
-            result.precondition,
-            result.observation.evidence,
-        )
-        .map_err(FaultRuntimeError::Contract)
-        .map_err(BindingRuntimeError::AdapterCommit)?;
-        records.push(record);
+        record
+            .finalize_committed(
+                result.observation.coordinate,
+                result.precondition,
+                result.observation.evidence,
+            )
+            .map_err(FaultRuntimeError::Contract)
+            .map_err(BindingRuntimeError::AdapterCommit)?;
     }
-    ResolvedReplayWorkItem::new(
-        coordinate,
-        same_coordinate_sequence,
-        opportunity,
-        derivation_fingerprint,
-        records,
-    )
-    .map_err(BindingRuntimeError::AdapterCommit)
+    item.validate()
+        .map_err(BindingRuntimeError::AdapterCommit)?;
+    Ok(item)
 }

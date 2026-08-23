@@ -95,6 +95,31 @@ pub(super) fn reserve_usize_runtime(
         .map_err(BindingRuntimeError::ResourceLimit)
 }
 
+/// Reserves logical capacity and backing storage before adapter mutation.
+pub(super) fn try_reserve_runtime<T>(
+    values: &mut Vec<T>,
+    resource_limits: FaultResourceLimits,
+    field: &'static str,
+    additional: usize,
+) -> Result<(), BindingRuntimeError> {
+    reserve_usize_runtime(resource_limits, field, values.len(), additional)?;
+    values.try_reserve_exact(additional).map_err(|_| {
+        let current = u64::try_from(values.len()).unwrap_or(u64::MAX);
+        let requested = u64::try_from(additional).unwrap_or(u64::MAX);
+        let configured = resource_limits.configured(field).unwrap_or(0);
+        let hard = FaultResourceLimits::compiled_maximum()
+            .configured(field)
+            .unwrap_or(0);
+        BindingRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+            field,
+            current,
+            requested,
+            configured,
+            hard,
+        })
+    })
+}
+
 pub(super) fn recorded_effect_count(
     work_items: &[ResolvedReplayWorkItem],
 ) -> Result<usize, BindingRuntimeError> {
