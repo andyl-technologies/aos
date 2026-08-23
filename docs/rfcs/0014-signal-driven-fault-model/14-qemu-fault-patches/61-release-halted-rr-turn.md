@@ -85,6 +85,8 @@ that CPU/site and aborts only if the marked PAUSE takes the still-partial
 early-yield branch; earlier startup/contention PAUSEs cannot satisfy the marker.
 It retains the ordinary HLT and full-quantum paths. If the critical PAUSE merely
 exhausted the ordinary quantum, the marker is cleared without abort and the
-negative run fails the gate. The remaining APs acquire and release in turn
-before the BSP emits `R`.
+negative run fails the gate. The negative also consumes the gate's bounded
+pre-abort UART capture and requires exact `AAAB`, rather than trusting authored
+result text. The remaining APs acquire and release in turn before the BSP emits
+`R`.
 INIT/SIPI delivery or an unrelated interrupt cannot false-green this evidence.

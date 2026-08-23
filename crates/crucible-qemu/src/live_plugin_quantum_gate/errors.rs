@@ -88,6 +88,15 @@ pub enum LivePluginQuantumGateError {
         /// Complete bounded output observed from the guest.
         observed: Vec<u8>,
     },
+    /// QEMU failed after emitting a bounded prefix of the SMP guest proof.
+    #[error("quantum QEMU failed after guest evidence {observed:?}: {source}")]
+    GuestEvidenceBeforeFailure {
+        /// Complete bounded console prefix available when QEMU failed.
+        observed: Vec<u8>,
+        /// Underlying live-gate failure caused by the test-only QEMU abort.
+        #[source]
+        source: Box<LivePluginQuantumGateError>,
+    },
     /// Mapping the completed shared-memory setup region failed.
     #[error("map quantum loaded-QEMU shared-memory region failed: {source}")]
     RegionMap {

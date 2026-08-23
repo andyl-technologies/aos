@@ -39,7 +39,7 @@
     qemuPackage = qemuEarlyPauseYieldTrap;
     pluginPackage = pluginEarlyPauseYieldTrap;
     expectedQemuFailureMarker = "CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED";
-    expectedQemuFailureProvenance = "AAAB-issued-before-critical-arm";
+    expectedQemuFailureEvidence = "guest evidence [65, 65, 65, 66]";
   };
 
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -178,12 +178,17 @@
       }
       {
         label = "critical PAUSE negative armed after AAAB";
+        needle = "BSP has emitted B before the marker";
+      }
+      {
+        label = "critical PAUSE arm immediately precedes PAUSE";
         needle = ''
-          movb $'B', %al
-                  call serial_byte
-
-                  /*
-                   * This otherwise inert POST-port write arms only the test-only QEMU
+          movb $0xa7, %al
+                  outb %al, %dx
+                  xorw %ax, %ax
+                  movw $1, %cx
+                  movw $0, 0x7002
+                  pause
         '';
       }
       {
@@ -217,8 +222,8 @@
         needle = "EXPECTED_QEMU_FAILURE_MARKER";
       }
       {
-        label = "causal QEMU failure provenance";
-        needle = "EXPECTED_QEMU_FAILURE_PROVENANCE";
+        label = "runtime QEMU failure evidence";
+        needle = "grep -Fq \"$EXPECTED_QEMU_FAILURE_EVIDENCE\" \"$stderr_report\"";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeSource [
@@ -280,7 +285,7 @@ in
               'expected_qemu_failure_marker=CRUCIBLE_TEST_CRITICAL_EARLY_PAUSE_YIELD_REACHED' \
               ${earlyPauseYieldNegative}/result
             grep -Fxq \
-              'expected_qemu_failure_provenance=AAAB-issued-before-critical-arm' \
+              'observed_qemu_failure_evidence=guest evidence [65, 65, 65, 66]' \
               ${earlyPauseYieldNegative}/result
 
             mkdir -p "$out"
