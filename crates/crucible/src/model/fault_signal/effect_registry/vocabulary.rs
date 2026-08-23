@@ -46,7 +46,7 @@ impl<'de> serde::Deserialize<'de> for FaultCapabilityId {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let value = super::super::fallible_decode::deserialize_string(deserializer)?;
         Self::parse(value).map_err(serde::de::Error::custom)
     }
 }

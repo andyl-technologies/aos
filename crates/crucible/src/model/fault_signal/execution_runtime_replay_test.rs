@@ -4,6 +4,74 @@ use super::test_support::*;
 use super::*;
 
 #[test]
+fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits() {
+    let plan = test_plan();
+    let seed = ContentHash::from_bytes(b"resolved-trace-public-decode");
+    let mut recorder = FaultExecutionRuntime::new(
+        &plan,
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        manifests(),
+    )
+    .unwrap_or_else(|error| panic!("recorder: {error}"));
+    recorder
+        .evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+        )
+        .unwrap_or_else(|error| panic!("recording boundary: {error}"));
+    let item = recorder
+        .recorded_work_items
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("recording must produce one work item"));
+    assert_eq!(item.records.len(), 1);
+
+    let trace = ResolvedEffectTrace {
+        mode: FaultReplayMode::LockedEffect,
+        work_items: vec![item.clone()],
+        cursor: 0,
+    };
+    let bytes = trace
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("nonempty trace should encode: {error}"));
+    assert_eq!(
+        ResolvedEffectTrace::from_canonical_bytes(&bytes, FaultResourceLimits::default()),
+        Ok(trace)
+    );
+
+    let oversized = ResolvedEffectTrace {
+        mode: FaultReplayMode::LockedEffect,
+        work_items: vec![item.clone(), item],
+        cursor: 0,
+    };
+    let oversized_bytes = oversized
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("oversized trace fixture should encode: {error}"));
+    let limits = FaultResourceLimits {
+        thin_replay_events: 2,
+        resolved_effect_records: 1,
+        ..FaultResourceLimits::default()
+    };
+    assert!(matches!(
+        ResolvedEffectTrace::from_canonical_bytes(&oversized_bytes, limits),
+        Err(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 1,
+                requested: 1,
+                configured: 1,
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
 fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"recomputed-derivation-mismatch");

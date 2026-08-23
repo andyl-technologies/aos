@@ -47,7 +47,7 @@ impl<'de> serde::Deserialize<'de> for FaultObjectId {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let value = super::fallible_decode::deserialize_string(deserializer)?;
         Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
@@ -802,12 +802,14 @@ pub enum OpportunityPayload {
         /// Producer-owned monotonically recorded frame sequence.
         producer_sequence: u64,
         /// Nested scheduler-owned protocol-expansion ordinals.
+        #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
         protocol_expansion_path: Vec<u16>,
         /// Number of scheduler-generated responses in this frame's ancestry.
         generated_response_depth: u8,
         /// Opportunity that generated this frame, absent for guest frames.
         generated_response_cause: Option<ContentHash>,
         /// Ordered opportunities that changed this frame's World route.
+        #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
         forwarding_mutation_path: Vec<ContentHash>,
         /// Frame length in bytes.
         length_bytes: u64,

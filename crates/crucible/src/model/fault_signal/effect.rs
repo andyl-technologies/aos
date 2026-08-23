@@ -203,6 +203,7 @@ pub struct ResolvedEffectRecord {
     /// recomputed-cause replay.
     pub derivation_fingerprint: ContentHash,
     /// Contributors in canonical binding order.
+    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
     pub contributors: Vec<EffectContributor>,
     /// Production capability used to apply the effect.
     pub capability: FaultCapabilityId,
