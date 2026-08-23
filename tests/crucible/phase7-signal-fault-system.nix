@@ -229,9 +229,13 @@ in
           run_exact_qemu_test \
             fault_action_sink::tests::staged_qemu_results_and_evidence_use_reserved_storage
           run_exact_qemu_test \
+            fault_action_sink::tests::typed_prepare_reserves_only_the_exact_evidence_capacity
+          run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::qemu_action_ledger_retains_impulses_and_removed_rules_for_events
+          run_exact_qemu_test \
+            node::tests::fault_command::fault_command_applies_at_exact_current_boundary_without_guest_progress
           run_exact_shmem_test \
             fault_command::tests::result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer
 

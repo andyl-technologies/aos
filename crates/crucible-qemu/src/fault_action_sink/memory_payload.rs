@@ -2,6 +2,42 @@
 
 use super::*;
 
+pub(super) fn memory_batch(
+    actions: &[PreparedMemoryAction],
+    expected_precondition_sha256: [u8; 32],
+) -> MemoryMutationBatchV1 {
+    MemoryMutationBatchV1 {
+        actions: actions
+            .iter()
+            .map(|prepared| MemoryMutationBatchActionV1 {
+                action_hash: prepared.action.id().bytes,
+                mutation: prepared.payload.clone(),
+            })
+            .collect(),
+        expected_precondition_sha256,
+    }
+}
+
+pub(super) fn memory_batch_evidence_matches(
+    evidence: &MemoryMutationBatchEvidenceV1,
+    prepared: &PreparedQemuNodeBatch,
+) -> bool {
+    evidence.actions.len() == prepared.actions.len()
+        && evidence
+            .actions
+            .iter()
+            .zip(&prepared.actions)
+            .all(|(evidence, prepared_action)| {
+                evidence.action_hash == prepared_action.action.id().bytes
+                    && memory_evidence_matches(
+                        &evidence.evidence,
+                        &prepared_action.payload,
+                        prepared.coordinate,
+                        qemu_fault_target_hash(&prepared.node.name),
+                    )
+            })
+}
+
 pub(super) struct MemoryActionPayload {
     pub(super) action: ResolvedBindingAction,
     pub(super) node: NodeId,

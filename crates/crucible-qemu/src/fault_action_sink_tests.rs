@@ -191,6 +191,33 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
 }
 
 #[test]
+fn typed_prepare_reserves_only_the_exact_evidence_capacity() {
+    let storage =
+        reserve_fault_result_storage(FaultResourceLimits::default(), NODE_FAULT_EVIDENCE_V1_BYTES)
+            .unwrap_or_else(|error| panic!("typed evidence storage must be admitted: {error}"));
+
+    assert_eq!(storage.len(), 0);
+    assert_eq!(storage.capacity(), NODE_FAULT_EVIDENCE_V1_BYTES);
+
+    let limits = FaultResourceLimits {
+        effect_payload_bytes: NODE_FAULT_EVIDENCE_V1_BYTES as u64 - 1,
+        ..FaultResourceLimits::default()
+    };
+    assert_eq!(
+        reserve_fault_result_storage(limits, NODE_FAULT_EVIDENCE_V1_BYTES),
+        Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field: "effect_payload_bytes",
+                current: 0,
+                requested: NODE_FAULT_EVIDENCE_V1_BYTES as u64,
+                configured: NODE_FAULT_EVIDENCE_V1_BYTES as u64 - 1,
+                hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
+            })
+        ))
+    );
+}
+
+#[test]
 fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
     let payload = b"typed-result-evidence";
     let header = crucible_shmem::FaultResultHeaderV1 {
