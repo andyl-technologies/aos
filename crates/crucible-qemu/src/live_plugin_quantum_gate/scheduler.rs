@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    LivePluginAdvancementRates, LivePluginIdleObservation, LivePluginQuantumGateConfig,
-    LivePluginQuantumGateError,
+    HostAdversary, LivePluginAdvancementRates, LivePluginIdleObservation,
+    LivePluginQuantumGateConfig, LivePluginQuantumGateError,
 };
 
 /// Host poll interval while waiting on the plugin-owned boundary or teardown.
@@ -38,6 +38,7 @@ pub(super) fn drive_scenario(
     child: &mut crate::QemuNodeChild,
     setup: &crate::QemuHostPluginSetup,
     config: &LivePluginQuantumGateConfig,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<
     (
         LivePluginIdleObservation,
@@ -53,7 +54,7 @@ pub(super) fn drive_scenario(
     let mut host_observable_schedule = Vec::new();
 
     let idle = loop {
-        let (stop, event) = run_quantum(hot_path, child, setup, ceiling, config)?;
+        let (stop, event) = run_quantum(hot_path, child, setup, ceiling, config, host_adversary)?;
         host_observable_schedule.push(event);
         match stop {
             QuantumStop::ReachedCeiling { .. } => {
@@ -89,7 +90,7 @@ pub(super) fn drive_scenario(
                 .saturating_add(schedule.ceiling_step_icount),
         );
     let idle_started = wall_clock_start();
-    let (stop, event) = run_quantum(hot_path, child, setup, idle_horizon, config)?;
+    let (stop, event) = run_quantum(hot_path, child, setup, idle_horizon, config, host_adversary)?;
     host_observable_schedule.push(event);
     let terminal_icount = match stop {
         QuantumStop::ReachedCeiling { icount } => icount,
@@ -139,6 +140,7 @@ pub(super) fn run_quantum(
     setup: &crate::QemuHostPluginSetup,
     ceiling: u64,
     config: &LivePluginQuantumGateConfig,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<(QuantumStop, SimDoubleHostScheduleEvent), LivePluginQuantumGateError> {
     let from_icount = QemuShmemHotPathChannel::idle_state(hot_path)
         .map_err(|source| channel_error("read pre-quantum icount", source))?
@@ -165,6 +167,8 @@ pub(super) fn run_quantum(
     setup
         .signal_plugin_wake()
         .map_err(|source| channel_error("wake plugin for next quantum", source))?;
+    HostAdversary::begin_if_present(host_adversary)
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     let stop = wait_for_quantum_boundary(hot_path, child, ceiling, config)?;
     let completion = QemuShmemHotPathChannel::finish_quantum(hot_path, pending)
         .map_err(|source| channel_error("finish quantum", source))?;

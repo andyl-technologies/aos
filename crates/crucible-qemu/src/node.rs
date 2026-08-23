@@ -31,6 +31,7 @@ use crucible_shmem::{
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
 
+use crate::async_driver::run_bounded_qemu_node_step_with_start_hook;
 use crate::console_observation::QemuConsoleObservationSpool;
 use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
@@ -1721,6 +1722,38 @@ impl QemuNode {
             return Err(QemuNodeError::CoverageEventLogRequired);
         }
         let report = self.advance_to_ceiling_report(ceiling)?;
+        self.finish_advance_report(ceiling, report)
+    }
+
+    /// Advances one gate quantum and runs a hook after its horizon is published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded async driver, shared-memory
+    /// hot path, post-publication hook, or timeout shutdown escalation fails.
+    pub(crate) fn advance_to_ceiling_after_publish(
+        &mut self,
+        ceiling: Icount,
+        after_publish: impl FnOnce() -> Result<(), QemuNodeChannelError>,
+    ) -> Result<AdvanceOutcome, QemuNodeError> {
+        if self.channels.shmem_hot_path.coverage_enabled() {
+            return Err(QemuNodeError::CoverageEventLogRequired);
+        }
+        let mut target = QemuNodeAsyncStepTarget {
+            child: &mut self.child,
+            channels: &mut self.channels,
+            lifecycle_state: &mut self.lifecycle_state,
+            shutdown_policy: self.shutdown_policy,
+        };
+        let report = run_bounded_qemu_node_step_with_start_hook(
+            &mut target,
+            self.host_io_runtime.as_mut(),
+            self.async_policy,
+            &self.crash_detector,
+            ExecutionHorizon { icount: ceiling },
+            after_publish,
+        )
+        .map_err(QemuNodeError::from_async_driver)?;
         self.finish_advance_report(ceiling, report)
     }
 

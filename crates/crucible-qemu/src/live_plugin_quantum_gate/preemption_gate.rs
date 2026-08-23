@@ -217,13 +217,20 @@ fn run_preemption_scenario(
 
     // Setup is outside the compared schedule. Start the finite contention
     // budget only once the guest is ready for its commanded RUN boundaries.
-    let host_adversary = HostAdversary::start_if(apply_scheduler_preemption, child.process_id())
-        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
+    let mut host_adversary =
+        HostAdversary::start_if(apply_scheduler_preemption, child.process_id())
+            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
 
     let ceiling_stride = config.schedule.ceiling_step_icount;
     let mut host_observable_schedule = Vec::with_capacity(3);
-    let (first_stop, first_event) =
-        scheduler::run_quantum(&mut hot_path, &mut child, &setup, ceiling_stride, config)?;
+    let (first_stop, first_event) = scheduler::run_quantum(
+        &mut hot_path,
+        &mut child,
+        &setup,
+        ceiling_stride,
+        config,
+        &mut host_adversary,
+    )?;
     require_reached_ceiling(first_stop, ceiling_stride)?;
     host_observable_schedule.push(first_event);
     let first_sample = required_sample(&hot_path, &mut child, config, ceiling_stride)?;
@@ -242,8 +249,14 @@ fn run_preemption_scenario(
             },
         })
         .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
-    let (switch_stop, switch_event) =
-        scheduler::run_quantum(&mut hot_path, &mut child, &setup, switch_ceiling, config)?;
+    let (switch_stop, switch_event) = scheduler::run_quantum(
+        &mut hot_path,
+        &mut child,
+        &setup,
+        switch_ceiling,
+        config,
+        &mut host_adversary,
+    )?;
     require_reached_ceiling(switch_stop, switch_ceiling)?;
     require_consumed(&hot_path, switch_sequence, "vCPU switch")?;
     host_observable_schedule.push(switch_event);
@@ -281,8 +294,14 @@ fn run_preemption_scenario(
             },
         })
         .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
-    let (interrupt_stop, interrupt_event) =
-        scheduler::run_quantum(&mut hot_path, &mut child, &setup, interrupt_ceiling, config)?;
+    let (interrupt_stop, interrupt_event) = scheduler::run_quantum(
+        &mut hot_path,
+        &mut child,
+        &setup,
+        interrupt_ceiling,
+        config,
+        &mut host_adversary,
+    )?;
     require_reached_ceiling(interrupt_stop, interrupt_ceiling)?;
     require_consumed(&hot_path, interrupt_sequence, "interrupt")?;
     host_observable_schedule.push(interrupt_event);
@@ -290,6 +309,8 @@ fn run_preemption_scenario(
     let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read preemption execution fingerprint", source))?;
 
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     setup
         .assert_run_control_silent()
         .map_err(|source| channel_error("prove preemption run control silence", source))?;
@@ -301,11 +322,6 @@ fn run_preemption_scenario(
         return Err(LivePluginQuantumGateError::ChildExitUnclean {
             status: exit_status.to_string(),
         });
-    }
-    if let Some(host_adversary) = host_adversary {
-        host_adversary
-            .finish()
-            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     }
     drop(setup);
     drop(child);

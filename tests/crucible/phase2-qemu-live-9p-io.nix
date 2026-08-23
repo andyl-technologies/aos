@@ -23,7 +23,7 @@
   # instruction ceiling. Keep enough headroom for loaded or slower builders;
   # determinism is still enforced exclusively in the icount domain.
   ninepTimeoutSecs ? "180",
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
 }: let
   liveIoRunner = import ./_live-io-runner.nix {inherit pkgs lib;};
   # A stock kernel with 9p built IN (CONFIG_NET_9P=y / CONFIG_9P_FS=y) on top of
@@ -64,7 +64,7 @@ in
     GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
     CRUCIBLE_9P_IO_BUSY_CEILING = busyCeiling;
     CRUCIBLE_9P_IO_TIMEOUT_SECS = ninepTimeoutSecs;
-    CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_9P_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;

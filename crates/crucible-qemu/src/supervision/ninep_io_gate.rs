@@ -429,9 +429,8 @@ fn run_one_scenario(
             status: format!("{:?}", run_state.status),
         });
     }
-    // Priming established guest progress; bound contention to the device-I/O
-    // schedule rather than spending its closed budget during process setup.
-    let host_adversary =
+    // Priming established progress; spend the budget on the device-I/O schedule.
+    let mut host_adversary =
         HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
             .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
     let (advance, response_delay_applied) = drive_and_service(
@@ -445,16 +444,14 @@ fn run_one_scenario(
             timeout: config.completion_timeout,
             response_wall_delay: role.response_wall_delay(),
         },
+        &mut host_adversary,
     )?;
 
-    // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
-    // if it is still alive, so no QEMU is orphaned on an early return.
+    // Join the signal controller while this exact child is still authenticated
+    // and alive; teardown must never race a raw signal against PID reuse.
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
     let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
-    if let Some(host_adversary) = host_adversary {
-        host_adversary
-            .finish()
-            .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
-    }
     let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
     drop(hot_path);
@@ -685,6 +682,7 @@ fn drive_and_service(
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
     options: DriveOptions,
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<(NinepIoAdvanceOutcome, bool), QemuLive9pIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
@@ -695,6 +693,8 @@ fn drive_and_service(
         },
     )
     .map_err(|source| QemuLive9pIoGateError::drive("start 9p-io drive quantum", source))?;
+    HostAdversary::begin_if_present(host_adversary)
+        .map_err(|source| QemuLive9pIoGateError::SchedulerPreemption { source })?;
 
     let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;

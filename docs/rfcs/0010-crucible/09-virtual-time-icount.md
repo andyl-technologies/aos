@@ -694,7 +694,7 @@ instruction-primary.
   exact deadline by a 40M-icount O(1) jump, wakes, and re-idles below the
   published ceiling, never self-extending past it, because the max-advance
   budget is computed as `ceiling - logical_offset`. The terminal icount is
-  byte-identical on the second, host-loaded run.
+  byte-identical on the second, bounded-scheduler-preemption run.
 - [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint

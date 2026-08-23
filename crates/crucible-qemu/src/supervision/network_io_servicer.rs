@@ -37,6 +37,8 @@ pub const LIVE_NETWORK_REPLY_LATENCY_ICOUNT: u64 = 100_000_000;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 const MINIMUM_ETHERNET_FRAME_LEN: usize = 60;
+const BROADCAST_MAC: [u8; 6] = [0xff; 6];
+const GUEST_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 const ROUTER_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 
 /// One guest TX frame observed by the live network servicer.
@@ -392,16 +394,25 @@ impl QemuLiveNetworkIoServicer {
     }
 }
 
-fn is_live_network_probe(frame: &[u8]) -> bool {
-    ethernet_payload(frame) == Some(LIVE_NETWORK_PROBE_PAYLOAD)
+pub(super) fn is_live_network_probe(frame: &[u8]) -> bool {
+    ethernet_addresses(frame) == Some((&BROADCAST_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_PROBE_PAYLOAD)
 }
 
-fn is_live_network_ack(frame: &[u8]) -> bool {
-    ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
+pub(super) fn is_live_network_ack(frame: &[u8]) -> bool {
+    ethernet_addresses(frame) == Some((&ROUTER_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_ACK_PAYLOAD)
 }
 
 pub(crate) fn is_live_network_backpressure_ack(frame: &[u8]) -> bool {
-    ethernet_payload(frame) == Some(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+    ethernet_addresses(frame) == Some((&ROUTER_MAC, &GUEST_MAC))
+        && ethernet_payload(frame) == Some(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+}
+
+fn ethernet_addresses(frame: &[u8]) -> Option<(&[u8; 6], &[u8; 6])> {
+    let destination = frame.get(..6)?.try_into().ok()?;
+    let source = frame.get(6..12)?.try_into().ok()?;
+    Some((destination, source))
 }
 
 fn ethernet_payload(frame: &[u8]) -> Option<&[u8]> {
@@ -519,10 +530,10 @@ pub enum QemuLiveNetworkIoServicerError {
 mod tests {
     use super::*;
 
-    fn frame_with(payload: &[u8]) -> Vec<u8> {
+    fn frame_with(destination: [u8; 6], source: [u8; 6], payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0_u8; MINIMUM_ETHERNET_FRAME_LEN];
-        frame[..6].copy_from_slice(&[0xff; 6]);
-        frame[6..12].copy_from_slice(&[0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+        frame[..6].copy_from_slice(&destination);
+        frame[6..12].copy_from_slice(&source);
         frame[12..14].copy_from_slice(&LIVE_NETWORK_ETHERTYPE);
         frame[14..14 + payload.len()].copy_from_slice(payload);
         frame
@@ -531,20 +542,40 @@ mod tests {
     #[test]
     fn probe_and_ack_are_exact_protocol_payloads() {
         assert!(is_live_network_probe(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
             LIVE_NETWORK_PROBE_PAYLOAD
         )));
         assert!(!is_live_network_probe(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
             LIVE_NETWORK_ACK_PAYLOAD
         )));
-        assert!(is_live_network_ack(&frame_with(LIVE_NETWORK_ACK_PAYLOAD)));
+        assert!(is_live_network_ack(&frame_with(
+            ROUTER_MAC,
+            GUEST_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
+        )));
         assert!(is_live_network_backpressure_ack(&frame_with(
+            ROUTER_MAC,
+            GUEST_MAC,
             LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
+        )));
+        assert!(!is_live_network_ack(&frame_with(
+            BROADCAST_MAC,
+            GUEST_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
+        )));
+        assert!(!is_live_network_ack(&frame_with(
+            ROUTER_MAC,
+            ROUTER_MAC,
+            LIVE_NETWORK_ACK_PAYLOAD
         )));
     }
 
     #[test]
     fn reply_targets_guest_source_and_uses_router_source() {
-        let probe = frame_with(LIVE_NETWORK_PROBE_PAYLOAD);
+        let probe = frame_with(BROADCAST_MAC, GUEST_MAC, LIVE_NETWORK_PROBE_PAYLOAD);
         let reply = live_network_reply(&probe).unwrap_or_else(|error| {
             panic!("valid probe should build a reply: {error}");
         });

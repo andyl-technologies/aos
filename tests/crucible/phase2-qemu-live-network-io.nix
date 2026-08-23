@@ -86,6 +86,12 @@ in
             ${networkInitramfs}/evidence.env
           grep -Fxq 'guest_interface=virtio-net-eth0' \
             ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_receive_filter=eth0-non-outgoing' \
+            ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_reply_ack_binding=exact-router-source-and-guest-destination' \
+            ${networkInitramfs}/evidence.env
+          grep -Fxq 'guest_self_probe_acknowledgement=forbidden' \
+            ${networkInitramfs}/evidence.env
           grep -Fxq 'multi_guest_tx_order=deterministic-node-mac-stagger' \
             ${networkInitramfs}/evidence.env
 
@@ -101,8 +107,10 @@ in
             --list > "$scheduler_test_list"
           for test_name in \
             asynchronous_preemption_completes_while_target_runs \
+            controller_waits_for_pending_work_release \
             disabled_adversary_spawns_no_controller \
             dropping_controller_resumes_and_joins_stopped_target \
+            exited_target_fails_after_pending_work_release \
             signal_failure_is_reported_and_joined \
             watchdog_expiry_directly_resumes_stopped_target; do
             grep -Fxq \
@@ -165,6 +173,9 @@ in
           grep -Fxq 'reply_latency_icount=100000000' "$report"
           grep -Eq '^ack_emit_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'acknowledgement_seen=true' "$report"
+          grep -Fxq \
+            'guest_ack_causality=exact-router-source-destination-and-post-delivery' \
+            "$report"
           grep -Fxq 'boot_backpressure_retained=true' "$report"
           grep -Fxq 'canonical_backpressure_retry_delivered=true' "$report"
           grep -Fxq 'backpressure_retry_icount=4000001' "$report"
@@ -180,6 +191,7 @@ in
           grep -Fxq 'determinism_scope=router-delivery-and-frame-order' "$report"
           grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Fxq 'host_scheduler_preemption_count=6' "$report"
+          grep -Fxq 'host_scheduler_preemption_pending_quantum=true' "$report"
           grep -Fxq 'host_scheduler_preemption_requested_milliseconds=90' "$report"
           grep -Fxq 'delayed_reply_applied=false' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
@@ -221,7 +233,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,guest-ack,frame-order-scheduler-preemption-invariance,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,completion-owned-frame-transfer,real-qemu-nic-backpressure,canonical-backpressure-retry,retained-frame-guest-ack,fresh-process-retained-frame-restore,bounded-network-rx-attempts,lossless-qemu-rx,router-source-bound-guest-ack,post-reply-ack-coordinate,frame-order-scheduler-preemption-invariance,pending-quantum-preemption-overlap,production-two-vm-world-route,production-live-search-branch,durable-exact-restore-next-quantum,post-checkpoint-packet-and-fault-continuation\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"

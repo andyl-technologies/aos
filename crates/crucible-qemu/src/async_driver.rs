@@ -580,6 +580,7 @@ mod error;
 pub use error::{QemuAsyncDriverError, QemuAsyncDriverRuntimeError, QemuAsyncDriverTargetError};
 
 mod driver;
+pub(crate) use driver::run_bounded_qemu_node_step_with_start_hook;
 pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};
 
 #[cfg(test)]

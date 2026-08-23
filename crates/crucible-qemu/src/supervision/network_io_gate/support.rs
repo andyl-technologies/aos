@@ -12,9 +12,12 @@ use crucible::{
 
 use super::{
     DRIVE_POLL_INTERVAL, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, GATE_DOMAIN, GATE_NODE,
-    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD,
-    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL,
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
+    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_PROBE_PAYLOAD, LIVE_NETWORK_REPLY_LATENCY_ICOUNT,
+    NetworkIoRunOutcome, QMP_PRIMER_WAKE_INTERVAL, QemuLiveNetworkIoGateConfig,
+    QemuLiveNetworkIoGateError,
+};
+use crate::supervision::network_io_servicer::{
+    is_live_network_ack, is_live_network_backpressure_ack, is_live_network_probe,
 };
 use crate::{
     CrucibleShmemNetworkDevice, QemuHostPluginSetup, QemuLaunchArtifact, QemuNodeChild,
@@ -58,25 +61,21 @@ fn protocol_frames(outcome: &NetworkIoRunOutcome) -> Vec<(u64, u32, Vec<u8>)> {
         .tx_frames
         .iter()
         .filter(|frame| {
-            frame
-                .payload
-                .windows(LIVE_NETWORK_PROBE_PAYLOAD.len())
-                .any(|window| window == LIVE_NETWORK_PROBE_PAYLOAD)
-                || frame
-                    .payload
-                    .windows(LIVE_NETWORK_ACK_PAYLOAD.len())
-                    .any(|window| window == LIVE_NETWORK_ACK_PAYLOAD)
-                || frame
-                    .payload
-                    .windows(LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD.len())
-                    .any(|window| window == LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD)
+            is_live_network_probe(&frame.payload)
+                || is_live_network_ack(&frame.payload)
+                || is_live_network_backpressure_ack(&frame.payload)
         })
         .map(|frame| (frame.emit_icount, frame.sequence, frame.payload.clone()))
         .collect()
 }
 
 pub(super) fn probe_emit_icount(outcome: &NetworkIoRunOutcome) -> Option<u64> {
-    protocol_frames(outcome).first().map(|frame| frame.0)
+    outcome
+        .snapshot
+        .tx_frames
+        .iter()
+        .find(|frame| is_live_network_probe(&frame.payload))
+        .map(|frame| frame.emit_icount)
 }
 
 pub(super) fn acknowledgement_offset_icount(outcome: &NetworkIoRunOutcome) -> Option<u64> {
@@ -117,6 +116,8 @@ pub(super) fn certify_run(
         Some("reply was not stamped at the fixed icount latency")
     } else if acknowledgements != 1 || outcome.acknowledgement_icount.is_none() {
         Some("guest did not receive the reply and emit one acknowledgement")
+    } else if outcome.acknowledgement_icount < outcome.snapshot.reply_delivery_icount {
+        Some("guest acknowledgement preceded the exact router reply delivery coordinate")
     } else if !outcome.snapshot.backpressure_acknowledgement_seen
         || outcome.backpressure_acknowledgement_icount.is_none()
     {

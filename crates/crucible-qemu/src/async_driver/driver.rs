@@ -21,6 +21,40 @@ where
     T: QemuAsyncNodeStepTarget,
     R: QemuHostIoRuntime + ?Sized,
 {
+    run_bounded_qemu_node_step_with_start_hook(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        || Ok(()),
+    )
+}
+
+/// Runs one scheduler quantum and invokes a gate hook after publication.
+///
+/// The hook exists for bounded scheduler-preemption gates: they must not
+/// release their signal controller until `start_quantum` has published a real
+/// QEMU horizon. Production callers use [`run_bounded_qemu_node_step`].
+///
+/// # Errors
+///
+/// Returns [`QemuAsyncDriverError`] under the same conditions as
+/// [`run_bounded_qemu_node_step`], including a typed channel error when the
+/// post-publication hook rejects the pending quantum.
+pub(crate) fn run_bounded_qemu_node_step_with_start_hook<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce() -> Result<(), QemuNodeChannelError>,
+{
     policy.validate()?;
 
     let mut async_operations = Vec::new();
@@ -32,6 +66,7 @@ where
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
+    after_start().map_err(QemuAsyncDriverError::Channel)?;
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;

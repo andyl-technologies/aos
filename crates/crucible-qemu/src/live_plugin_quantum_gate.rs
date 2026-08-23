@@ -479,25 +479,25 @@ fn run_one_scenario(
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
 
-    // The bounded worker starts only after QEMU/plugin setup, immediately
-    // before the guest schedule it is meant to contend with.
-    let host_adversary =
+    // Start only after setup, adjacent to the guest schedule being perturbed.
+    let mut host_adversary =
         HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
             .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
-    let (idle, rates, host_observable_schedule) =
-        scheduler::drive_scenario(&mut hot_path, &mut child, &setup, config)?;
+    let drive = scheduler::drive_scenario;
+    let (idle, rates, host_observable_schedule) = drive(
+        &mut hot_path,
+        &mut child,
+        &setup,
+        config,
+        &mut host_adversary,
+    )?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
-    if let Some(host_adversary) = host_adversary {
-        host_adversary
-            .finish()
-            .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
-    }
-
+    HostAdversary::finish_if_present(&mut host_adversary)
+        .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     setup
         .assert_run_control_silent()
         .map_err(|source| channel_error("prove run control silence", source))?;
-
     QemuPluginIpcControlChannel::send_quit(&mut setup)
         .map_err(|source| channel_error("send plugin Quit", source))?;
     scheduler::wait_for_plugin_teardown(&hot_path, config)?;
