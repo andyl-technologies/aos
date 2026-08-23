@@ -52,8 +52,12 @@ pub trait QemuAttemptHostResourceOwner {
     fn resource_limits(&self) -> AttemptResourceLimits;
 
     /// Returns the sealed child-process launch contract.
-    #[must_use]
-    fn child_process_contract(&self) -> &QemuChildProcessContract;
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error after terminal cleanup has closed launch
+    /// authority or when the contract cannot be authenticated.
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError>;
 
     /// Duplicates the narrow sticky process-cancellation capability.
     ///
@@ -314,7 +318,7 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
-    fn child_process_contract(&self) -> &QemuChildProcessContract {
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.child_process_contract()
     }
 

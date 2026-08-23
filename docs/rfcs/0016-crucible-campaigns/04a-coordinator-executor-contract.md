@@ -1965,7 +1965,14 @@ bind that interface to the nondroppable cgroup owner, a real aggregate
 filesystem quota, exclusive run-directory namespace ownership through QEMU
 artifact open, and active-node failure handoff. That Linux adapter and final
 session wiring remain mandatory before the guarded path may launch a campaign
-QEMU. Until then the cgroup and quarantine authorities remain crate-internal.
+QEMU. A process-only Linux facade now validates a daemon-incarnation namespace,
+non-root child IDs, task and finish bounds before acquiring the delegated root;
+it creates fixed-width unique child names, exposes only the sealed contract and
+sticky signal, and completes or quarantines the underlying owner. A partial
+setup poisons that allocator and retains authority fail-closed rather than
+allowing another launch. Raw cgroup controls and quarantine implementation
+remain crate-internal, and the process facade cannot be used as a complete
+resource guard until the quota/run-directory binding lands.
 
 Every validated `QemuLaunchCommand` also exposes a stable operational resource
 baseline derived from its fixed `-smp`, guest RAM, exact-VMState virtual size,

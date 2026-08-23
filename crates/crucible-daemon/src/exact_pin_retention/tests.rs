@@ -501,8 +501,8 @@ impl crate::QemuAttemptResourceGuard for GuardedResumeGuard {
 }
 
 impl crate::QemuAttemptProcessResourceGuard for GuardedResumeGuard {
-    fn child_process_contract(&self) -> &QemuChildProcessContract {
-        &self.process_contract
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
+        Ok(&self.process_contract)
     }
 
     fn retain_failed_launch_child(&mut self, child: crucible_qemu::QemuNodeChild) {

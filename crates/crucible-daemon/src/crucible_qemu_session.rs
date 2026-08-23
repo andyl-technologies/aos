@@ -133,8 +133,12 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// only while the attempt guard is live.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     /// Returns the exact child-process containment contract for this attempt.
-    #[must_use]
-    fn child_process_contract(&self) -> &QemuChildProcessContract;
+    ///
+    /// # Errors
+    ///
+    /// Returns an operational error after terminal cleanup has closed launch
+    /// authority or when the host owner cannot authenticate the contract.
+    fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError>;
 
     /// Retains a direct child whose failed realization could not reap it.
     ///
