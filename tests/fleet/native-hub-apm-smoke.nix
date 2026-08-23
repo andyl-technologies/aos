@@ -211,7 +211,8 @@ in {
       empty_orgs = json.loads(publisher.succeed(hub_command("org list", token)))
       assert empty_orgs["schema_version"] == "aos.hub.cli/v1", empty_orgs
       assert empty_orgs["kind"] == "list_organizations_response", empty_orgs
-      assert empty_orgs["data"]["organizations"] == [], empty_orgs
+      # Connect-JSON omits repeated fields at their protobuf empty default.
+      assert empty_orgs["data"].get("organizations", []) == [], empty_orgs
 
       # The publisher receives host-built paths through 9p, then makes only
       # that closure visible at its canonical paths and in its local Nix DB.
