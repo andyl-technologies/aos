@@ -4,6 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuLivePluginQuantumSmp",
   taskIds ? ["T-PLUG-24"],
 }: let
+  fullSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
   smpGuest = import ./phase2-qemu-live-plugin-quantum-smp-guest.nix {inherit pkgs;};
   liveQuantumSmp = import ./phase2-qemu-live-plugin-quantum.nix {
     inherit pkgs lib;
@@ -16,6 +17,28 @@
     maxSearch = "80000000";
     idleHorizonMargin = "80000000";
     customGuestKernel = "${smpGuest}/smp-idle-guest.elf";
+  };
+  qemuEarlyPauseYieldTrap = pkgs.qemuCrucibleNonDistributableTestPrefix {
+    pname = "qemu-crucible-early-pause-yield-trap";
+    series = fullSeries;
+    testOnlyPostPatch = ./fixtures/qemu-trap-early-pause-yield.patch;
+  };
+  pluginEarlyPauseYieldTrap = pkgs.crucibleQemuPluginFor qemuEarlyPauseYieldTrap;
+  earlyPauseYieldNegative = import ./phase2-qemu-live-plugin-quantum.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.earlyPauseYieldNegative";
+    taskIds = [];
+    openTaskIds = [];
+    smpVcpus = "4";
+    memoryMib = "64";
+    requireSmpPauseRendezvous = "1";
+    secondRunSchedulerPreemption = "0";
+    maxSearch = "80000000";
+    idleHorizonMargin = "80000000";
+    customGuestKernel = "${smpGuest}/smp-idle-guest.elf";
+    qemuPackage = qemuEarlyPauseYieldTrap;
+    pluginPackage = pluginEarlyPauseYieldTrap;
+    expectedQemuFailureMarker = "CRUCIBLE_TEST_EARLY_PAUSE_YIELD_REACHED";
   };
 
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -89,6 +112,14 @@
         needle = "if (owner == cpu->cpu_index)";
       }
       {
+        label = "guest PAUSE control-boundary fence begin";
+        needle = "qemu_plugin_crucible_guest_pause_handoff_begin();";
+      }
+      {
+        label = "guest PAUSE control-boundary fence completion";
+        needle = "qemu_plugin_crucible_guest_pause_handoff_complete();";
+      }
+      {
         label = "completed quantum avoids double handoff";
         needle = "else if (cursor != 0)";
       }
@@ -151,6 +182,14 @@
         label = "exact production fingerprint regression";
         needle = "stale_execution_fingerprint_requests_production_control_boundary";
       }
+      {
+        label = "test-only QEMU package injection";
+        needle = "qemuPackage ? pkgs.qemu-crucible";
+      }
+      {
+        label = "causal QEMU failure marker";
+        needle = "EXPECTED_QEMU_FAILURE_MARKER";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeSource [
       {
@@ -186,6 +225,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
+        earlyPauseYieldNegative
         liveQuantumSmp
       ];
 
@@ -205,6 +245,10 @@ in
             grep -Fxq 'host_adversary=bounded-scheduler-preemption' ${liveQuantumSmp}/result
             grep -Fxq 'sim_double_schedule_matches=true' ${liveQuantumSmp}/result
             grep -Fxq 'guest_load_segments=compact-high-only' ${smpGuest}/evidence.env
+            grep -Fxq PASS ${earlyPauseYieldNegative}/result
+            grep -Fxq \
+              'expected_qemu_failure_marker=CRUCIBLE_TEST_EARLY_PAUSE_YIELD_REACHED' \
+              ${earlyPauseYieldNegative}/result
 
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
@@ -220,6 +264,7 @@ in
             guest_pause_rr_handoff=canonical-cursor-zero
             guest_pause_classification=dedicated-transient-marker
             guest_pause_rendezvous=release-pause-immediate-reacquire-fails-before-ap-lock-chain
+            guest_pause_early_yield_negative=exact-branch-trap-observed
             guest_smp_pause_rendezvous_observed=true
             ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only

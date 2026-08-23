@@ -316,6 +316,18 @@
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           grep -q '^+                icount_crucible_rr_yield_cpu(cpu);' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qemu_plugin_crucible_guest_pause_handoff_begin();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            qemu_plugin_crucible_guest_pause_handoff_complete();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 2) == 1) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qatomic_store_release(&qemu_plugin_crucible_guest_pause_handoff, 3);' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    if (qemu_plugin_crucible_guest_pause_handoff_pending()) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        qemu_plugin_schedule_control_boundary();' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           ! grep -q '^+.*cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
 

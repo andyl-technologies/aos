@@ -1242,8 +1242,11 @@ component that makes that purity true *inside* the QEMU process.
   then runs a lock-handoff AP/BSP rendezvous whose exact `AAABPPPR` console
   record requires a waiting AP to acquire the BSP-released lock between the
   BSP's `PAUSE` and its immediately following reacquire instruction. A failed
-  early handoff emits `F` and parks forever, so eventual rotation at the
-  ordinary RR quantum cannot false-green the proof. The remaining APs acquire
+  early handoff emits `F` and parks forever. A test-only QEMU traps precisely
+  the still-partial early-yield branch while retaining ordinary full-quantum
+  and HLT behavior, and the same live workload must reach that trap; eventual
+  rotation at the ordinary RR quantum cannot false-green the proof. The
+  remaining APs acquire
   in turn before the guest parks all four vCPUs in HLT and arms a periodic PIT
   deadline on the BSP.
   Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
