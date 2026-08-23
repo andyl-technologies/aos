@@ -44,9 +44,26 @@ impl FaultRuntimeCheckpoint {
         plan: &FaultSignalPlan,
         scenario_seed: ContentHash,
     ) -> Result<Self, FaultRuntimeError> {
-        checkpoint_codec::admit_input(bytes, plan.resource_limits())?;
-        let checkpoint: Self =
-            ciborium::de::from_reader(bytes).map_err(|_| FaultRuntimeError::CheckpointEncoding)?;
+        let limits = plan.resource_limits();
+        checkpoint_codec::admit_input(bytes, limits)?;
+        let scratch_bytes = trace_codec::checkpoint_preflight(bytes, limits)?;
+        let scratch_requested = u64::try_from(scratch_bytes)
+            .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+        let mut scratch = Vec::new();
+        scratch.try_reserve_exact(scratch_bytes).map_err(|_| {
+            FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field: "fat_checkpoint_bytes",
+                current: 0,
+                requested: scratch_requested,
+                configured: limits.fat_checkpoint_bytes,
+                hard: FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes,
+            })
+        })?;
+        scratch.resize(scratch_bytes, 0);
+
+        let _budget = super::super::fallible_decode::DecodeBudgetGuard::enter(limits);
+        let checkpoint: Self = ciborium::de::from_reader_with_buffer(bytes, &mut scratch)
+            .map_err(trace_codec::map_decode_error)?;
         checkpoint.validate(plan, scenario_seed)?;
         if checkpoint.canonical_bytes()?.as_slice() != bytes {
             return Err(FaultRuntimeError::CheckpointEncoding);

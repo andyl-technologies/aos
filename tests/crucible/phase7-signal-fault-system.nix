@@ -79,6 +79,29 @@ in
           fi
 
           target="$TMPDIR/signal-fault-system-target"
+          crucible_lib_tests="$TMPDIR/crucible-lib-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib \
+            -- --list > "$crucible_lib_tests"
+
+          run_exact_crucible_test() {
+            test_name="$1"
+            grep -Fqx "$test_name: test" "$crucible_lib_tests"
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --lib "$test_name" \
+              -- --exact --test-threads=1
+          }
+
           for test_target in \
             gate_signal_fault_system \
             fault_reference \
@@ -137,62 +160,22 @@ in
             --test production_fault_checkpoint \
             -- --test-threads=1
 
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib signal_fault_frontier_preserves_parent_time_and_typed_candidates \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib locked_replay_retains_and_enforces_a_backend_refined_coordinate \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib resolved_effect_trace_rejects_unversioned_and_future_envelopes \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib resolved_effect_trace_preflights_authored_collection_counts \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib borrowed_capacity_wire_matches_a_real_host_record_candidate \
-            -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible \
-            --lib nested_sequence_allocation_uses_the_authored_fat_checkpoint_coordinate \
-            -- --test-threads=1
+          run_exact_crucible_test \
+            scheduler::tests::signal_fault_frontier_preserves_parent_time_and_typed_candidates
+          run_exact_crucible_test \
+            model::fault_signal::binding_runtime::tests::refined_coordinate::locked_replay_retains_and_enforces_a_backend_refined_coordinate
+          run_exact_crucible_test \
+            model::fault_signal::runtime::tests::resolved_effect_trace_rejects_unversioned_and_future_envelopes
+          run_exact_crucible_test \
+            model::fault_signal::runtime::tests::resolved_effect_trace_preflights_authored_collection_counts
+          run_exact_crucible_test \
+            model::fault_signal::execution_runtime::replay_tests::resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored_limits
+          run_exact_crucible_test \
+            model::fault_signal::execution_runtime::capacity_preflight::tests::borrowed_capacity_wire_matches_a_real_host_record_candidate
+          run_exact_crucible_test \
+            model::fault_signal::fallible_decode::tests::nested_sequence_allocation_uses_the_authored_fat_checkpoint_coordinate
+          run_exact_crucible_test \
+            model::fault_signal::execution_runtime::replay_tests::fault_runtime_checkpoint_preflights_authored_record_count_before_decode
 
           cargo test \
             --frozen \

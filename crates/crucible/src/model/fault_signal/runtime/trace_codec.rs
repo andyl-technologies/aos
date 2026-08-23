@@ -73,48 +73,10 @@ pub(super) fn preflight(
 ) -> Result<usize, FaultRuntimeError> {
     let mut cursor = CborCursor::new(payload);
     let fields = cursor.map_len()?;
-    let mut records = 0_u64;
     for _ in 0..fields {
         let field = cursor.text()?;
         if field == b"work_items" {
-            let work_items = cursor.array_len()?;
-            admit(
-                "thin_replay_events",
-                0,
-                work_items,
-                limits.thin_replay_events,
-                HARD_WORK_ITEMS,
-            )?;
-            for _ in 0..work_items {
-                let item_fields = cursor.map_len()?;
-                for _ in 0..item_fields {
-                    let item_field = cursor.text()?;
-                    if item_field == b"records" {
-                        let additional = cursor.array_len()?;
-                        admit(
-                            "resolved_effect_records",
-                            records,
-                            additional,
-                            limits.resolved_effect_records,
-                            HARD_RECORDS,
-                        )?;
-                        records = records.checked_add(additional).ok_or_else(|| {
-                            resource(
-                                "resolved_effect_records",
-                                records,
-                                additional,
-                                limits.resolved_effect_records,
-                                HARD_RECORDS,
-                            )
-                        })?;
-                        for _ in 0..additional {
-                            cursor.skip_value(0)?;
-                        }
-                    } else {
-                        cursor.skip_value(0)?;
-                    }
-                }
-            }
+            scan_work_items(&mut cursor, limits)?;
         } else {
             cursor.skip_value(0)?;
         }
@@ -123,6 +85,82 @@ pub(super) fn preflight(
         return Err(FaultRuntimeError::CheckpointEncoding);
     }
     Ok(cursor.max_scalar_bytes)
+}
+
+pub(super) fn checkpoint_preflight(
+    payload: &[u8],
+    limits: FaultResourceLimits,
+) -> Result<usize, FaultRuntimeError> {
+    let mut cursor = CborCursor::new(payload);
+    let fields = cursor.map_len()?;
+    for _ in 0..fields {
+        let field = cursor.text()?;
+        match field {
+            b"recorded_work_items" => scan_work_items(&mut cursor, limits)?,
+            b"replay" if cursor.peek_byte()? != 0xf6 => {
+                let replay_fields = cursor.map_len()?;
+                for _ in 0..replay_fields {
+                    let replay_field = cursor.text()?;
+                    if replay_field == b"work_items" {
+                        scan_work_items(&mut cursor, limits)?;
+                    } else {
+                        cursor.skip_value(0)?;
+                    }
+                }
+            }
+            _ => cursor.skip_value(0)?,
+        }
+    }
+    if cursor.offset != payload.len() {
+        return Err(FaultRuntimeError::CheckpointEncoding);
+    }
+    Ok(cursor.max_scalar_bytes)
+}
+
+fn scan_work_items(
+    cursor: &mut CborCursor<'_>,
+    limits: FaultResourceLimits,
+) -> Result<(), FaultRuntimeError> {
+    let work_items = cursor.array_len()?;
+    admit(
+        "thin_replay_events",
+        0,
+        work_items,
+        limits.thin_replay_events,
+        HARD_WORK_ITEMS,
+    )?;
+    let mut records = 0_u64;
+    for _ in 0..work_items {
+        let item_fields = cursor.map_len()?;
+        for _ in 0..item_fields {
+            let item_field = cursor.text()?;
+            if item_field == b"records" {
+                let additional = cursor.array_len()?;
+                admit(
+                    "resolved_effect_records",
+                    records,
+                    additional,
+                    limits.resolved_effect_records,
+                    HARD_RECORDS,
+                )?;
+                records = records.checked_add(additional).ok_or_else(|| {
+                    resource(
+                        "resolved_effect_records",
+                        records,
+                        additional,
+                        limits.resolved_effect_records,
+                        HARD_RECORDS,
+                    )
+                })?;
+                for _ in 0..additional {
+                    cursor.skip_value(0)?;
+                }
+            } else {
+                cursor.skip_value(0)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 trait BoundField {
@@ -317,7 +355,7 @@ fn resource_message(
     super::super::fallible_decode::resource_message(field, current, requested, configured, hard)
 }
 
-fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
+pub(super) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> FaultRuntimeError {
     let ciborium::de::Error::Semantic(_, message) = error else {
         return FaultRuntimeError::CheckpointEncoding;
     };
@@ -443,6 +481,13 @@ impl<'a> CborCursor<'a> {
             .ok_or(FaultRuntimeError::CheckpointEncoding)?;
         self.offset += 1;
         Ok(value)
+    }
+
+    fn peek_byte(&self) -> Result<u8, FaultRuntimeError> {
+        self.bytes
+            .get(self.offset)
+            .copied()
+            .ok_or(FaultRuntimeError::CheckpointEncoding)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], FaultRuntimeError> {

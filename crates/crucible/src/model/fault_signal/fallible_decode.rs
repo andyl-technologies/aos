@@ -152,6 +152,10 @@ pub(super) fn deserialize_string<'de, D>(deserializer: D) -> Result<String, D::E
 where
     D: Deserializer<'de>,
 {
+    if !budget_active() {
+        return String::deserialize(deserializer);
+    }
+
     struct StringVisitor;
 
     impl Visitor<'_> for StringVisitor {
@@ -272,9 +276,17 @@ mod tests {
 
     struct FallibleU64Vec(Vec<u64>);
 
+    struct CompatibleString(String);
+
     impl<'de> Deserialize<'de> for FallibleU64Vec {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             deserialize_vec(deserializer).map(Self)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for CompatibleString {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserialize_string(deserializer).map(Self)
         }
     }
 
@@ -317,5 +329,16 @@ mod tests {
         let decoded = serde_json::from_str::<FallibleU64Vec>("[1,2]")
             .unwrap_or_else(|error| panic!("streaming JSON sequence should decode: {error}"));
         assert_eq!(decoded.0, vec![1, 2]);
+    }
+
+    #[test]
+    fn non_artifact_deserializers_retain_large_string_compatibility() {
+        let source = "a".repeat(5_000);
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&source, &mut encoded)
+            .unwrap_or_else(|error| panic!("string fixture should encode: {error}"));
+        let decoded = ciborium::de::from_reader::<CompatibleString, _>(encoded.as_slice())
+            .unwrap_or_else(|error| panic!("large string should decode: {error}"));
+        assert_eq!(decoded.0, source);
     }
 }
