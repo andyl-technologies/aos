@@ -63,7 +63,9 @@ in {
       bootMode = "image";
       hostStoreMount = true;
       imageDiskMiB = 16384;
-      memoryMiB = 4096;
+      # Nix's canonical NAR writer can transiently exceed 6 GiB while hashing
+      # the production-sized raw disk and A/B payload imported over 9p.
+      memoryMiB = 8192;
       varProvisioning = "repart";
     };
   };
@@ -809,7 +811,7 @@ in {
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /tmp/publication-system
-      """), timeout=2400)
+      """), timeout=1800)
       publication_system_data = json.loads(publication_system)["data"]
       assert publication_system_data["state"] == "ready", publication_system_data
       publisher.wait_until_succeeds(
