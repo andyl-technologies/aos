@@ -1844,9 +1844,13 @@ and mints the otherwise-unconstructible child contract from fresh
 `cgroup.procs` and sticky nonblocking eventfd descriptors. It holds one
 nonblocking exclusive lock on the delegated child namespace across root,
 configured-group, and failed-setup cleanup authorities; a valid delegation MUST
-not grant a non-cooperating writer access to that same namespace. Once a child
-directory exists, every setup error retains its pinned cleanup authority, and a
-failed release returns that authority instead of dropping it. The authority
+not grant a non-cooperating writer access to that same namespace. A child
+forked while an authority is live inherits the close-on-exec lock description
+until `exec`; replacement-owner acquisition therefore treats a transient busy
+result after final local release as a fail-closed handoff and retries within its
+supervised startup deadline. Once a child directory exists, every setup error
+retains its pinned cleanup authority, and a failed release returns that
+authority instead of dropping it. The authority
 retains independent `cgroup.kill` and `cgroup.events` access for
 cancellation/reap supervision, derives the exact PID/start-time/executable
 identity from the owned direct child, authenticates that process generation
