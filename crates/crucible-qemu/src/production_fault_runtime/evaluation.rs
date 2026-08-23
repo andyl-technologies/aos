@@ -35,7 +35,7 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
-        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
+        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
         let runtime = self
             .runtime
             .as_mut()
@@ -245,7 +245,7 @@ impl ProductionFaultRuntime {
     pub(super) fn update_qemu_action_ledger(
         &mut self,
         actions: &[ResolvedBindingAction],
-        mut commits: BTreeMap<ContentHash, CommittedQemuActionEvidence>,
+        mut commits: Vec<(ContentHash, CommittedQemuActionEvidence)>,
     ) -> Result<(), ProductionFaultRuntimeError> {
         for action in actions
             .iter()
@@ -254,15 +254,14 @@ impl ProductionFaultRuntime {
             match action.kind {
                 BindingActionKind::UpsertPersistent | BindingActionKind::Apply => {
                     let identity = action.id();
-                    let commit =
-                        commits
-                            .remove(&identity)
-                            .ok_or_else(|| BackendError::Rejected {
-                                message: format!(
-                                    "QEMU action identity {} has no authenticated APPLY result",
-                                    identity.to_hex()
-                                ),
-                            })?;
+                    let commit = take_qemu_commit(&mut commits, identity).ok_or_else(|| {
+                        BackendError::Rejected {
+                            message: format!(
+                                "QEMU action identity {} has no authenticated APPLY result",
+                                identity.to_hex()
+                            ),
+                        }
+                    })?;
                     let retained = u64::try_from(self.qemu_issued_actions.len()).map_err(|_| {
                         FaultResourceLimitError::Representation {
                             field: "event_records",
@@ -339,7 +338,7 @@ impl ProductionFaultRuntime {
                     }
                 }
                 BindingActionKind::RemovePersistent => {
-                    if commits.remove(&action.id()).is_none() {
+                    if take_qemu_commit(&mut commits, action.id()).is_none() {
                         return Err(BackendError::Rejected {
                             message: format!(
                                 "QEMU removal identity {} has no authenticated APPLY result",
@@ -403,7 +402,7 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
-        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes);
+        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
         let runtime = self
             .runtime
             .as_mut()
@@ -497,6 +496,16 @@ impl ProductionFaultRuntime {
         }
         Ok(())
     }
+}
+
+fn take_qemu_commit(
+    commits: &mut Vec<(ContentHash, CommittedQemuActionEvidence)>,
+    action: ContentHash,
+) -> Option<CommittedQemuActionEvidence> {
+    let index = commits
+        .iter()
+        .position(|(candidate, _)| *candidate == action)?;
+    Some(commits.swap_remove(index).1)
 }
 
 fn runtime_collection_allocation(

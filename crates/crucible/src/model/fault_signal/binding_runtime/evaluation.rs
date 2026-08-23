@@ -96,6 +96,11 @@ impl<'a> FaultBindingRuntime<'a> {
                         .map_or(derivation_fingerprint, |item| item.derivation_fingerprint),
                     _ => derivation_fingerprint,
                 };
+                let recorded_effects_before = recorded
+                    .as_deref()
+                    .map(|work_items| recorded_effect_count(work_items))
+                    .transpose()?
+                    .unwrap_or(0);
                 if let Some(work_items) = recorded.as_deref() {
                     reserve_usize_runtime(
                         self.resource_limits,
@@ -106,7 +111,7 @@ impl<'a> FaultBindingRuntime<'a> {
                     reserve_usize_runtime(
                         self.resource_limits,
                         "resolved_effect_records",
-                        recorded_effect_count(work_items)?,
+                        recorded_effects_before,
                         evaluation.actions.len(),
                     )?;
                 }
@@ -134,6 +139,7 @@ impl<'a> FaultBindingRuntime<'a> {
                         same_coordinate_sequence,
                         recording_derivation_fingerprint,
                         self.resource_limits,
+                        recorded_effects_before,
                     )?)
                 } else {
                     None
@@ -194,6 +200,7 @@ impl<'a> FaultBindingRuntime<'a> {
                     BindingRuntimeError::AdapterAbort(_) | BindingRuntimeError::AdapterCommit(_)
                 ) {
                     self.poisoned = true;
+                    return Err(error);
                 }
                 self.states = states;
                 self.active = active;
