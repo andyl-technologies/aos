@@ -81,10 +81,21 @@
         needle = "guest_pause_yield &&";
       }
       {
-        label = "host kick excluded from guest yield";
-        needle = "cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug";
+        label = "guest PAUSE committed before host-work exits";
+        needle = "Commit the helper-authenticated PAUSE transition before any";
+      }
+      {
+        label = "guest PAUSE owner handoff";
+        needle = "if (owner == cpu->cpu_index)";
+      }
+      {
+        label = "completed quantum avoids double handoff";
+        needle = "else if (cursor != 0)";
       }
     ]
+    ++ lib.optional
+    (hasInfix "cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug" haltedRrPatch)
+    "pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch: guest PAUSE handoff is incorrectly conditional on late host work"
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum-smp-guest.nix" smpGuestSource [
       {
         label = "directed AP startup";
@@ -107,16 +118,20 @@
         needle = "movl $ap_trampoline_start, %esi";
       }
       {
-        label = "AP online PAUSE rendezvous";
-        needle = "ap_wait_for_release:";
+        label = "AP lock contention before handoff";
+        needle = "ap_acquire_handoff_lock:";
       }
       {
         label = "BSP observes every AP online";
         needle = "wait_for_all_aps_online:";
       }
       {
-        label = "post-PAUSE AP acknowledgement";
-        needle = "lock incw 0x7004";
+        label = "PAUSE immediate reacquire negative";
+        needle = "lock cmpxchgw %cx, 0x7002";
+      }
+      {
+        label = "PAUSE handoff failure marker";
+        needle = "movb $'F', %al";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum.nix" quantumGate [
@@ -204,7 +219,7 @@ in
             halted_partial_rr_turn_reaches_idle=true
             guest_pause_rr_handoff=canonical-cursor-zero
             guest_pause_classification=dedicated-transient-marker
-            guest_pause_rendezvous=ap-online-bsp-release-ap-past-pause
+            guest_pause_rendezvous=release-pause-immediate-reacquire-fails-before-ap-lock-chain
             guest_smp_pause_rendezvous_observed=true
             ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only
