@@ -1536,30 +1536,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   mismatches remain rejected. The x86 `PAUSE` helper sets a transient private
   marker that the RR loop consumes and clears immediately after TCG returns;
   generic `EXCP_INTERRUPT` exits cannot masquerade as a guest yield. A marked
-  multi-vCPU `PAUSE` that returns without a host exit request commits the
-  RFC-authorized early handoff at cursor zero, preventing the lock owner from
-  reacquiring a released firmware or guest spin lock before a waiting vCPU can
-  run. Ordinary accounting remains the sole handoff when the `PAUSE` coincides
-  with a completed quantum, and single-vCPU cursor behavior is unchanged.
+  multi-vCPU `PAUSE` commits the RFC-authorized early handoff at cursor zero
+  immediately after instruction accounting and before plugin callbacks,
+  vmstop, scheduled fault dispatch, or host preemption can return from the
+  batch. Host work at that same boundary is serviced after the canonical guest
+  transition. Ordinary accounting remains the sole handoff when the `PAUSE`
+  coincides with a completed quantum, and single-vCPU cursor behavior is
+  unchanged.
 - **Micro-test:** the diskless live quantum guests deliberately reach their
   final `HLT` at a nonzero RR cursor position. The one-vCPU and four-vCPU gates
   require QEMU to publish the all-halted boundary, complete the exact timer
   idle jump, and reproduce the result under bounded scheduler preemption. The
   four-vCPU gate additionally captures the exact output-only sequence
-  `AAABPPPR`: every AP publishes online before the BSP releases it, and every AP
-  publishes again only after observing that release. Both sides wait with
-  `PAUSE`, so reaching the final all-halted boundary requires the canonical
-  helper-marked guest-yield handoff; INIT/SIPI delivery alone cannot satisfy the
-  gate.
+  `AAABPPPR`: every AP publishes online and contends on a lock held by the BSP.
+  The BSP releases the lock, executes `PAUSE`, and immediately attempts to
+  reacquire it. Reacquisition emits `F` and parks forever. A passing `P` before
+  that next BSP instruction therefore proves a waiter ran at the helper-marked
+  zero-instruction handoff; eventual rotation at the ordinary 4096-instruction
+  quantum is too late and cannot satisfy the gate. The remaining APs acquire in
+  turn before `R`, so INIT/SIPI delivery alone cannot satisfy the evidence.
   Structural checks require the halted-owner escape before the partial-turn
   continuation.
 - **Inertness:** both branches are inside precise sim mode's RR loop. The idle
   branch requires the selected cursor owner to be halted with no pending work;
   the yield branch requires the helper-authored transient marker, multiple
-  vCPUs, a still-partial owner-matched turn, and no host exit request, stop,
-  unplug, or queued CPU work. The marker is cleared before any control callback
-  and is not VMState. Every ordinary QEMU accelerator retains its prior
-  behavior.
+  vCPUs, and a still-partial owner-matched turn. The marker transition commits
+  before any control callback or host-work exit and is not VMState. Every
+  ordinary QEMU accelerator retains its prior behavior.
 - **Risk:** D.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

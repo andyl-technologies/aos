@@ -1239,9 +1239,12 @@ component that makes that purity true *inside* the QEMU process.
   RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
   quantum gate boots a hermetic multiboot guest with the same production plugin
   at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
-  then runs a two-phase AP/BSP rendezvous whose exact `AAABPPPR` console record
-  can complete only when each `PAUSE` hands its zero-instruction partial turn to
-  another vCPU. It then parks all four vCPUs in HLT and arms a periodic PIT
+  then runs a lock-handoff AP/BSP rendezvous whose exact `AAABPPPR` console
+  record requires a waiting AP to acquire the BSP-released lock between the
+  BSP's `PAUSE` and its immediately following reacquire instruction. A failed
+  early handoff emits `F` and parks forever, so eventual rotation at the
+  ordinary RR quantum cannot false-green the proof. The remaining APs acquire
+  in turn before the guest parks all four vCPUs in HLT and arms a periodic PIT
   deadline on the BSP.
   Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
   hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
@@ -1250,9 +1253,16 @@ component that makes that purity true *inside* the QEMU process.
   wake, and await the exact all-halted fingerprint control boundary. Production
   `QemuNode::execution_fingerprint` owns the same bounded refresh whenever its
   first sample is absent or stale; it does not poll for a callback that an
-  all-halted executor will never publish. The scenario repeats under bounded
-  scheduler preemption with an identical idle observation, execution
-  fingerprint, and host-observable schedule.
+  all-halted executor will never publish. Because fault-result polling uses the
+  same control wake, the callback pumps every same-coordinate fault command
+  before clearing and synchronously recapturing the requested fingerprint; the
+  acknowledgement therefore orders a post-mutation hash, never a stale
+  pre-mutation sample with the same icount. The live hardware gate proves this
+  with a one-byte conventional-RAM mutation whose writable-RAM component makes
+  the pre/post hashes differ without guest progress; its separate clock fault
+  remains authenticated by the typed clock evidence.
+  The scenario repeats under bounded scheduler preemption with an identical
+  idle observation, execution fingerprint, and host-observable schedule.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an

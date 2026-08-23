@@ -367,8 +367,12 @@ fn drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu() {
 }
 
 #[test]
-fn drained_control_boundary_pumps_fault_commands_before_acknowledging() {
+fn drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack() {
     let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 7, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(79, 1, 0, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     let _borrowed_bridge = state
@@ -380,10 +384,12 @@ fn drained_control_boundary_pumps_fault_commands_before_acknowledging() {
         .unwrap_or_else(|error| panic!("control request should publish: {error}"));
 
     assert_eq!(
-        state.on_control_boundary(0),
+        state.on_control_boundary(7),
         Err(LiveVcpuTimeCallbackError::FaultCommandStateBorrowed)
     );
-    assert_eq!(slot.snapshot().control_boundary_ack, request);
+    let snapshot = slot.snapshot();
+    assert_eq!(snapshot.current_icount, 0);
+    assert_eq!(snapshot.control_boundary_ack, request);
 }
 
 #[test]

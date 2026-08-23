@@ -14,13 +14,18 @@
     else ''
         /*
          * The live gate observes COM1 as an output-only stream. The rendezvous
-         * below emits A^(N-1) B P^(N-1) R. Each wait executes PAUSE, so the BSP
-         * cannot release the APs and the APs cannot reach HLT unless QEMU hands
-         * the helper-marked zero-instruction RR turn to another vCPU.
+         * below emits A^(N-1) B P^(N-1) R. After every AP is actively
+         * contending on a held lock, the BSP releases it, executes PAUSE, and
+         * immediately attempts to reacquire it. Success emits F and parks the
+         * BSP forever. A passing stream therefore proves a waiter ran in the
+         * zero-instruction interval between PAUSE and the BSP's next guest
+         * instruction; an ordinary 4096-instruction quantum handoff is too late.
          */
         movw $0, 0x7000
-        movw $0, 0x7002
+        movw $1, 0x7002
         movw $0, 0x7004
+        movw $0, 0x7006
+        movw $0, 0x7008
         movw $0x3f9, %dx
         movb $0, %al
         outb %al, %dx
@@ -76,14 +81,32 @@
       all_aps_online:
         movb $'B', %al
         call serial_byte
-        movw $1, 0x7002
+        xorw %ax, %ax
+        movw $1, %cx
+        movw $0, 0x7002
+        pause
+
+        /* The very next guest instruction must observe a waiter's lock. */
+        lock cmpxchgw %cx, 0x7002
+        jne pause_handoff_proven
+        movb $'F', %al
+        call serial_byte
+      pause_handoff_failed:
+        cli
+        hlt
+        jmp pause_handoff_failed
+
+      pause_handoff_proven:
+        movw $1, 0x7006
 
       wait_for_all_aps_past_pause:
-        cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7004
+        cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7008
         je all_aps_past_pause
         pause
         jmp wait_for_all_aps_past_pause
       all_aps_past_pause:
+        cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7004
+        jne pause_handoff_failed
         movb $'R', %al
         call serial_byte
     '';
@@ -282,22 +305,32 @@ in
               outb %al, %dx
               lock incw 0x7000
 
-            ap_wait_for_release:
-              cmpw $1, 0x7002
-              je ap_released
+            ap_acquire_handoff_lock:
+              xorw %ax, %ax
+              movw $1, %cx
+              lock cmpxchgw %cx, 0x7002
+              je ap_acquired_handoff_lock
               pause
-              jmp ap_wait_for_release
-            ap_released:
+              jmp ap_acquire_handoff_lock
+            ap_acquired_handoff_lock:
               movb $'P', %bl
-            ap_released_serial_wait:
+            ap_handoff_serial_wait:
               movw $0x3fd, %dx
               inb %dx, %al
               testb $0x20, %al
-              jz ap_released_serial_wait
+              jz ap_handoff_serial_wait
               movb %bl, %al
               movw $0x3f8, %dx
               outb %al, %dx
               lock incw 0x7004
+            ap_wait_for_lock_release_authorization:
+              cmpw $1, 0x7006
+              je ap_release_handoff_lock
+              pause
+              jmp ap_wait_for_lock_release_authorization
+            ap_release_handoff_lock:
+              movw $0, 0x7002
+              lock incw 0x7008
             ${apRunLoop}
             ap_trampoline_end:
             GUEST_ASM
@@ -349,7 +382,7 @@ in
             guest_deadline=${guestDeadline}
             guest_ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only
-            guest_smp_rendezvous=ap-online-bsp-release-ap-past-pause
+            guest_smp_rendezvous=release-pause-immediate-reacquire-fails-before-ap-lock-chain
             EVIDENCE
           '';
         }
