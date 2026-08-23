@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "evaluation/ledger.rs"]
+mod ledger;
+
 impl ProductionFaultRuntime {
     /// Evaluates one scheduler boundary against host devices and live QEMU.
     ///
@@ -35,6 +38,7 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
+        let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
         let runtime = self
             .runtime
@@ -46,13 +50,15 @@ impl ProductionFaultRuntime {
             &mut sink,
         )?;
         let qemu_commits = sink.take_qemu_commit_evidence();
-        if evaluation.emitted_events != preview.emitted_events
+        if evaluation.actions != preview.actions
+            || evaluation.emitted_events != preview.emitted_events
             || evaluation.state_machine_events != preview.state_machine_events
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions, qemu_commits) {
+        if let Err(error) = self.commit_staged_qemu_action_ledger(staged_qemu_ledger, qemu_commits)
+        {
             if let Some(runtime) = &mut self.runtime {
                 runtime.poison();
             }
@@ -242,142 +248,6 @@ impl ProductionFaultRuntime {
         Ok(())
     }
 
-    pub(super) fn update_qemu_action_ledger(
-        &mut self,
-        actions: &[ResolvedBindingAction],
-        mut commits: Vec<(ContentHash, CommittedQemuActionEvidence)>,
-    ) -> Result<(), ProductionFaultRuntimeError> {
-        for action in actions
-            .iter()
-            .filter(|action| matches!(action.effect.specification(), EffectSpecification::Node(_)))
-        {
-            match action.kind {
-                BindingActionKind::UpsertPersistent | BindingActionKind::Apply => {
-                    let identity = action.id();
-                    let commit = take_qemu_commit(&mut commits, identity).ok_or_else(|| {
-                        BackendError::Rejected {
-                            message: format!(
-                                "QEMU action identity {} has no authenticated APPLY result",
-                                identity.to_hex()
-                            ),
-                        }
-                    })?;
-                    let retained = u64::try_from(self.qemu_issued_actions.len()).map_err(|_| {
-                        FaultResourceLimitError::Representation {
-                            field: "event_records",
-                            value: u64::MAX,
-                        }
-                    })?;
-                    self.resource_limits.reserve("event_records", retained, 1)?;
-                    let retained_action = try_clone_action(action, || {
-                        runtime_collection_allocation(
-                            "event_records",
-                            self.qemu_issued_actions.len(),
-                            self.resource_limits,
-                        )
-                    })?;
-                    if self
-                        .qemu_issued_actions
-                        .try_insert(identity, retained_action)
-                        .map_err(|_| {
-                            runtime_collection_allocation(
-                                "event_records",
-                                self.qemu_issued_actions.len(),
-                                self.resource_limits,
-                            )
-                        })?
-                        .is_some()
-                    {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU action identity {} was issued more than once",
-                                identity.to_hex()
-                            ),
-                        }
-                        .into());
-                    }
-                    if self
-                        .qemu_action_commits
-                        .try_insert(identity, commit)
-                        .map_err(|_| {
-                            runtime_collection_allocation(
-                                "event_records",
-                                self.qemu_action_commits.len(),
-                                self.resource_limits,
-                            )
-                        })?
-                        .is_some()
-                    {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU action identity {} has more than one APPLY result",
-                                identity.to_hex()
-                            ),
-                        }
-                        .into());
-                    }
-                    if action.kind == BindingActionKind::UpsertPersistent {
-                        self.qemu_active_rule_ids.retain(|active_id| {
-                            self.qemu_issued_actions
-                                .get(active_id)
-                                .is_none_or(|active| {
-                                    active.binding != action.binding
-                                        || active.target != action.target
-                                        || active.phase != action.phase
-                                })
-                        });
-                        self.qemu_active_rule_ids
-                            .try_insert(identity)
-                            .map_err(|_| {
-                                runtime_collection_allocation(
-                                    "event_records",
-                                    self.qemu_active_rule_ids.len(),
-                                    self.resource_limits,
-                                )
-                            })?;
-                    }
-                }
-                BindingActionKind::RemovePersistent => {
-                    if take_qemu_commit(&mut commits, action.id()).is_none() {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU removal identity {} has no authenticated APPLY result",
-                                action.id().to_hex()
-                            ),
-                        }
-                        .into());
-                    }
-                    let prior_len = self.qemu_active_rule_ids.len();
-                    self.qemu_active_rule_ids.retain(|active_id| {
-                        self.qemu_issued_actions
-                            .get(active_id)
-                            .is_none_or(|active| {
-                                active.binding != action.binding
-                                    || active.target != action.target
-                                    || active.phase != action.phase
-                            })
-                    });
-                    if self.qemu_active_rule_ids.len() == prior_len {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU removed an unissued persistent rule for binding `{}`",
-                                action.binding.as_str()
-                            ),
-                        }
-                        .into());
-                    }
-                }
-            }
-        }
-        if !commits.is_empty() {
-            return Err(BackendError::Rejected {
-                message: String::from("QEMU returned APPLY evidence for an uncommitted action"),
-            }
-            .into());
-        }
-        Ok(())
-    }
-
     /// Evaluates one exact device or architectural opportunity.
     ///
     /// # Errors
@@ -402,6 +272,7 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
+        let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
         let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
         let runtime = self
             .runtime
@@ -413,13 +284,15 @@ impl ProductionFaultRuntime {
             &mut sink,
         )?;
         let qemu_commits = sink.take_qemu_commit_evidence();
-        if evaluation.emitted_events != preview.emitted_events
+        if evaluation.actions != preview.actions
+            || evaluation.emitted_events != preview.emitted_events
             || evaluation.state_machine_events != preview.state_machine_events
         {
             runtime.poison();
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
-        if let Err(error) = self.update_qemu_action_ledger(&evaluation.actions, qemu_commits) {
+        if let Err(error) = self.commit_staged_qemu_action_ledger(staged_qemu_ledger, qemu_commits)
+        {
             if let Some(runtime) = &mut self.runtime {
                 runtime.poison();
             }

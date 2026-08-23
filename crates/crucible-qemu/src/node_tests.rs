@@ -465,10 +465,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
         self.await_child(wait, timeout)
     }
-
     fn await_fault_result(
         &mut self,
         _timeout: Duration,
+        _: Vec<u8>,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         self.fault_results.pop_front().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new("await fault result", "no scripted fault result")

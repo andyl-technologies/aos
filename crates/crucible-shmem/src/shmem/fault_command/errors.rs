@@ -90,6 +90,14 @@ pub enum FaultTransportError {
         /// Exact payload byte count requested from the allocator.
         requested: usize,
     },
+    /// A caller-supplied payload buffer cannot hold the published result.
+    #[error("fault payload buffer capacity {capacity} is smaller than {requested} bytes")]
+    PayloadBufferTooSmall {
+        /// Already-owned buffer capacity.
+        capacity: usize,
+        /// Exact published payload byte count.
+        requested: usize,
+    },
     /// Producer and consumer indices describe more live entries than capacity.
     #[error("fault ring indices are corrupt: read={read} write={write} capacity={capacity}")]
     CorruptRingIndices {
