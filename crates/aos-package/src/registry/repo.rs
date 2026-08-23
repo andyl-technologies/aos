@@ -447,13 +447,11 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
                 write_tree_recursive(repo, subtree, &path)?;
             }
             Some(git2::ObjectType::Blob) => {
-                let object = entry.to_object(repo)?;
-                let blob = object
-                    .as_blob()
-                    .ok_or_else(|| anyhow::anyhow!("blob entry {name} is not a blob"))?;
+                let content = read_blob_content(repo, entry.id())
+                    .with_context(|| format!("reading blob for {}", path.display()))?;
                 let filemode = entry.filemode();
                 if filemode == 0o120000 {
-                    let target = std::str::from_utf8(blob.content())
+                    let target = std::str::from_utf8(&content)
                         .with_context(|| format!("symlink target for {name} is not UTF-8"))?;
                     std::os::unix::fs::symlink(target, &path)
                         .with_context(|| format!("creating symlink {}", path.display()))?;
@@ -467,7 +465,7 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
                         .open(&path)
                         .with_context(|| format!("creating {}", path.display()))?;
                     use std::io::Write;
-                    file.write_all(blob.content())
+                    file.write_all(&content)
                         .with_context(|| format!("writing {}", path.display()))?;
                 }
             }
@@ -477,6 +475,27 @@ fn write_tree_recursive(repo: &git2::Repository, tree: &git2::Tree, dest: &Path)
         }
     }
     Ok(())
+}
+
+/// Read blob bytes directly from the object database.
+///
+/// libgit2's experimental SHA-256 support can construct a zero-length
+/// `git2::Blob` view for a non-empty blob received in a pack, particularly
+/// when the object is delta-compressed. The lower-level ODB reader resolves
+/// the same packed object correctly and also exposes its actual object kind,
+/// so extraction uses that representation and fails closed on a type mismatch.
+fn read_blob_content(repo: &git2::Repository, oid: git2::Oid) -> Result<Vec<u8>> {
+    let odb = repo.odb().context("opening object database")?;
+    let object = odb
+        .read(oid)
+        .with_context(|| format!("reading object {oid}"))?;
+    if object.kind() != git2::ObjectType::Blob {
+        bail!(
+            "tree entry {oid} resolved to {:?}, not a blob",
+            object.kind()
+        );
+    }
+    Ok(object.data().to_vec())
 }
 
 /// Map every semver-parseable tag's annotated tag-object OID to its version.
