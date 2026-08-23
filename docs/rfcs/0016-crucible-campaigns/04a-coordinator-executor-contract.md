@@ -2055,7 +2055,15 @@ further modeled progress and retains the session for guarded reap or
 quarantine. A successful capture returns authenticated `QemuVmSnapshot`
 metadata plus a reopenable, byte-stable VMState source. The session reaps QEMU
 before handing that linear capture to the worker pool; the supervisor continues
-charging the execution reservation until durable pause. The daemon then
+charging the execution reservation until durable pause. The real-node executor
+now supplies the underlying ordered primitive: after
+paused metadata capture it performs final drain and exact reap, rejects any
+sealed event-log change, synchronizes and reauthenticates the retained VMState
+inode, and yields only a bounded positional reader that survives artifact
+unlink without carrying directory or mutation authority. The daemon wraps that
+reader as a reopenable CAS source with an independent positional cursor per
+open. Live-session orchestration remains open before this primitive enters the
+production worker flight. The daemon then
 prepares a no-write, content-addressed root over canonical snapshot metadata and
 the streamed opaque VMState child, stages that exact root in the assignment
 ledger before the first immutable write, publishes both children before the

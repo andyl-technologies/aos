@@ -272,7 +272,7 @@ pub use realization::{
 };
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
+    QemuCapturedVmStateSource, QemuExactRootWarmRestoreNodeLauncher, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
     QemuLiveAttemptBackend, QemuLiveBackendShutdown, QemuNodeLauncher, QemuNodeRealizationExecutor,
     QemuNodeRealizationLauncher, QemuRealizedNodeBackend, QemuReplayValidationNodeLauncher,
@@ -336,9 +336,9 @@ pub use single_vm_fingerprint::{
 };
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError, QemuSpawnHostResources,
-    QemuSpawnSetupResources, QemuSpawnedChild, QemuVmStateBinding, QemuVmStateMaterialization,
-    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    QemuCapturedVmState, QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild, QemuVmStateBinding,
+    QemuVmStateMaterialization, spawn_prepared_qemu_child_with_fds_in_directory_guarded,
     spawn_qemu_child_with_fds_in_directory,
 };
 pub use storage_array::{

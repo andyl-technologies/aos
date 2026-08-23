@@ -5,6 +5,8 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
 use std::process::Command;
 use std::rc::Rc;
 
@@ -69,6 +71,7 @@ struct ScriptedGuardedLauncher {
     snapshot: ContentHash,
     runtime_id: ContentHash,
     current_icount: Icount,
+    vmstate: File,
 }
 
 struct ScriptedThinLauncher {
@@ -132,6 +135,30 @@ impl QemuGuardedNodeRealizationLauncher for ScriptedGuardedLauncher {
             current_icount: self.current_icount,
             shutdown_event: None,
         })
+    }
+}
+
+impl QemuCapturedVmStateSource for ScriptedGuardedLauncher {
+    fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuVmRealizationError> {
+        let logical_length = self
+            .vmstate
+            .metadata()
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "inspect scripted captured VMState",
+                message: source.to_string(),
+            })?
+            .len();
+        let file = self
+            .vmstate
+            .try_clone()
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "duplicate scripted captured VMState",
+                message: source.to_string(),
+            })?;
+        Ok(QemuCapturedVmState::from_unvalidated_test_file(
+            file,
+            logical_length,
+        ))
     }
 }
 
@@ -332,6 +359,7 @@ fn guarded_exact_root_launcher_binds_snapshot_before_runtime_admission()
         snapshot: snapshot.id(),
         runtime_id,
         current_icount: Icount { retired: 7 },
+        vmstate: scripted_vmstate(),
     };
     let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
     let process_contract = test_process_contract();
@@ -355,6 +383,72 @@ fn guarded_exact_root_launcher_binds_snapshot_before_runtime_admission()
             NodeExecutorCall::Fingerprint,
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn exact_checkpoint_artifact_is_lent_only_after_sealed_shutdown()
+-> Result<(), QemuVmRealizationError> {
+    let log = shared_log();
+    let node = node_id();
+    let config = Configuration::genesis(scenario("captured-artifact"));
+    let runtime_id = hash("runtime", "captured-artifact");
+    let checkpoint =
+        checkpoint_for_config("captured-artifact", &config, &node, 11, CheckpointKind::Fat)?;
+    let snapshot = QemuVmSnapshot::diskless(
+        checkpoint.clone(),
+        QemuReplayOracleValidation::Match {
+            runtime_hash: runtime_id,
+        },
+    )?;
+    let launcher = ScriptedGuardedLauncher {
+        log: Rc::clone(&log),
+        snapshot: snapshot.id(),
+        runtime_id,
+        current_icount: Icount { retired: 11 },
+        vmstate: scripted_vmstate(),
+    };
+    let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
+    executor.resume_materialized_exact_snapshot_guarded(
+        &test_process_contract(),
+        &config,
+        &snapshot,
+    )?;
+
+    let (captured, vmstate) = executor.capture_exact_checkpoint_artifact(checkpoint.clone())?;
+    let mut bytes = vec![0_u8; usize::try_from(vmstate.logical_length()).map_err(|_| {
+        QemuVmRealizationError::Executor {
+            operation: "allocate scripted captured VMState",
+            message: String::from("captured length does not fit usize"),
+        }
+    })?];
+    let read = vmstate
+        .read_at(&mut bytes, 0)
+        .map_err(|source| QemuVmRealizationError::Executor {
+            operation: "read scripted captured VMState",
+            message: source.to_string(),
+        })?;
+
+    assert_eq!(captured.checkpoint(), &checkpoint);
+    assert_eq!(read, bytes.len());
+    assert_eq!(bytes, b"scripted stable VMState");
+    assert!(!executor.live_backend_is_active());
+    let calls = logged(&log);
+    let capture = calls
+        .iter()
+        .position(|call| matches!(call, NodeExecutorCall::Capture(_)))
+        .ok_or_else(|| QemuVmRealizationError::Executor {
+            operation: "inspect scripted capture ordering",
+            message: String::from("capture call missing"),
+        })?;
+    let shutdown = calls
+        .iter()
+        .position(|call| matches!(call, NodeExecutorCall::Shutdown))
+        .ok_or_else(|| QemuVmRealizationError::Executor {
+            operation: "inspect scripted capture ordering",
+            message: String::from("shutdown call missing"),
+        })?;
+    assert!(capture < shutdown);
     Ok(())
 }
 
@@ -391,6 +485,7 @@ fn guarded_replay_validation_reaps_fat_probe_before_thin_launch()
         snapshot: exact.id(),
         runtime_id,
         current_icount: Icount { retired: 0 },
+        vmstate: scripted_vmstate(),
     };
     let thin_launcher = ScriptedThinLauncher {
         log: Rc::clone(&log),
@@ -901,6 +996,14 @@ fn scripted_launcher(
             retired: current_icount,
         },
     }
+}
+
+fn scripted_vmstate() -> File {
+    let mut file = tempfile::tempfile().expect("create scripted VMState");
+    file.write_all(b"scripted stable VMState")
+        .expect("write scripted VMState");
+    file.sync_all().expect("synchronize scripted VMState");
+    file
 }
 
 fn checkpoint_for_config(

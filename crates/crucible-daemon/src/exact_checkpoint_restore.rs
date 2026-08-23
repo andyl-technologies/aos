@@ -7,11 +7,13 @@
 //! run-directory transaction; only a complete authenticated copy becomes
 //! eligible for guarded launch.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::sync::Arc;
 
 use crucible::{Configuration, ContentHash};
+use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_qemu::{
-    QemuBakedGenesisRestoreAdmission, QemuFailedLaunchChildSource,
+    QemuBakedGenesisRestoreAdmission, QemuCapturedVmState, QemuFailedLaunchChildSource,
     QemuGuardedNodeRealizationLauncher, QemuGuardedThinNodeRealizationLauncher,
     QemuNodeRealizationExecutor, QemuPreparedRunDirectory, QemuSpawnError,
     QemuVmLiveRealizationExecutor, QemuVmRealization, QemuVmRealizationError,
@@ -30,6 +32,69 @@ use crate::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuExactCheckpointRealization,
 };
+
+/// Converts a post-reap QEMU VMState capability into a reopenable CAS source.
+///
+/// Every opened reader has an independent positional cursor over the same
+/// retained inode. The source therefore remains deterministic when immutable
+/// publication retries or mirrors it after the run-directory entry is removed.
+#[must_use]
+pub fn captured_qemu_vmstate_blob(source: QemuCapturedVmState) -> BlobHandle {
+    BlobHandle::new(Arc::new(CapturedQemuVmStateSource {
+        source: Arc::new(source),
+    }))
+}
+
+struct CapturedQemuVmStateSource {
+    source: Arc<QemuCapturedVmState>,
+}
+
+impl BlobSource for CapturedQemuVmStateSource {
+    fn logical_length(&self) -> u64 {
+        self.source.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(CapturedQemuVmStateReader {
+            source: Arc::clone(&self.source),
+            offset: 0,
+        }))
+    }
+}
+
+struct CapturedQemuVmStateReader {
+    source: Arc<QemuCapturedVmState>,
+    offset: u64,
+}
+
+impl Read for CapturedQemuVmStateReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.source.logical_length().saturating_sub(self.offset);
+        if remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        let maximum = usize::try_from(remaining).unwrap_or(usize::MAX);
+        let read_length = buffer.len().min(maximum);
+        let read = self
+            .source
+            .read_at(&mut buffer[..read_length], self.offset)?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "captured QEMU VMState ended before its attested length",
+            ));
+        }
+        self.offset = self
+            .offset
+            .checked_add(u64::try_from(read).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "VMState read length overflow")
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "VMState read offset overflow")
+            })?;
+        Ok(read)
+    }
+}
 
 /// One exact checkpoint durably materialized for guarded QEMU restore.
 #[derive(Clone, Debug)]
@@ -614,5 +679,31 @@ fn check_resume_boundary(
         Ok(()) => Ok(()),
         Err(QemuVmRealizationError::Canceled { .. }) => Err(ExactCheckpointResumeError::Canceled),
         Err(source) => Err(ExactCheckpointResumeError::Realization(source)),
+    }
+}
+
+#[cfg(test)]
+mod captured_source_tests {
+    use super::*;
+
+    #[test]
+    fn captured_vmstate_blob_reopens_after_the_named_file_is_removed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let payload = b"reopenable captured VMState";
+        let mut named = tempfile::NamedTempFile::new()?;
+        named.write_all(payload)?;
+        named.as_file().sync_all()?;
+        let source = QemuCapturedVmState::from_unvalidated_test_file(
+            named.reopen()?,
+            u64::try_from(payload.len())?,
+        );
+        let blob = captured_qemu_vmstate_blob(source);
+        let path = named.path().to_owned();
+        drop(named);
+        assert!(!path.exists());
+
+        assert_eq!(blob.read_all(1024)?, payload);
+        assert_eq!(blob.read_all(1024)?, payload);
+        Ok(())
     }
 }

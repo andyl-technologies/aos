@@ -10,13 +10,14 @@ use std::ffi::CString;
 use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
-use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+use rustix::fs::{FileType, Mode, OFlags, fstat, fsync, open, openat};
 use thiserror::Error;
 
 use crate::{
@@ -84,6 +85,47 @@ pub struct QemuPreparedRunDirectory {
     admitted_ceiling: (u32, u64, u64),
     attempt_binding: Arc<AttemptResourceBinding>,
     vmstate_materialization: PreparedVmStateMaterialization,
+}
+
+/// Reopen-independent read capability for one reaped QEMU VMState artifact.
+///
+/// The capability exposes bounded positional reads only. It carries no run-
+/// directory, mutation, quota, or process authority and remains readable after
+/// the attempt owner unlinks its private run-directory artifacts.
+#[derive(Debug)]
+pub struct QemuCapturedVmState {
+    file: File,
+    logical_length: u64,
+}
+
+impl QemuCapturedVmState {
+    /// Builds an unvalidated captured source for cross-crate conformance tests.
+    ///
+    /// Production code can obtain this capability only from the post-reap
+    /// realization executor.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_unvalidated_test_file(file: File, logical_length: u64) -> Self {
+        Self {
+            file,
+            logical_length,
+        }
+    }
+
+    /// Returns the exact stable byte length attested after process reap.
+    #[must_use]
+    pub const fn logical_length(&self) -> u64 {
+        self.logical_length
+    }
+
+    /// Reads bytes at one absolute artifact offset without shared cursor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the retained inode cannot be read.
+    pub fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+        self.file.read_at(buffer, offset)
+    }
 }
 
 #[derive(Debug)]
@@ -206,6 +248,20 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
         }
+        let retained_vmstate = self.revalidate_identity()?;
+        if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
+            let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
+            if actual != bytes {
+                return Err(QemuSpawnError::PreparedVmStateIncomplete {
+                    expected: bytes,
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn revalidate_identity(&self) -> Result<rustix::fs::Stat, QemuSpawnError> {
         let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
             operation: "reinspect prepared QEMU run directory",
             source: source.into(),
@@ -224,15 +280,6 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
         }
-        if let PreparedVmStateMaterialization::Exact { bytes, .. } = self.vmstate_materialization {
-            let actual = u64::try_from(retained_vmstate.st_size).unwrap_or(u64::MAX);
-            if actual != bytes {
-                return Err(QemuSpawnError::PreparedVmStateIncomplete {
-                    expected: bytes,
-                    actual,
-                });
-            }
-        }
         let named_vmstate = open_prepared_vmstate(&self.directory, &self.path)?;
         let named_metadata = fstat(&named_vmstate).map_err(|source| QemuSpawnError::Io {
             operation: "reinspect named exact-VMState container",
@@ -243,7 +290,60 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
             });
         }
-        Ok(())
+        Ok(retained_vmstate)
+    }
+
+    /// Seals a positional read capability after the owning QEMU process is reaped.
+    ///
+    /// This method is crate-private so only the realization executor can invoke
+    /// it after its active-node shutdown attestation. It intentionally accepts
+    /// a file whose length changed through a completed QEMU `savevm` operation;
+    /// ordinary launch revalidation continues to require the prior exact length.
+    pub(crate) fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuSpawnError> {
+        if self.vmstate_materialization == PreparedVmStateMaterialization::Updating {
+            return Err(QemuSpawnError::PreparedVmStateNotReady {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        let before = self.revalidate_identity()?;
+        let logical_length =
+            u64::try_from(before.st_size).map_err(|_| QemuSpawnError::PreparedVmStateLength {
+                length: u64::MAX,
+                maximum: self.admitted_ceiling.2,
+            })?;
+        if logical_length == 0 || logical_length > self.admitted_ceiling.2 {
+            return Err(QemuSpawnError::PreparedVmStateLength {
+                length: logical_length,
+                maximum: self.admitted_ceiling.2,
+            });
+        }
+        fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize captured exact-VMState artifact",
+            source: source.into(),
+        })?;
+        let file = File::from(
+            self.vmstate
+                .try_clone()
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "duplicate captured exact-VMState artifact",
+                    source,
+                })?,
+        );
+        let after = fstat(&file).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect captured exact-VMState artifact",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&after)
+            || u64::try_from(after.st_size).ok() != Some(logical_length)
+        {
+            return Err(QemuSpawnError::PreparedVmStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        Ok(QemuCapturedVmState {
+            file,
+            logical_length,
+        })
     }
 
     fn validate_launch_basis(

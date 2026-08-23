@@ -575,6 +575,38 @@ fn exact_vmstate_materialization_commits_one_checkpoint_root_basis() -> Result<(
 }
 
 #[test]
+fn reaped_vmstate_reader_survives_artifact_unlink_without_shared_cursor()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::write(&vmstate_path, b"provisioned")?;
+    let mut prepared =
+        QemuPreparedRunDirectory::open_for_launch(&command, directory.path(), &contract)?;
+    let binding = QemuVmStateBinding::from_exact_checkpoint_root_digest(
+        ContentHash::from_canonical_material("checkpoint-root", "captured").bytes,
+    );
+    let payload = b"stable captured VMState";
+    let mut materialization =
+        prepared.begin_exact_vmstate_materialization(binding, u64::try_from(payload.len())?)?;
+    materialization.write_all(payload)?;
+    materialization.finish()?;
+
+    let captured = prepared.capture_vmstate_after_reap()?;
+    std::fs::remove_file(&vmstate_path)?;
+    let mut beginning = [0_u8; 6];
+    let mut ending = [0_u8; 7];
+    assert_eq!(captured.read_at(&mut ending, 16)?, ending.len());
+    assert_eq!(captured.read_at(&mut beginning, 0)?, beginning.len());
+
+    assert_eq!(captured.logical_length(), u64::try_from(payload.len())?);
+    assert_eq!(&beginning, b"stable");
+    assert_eq!(&ending, b"VMState");
+    Ok(())
+}
+
+#[test]
 fn interrupted_exact_vmstate_materialization_blocks_guarded_launch_until_replaced()
 -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;

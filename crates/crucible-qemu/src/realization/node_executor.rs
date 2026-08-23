@@ -16,8 +16,8 @@ use crate::node_factory::{
     QemuPreparedWarmRestoreLaunch, spawn_setup_and_restore_prepared_qemu_node_guarded,
 };
 use crate::{
-    QemuChildProcessContract, QemuExactSnapshotPolicy, QemuHostIoRuntime, QemuLaunchCommand,
-    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNode,
+    QemuCapturedVmState, QemuChildProcessContract, QemuExactSnapshotPolicy, QemuHostIoRuntime,
+    QemuLaunchCommand, QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuNode,
     QemuNodeFactoryRuntime, QemuNodeRestorePlan, QemuPreparedRunDirectory, QemuSpawnError,
     QemuVmStateBinding, QemuWarmRestoreLaunchError, spawn_setup_and_restore_qemu_node,
 };
@@ -355,6 +355,21 @@ pub trait QemuFailedLaunchChildSource: QemuNodeLauncher {
     fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild>;
 }
 
+/// Owns the pinned VMState inode used by one guarded live QEMU generation.
+///
+/// The realization executor invokes this capability only after its active node
+/// has returned an exact reap attestation. It yields a read-only positional
+/// source, never the run-directory or mutation authority.
+pub trait QemuCapturedVmStateSource: QemuNodeLauncher {
+    /// Seals the stable VMState bytes after process reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the pinned inode changed, has an
+    /// invalid length, or cannot be synchronized and duplicated.
+    fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuVmRealizationError>;
+}
+
 /// Concrete launcher that composes QEMU spawn, plugin setup, QMP load, and node assembly.
 pub struct QemuWarmRestoreNodeLauncher<A, R, F> {
     command: QemuLaunchCommand,
@@ -573,6 +588,22 @@ where
 {
     fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
         self.failed_child.take()
+    }
+}
+
+impl<A, R, F> QemuCapturedVmStateSource for QemuExactRootWarmRestoreNodeLauncher<A, R, F>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+    F: FnMut(&Configuration) -> QemuNodeFactoryRuntime<A, R>,
+{
+    fn capture_vmstate_after_reap(&self) -> Result<QemuCapturedVmState, QemuVmRealizationError> {
+        self.run_directory
+            .capture_vmstate_after_reap()
+            .map_err(|source| QemuVmRealizationError::Executor {
+                operation: "capture reaped QEMU VMState artifact",
+                message: source.to_string(),
+            })
     }
 }
 
@@ -808,6 +839,39 @@ where
         L: QemuFailedLaunchChildSource,
     {
         self.launcher.take_failed_launch_child()
+    }
+
+    /// Captures one exact checkpoint and seals its VMState after process reap.
+    ///
+    /// The live node remains paused after metadata capture. This operation then
+    /// performs the final observable-event drain, terminates and reaps the
+    /// process, rejects any event-log change at the sealed boundary, and only
+    /// afterward lends the narrow stable VMState reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when capture, final drain, shutdown,
+    /// reap, or stable VMState sealing fails. A shutdown failure retains the
+    /// active node for the caller's quarantine path.
+    pub fn capture_exact_checkpoint_artifact(
+        &mut self,
+        checkpoint: Checkpoint,
+    ) -> Result<(QemuVmSnapshot, QemuCapturedVmState), QemuVmRealizationError>
+    where
+        L: QemuCapturedVmStateSource,
+    {
+        let snapshot = self.capture_live_exact_snapshot(checkpoint)?;
+        let shutdown = self.shutdown_live_backend()?;
+        if !shutdown.observation_boundary_unchanged() {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "capture exact QEMU checkpoint artifact",
+                message: String::from(
+                    "final shutdown drain changed the sealed checkpoint observation boundary",
+                ),
+            });
+        }
+        let vmstate = self.launcher.capture_vmstate_after_reap()?;
+        Ok((snapshot, vmstate))
     }
 
     fn launch_and_install(
