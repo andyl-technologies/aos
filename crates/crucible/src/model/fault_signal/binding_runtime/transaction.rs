@@ -4,20 +4,19 @@ use super::*;
 
 fn validate_prepared_batch(
     actions: &[ResolvedBindingAction],
-    batch: PreparedActionBatch,
+    batch: &PreparedActionBatch,
     allow_unrefined_node_preview: bool,
-) -> Result<Vec<PreparedActionResult>, BindingRuntimeError> {
+) -> Result<(), BindingRuntimeError> {
     if batch.transaction == ContentHash::default() || actions.len() != batch.results.len() {
         return Err(BindingRuntimeError::AdapterResult);
     }
-    let mut results = Vec::with_capacity(batch.results.len());
-    for (action, result) in actions.iter().zip(batch.results) {
+    for (action, result) in actions.iter().zip(&batch.results) {
         let expected_kind = match action.kind {
             BindingActionKind::UpsertPersistent => FaultObservationKind::BindingActivation,
             BindingActionKind::RemovePersistent => FaultObservationKind::BindingDeactivation,
             BindingActionKind::Apply => FaultObservationKind::EffectCommitted,
         };
-        let observation = result.observation;
+        let observation = &result.observation;
         let coordinate_matches = action.accepts_observation_coordinate(observation.coordinate)
             || (allow_unrefined_node_preview
                 && action.effect.kind().descriptor().adapter == FaultAdapter::Node
@@ -34,22 +33,34 @@ fn validate_prepared_batch(
         {
             return Err(BindingRuntimeError::AdapterResult);
         }
-        results.push(PreparedActionResult {
-            action: result.action,
-            precondition: result.precondition,
-            observation,
-        });
     }
-    Ok(results)
+    Ok(())
 }
 
-pub(super) fn prepare_and_commit(
+fn validate_prepared_order(
+    actions: &[ResolvedBindingAction],
+    batch: &PreparedActionBatch,
+) -> Result<(), BindingRuntimeError> {
+    if batch.transaction == ContentHash::default()
+        || actions.len() != batch.results.len()
+        || actions
+            .iter()
+            .zip(&batch.results)
+            .any(|(action, result)| action.id() != result.action)
+    {
+        return Err(BindingRuntimeError::AdapterResult);
+    }
+    Ok(())
+}
+
+pub(super) struct PreparedActionTransaction(Option<ContentHash>);
+
+pub(super) fn prepare_actions(
     sink: &mut dyn FaultActionSink,
     actions: &[ResolvedBindingAction],
-    allow_unrefined_node_preview: bool,
-) -> Result<Vec<PreparedActionResult>, BindingRuntimeError> {
+) -> Result<PreparedActionTransaction, BindingRuntimeError> {
     if actions.is_empty() {
-        return Ok(Vec::new());
+        return Ok(PreparedActionTransaction(None));
     }
     let prepared = match sink.prepare_batch(actions) {
         Ok(prepared) => prepared,
@@ -61,13 +72,31 @@ pub(super) fn prepare_and_commit(
         }
     };
     let transaction = prepared.transaction;
+    if validate_prepared_order(actions, &prepared).is_err() {
+        sink.abort_batch(transaction)
+            .map_err(BindingRuntimeError::AdapterAbort)?;
+        return Err(BindingRuntimeError::AdapterResult);
+    }
+    Ok(PreparedActionTransaction(Some(transaction)))
+}
+
+pub(super) fn commit_prepared_actions(
+    sink: &mut dyn FaultActionSink,
+    actions: &[ResolvedBindingAction],
+    transaction: PreparedActionTransaction,
+    allow_unrefined_node_preview: bool,
+) -> Result<Vec<PreparedActionResult>, BindingRuntimeError> {
+    let Some(transaction) = transaction.0 else {
+        return Ok(Vec::new());
+    };
     match sink.commit_batch(transaction) {
         Ok(committed) if committed.transaction == transaction => {
-            validate_prepared_batch(actions, committed, allow_unrefined_node_preview).map_err(
+            validate_prepared_batch(actions, &committed, allow_unrefined_node_preview).map_err(
                 |_error| {
                     BindingRuntimeError::AdapterCommit(FaultRuntimeError::IncompleteAdapterState)
                 },
-            )
+            )?;
+            Ok(committed.results)
         }
         Ok(_) => Err(BindingRuntimeError::AdapterCommit(
             FaultRuntimeError::IncompleteAdapterState,
@@ -80,6 +109,15 @@ pub(super) fn prepare_and_commit(
         Err(FaultActionCommitError::Rejected(_)) => Err(BindingRuntimeError::AdapterResult),
         Err(FaultActionCommitError::Fatal(error)) => Err(BindingRuntimeError::AdapterCommit(error)),
     }
+}
+
+pub(super) fn prepare_and_commit(
+    sink: &mut dyn FaultActionSink,
+    actions: &[ResolvedBindingAction],
+    allow_unrefined_node_preview: bool,
+) -> Result<Vec<PreparedActionResult>, BindingRuntimeError> {
+    let transaction = prepare_actions(sink, actions)?;
+    commit_prepared_actions(sink, actions, transaction, allow_unrefined_node_preview)
 }
 
 fn validate_rejected_batch(actions: &[ResolvedBindingAction], batch: &RejectedActionBatch) -> bool {

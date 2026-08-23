@@ -237,6 +237,23 @@ impl ResolvedEffectRecord {
         precondition_digest: Option<ContentHash>,
         evidence_digest: ContentHash,
     ) -> Result<Self, FaultContractError> {
+        let mut record = Self::stage_from_action(
+            action,
+            opportunity,
+            same_coordinate_sequence,
+            derivation_fingerprint,
+        )?;
+        record.finalize_committed(action.coordinate, precondition_digest, evidence_digest)?;
+        Ok(record)
+    }
+
+    /// Owns every heap-bearing record field before an adapter may commit.
+    pub(crate) fn stage_from_action(
+        action: &ResolvedBindingAction,
+        opportunity: Option<&FaultOpportunity>,
+        same_coordinate_sequence: u64,
+        derivation_fingerprint: ContentHash,
+    ) -> Result<Self, FaultContractError> {
         if opportunity.map(FaultOpportunity::id) != action.opportunity {
             return Err(FaultContractError::MissingOpportunity {
                 effect: action.effect.kind(),
@@ -269,11 +286,23 @@ impl ResolvedEffectRecord {
                 contribution_digest: action.mapped_digest,
             }],
             capability: FaultCapabilityId::parse(action.effect.capability())?,
-            precondition_digest,
-            evidence_digest,
+            precondition_digest: None,
+            evidence_digest: ContentHash::default(),
         };
-        record.validate()?;
         Ok(record)
+    }
+
+    /// Installs allocation-free backend evidence into one staged record.
+    pub(crate) fn finalize_committed(
+        &mut self,
+        coordinate: FaultCoordinate,
+        precondition_digest: Option<ContentHash>,
+        evidence_digest: ContentHash,
+    ) -> Result<(), FaultContractError> {
+        self.coordinate = coordinate;
+        self.precondition_digest = precondition_digest;
+        self.evidence_digest = evidence_digest;
+        self.validate()
     }
 
     /// Reconstructs the exact typed action retained for locked replay.
