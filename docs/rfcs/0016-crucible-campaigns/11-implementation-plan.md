@@ -267,6 +267,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   exact execution or releases one unaccepted lease per step, and exact-
   checkpoint issues one exact-basis checkpoint request per step while retaining
   the reservation through publication and durable pause.
+  A daemon-owned `CampaignRuntime` now gives that step machine one fixed
+  long-lived thread, sticky shutdown, explicit progress wakeups, and a startup-
+  bounded 1 ms through 60 s fallback poll for asynchronous executor progress.
+  It continues immediately only after an outcome that can make another bounded
+  transition, inserts an interruptible 1 ms fairness pause after at most 256
+  immediate operations, reports terminal component failures to its join owner,
+  and does not add a second modeled-work queue. Process-level campaign enumeration,
+  configuration, and service-failure coupling remain open.
   The QEMU realization executor now exposes only a borrowed already-realized
   live-backend facade without generic VMState/process authority, and the daemon
   composes that capability with a pre-launch exact resource guard and mandatory
@@ -468,10 +476,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   canonical planner now runs behind a versioned one-request process protocol:
   a parent-owned supervisor measures deterministic page fuel, enforces a
   finite wall deadline and sticky cancellation, drains bounded pipes, and
-  kills and reaps the authority-free worker before returning. Long-lived
-  coordinator attachment of that supervisor, richer owner-built
-  reward/novelty/finding projections, and complete fixed-point PUCT ranking
-  remain open. The first `CampaignService`
+  kills and reaps the authority-free worker before returning. The generic
+  daemon-owned long-lived coordinator runtime is implemented; attaching its
+  packaged planner configuration to process startup remains open, together with
+  richer owner-built reward/novelty/finding projections and complete fixed-
+  point PUCT ranking. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

@@ -11,6 +11,7 @@
 //! runtime-state records; [`campaign_bootstrap`] composes durable directory
 //! storage, strict policy, managed endpoint, and listener ownership;
 //! [`campaign_endpoint`] owns the exact local Unix socket namespace;
+//! [`campaign_runtime`] owns one sticky, bounded, long-lived supervisor thread;
 //! [`campaign_loopback`] provides the strict local
 //! user-facing service transport; [`campaign_server`] owns its bounded
 //! authenticated listener and fixed connection workers;
@@ -55,6 +56,7 @@ pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_policy;
 pub mod campaign_retention;
+pub mod campaign_runtime;
 pub mod campaign_server;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
@@ -121,6 +123,13 @@ pub use campaign_policy::{
 pub use campaign_retention::{
     LocalCampaignRetentionError, LocalCampaignRetentionRoot, LocalCampaignRetentionSummary,
     visit_local_campaign_retention_roots,
+};
+pub use campaign_runtime::{
+    CampaignRuntime, CampaignRuntimeConfig, CampaignRuntimeConfigError, CampaignRuntimeDriver,
+    CampaignRuntimeJoinError, CampaignRuntimeReport, CampaignRuntimeStartError,
+    CampaignRuntimeStepDisposition, CampaignRuntimeWake, DEFAULT_CAMPAIGN_RUNTIME_POLL_INTERVAL,
+    MAX_CAMPAIGN_RUNTIME_IMMEDIATE_BURST, MAX_CAMPAIGN_RUNTIME_POLL_INTERVAL,
+    MIN_CAMPAIGN_RUNTIME_POLL_INTERVAL,
 };
 pub use campaign_server::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,

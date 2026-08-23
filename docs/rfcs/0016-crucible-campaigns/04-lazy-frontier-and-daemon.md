@@ -269,6 +269,23 @@ that reservation through durable publication and pause. Resume reconstructs
 the frontier from semantic roots, so canceled attempts become claimable
 without a modeled state change.
 
+The daemon owns that step machine through one fixed long-lived runtime thread
+per attached campaign. The runtime performs one initial step, continues
+immediately only when the prior outcome permits another bounded operation, and
+otherwise sleeps until an explicit repository/executor progress wake or a
+finite fallback poll. The fallback interval is fixed at startup in
+`1 ms..=60 s`; the default is 100 ms. This preserves progress when an external
+component cannot deliver a wake without introducing another modeled-work
+queue. Even a continuous progress chain pauses interruptibly for at least 1 ms
+after 256 component operations, preventing a faulty component or maximum-sized
+scan from creating an unbounded hot loop. Shutdown is sticky, interrupts a
+quiescent wait, and prevents the
+runtime from beginning another component operation. A repository, planner, or
+executor failure terminates the runtime and remains observable to its daemon
+owner; it is not converted into an unbounded retry loop. Process startup still
+needs to enumerate/configure the campaigns to attach and couple runtime failure
+to the user-facing service lifecycle.
+
 The real-node realization boundary now has an executor-owned exact-capture
 primitive for that checkpoint path. It seals the unified event
 log, exact-checks the installed configuration and current node instruction
