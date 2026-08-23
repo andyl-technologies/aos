@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::TransferProgress;
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::registry::dumb_http;
@@ -502,7 +503,7 @@ fn read_blob_content(repo: &git2::Repository, oid: git2::Oid) -> Result<Vec<u8>>
     Ok(object.data().to_vec())
 }
 
-/// Verify raw object bytes against their Git SHA-256 content address.
+/// Verify raw object bytes against their Git content address.
 fn object_matches_oid(oid: git2::Oid, kind: git2::ObjectType, data: &[u8]) -> bool {
     let kind = match kind {
         git2::ObjectType::Commit => "commit",
@@ -511,10 +512,22 @@ fn object_matches_oid(oid: git2::Oid, kind: git2::ObjectType, data: &[u8]) -> bo
         git2::ObjectType::Tag => "tag",
         _ => return false,
     };
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{kind} {}\0", data.len()).as_bytes());
-    hasher.update(data);
-    hasher.finalize().as_slice() == oid.as_bytes()
+    let header = format!("{kind} {}\0", data.len());
+    match oid.as_bytes().len() {
+        20 => {
+            let mut hasher = Sha1::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            hasher.finalize().as_slice() == oid.as_bytes()
+        }
+        32 => {
+            let mut hasher = Sha256::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            hasher.finalize().as_slice() == oid.as_bytes()
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -529,6 +542,18 @@ mod object_identity_tests {
         let repo = git2::Repository::init_opts(tmp.path(), &options).unwrap();
         let odb = repo.odb().unwrap();
         let content = b"non-empty registry metadata\n";
+        let oid = odb.write(git2::ObjectType::Blob, content).unwrap();
+
+        assert!(object_matches_oid(oid, git2::ObjectType::Blob, content));
+        assert!(!object_matches_oid(oid, git2::ObjectType::Blob, b""));
+    }
+
+    #[test]
+    fn sha1_identity_remains_supported_for_legacy_repository_reads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path()).unwrap();
+        let odb = repo.odb().unwrap();
+        let content = b"legacy registry metadata\n";
         let oid = odb.write(git2::ObjectType::Blob, content).unwrap();
 
         assert!(object_matches_oid(oid, git2::ObjectType::Blob, content));
