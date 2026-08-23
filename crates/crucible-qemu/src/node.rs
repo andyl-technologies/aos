@@ -1326,6 +1326,11 @@ impl QemuNode {
         payload: &[u8],
         maximum_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        if header.command_flags & FAULT_COMMAND_FLAG_PREPARE_ONLY == 0 {
+            return Err(QemuNodeError::fault_command(
+                "dynamic result sizing is restricted to non-mutating PREPARE commands",
+            ));
+        }
         self.apply_fault_command_at_current_boundary_with_storage(
             header,
             payload,

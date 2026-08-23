@@ -99,11 +99,37 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             capability_hash: [7; 32],
         }]);
 
+        if command_flags == 0 {
+            assert!(matches!(
+                node.apply_fault_preparation_at_current_boundary(
+                    command.clone(),
+                    &payload,
+                    32,
+                ),
+                Err(QemuNodeError::FaultCommand { message })
+                    if message.contains("restricted to non-mutating PREPARE")
+            ));
+            assert!(fault_commands.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(
+                node.apply_fault_preparation_at_current_boundary(command.clone(), &payload, 31,),
+                Err(QemuNodeError::FaultResultStorage {
+                    requested: 32,
+                    configured: 31,
+                })
+            );
+        }
+
         assert_eq!(
             node.apply_fault_command_at_current_boundary(command.clone(), &payload)?,
             result
         );
-        assert_eq!(*fault_commands.lock().unwrap(), vec![(command, payload)]);
+        let expected_publications = if command_flags == 0 {
+            vec![(command, payload)]
+        } else {
+            vec![(command.clone(), payload.clone()), (command, payload)]
+        };
+        assert_eq!(*fault_commands.lock().unwrap(), expected_publications);
     }
     Ok(())
 }
