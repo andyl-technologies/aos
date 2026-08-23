@@ -83,6 +83,47 @@ fn managed_endpoint_cleanup_never_removes_a_replacement_path() {
 }
 
 #[test]
+fn campaign_and_executor_endpoints_share_a_directory_without_sharing_authority() {
+    let directory = tempfile::tempdir().expect("component endpoint directory");
+    fs::set_permissions(directory.path(), Permissions::from_mode(0o750))
+        .expect("secure component directory mode");
+    let metadata = fs::metadata(directory.path()).expect("component directory metadata");
+    let campaign = CampaignLoopbackEndpointConfig::new(
+        directory.path().join("campaign.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("campaign endpoint config");
+    let executor = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("executor endpoint config");
+
+    let campaign_listener = campaign.bind().expect("bind campaign endpoint");
+    let executor_listener = executor.bind().expect("bind executor endpoint");
+    assert!(matches!(
+        campaign.bind(),
+        Err(CampaignLoopbackEndpointError::EndpointInUse)
+    ));
+    assert!(matches!(
+        executor.bind(),
+        Err(ExecutorLoopbackEndpointError::EndpointInUse)
+    ));
+    UnixStream::connect(campaign.path()).expect("connect campaign endpoint");
+    UnixStream::connect(executor.path()).expect("connect executor endpoint");
+
+    drop(campaign_listener);
+    assert!(!campaign.path().exists());
+    assert!(executor.path().exists());
+    drop(executor_listener);
+    assert!(!executor.path().exists());
+}
+
+#[test]
 fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
     let (directory, config) = endpoint_fixture();
     fs::set_permissions(directory.path(), Permissions::from_mode(0o770))
@@ -110,7 +151,7 @@ fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
     );
 
     fs::remove_file(config.path()).expect("remove endpoint symlink");
-    let lock_path = directory.path().join(ENDPOINT_LOCK_FILE);
+    let lock_path = directory.path().join(CAMPAIGN_ENDPOINT_LOCK_FILE);
     fs::remove_file(&lock_path).expect("remove prior endpoint lock");
     symlink(&target, &lock_path).expect("endpoint lock symlink");
     assert!(matches!(

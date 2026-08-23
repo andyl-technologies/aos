@@ -10,7 +10,8 @@
 //! Module map: [`assignment_ledger`] owns crash-safe executor idempotency and
 //! runtime-state records; [`campaign_bootstrap`] composes durable directory
 //! storage, strict policy, managed endpoint, and listener ownership;
-//! [`campaign_endpoint`] owns the exact local Unix socket namespace;
+//! [`campaign_endpoint`] owns exact local campaign and executor Unix socket
+//! namespaces;
 //! [`campaign_attachment`] composes one packaged planner and checked local
 //! executor with a named durable campaign;
 //! [`campaign_runtime`] owns one sticky, bounded, long-lived supervisor thread;
@@ -110,7 +111,9 @@ pub use campaign_bootstrap::{
     CampaignLocalServiceMode, PreparedCampaignLocalService,
 };
 pub use campaign_endpoint::{
-    CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ManagedCampaignLoopbackListener,
+    CampaignLoopbackEndpointConfig, CampaignLoopbackEndpointError, ExecutorLoopbackEndpointConfig,
+    ExecutorLoopbackEndpointError, ManagedCampaignLoopbackListener,
+    ManagedExecutorLoopbackListener,
 };
 pub use campaign_gc::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,

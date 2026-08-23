@@ -265,8 +265,12 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   effective UID/GID through Linux `SO_PEERCRED` before decoding component
   bytes, rejects excess or foreign sockets, distinguishes protocol from service
   failure telemetry, interrupts active connections on sticky shutdown, and
-  joins every connection worker before returning. The production filesystem
-  endpoint owner and concrete QEMU worker selection remain open.
+  joins every connection worker before returning. Its managed endpoint retains
+  a separate lifetime namespace lock and exact socket inode until join while
+  reusing the campaign endpoint's path, owner, mode, stale-recovery, and safe
+  teardown contract. Campaign and executor sockets can coexist in one secure
+  directory without sharing namespace authority. Concrete QEMU worker selection
+  and daemon flag wiring remain open.
   A bounded `CampaignSupervisor` now composes one planner driver and one
   executor driver over the same repository, reloads exact lifecycle intent on
   every step, and performs at most one component operation. Running execution

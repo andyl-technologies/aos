@@ -1521,10 +1521,14 @@ workers, sixteen queued sockets, and 4,096 exchanges. A full queue closes the
 new socket without decoding it. Sticky shutdown stops acceptance, closes every
 active and queued socket, and joins every connection worker before returning
 accepted, capacity-rejected, completed, peer-rejected, protocol-failed, and
-service-failed counters. The listener receives an already-bound socket; the
-production daemon must additionally retain its authenticated filesystem
-namespace owner through listener join before exposing this component as a
-standalone endpoint.
+service-failed counters. It accepts either an already-bound socket or a managed
+filesystem endpoint that applies the same canonical-path, exact-owner,
+non-group/other-writable parent, same-owner stale-socket, configured-mode, and
+exact-inode conditional-teardown rules as the campaign endpoint. Distinct
+lifetime lock files let both endpoints share one secure directory without
+sharing namespace authority. The managed endpoint guard remains owned until
+listener join. Production worker selection and daemon flag wiring remain
+separate bootstrap responsibilities.
 
 The single-host daemon persists two bounded operational record families:
 

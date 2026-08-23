@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
+use std::fs::Permissions;
 use std::io::Read;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,9 +26,9 @@ use super::{
     UnixPeerExecutorIdentity,
 };
 use crate::{
-    AllowAllAttemptAdmission, LocalExecutorPoolService, LoopbackExecutorService,
-    LoopbackExecutorTimeouts, MAX_EXECUTOR_LISTENER_WORKERS, MAX_EXECUTOR_PENDING_CONNECTIONS,
-    MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
+    AllowAllAttemptAdmission, ExecutorLoopbackEndpointConfig, LocalExecutorPoolService,
+    LoopbackExecutorService, LoopbackExecutorTimeouts, MAX_EXECUTOR_LISTENER_WORKERS,
+    MAX_EXECUTOR_PENDING_CONNECTIONS, MAX_EXECUTOR_REQUESTS_PER_CONNECTION, MemoryAssignmentLedger,
 };
 
 #[derive(Clone)]
@@ -135,6 +137,45 @@ fn fixed_listener_serves_multiple_authenticated_requests_and_joins() {
     assert_eq!(report.peer_rejections(), 0);
     assert_eq!(report.protocol_failures(), 0);
     assert_eq!(report.service_failures(), 0);
+}
+
+#[test]
+fn managed_endpoint_is_retained_until_listener_workers_join() {
+    let directory = tempfile::tempdir().expect("executor listener directory");
+    std::fs::set_permissions(directory.path(), Permissions::from_mode(0o750))
+        .expect("secure executor directory mode");
+    let metadata = std::fs::metadata(directory.path()).expect("executor directory metadata");
+    let endpoint = ExecutorLoopbackEndpointConfig::new(
+        directory.path().join("executor.sock"),
+        metadata.uid(),
+        metadata.gid(),
+        0o600,
+    )
+    .expect("executor endpoint config");
+    let managed = endpoint.bind().expect("bind managed executor endpoint");
+    let server = ExecutorLoopbackServer::from_managed_listener(
+        managed,
+        DescriptionOnlyService {
+            description: description(),
+        },
+        current_identity(),
+        test_config(1, 1, 8),
+    )
+    .expect("managed executor server");
+    let shutdown = server.shutdown_handle();
+    let join = thread::spawn(move || server.serve());
+
+    let idle = UnixStream::connect(endpoint.path()).expect("connect managed endpoint");
+    wait_until(Duration::from_secs(2), || {
+        shutdown.active_connections() == 1
+    });
+    assert!(endpoint.path().exists());
+    shutdown.shutdown();
+    drop(idle);
+    join.join()
+        .expect("join executor listener")
+        .expect("serve executor listener");
+    assert!(!endpoint.path().exists());
 }
 
 #[test]

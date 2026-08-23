@@ -1,4 +1,4 @@
-//! Managed Unix-socket namespace for the local campaign service.
+//! Managed Unix-socket namespaces for local campaign components.
 //!
 //! Production listener bootstrap uses one operator-owned directory whose owner
 //! is exact and whose group/other write bits are clear. A lifetime `flock` on a
@@ -14,7 +14,8 @@ use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
-const ENDPOINT_LOCK_FILE: &str = ".crucible-campaign-listener.lock";
+const CAMPAIGN_ENDPOINT_LOCK_FILE: &str = ".crucible-campaign-listener.lock";
+const EXECUTOR_ENDPOINT_LOCK_FILE: &str = ".crucible-executor-listener.lock";
 // Linux `sockaddr_un.sun_path` has 108 bytes including the terminating NUL.
 const MAX_ENDPOINT_PATH_BYTES: usize = 107;
 
@@ -112,6 +113,20 @@ impl CampaignLoopbackEndpointConfig {
     /// stale entry, lifetime lock, bind result, ownership, permissions, or
     /// directory synchronization cannot be validated exactly.
     pub fn bind(&self) -> Result<ManagedCampaignLoopbackListener, CampaignLoopbackEndpointError> {
+        let (listener, guard) = self.bind_parts(
+            CAMPAIGN_ENDPOINT_LOCK_FILE,
+            "bind-campaign-endpoint",
+            "set-campaign-endpoint-mode",
+        )?;
+        Ok(ManagedCampaignLoopbackListener { listener, guard })
+    }
+
+    fn bind_parts(
+        &self,
+        lock_file: &'static str,
+        bind_operation: &'static str,
+        mode_operation: &'static str,
+    ) -> Result<(UnixListener, LocalEndpointGuard), CampaignLoopbackEndpointError> {
         let parent = self
             .path
             .parent()
@@ -124,7 +139,7 @@ impl CampaignLoopbackEndpointConfig {
         let parent_identity = FileIdentity::from_metadata(&parent_path_metadata);
         require_file_identity(&parent_directory, parent_identity, parent)?;
 
-        let lock_path = parent.join(ENDPOINT_LOCK_FILE);
+        let lock_path = parent.join(lock_file);
         let endpoint_lock: File = rustix::fs::open(
             &lock_path,
             OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -158,33 +173,107 @@ impl CampaignLoopbackEndpointConfig {
             .map_err(|source| io_error("sync-endpoint-directory-before-bind", parent, source))?;
 
         let listener = UnixListener::bind(&self.path)
-            .map_err(|source| io_error("bind-campaign-endpoint", &self.path, source))?;
-        let socket_identity =
-            match finish_bound_socket(self, parent, &parent_directory, parent_identity) {
-                Ok(identity) => identity,
-                Err(source) => {
-                    let _ = fs::remove_file(&self.path);
-                    let _ = parent_directory.sync_all();
-                    return Err(source);
-                }
-            };
-        Ok(ManagedCampaignLoopbackListener {
+            .map_err(|source| io_error(bind_operation, &self.path, source))?;
+        let socket_identity = match finish_bound_socket(
+            self,
+            parent,
+            &parent_directory,
+            parent_identity,
+            mode_operation,
+        ) {
+            Ok(identity) => identity,
+            Err(source) => {
+                let _ = fs::remove_file(&self.path);
+                let _ = parent_directory.sync_all();
+                return Err(source);
+            }
+        };
+        Ok((
             listener,
-            guard: CampaignEndpointGuard {
+            LocalEndpointGuard {
                 path: self.path.clone(),
                 socket_identity,
                 parent_identity,
                 parent_directory,
                 _endpoint_lock: endpoint_lock,
             },
-        })
+        ))
+    }
+}
+
+/// Exact deployment contract for one managed executor-component socket.
+///
+/// The executor endpoint uses the same pathname, ownership, stale-recovery,
+/// and exact-inode teardown rules as [`CampaignLoopbackEndpointConfig`], but a
+/// distinct lifetime lock lets both endpoints coexist in one secure directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutorLoopbackEndpointConfig {
+    inner: CampaignLoopbackEndpointConfig,
+}
+
+impl ExecutorLoopbackEndpointConfig {
+    /// Builds one absolute bounded executor endpoint contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorLoopbackEndpointError`] for the same invalid path,
+    /// ownership profile, or socket mode as
+    /// [`CampaignLoopbackEndpointConfig::new`].
+    pub fn new(
+        path: impl Into<PathBuf>,
+        owner_user_id: u32,
+        owner_group_id: u32,
+        socket_mode: u32,
+    ) -> Result<Self, ExecutorLoopbackEndpointError> {
+        CampaignLoopbackEndpointConfig::new(path, owner_user_id, owner_group_id, socket_mode)
+            .map(|inner| Self { inner })
+    }
+
+    /// Returns the exact stable socket path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.inner.path()
+    }
+
+    /// Returns the required socket and directory owner user ID.
+    #[must_use]
+    pub const fn owner_user_id(&self) -> u32 {
+        self.inner.owner_user_id()
+    }
+
+    /// Returns the required socket and directory owner group ID.
+    #[must_use]
+    pub const fn owner_group_id(&self) -> u32 {
+        self.inner.owner_group_id()
+    }
+
+    /// Returns the exact socket permission bits installed after bind.
+    #[must_use]
+    pub const fn socket_mode(&self) -> u32 {
+        self.inner.socket_mode()
+    }
+
+    /// Acquires the executor namespace and binds one managed listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorLoopbackEndpointError`] when the namespace contract,
+    /// stale entry, lifetime lock, bind result, ownership, permissions, or
+    /// directory synchronization cannot be validated exactly.
+    pub fn bind(&self) -> Result<ManagedExecutorLoopbackListener, ExecutorLoopbackEndpointError> {
+        let (listener, guard) = self.inner.bind_parts(
+            EXECUTOR_ENDPOINT_LOCK_FILE,
+            "bind-executor-endpoint",
+            "set-executor-endpoint-mode",
+        )?;
+        Ok(ManagedExecutorLoopbackListener { listener, guard })
     }
 }
 
 /// Bound listener retaining exact endpoint namespace ownership for its lifetime.
 pub struct ManagedCampaignLoopbackListener {
     listener: UnixListener,
-    guard: CampaignEndpointGuard,
+    guard: LocalEndpointGuard,
 }
 
 impl ManagedCampaignLoopbackListener {
@@ -194,12 +283,30 @@ impl ManagedCampaignLoopbackListener {
         &self.guard.path
     }
 
-    pub(crate) fn into_parts(self) -> (UnixListener, CampaignEndpointGuard) {
+    pub(crate) fn into_parts(self) -> (UnixListener, LocalEndpointGuard) {
         (self.listener, self.guard)
     }
 }
 
-pub(crate) struct CampaignEndpointGuard {
+/// Bound executor listener retaining exact endpoint namespace ownership.
+pub struct ManagedExecutorLoopbackListener {
+    listener: UnixListener,
+    guard: LocalEndpointGuard,
+}
+
+impl ManagedExecutorLoopbackListener {
+    /// Returns the exact managed socket path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.guard.path
+    }
+
+    pub(crate) fn into_parts(self) -> (UnixListener, LocalEndpointGuard) {
+        (self.listener, self.guard)
+    }
+}
+
+pub(crate) struct LocalEndpointGuard {
     path: PathBuf,
     socket_identity: FileIdentity,
     parent_identity: FileIdentity,
@@ -207,7 +314,7 @@ pub(crate) struct CampaignEndpointGuard {
     _endpoint_lock: File,
 }
 
-impl Drop for CampaignEndpointGuard {
+impl Drop for LocalEndpointGuard {
     fn drop(&mut self) {
         let Some(parent) = self.path.parent() else {
             return;
@@ -232,41 +339,41 @@ impl Drop for CampaignEndpointGuard {
     }
 }
 
-/// Failure to establish or retain one managed campaign endpoint.
+/// Failure to establish or retain one managed local component endpoint.
 #[derive(Debug, thiserror::Error)]
 pub enum CampaignLoopbackEndpointError {
     /// The endpoint path was not absolute, bounded, or ordinarily named.
-    #[error("campaign endpoint path is invalid")]
+    #[error("local component endpoint path is invalid")]
     InvalidPath,
     /// Socket permission bits were invalid or granted no write access.
-    #[error("campaign endpoint socket mode is invalid")]
+    #[error("local component endpoint socket mode is invalid")]
     InvalidSocketMode,
     /// The endpoint parent was not a real directory.
-    #[error("campaign endpoint parent is not a directory")]
+    #[error("local component endpoint parent is not a directory")]
     ParentNotDirectory,
     /// The endpoint parent owner did not match deployment configuration.
-    #[error("campaign endpoint parent ownership does not match configuration")]
+    #[error("local component endpoint parent ownership does not match configuration")]
     ParentOwnershipMismatch,
     /// The endpoint parent granted namespace mutation to group or other users.
-    #[error("campaign endpoint parent must not be group/other writable")]
+    #[error("local component endpoint parent must not be group/other writable")]
     ParentNamespaceWritable,
     /// Another cooperating listener owns the endpoint namespace lock.
-    #[error("campaign endpoint is already in use")]
+    #[error("local component endpoint is already in use")]
     EndpointInUse,
     /// The persistent endpoint lock was not an owner-only regular file.
-    #[error("campaign endpoint lock file is invalid")]
+    #[error("local component endpoint lock file is invalid")]
     InvalidLockFile,
     /// A preexisting endpoint path was not an eligible same-owner Unix socket.
-    #[error("campaign endpoint stale path is invalid")]
+    #[error("local component endpoint stale path is invalid")]
     InvalidStalePath,
     /// The bound socket did not match its exact ownership/type/mode contract.
-    #[error("campaign endpoint bound socket is invalid")]
+    #[error("local component endpoint bound socket is invalid")]
     InvalidBoundSocket,
     /// The pinned endpoint directory changed across namespace operations.
-    #[error("campaign endpoint directory identity changed")]
+    #[error("local component endpoint directory identity changed")]
     DirectoryIdentityChanged,
     /// A filesystem or socket operation failed.
-    #[error("campaign endpoint {operation} failed for {}: {source}", path.display())]
+    #[error("local component endpoint {operation} failed for {}: {source}", path.display())]
     Io {
         /// Stable operation category.
         operation: &'static str,
@@ -277,6 +384,9 @@ pub enum CampaignLoopbackEndpointError {
         source: io::Error,
     },
 }
+
+/// Failure to establish or retain one managed executor endpoint.
+pub type ExecutorLoopbackEndpointError = CampaignLoopbackEndpointError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
@@ -357,9 +467,10 @@ fn finish_bound_socket(
     parent: &Path,
     parent_directory: &File,
     parent_identity: FileIdentity,
+    mode_operation: &'static str,
 ) -> Result<FileIdentity, CampaignLoopbackEndpointError> {
     fs::set_permissions(&config.path, Permissions::from_mode(config.socket_mode))
-        .map_err(|source| io_error("set-campaign-endpoint-mode", &config.path, source))?;
+        .map_err(|source| io_error(mode_operation, &config.path, source))?;
     let metadata = fs::symlink_metadata(&config.path)
         .map_err(|source| io_error("stat-bound-endpoint", &config.path, source))?;
     if !metadata.file_type().is_socket()

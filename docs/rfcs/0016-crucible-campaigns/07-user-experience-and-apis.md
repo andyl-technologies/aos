@@ -475,7 +475,10 @@ The loopback executor component now has a bounded fixed-worker listener over an
 already-bound Unix socket. It authenticates one startup-fixed effective
 user/group identity through `SO_PEERCRED`, bounds queued sockets and requests
 per connection, and joins all connection workers on shutdown. Filesystem
-endpoint ownership and production QEMU worker selection remain daemon bootstrap
+endpoint ownership uses a distinct lifetime lock and the same exact owner,
+stale-recovery, mode, and conditional-teardown rules as the campaign socket;
+both sockets may share one secure directory without sharing authority.
+Production QEMU worker selection and daemon flag wiring remain bootstrap
 responsibilities rather than a second user-facing service.
 
 The direct service contract implements strict request-bound `CreateCampaign`,
