@@ -537,13 +537,46 @@ fn run_one_scenario(
         HostAdversary::start_if(role.applies_scheduler_preemption(), child.process_id())
             .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     let drive = scheduler::drive_scenario;
-    let (idle, rates, host_observable_schedule) = drive(
+    let drive_result = drive(
         &mut hot_path,
         &mut child,
         &setup,
         config,
         &mut host_adversary,
-    )?;
+    );
+    let (idle, rates, host_observable_schedule) = match drive_result {
+        Ok(completed) => completed,
+        Err(source) if guest_evidence_spool.is_some() => {
+            if let Some(reader) = guest_evidence_reader.as_mut() {
+                reader
+                    .drain_available()
+                    .map_err(|source| LivePluginQuantumGateError::Channel {
+                        operation: "drain SMP rendezvous evidence after QEMU failure",
+                        source: QemuNodeChannelError::new(
+                            "drain failed guest console",
+                            source.to_string(),
+                        ),
+                    })?;
+            }
+            let Some(spool) = guest_evidence_spool.as_ref() else {
+                return Err(source);
+            };
+            let observed = spool
+                .take()
+                .map_err(|source| LivePluginQuantumGateError::Channel {
+                    operation: "take SMP rendezvous evidence after QEMU failure",
+                    source: QemuNodeChannelError::new(
+                        "take failed guest console",
+                        source.to_string(),
+                    ),
+                })?;
+            return Err(LivePluginQuantumGateError::GuestEvidenceBeforeFailure {
+                observed,
+                source: Box::new(source),
+            });
+        }
+        Err(source) => return Err(source),
+    };
     scheduler::publish_terminal_fingerprint(
         &mut fingerprint_runtime,
         &hot_path,

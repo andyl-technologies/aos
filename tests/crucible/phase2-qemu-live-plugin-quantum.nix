@@ -31,6 +31,7 @@
   qemuPackage ? pkgs.qemu-crucible,
   pluginPackage ? pkgs.crucible-qemu-plugin,
   expectedQemuFailureMarker ? "",
+  expectedQemuFailureEvidence ? "",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -75,6 +76,7 @@ in
     CRUCIBLE_QUANTUM_MEMORY_MIB = memoryMib;
     CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS = requireSmpPauseRendezvous;
     EXPECTED_QEMU_FAILURE_MARKER = expectedQemuFailureMarker;
+    EXPECTED_QEMU_FAILURE_EVIDENCE = expectedQemuFailureEvidence;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -188,6 +190,8 @@ in
           if [ -n "$EXPECTED_QEMU_FAILURE_MARKER" ]; then
             test "$run_status" -ne 0
             grep -Fq "$EXPECTED_QEMU_FAILURE_MARKER" "$stderr_report"
+            test -n "$EXPECTED_QEMU_FAILURE_EVIDENCE"
+            grep -Fq "$EXPECTED_QEMU_FAILURE_EVIDENCE" "$stderr_report"
             if grep -Fxq PASS "$report"; then
               echo 'FAIL: QEMU negative control emitted PASS' >&2
               exit 1
@@ -196,6 +200,8 @@ in
             {
               printf 'PASS\n'
               printf 'expected_qemu_failure_marker=%s\n' "$EXPECTED_QEMU_FAILURE_MARKER"
+              printf 'observed_qemu_failure_evidence=%s\n' \
+                "$EXPECTED_QEMU_FAILURE_EVIDENCE"
               printf 'negative_control_exit_status=%s\n' "$run_status"
             } > "$out/result"
             cp "$stderr_report" "$out/stderr"
