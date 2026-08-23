@@ -296,7 +296,17 @@
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           grep -q '^+void icount_crucible_rr_yield_cpu(CPUState \*cpu)' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+    cs->crucible_guest_pause_yield = true;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        guest_pause_yield = cpu->crucible_guest_pause_yield;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        cpu->crucible_guest_pause_yield = false;' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+        if (guest_pause_yield && r != EXCP_INTERRUPT) {' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           grep -q '^+            !rr_crucible_sim_single_vcpu() &&' \
+            "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
+          grep -q '^+            guest_pause_yield &&' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"
           grep -q '^+            r == EXCP_INTERRUPT &&' \
             "${patchDir}/0110-crucible-release-halted-rr-turn.patch"

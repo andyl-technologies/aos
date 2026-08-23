@@ -78,7 +78,11 @@ fn run() -> Result<(), String> {
                 true,
             )?)
             .with_smp_vcpus(env_u16("CRUCIBLE_QUANTUM_SMP_VCPUS", 1)?)
-            .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?);
+            .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?)
+            .with_guest_smp_pause_rendezvous(env_flag(
+                "CRUCIBLE_QUANTUM_REQUIRE_SMP_PAUSE_RENDEZVOUS",
+                false,
+            )?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -151,6 +155,10 @@ fn run() -> Result<(), String> {
     println!(
         "time_authority_is_rust_plugin={}",
         report.time_authority_is_rust_plugin
+    );
+    println!(
+        "guest_smp_pause_rendezvous_observed={}",
+        report.guest_smp_pause_rendezvous_observed
     );
     Ok(())
 }

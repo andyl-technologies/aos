@@ -1533,25 +1533,33 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   callback may capture cross-vCPU registers at an exact completed-turn handoff
   only when the committed cursor is zero at the next serialized owner and
   `current_cpu` still names the vCPU whose turn just finished; other owner
-  mismatches remain rejected. A multi-vCPU guest `PAUSE` that returns without a
-  host exit request commits the RFC-authorized early handoff at cursor zero;
-  this prevents the lock owner from reacquiring a released firmware or guest
-  spin lock before a waiting vCPU can run. Ordinary accounting remains the sole
-  handoff when the `PAUSE` coincides with a completed quantum, and single-vCPU
-  cursor behavior is unchanged.
+  mismatches remain rejected. The x86 `PAUSE` helper sets a transient private
+  marker that the RR loop consumes and clears immediately after TCG returns;
+  generic `EXCP_INTERRUPT` exits cannot masquerade as a guest yield. A marked
+  multi-vCPU `PAUSE` that returns without a host exit request commits the
+  RFC-authorized early handoff at cursor zero, preventing the lock owner from
+  reacquiring a released firmware or guest spin lock before a waiting vCPU can
+  run. Ordinary accounting remains the sole handoff when the `PAUSE` coincides
+  with a completed quantum, and single-vCPU cursor behavior is unchanged.
 - **Micro-test:** the diskless live quantum guests deliberately reach their
   final `HLT` at a nonzero RR cursor position. The one-vCPU and four-vCPU gates
   require QEMU to publish the all-halted boundary, complete the exact timer
   idle jump, and reproduce the result under bounded scheduler preemption. The
-  four-vCPU gate first passes SeaBIOS's `PAUSE`-based AP-startup rendezvous, so
-  it also proves the canonical guest-yield handoff on a production boot path.
+  four-vCPU gate additionally captures the exact output-only sequence
+  `AAABPPPR`: every AP publishes online before the BSP releases it, and every AP
+  publishes again only after observing that release. Both sides wait with
+  `PAUSE`, so reaching the final all-halted boundary requires the canonical
+  helper-marked guest-yield handoff; INIT/SIPI delivery alone cannot satisfy the
+  gate.
   Structural checks require the halted-owner escape before the partial-turn
   continuation.
 - **Inertness:** both branches are inside precise sim mode's RR loop. The idle
   branch requires the selected cursor owner to be halted with no pending work;
-  the yield branch requires multiple vCPUs, a still-partial owner-matched turn,
-  and no host exit request, stop, unplug, or queued CPU work. Every ordinary
-  QEMU accelerator retains its prior behavior.
+  the yield branch requires the helper-authored transient marker, multiple
+  vCPUs, a still-partial owner-matched turn, and no host exit request, stop,
+  unplug, or queued CPU work. The marker is cleared before any control callback
+  and is not VMState. Every ordinary QEMU accelerator retains its prior
+  behavior.
 - **Risk:** D.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

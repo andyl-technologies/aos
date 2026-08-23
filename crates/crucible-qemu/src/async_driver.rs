@@ -137,6 +137,22 @@ pub trait QemuHostIoRuntime: Send {
         self.checkpoint_device_io_is_quiescent()
     }
 
+    /// Publishes the current exact execution fingerprint at a control boundary.
+    ///
+    /// The runtime must wake the external executor and wait until the plugin has
+    /// release-acknowledged a synchronous fingerprint sample. This is required
+    /// after an all-halted idle advance because no vCPU callback owns a later
+    /// sample at that otherwise quiescent boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the control request cannot be
+    /// published, woken, or acknowledged within `timeout`.
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError>;
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live

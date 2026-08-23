@@ -398,6 +398,13 @@ impl ScriptedRuntime {
 }
 
 impl QemuHostIoRuntime for ScriptedRuntime {
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     fn arm_advance_completion_fence(
         &mut self,
         fence: Option<QemuAdvanceCompletionFence>,

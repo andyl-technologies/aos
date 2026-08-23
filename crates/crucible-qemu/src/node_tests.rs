@@ -104,6 +104,7 @@ enum ChannelCall {
     ShmemEmit,
     ShmemIdle,
     ShmemFingerprint,
+    HostFingerprintBoundary,
     HostCheckpointClearWhileStopped,
     HostCheckpointAbort,
     QmpStop,
@@ -136,6 +137,7 @@ struct ScriptedShmemHotPath {
     fault_commands: SharedFaultCommands,
     stale_fault_results: Arc<Mutex<VecDeque<DequeuedFaultResult>>>,
     fault_events: SharedFaultEvents,
+    fingerprint_retry_countdown: Arc<Mutex<u8>>,
 }
 
 #[derive(Clone)]
@@ -322,6 +324,14 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::ShmemFingerprint);
+        let mut retry_countdown = self.fingerprint_retry_countdown.lock().unwrap();
+        if *retry_countdown > 0 {
+            *retry_countdown -= 1;
+            return Err(QemuNodeChannelError::retryable(
+                "execution_fingerprint",
+                "scripted sample is stale",
+            ));
+        }
         Ok(ExecutionFingerprint {
             hash: content_hash("fingerprint", "vm-a"),
         })
@@ -423,6 +433,17 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostFingerprintBoundary);
+        Ok(())
+    }
+
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.log
             .lock()
@@ -700,6 +721,39 @@ fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Bo
     Ok(())
 }
 
+#[test]
+fn stale_execution_fingerprint_requests_production_control_boundary() -> Result<(), Box<dyn Error>>
+{
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            fingerprint_retry_countdown: 1,
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
+
+    assert_eq!(
+        node.execution_fingerprint()?,
+        ExecutionFingerprint {
+            hash: content_hash("fingerprint", "vm-a"),
+        }
+    );
+    node.shutdown_child()?;
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemFingerprint,
+            ChannelCall::HostFingerprintBoundary,
+            ChannelCall::ShmemFingerprint,
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+        ]
+    );
+    Ok(())
+}
+
 #[path = "node_tests/exact_lifecycle.rs"]
 mod exact_lifecycle;
 
@@ -733,6 +787,7 @@ fn scripted_node_with_runtime(
             fail_qmp_stop: false,
             fail_qmp_snapshot,
             qmp_snapshot_timeout: false,
+            fingerprint_retry_countdown: 0,
         },
         runtime_outcomes,
     )
@@ -745,6 +800,7 @@ struct ScriptedNodeOptions {
     fail_qmp_stop: bool,
     fail_qmp_snapshot: bool,
     qmp_snapshot_timeout: bool,
+    fingerprint_retry_countdown: u8,
 }
 
 fn scripted_node_with_options(
@@ -779,6 +835,7 @@ fn scripted_node_with_fault_events(
             fault_commands: Arc::new(Mutex::new(Vec::new())),
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(events.into_iter().collect())),
+            fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),
@@ -854,6 +911,7 @@ fn scripted_node_with_coverage(
             fault_commands: Arc::new(Mutex::new(Vec::new())),
             stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
             fault_events: Arc::new(Mutex::new(VecDeque::new())),
+            fingerprint_retry_countdown: Arc::new(Mutex::new(options.fingerprint_retry_countdown)),
         },
         ScriptedQmpMachineControl {
             log: Arc::clone(&log),

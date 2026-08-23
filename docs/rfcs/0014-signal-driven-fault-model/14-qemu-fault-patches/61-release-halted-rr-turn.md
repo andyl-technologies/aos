@@ -28,7 +28,13 @@ without pending work, the RR execution loop exits to its normal idle path. The
 cursor remains serialized at its nonzero position; leaving the execution loop
 does not consume or reset it.
 
-In multi-vCPU precise sim mode, an `EXCP_INTERRUPT` return with no asynchronous
+The x86 `PAUSE` helper marks its own TCG exit in transient private `CPUState`.
+The RR loop consumes and clears that marker immediately after `tcg_cpu_exec()`
+returns, before any control callback or checkpoint boundary. Generic
+`EXCP_INTERRUPT` exits therefore cannot masquerade as a guest yield, and the
+marker is never VMState.
+
+In multi-vCPU precise sim mode, a marked `PAUSE` return with no asynchronous
 exit request, stop, unplug, or queued CPU work is a guest-authored scheduler
 yield. When ordinary instruction accounting has not already completed the
 turn, QEMU advances the serialized owner to the next vCPU and resets the cursor
@@ -52,6 +58,13 @@ nonzero RR cursor position. The live gates require the real patched QEMU and
 plugin to publish an all-halted boundary, advance to the exact PIT deadline,
 and reproduce the result under bounded scheduler preemption. The patch
 micro-test also requires the halted-owner escape to precede partial-turn
-continuation and requires the guest-yield branch to exclude single-vCPU,
-host-kick, and already-completed-turn cases. The four-vCPU run necessarily
-passes SeaBIOS's `PAUSE`-based AP rendezvous before it can enter the gate guest.
+continuation, requires `PAUSE` to set a dedicated marker that is consumed and
+cleared immediately on return, and requires the guest-yield branch to exclude
+unmarked interrupts, single-vCPU, host-kick, and already-completed-turn cases.
+The four-vCPU guest emits the exact output-only sequence `AAABPPPR`. Each AP
+publishes `A` before the BSP releases it with `B`, then publishes `P` only after
+that release; the BSP emits `R` only after all three post-release publications.
+The BSP and AP wait loops execute `PAUSE`, so the final all-halted boundary is
+unreachable unless the helper-marked zero-instruction RR turn hands off to the
+next vCPU. INIT/SIPI delivery or an unrelated interrupt cannot false-green this
+evidence.

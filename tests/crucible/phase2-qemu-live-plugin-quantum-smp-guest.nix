@@ -13,6 +13,31 @@
     then ""
     else ''
         /*
+         * The live gate observes COM1 as an output-only stream. The rendezvous
+         * below emits A^(N-1) B P^(N-1) R. Each wait executes PAUSE, so the BSP
+         * cannot release the APs and the APs cannot reach HLT unless QEMU hands
+         * the helper-marked zero-instruction RR turn to another vCPU.
+         */
+        movw $0, 0x7000
+        movw $0, 0x7002
+        movw $0, 0x7004
+        movw $0x3f9, %dx
+        movb $0, %al
+        outb %al, %dx
+        movw $0x3fb, %dx
+        movb $0x80, %al
+        outb %al, %dx
+        movw $0x3f8, %dx
+        movb $1, %al
+        outb %al, %dx
+        movw $0x3f9, %dx
+        movb $0, %al
+        outb %al, %dx
+        movw $0x3fb, %dx
+        movb $0x03, %al
+        outb %al, %dx
+
+        /*
          * Keep every ELF PT_LOAD segment above the option-ROM window. QEMU's
          * multiboot loader exposes the complete elf_low..elf_high span through
          * one fw_cfg DMA transfer, including sparse zero-filled gaps. A low
@@ -42,6 +67,25 @@
         incl %ecx
       cmpl ${"$"}${toString guestVcpus}, %ecx
         jne start_next_ap
+
+      wait_for_all_aps_online:
+        cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7000
+        je all_aps_online
+        pause
+        jmp wait_for_all_aps_online
+      all_aps_online:
+        movb $'B', %al
+        call serial_byte
+        movw $1, 0x7002
+
+      wait_for_all_aps_past_pause:
+        cmpw ${"$"}${toString (guestVcpus - 1)}, 0x7004
+        je all_aps_past_pause
+        pause
+        jmp wait_for_all_aps_past_pause
+      all_aps_past_pause:
+        movb $'R', %al
+        call serial_byte
     '';
   bspRunLoop =
     if guestIdle
@@ -169,6 +213,18 @@ in
               jnz wait_for_icr
               ret
 
+            serial_byte:
+              pushl %eax
+            serial_wait:
+              movw $0x3fd, %dx
+              inb %dx, %al
+              testb $0x20, %al
+              jz serial_wait
+              popl %eax
+              movw $0x3f8, %dx
+              outb %al, %dx
+              ret
+
             irq0:
               pushal
               movb $0x20, %al
@@ -214,6 +270,34 @@ in
             .code16
             ap_start:
               cli
+              /* Publish online only after the byte reached the UART. */
+              movb $'A', %bl
+            ap_online_serial_wait:
+              movw $0x3fd, %dx
+              inb %dx, %al
+              testb $0x20, %al
+              jz ap_online_serial_wait
+              movb %bl, %al
+              movw $0x3f8, %dx
+              outb %al, %dx
+              lock incw 0x7000
+
+            ap_wait_for_release:
+              cmpw $1, 0x7002
+              je ap_released
+              pause
+              jmp ap_wait_for_release
+            ap_released:
+              movb $'P', %bl
+            ap_released_serial_wait:
+              movw $0x3fd, %dx
+              inb %dx, %al
+              testb $0x20, %al
+              jz ap_released_serial_wait
+              movb %bl, %al
+              movw $0x3f8, %dx
+              outb %al, %dx
+              lock incw 0x7004
             ${apRunLoop}
             ap_trampoline_end:
             GUEST_ASM
@@ -265,6 +349,7 @@ in
             guest_deadline=${guestDeadline}
             guest_ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only
+            guest_smp_rendezvous=ap-online-bsp-release-ap-past-pause
             EVIDENCE
           '';
         }
