@@ -38,7 +38,11 @@
   };
 in {
   name = "native-hub-apm-smoke";
-  timeout = 3600;
+  # Fresh native-Hub publication intentionally transfers the complete raw
+  # disk plus its A/B update payload directory. Slow KVM or 9p hosts can spend
+  # well over twenty minutes in that one production-sized transaction before
+  # the reboot/rollback checks begin.
+  timeout = 5400;
 
   machines = {
     consumer = {
@@ -805,7 +809,7 @@ in {
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /tmp/publication-system
-      """), timeout=1200)
+      """), timeout=2400)
       publication_system_data = json.loads(publication_system)["data"]
       assert publication_system_data["state"] == "ready", publication_system_data
       publisher.wait_until_succeeds(
