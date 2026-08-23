@@ -127,7 +127,7 @@ shape-line|crates/crucible-qemu/src/launch.rs|1638
 shape-line|crates/crucible-qemu/src/launch/validation.rs|869
 shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|851
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701
-shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|855
+shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|888
 shape-line|crates/crucible-qemu/src/mapped_quantum.rs|950
 shape-line|crates/crucible-qemu/src/node.rs|2645
 shape-line|crates/crucible-qemu/src/node_factory.rs|981

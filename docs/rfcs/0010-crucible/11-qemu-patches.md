@@ -1559,7 +1559,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   guest has issued the `AAAB` prefix and immediately before the critical
   release-site `PAUSE`. It aborts only if that marked PAUSE takes the
   still-partial early-yield branch. Earlier startup/contention PAUSEs and an
-  ordinary 4096-instruction completion cannot satisfy that negative control.
+  ordinary 4096-instruction completion cannot satisfy that negative control;
+  the negative additionally requires the live gate's captured pre-abort UART
+  bytes to equal `AAAB`.
   The remaining APs acquire in turn before `R`, so INIT/SIPI delivery alone
   cannot satisfy the evidence.
   Structural checks require the halted-owner escape before the partial-turn
