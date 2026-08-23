@@ -153,6 +153,14 @@ in
             -p crucible \
             --lib locked_replay_retains_and_enforces_a_backend_refined_coordinate \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible \
+            --lib resolved_effect_trace_rejects_unversioned_and_future_envelopes \
+            -- --test-threads=1
 
           cargo test \
             --frozen \

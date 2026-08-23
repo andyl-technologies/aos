@@ -291,7 +291,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 return Err(error);
             }
         }
-        match prepare_and_commit(sink, &evaluation.actions) {
+        match prepare_and_commit(sink, &evaluation.actions, false) {
             Ok(results) => evaluation
                 .observations
                 .extend(results.into_iter().map(|result| result.observation)),

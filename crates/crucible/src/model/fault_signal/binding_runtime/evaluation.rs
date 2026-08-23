@@ -110,7 +110,13 @@ impl<'a> FaultBindingRuntime<'a> {
                         evaluation.actions.len(),
                     )?;
                 }
-                let results = prepare_and_commit(sink, &evaluation.actions)?;
+                // A preview runs only against the deterministic in-memory
+                // adapter ledger, which cannot sample QEMU's live icount. It
+                // may therefore retain a node action's virtual-time-only
+                // coordinate. Every committing path requires the backend
+                // refinement before recording or replay verification.
+                let results =
+                    prepare_and_commit(sink, &evaluation.actions, !verify_replay_outcomes)?;
                 if verify_replay_outcomes && let Some(trace) = replay.as_deref_mut() {
                     verify_replay_results(
                         trace,

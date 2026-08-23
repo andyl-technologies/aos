@@ -1,7 +1,7 @@
 # Current engineering-hygiene debt exposed when the Crucible package runs the
 # workspace-scoped test suite. Line entries are caps, not blanket exemptions:
 # increasing a listed file's line count still fails the gate.
-shape-line|crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs|612
+shape-line|crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs|611
 shape-line|crates/crucible-api/src/client.rs|2965
 shape-line|crates/crucible-api/src/debug_gateway.rs|923
 shape-line|crates/crucible-api/src/lifecycle.rs|2204
@@ -116,7 +116,7 @@ shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1817
 shape-line|crates/crucible-qemu/examples/crucible-qemu-fingerprint.rs|653
 shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|716
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1568
-shape-line|crates/crucible-qemu/src/fault_action_sink.rs|1007
+shape-line|crates/crucible-qemu/src/fault_action_sink.rs|996
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/host_setup.rs|1643

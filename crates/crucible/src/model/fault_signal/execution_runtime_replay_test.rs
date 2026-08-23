@@ -135,6 +135,17 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
             .unwrap_or_else(|error| panic!("restored bytes: {error}")),
         bytes
     );
+
+    let mut retired_version = checkpoint.clone();
+    retired_version.semantic_version = 2;
+    let retired_bytes = retired_version
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("retired checkpoint fixture: {error}"));
+    assert_eq!(
+        FaultRuntimeCheckpoint::from_canonical_bytes(&retired_bytes, &plan, seed),
+        Err(FaultRuntimeError::VersionOrIdentityMismatch)
+    );
+
     let mut trailing = bytes;
     trailing.push(0);
     assert!(FaultRuntimeCheckpoint::from_canonical_bytes(&trailing, &plan, seed).is_err());
