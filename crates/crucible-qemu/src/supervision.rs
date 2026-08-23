@@ -32,6 +32,11 @@ impl HostSupervisionDeadline {
     pub(super) fn has_time_remaining(&self) -> bool {
         self.0.has_time_remaining()
     }
+
+    /// Returns the remaining host-only supervision budget.
+    pub(super) fn remaining(&self) -> Option<std::time::Duration> {
+        self.0.remaining()
+    }
 }
 
 pub use accelerator_io_servicer::{

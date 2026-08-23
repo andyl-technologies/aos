@@ -844,6 +844,61 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         ))
     }
 
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if timeout.is_zero() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "publish current execution fingerprint",
+                "execution fingerprint control-boundary timeout is zero",
+            ));
+        }
+
+        let request = self.signal_wake()?;
+        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let mut last_observed = None;
+        for attempt in 0..attempts {
+            self.service_console_output()?;
+            let snapshot = self
+                .region
+                .node_slot(self.vm_slot)
+                .map_err(map_slot_error)?
+                .snapshot();
+            last_observed = Some((
+                snapshot.control_boundary_ack,
+                snapshot.current_icount,
+                snapshot.status,
+            ));
+            if control_boundary_request_is_acknowledged(request, &snapshot) {
+                // The plugin publishes the fingerprint through its synchronous
+                // digest worker before release-acknowledging this request. The
+                // acquire snapshot therefore makes the exact sample visible to
+                // the node's independent hot-path mapping.
+                return Ok(());
+            }
+            if attempt + 1 < attempts {
+                if attempt % 16 == 15 {
+                    self.write_wake_doorbell()?;
+                }
+                thread::sleep(self.poll_interval);
+            }
+        }
+
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish current execution fingerprint",
+            format!(
+                "QEMU did not acknowledge fingerprint control token {request} within {timeout:?}; last observation {}",
+                last_observed.map_or_else(
+                    || String::from("none"),
+                    |(ack, current, status)| {
+                        format!("token {ack}, current icount {current}, status {status}")
+                    },
+                )
+            ),
+        ))
+    }
+
     /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.
     fn quiesce_for_checkpoint(
         &mut self,
