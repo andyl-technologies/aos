@@ -2467,6 +2467,115 @@ mod tests {
         assert!(content.contains("curl"));
     }
 
+    #[tokio::test]
+    async fn extract_packages_reads_updated_blob_from_sha256_fetch_pack() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        let origin_dir = tmp.path().join("origin.git");
+        let cache_dir = tmp.path().join("cache.git");
+        let output_dir = tmp.path().join("extracted");
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+        assert!(
+            git(&work_dir)
+                .args(["init", "--object-format=sha256"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let _ = git(&work_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(&work_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+        assert!(
+            git(&work_dir)
+                .args(["checkout", "-b", "stable"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+
+        let package_dir = work_dir.join("packages").join("a");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        let package_path = package_dir.join("aos.toml");
+        tokio::fs::write(
+            &package_path,
+            "[package]\nname = \"aos\"\n[[versions]]\nversion = \"test-1\"\n",
+        )
+        .await
+        .unwrap();
+        let _ = commit_all(&work_dir, "publish test-1").await;
+        let expected = "[package]\nname = \"aos\"\n[[versions]]\nprevious = \"test-1\"\nversion = \"test-2\"\n";
+        tokio::fs::write(&package_path, expected).await.unwrap();
+        let expected_commit = commit_all(&work_dir, "publish test-2").await;
+
+        assert!(
+            git(tmp.path())
+                .args([
+                    "init",
+                    "--bare",
+                    "--object-format=sha256",
+                    &origin_dir.to_string_lossy(),
+                ])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(
+            git(&work_dir)
+                .args(["push", &origin_dir.to_string_lossy(), "stable"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(
+            git(&origin_dir)
+                .args(["gc", "--aggressive", "--prune=now"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+
+        ensure_repo(&cache_dir, &origin_dir.to_string_lossy())
+            .await
+            .unwrap();
+        repo::fetch(
+            &cache_dir,
+            &origin_dir.to_string_lossy(),
+            &["+refs/heads/stable:refs/remotes/origin/stable".to_string()],
+        )
+        .await
+        .unwrap();
+        let fetched_commit = repo::rev_parse_commit(&cache_dir, "refs/remotes/origin/stable")
+            .await
+            .unwrap();
+        assert_eq!(fetched_commit, expected_commit);
+
+        extract_packages(&cache_dir, &fetched_commit, &output_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(output_dir.join("a").join("aos.toml"))
+                .await
+                .unwrap(),
+            expected,
+        );
+    }
+
     /// Init a non-bare repo with a configured identity at `dir`.
     async fn init_repo(dir: &Path) {
         tokio::fs::create_dir_all(dir).await.unwrap();
