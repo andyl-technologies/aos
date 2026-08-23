@@ -292,18 +292,20 @@ enum Commands {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignArgs {
-    /// Connected daemon campaign-service Unix socket.
-    #[arg(long, value_name = "path", required = true)]
-    socket: PathBuf,
-    /// Principal expected from the daemon's authenticated peer policy.
-    #[arg(long, value_name = "principal", required = true)]
-    principal: String,
+    /// Connected daemon socket; required except for offline import validation.
+    #[arg(long, value_name = "path")]
+    socket: Option<PathBuf>,
+    /// Authenticated principal; required except for offline import validation.
+    #[arg(long, value_name = "principal")]
+    principal: Option<String>,
     #[command(subcommand)]
     command: CampaignCommand,
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignCommand {
+    /// Validate strict campaign import manifests without opening repository state.
+    ValidateImport(CampaignValidateImportArgs),
     /// Create a named campaign from canonical imported lineage and policy records.
     Create(CampaignCreateArgs),
     /// Derive a new named campaign from one exact source snapshot.
@@ -354,6 +356,13 @@ enum CampaignCommand {
     Pin(CampaignPinArgs),
     /// Remove one semantic configuration pin.
     Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignValidateImportArgs {
+    /// Strict import manifest to validate; repeated manifests share one bound.
+    #[arg(value_name = "MANIFEST", required = true)]
+    manifests: Vec<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -1858,6 +1867,8 @@ mod cli_artifact;
 mod cli_backend;
 #[path = "cli/campaign.rs"]
 mod cli_campaign;
+#[path = "cli/verify_serve/campaign_import.rs"]
+mod cli_campaign_import;
 #[path = "cli/control.rs"]
 mod cli_control;
 #[path = "cli/dispatch.rs"]

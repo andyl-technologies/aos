@@ -24,8 +24,15 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use crucible::{ScenarioDefForm, Schedule};
-use crucible_campaign::CandidateGeneratorSpec;
-use crucible_daemon::{MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, PreparedCampaignLocalService};
+use crucible_campaign::{
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId,
+    ConfigurationArtifactId,
+};
+use crucible_daemon::{
+    MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, PreparedCampaignLocalService,
+    decode_crucible_configuration_artifact, decode_crucible_scenario_artifact,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
+};
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 
@@ -33,6 +40,7 @@ use super::*;
 
 const CAMPAIGN_IMPORT_SCHEMA: &str = "crucible.campaign-import";
 const CAMPAIGN_IMPORT_VERSION: u32 = 1;
+const CAMPAIGN_IMPORT_VALIDATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-import-validation.v1";
 const MAX_CAMPAIGN_IMPORT_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_CAMPAIGN_IMPORT_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_IMPORT_PATH_BYTES: usize = 4_095;
@@ -61,21 +69,157 @@ struct GeneratorImport {
     specification: PathBuf,
 }
 
+/// Summary produced by strict offline campaign-import validation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(super) struct CampaignImportValidationReport {
+    schema: &'static str,
+    manifests: usize,
+    configurations: Vec<String>,
+    generators: Vec<String>,
+}
+
+impl CampaignImportValidationReport {
+    /// Returns the number of strict manifests validated together.
+    #[must_use]
+    pub(super) const fn manifest_count(&self) -> usize {
+        self.manifests
+    }
+
+    /// Returns the exact verified configuration-artifact identities.
+    #[must_use]
+    pub(super) fn configurations(&self) -> &[String] {
+        &self.configurations
+    }
+
+    /// Returns the exact verified generator identities.
+    #[must_use]
+    pub(super) fn generators(&self) -> &[String] {
+        &self.generators
+    }
+}
+
+trait CampaignImportTarget {
+    fn configuration(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, String>;
+
+    fn generator(
+        &mut self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<CandidateGeneratorSpecId, String>;
+}
+
+struct RepositoryImportTarget<'a> {
+    prepared: &'a PreparedCampaignLocalService,
+}
+
+impl CampaignImportTarget for RepositoryImportTarget<'_> {
+    fn configuration(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, String> {
+        self.prepared
+            .import_configuration(scenario, schedule)
+            .map_err(|error| error.to_string())
+    }
+
+    fn generator(
+        &mut self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<CandidateGeneratorSpecId, String> {
+        self.prepared
+            .import_generator(generator)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Default)]
+struct OfflineValidationTarget {
+    generators: BTreeSet<CandidateGeneratorSpecId>,
+}
+
+impl CampaignImportTarget for OfflineValidationTarget {
+    fn configuration(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<ConfigurationArtifactId, String> {
+        let scenario_artifact =
+            encode_crucible_scenario_artifact(scenario).map_err(|error| error.to_string())?;
+        decode_crucible_scenario_artifact(&scenario_artifact).map_err(|error| error.to_string())?;
+        let configuration = encode_crucible_configuration_artifact(&scenario_artifact, schedule)
+            .map_err(|error| error.to_string())?;
+        decode_crucible_configuration_artifact(scenario, &scenario_artifact, &configuration)
+            .map_err(|error| error.to_string())?;
+        configuration.id().map_err(|error| error.to_string())
+    }
+
+    fn generator(
+        &mut self,
+        generator: &CandidateGeneratorSpec,
+    ) -> Result<CandidateGeneratorSpecId, String> {
+        if let CandidateGeneratorAlgorithm::OrderedMixture { components } = generator.algorithm() {
+            for component in components {
+                if !self.generators.contains(&component.generator()) {
+                    return Err(format!(
+                        "generator dependency {} was not validated earlier in this manifest set",
+                        component.generator()
+                    ));
+                }
+            }
+        }
+        let id = generator.id().map_err(|error| error.to_string())?;
+        self.generators.insert(id);
+        Ok(id)
+    }
+}
+
 pub(super) fn apply_campaign_import_manifests(
     prepared: &PreparedCampaignLocalService,
     manifests: &[PathBuf],
 ) -> Result<(), CliError> {
-    let mut total_entries = 0_usize;
-    for path in manifests {
-        apply_campaign_import_manifest(prepared, path, &mut total_entries)?;
-    }
-    Ok(())
+    let mut target = RepositoryImportTarget { prepared };
+    process_campaign_import_manifests(&mut target, manifests).map(|_| ())
 }
 
-fn apply_campaign_import_manifest(
-    prepared: &PreparedCampaignLocalService,
+/// Validates one closed dependency-ordered manifest set without repository access.
+///
+/// Configuration identities are re-derived through the same Crucible adapter
+/// used by durable import. Generator dependencies must occur earlier in the
+/// supplied manifest sequence, making the offline result independent of any
+/// preexisting repository state.
+pub(super) fn validate_campaign_import_manifests(
+    manifests: &[PathBuf],
+) -> Result<CampaignImportValidationReport, CliError> {
+    let mut target = OfflineValidationTarget::default();
+    process_campaign_import_manifests(&mut target, manifests)
+}
+
+fn process_campaign_import_manifests<T: CampaignImportTarget>(
+    target: &mut T,
+    manifests: &[PathBuf],
+) -> Result<CampaignImportValidationReport, CliError> {
+    let mut total_entries = 0_usize;
+    let mut report = CampaignImportValidationReport {
+        schema: CAMPAIGN_IMPORT_VALIDATION_REPORT_SCHEMA,
+        manifests: manifests.len(),
+        configurations: Vec::new(),
+        generators: Vec::new(),
+    };
+    for path in manifests {
+        apply_campaign_import_manifest(target, path, &mut total_entries, &mut report)?;
+    }
+    Ok(report)
+}
+
+fn apply_campaign_import_manifest<T: CampaignImportTarget>(
+    target: &mut T,
     path: &Path,
     total_entries: &mut usize,
+    report: &mut CampaignImportValidationReport,
 ) -> Result<(), CliError> {
     let bytes = read_secure_import_file(path, MAX_CAMPAIGN_IMPORT_MANIFEST_BYTES, "manifest")?;
     let text = std::str::from_utf8(&bytes)
@@ -112,11 +256,12 @@ fn apply_campaign_import_manifest(
         })?;
         drop(schedule_bytes);
 
-        prepared
-            .import_configuration(&scenario, &schedule)
+        let id = target
+            .configuration(&scenario, &schedule)
             .map_err(|error| {
                 campaign_import_error(path, format!("configuration import failed: {error}"))
             })?;
+        report.configurations.push(id.to_string());
     }
 
     for generator in manifest.generator {
@@ -134,9 +279,10 @@ fn apply_campaign_import_manifest(
             })?;
         drop(bytes);
 
-        prepared.import_generator(&specification).map_err(|error| {
+        let id = target.generator(&specification).map_err(|error| {
             campaign_import_error(path, format!("generator import failed: {error}"))
         })?;
+        report.generators.push(id.to_string());
     }
     Ok(())
 }
@@ -315,6 +461,8 @@ fn campaign_import_error(path: &Path, detail: impl std::fmt::Display) -> CliErro
 mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
+    use crucible_campaign::WeightedGenerator;
+
     use super::*;
 
     #[test]
@@ -375,5 +523,128 @@ specification = "/tmp/generator.bin"
         assert_eq!(total, MAX_CAMPAIGN_IMPORT_ENTRIES);
         assert!(charge_manifest_entries(path, &mut total, 1).is_err());
         assert_eq!(total, MAX_CAMPAIGN_IMPORT_ENTRIES);
+    }
+
+    #[test]
+    fn offline_validation_authenticates_dependency_order_without_repository_state() {
+        let directory = tempfile::tempdir().expect("campaign import validation directory");
+        let base = CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All)
+            .expect("base generator");
+        let base_id = base.id().expect("base generator ID");
+        let mixture = CandidateGeneratorSpec::new(
+            1,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![WeightedGenerator::new(base_id, 1).expect("mixture component")],
+            },
+        )
+        .expect("mixture generator");
+        let mixture_id = mixture.id().expect("mixture generator ID");
+        let base_path = directory.path().join("base.bin");
+        let mixture_path = directory.path().join("mixture.bin");
+        for (path, bytes) in [
+            (&base_path, base.canonical_bytes()),
+            (&mixture_path, mixture.canonical_bytes()),
+        ] {
+            fs::write(path, bytes).expect("generator body");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("secure generator body");
+        }
+        let manifest = directory.path().join("manifest.toml");
+        fs::write(
+            &manifest,
+            format!(
+                concat!(
+                    "schema = \"crucible.campaign-import\"\n",
+                    "version = 1\n\n",
+                    "[[generator]]\n",
+                    "specification = \"{}\"\n\n",
+                    "[[generator]]\n",
+                    "specification = \"{}\"\n",
+                ),
+                base_path.display(),
+                mixture_path.display(),
+            ),
+        )
+        .expect("campaign import manifest");
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600))
+            .expect("secure campaign import manifest");
+
+        let report = validate_campaign_import_manifests(std::slice::from_ref(&manifest))
+            .expect("offline manifest validation");
+        assert_eq!(report.manifest_count(), 1);
+        assert!(report.configurations().is_empty());
+        assert_eq!(
+            report.generators(),
+            &[base_id.to_string(), mixture_id.to_string()]
+        );
+
+        fs::write(
+            &manifest,
+            format!(
+                concat!(
+                    "schema = \"crucible.campaign-import\"\n",
+                    "version = 1\n\n",
+                    "[[generator]]\n",
+                    "specification = \"{}\"\n",
+                ),
+                mixture_path.display(),
+            ),
+        )
+        .expect("missing-dependency manifest");
+        assert!(
+            validate_campaign_import_manifests(std::slice::from_ref(&manifest))
+                .expect_err("missing dependency must fail")
+                .to_string()
+                .contains("was not validated earlier")
+        );
+    }
+
+    #[test]
+    fn offline_validation_rederives_configuration_identity() {
+        let directory = tempfile::tempdir().expect("campaign configuration validation directory");
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let schedule = Schedule::empty();
+        let scenario_path = directory.path().join("scenario.bin");
+        let schedule_path = directory.path().join("schedule.bin");
+        for (path, bytes) in [
+            (&scenario_path, scenario.to_compact_binary()),
+            (&schedule_path, schedule.to_compact_binary()),
+        ] {
+            fs::write(path, bytes).expect("configuration body");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("secure configuration body");
+        }
+        let manifest = directory.path().join("manifest.toml");
+        fs::write(
+            &manifest,
+            format!(
+                concat!(
+                    "schema = \"crucible.campaign-import\"\n",
+                    "version = 1\n\n",
+                    "[[configuration]]\n",
+                    "scenario = \"{}\"\n",
+                    "schedule = \"{}\"\n",
+                ),
+                scenario_path.display(),
+                schedule_path.display(),
+            ),
+        )
+        .expect("configuration manifest");
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600))
+            .expect("secure configuration manifest");
+
+        let scenario_artifact =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+        let expected = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
+            .expect("configuration artifact")
+            .id()
+            .expect("configuration artifact ID")
+            .to_string();
+        let report = validate_campaign_import_manifests(std::slice::from_ref(&manifest))
+            .expect("offline configuration validation");
+        assert_eq!(report.configurations(), &[expected]);
+        assert!(report.generators().is_empty());
     }
 }
