@@ -24,8 +24,8 @@ use crucible::{
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     DequeuedFaultEvent, DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1,
-    FaultResultStatus, FingerprintSample as QemuFingerprintSample, SchedulerPreemptionCommand,
-    SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
+    FaultResultStatus, FingerprintSample as QemuFingerprintSample, HARD_FAULT_PAYLOAD_BYTES,
+    SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
@@ -1266,7 +1266,25 @@ impl QemuNode {
         header: FaultCommandHeaderV1,
         payload: &[u8],
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.apply_fault_command_at_current_boundary_with_result_buffer(header, payload, Vec::new())
+        // The compatibility entry point owns no PREPARE evidence buffer. Admit
+        // the ABI hard ceiling before publication so it remains correct for
+        // every negotiated result shape without allocating after APPLY.
+        let requested_u64 = u64::from(HARD_FAULT_PAYLOAD_BYTES);
+        let requested =
+            usize::try_from(requested_u64).map_err(|_| QemuNodeError::FaultResultStorage {
+                requested: requested_u64,
+            })?;
+        let mut result_buffer = Vec::new();
+        result_buffer.try_reserve_exact(requested).map_err(|_| {
+            QemuNodeError::FaultResultStorage {
+                requested: requested_u64,
+            }
+        })?;
+        self.apply_fault_command_at_current_boundary_with_result_buffer(
+            header,
+            payload,
+            result_buffer,
+        )
     }
 
     /// Applies one admitted command using result storage reserved by the caller.

@@ -164,6 +164,14 @@ pub enum QemuNodeError {
         /// Deterministic command, capability, coordinate, or result mismatch.
         message: String,
     },
+    /// Precommit storage for the lossless QEMU result payload could not be reserved.
+    #[error(
+        "cannot reserve {requested} bytes for the QEMU fault result before command publication"
+    )]
+    FaultResultStorage {
+        /// Exact hard-bounded result storage requested before visible mutation.
+        requested: u64,
+    },
 }
 
 impl QemuNodeError {
