@@ -11,8 +11,16 @@ use serde::Serialize;
 
 use super::{FaultResourceLimitError, FaultResourceLimits, FaultRuntimeError};
 
-pub(super) fn encode<T: Serialize>(
+pub(in crate::model::fault_signal) fn encode<T: Serialize>(
     value: &T,
+    resource_limits: FaultResourceLimits,
+) -> Result<Vec<u8>, FaultRuntimeError> {
+    encode_prefixed(value, &[], resource_limits)
+}
+
+pub(super) fn encode_prefixed<T: Serialize>(
+    value: &T,
+    prefix: &[u8],
     resource_limits: FaultResourceLimits,
 ) -> Result<Vec<u8>, FaultRuntimeError> {
     let maximum = resource_limits.fat_checkpoint_bytes;
@@ -24,13 +32,16 @@ pub(super) fn encode<T: Serialize>(
             .unwrap_or(FaultRuntimeError::CheckpointEncoding)
     })?;
 
-    let length = counter.length;
+    let prefix_length = u64::try_from(prefix.len())
+        .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
+    let length = admit(prefix_length, counter.length, maximum, hard)?;
     let length_usize = usize::try_from(length)
         .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length_usize)
         .map_err(|_| resource_error(0, length, maximum, hard))?;
+    bytes.extend_from_slice(prefix);
     let mut writer = ReservedWriter::new(&mut bytes, length, hard);
     ciborium::ser::into_writer(value, &mut writer).map_err(|_| {
         writer

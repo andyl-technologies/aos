@@ -30,10 +30,9 @@ use std::time::Duration;
 
 use crucible::model::ContentHash;
 use crucible_shmem::{
-    DequeuedFaultResult, MappedSetupRegion, MappedSetupRegionAccessError, STATUS_DONE, STATUS_IDLE,
-    SetupRegionMapError, authorize_advance_ceiling, dequeue_fault_result, mmap_setup_region,
+    DequeuedFaultResult, MappedSetupRegion, STATUS_DONE, STATUS_IDLE, authorize_advance_ceiling,
+    dequeue_fault_result, mmap_setup_region,
 };
-use thiserror::Error;
 
 use super::accelerator_io_servicer::QemuLiveAcceleratorServicer;
 use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
@@ -1520,33 +1519,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     }
 }
 
-/// Maps a node-slot access failure to a runtime await error.
-fn map_slot_error(source: MappedSetupRegionAccessError) -> QemuAsyncDriverRuntimeError {
-    QemuAsyncDriverRuntimeError::new("poll advance completion", source.to_string())
-}
-
-/// Error building a [`QemuLiveHostIoRuntime`].
-#[derive(Debug, Error)]
-pub enum QemuLiveHostIoRuntimeError {
-    /// The shared-memory region could not be mapped.
-    #[error("map shared-memory region failed: {source}")]
-    MapRegion {
-        /// Underlying mapping error.
-        source: SetupRegionMapError,
-    },
-    /// The plugin wake eventfd could not be cloned.
-    #[error("clone plugin wake eventfd failed: {source}")]
-    CloneWakeFd {
-        /// Underlying descriptor clone error.
-        source: std::io::Error,
-    },
-    /// The configured poll interval was zero.
-    #[error("host-I/O runtime poll interval must be nonzero")]
-    ZeroPollInterval,
-    /// More than one console stream was attached to one node runtime.
-    #[error("QEMU host-I/O runtime already has a console stream")]
-    DuplicateConsole,
-}
+mod error;
+pub use error::QemuLiveHostIoRuntimeError;
+use error::map_slot_error;
 
 #[cfg(test)]
 #[path = "host_io_runtime_tests.rs"]

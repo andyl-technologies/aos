@@ -38,9 +38,16 @@
     entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
   };
   qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
-  qemuNode =
-    builtins.readFile ../../crates/crucible-qemu/src/node.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/node_tests.rs;
+  qemuNode = builtins.concatStringsSep "\n" [
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+    })
+  ];
   mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
   backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};

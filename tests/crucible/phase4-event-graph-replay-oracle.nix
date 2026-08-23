@@ -8,7 +8,10 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  replayTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  replayTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  };
   replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
