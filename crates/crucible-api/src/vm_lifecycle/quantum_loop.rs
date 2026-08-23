@@ -5,6 +5,7 @@ use super::*;
 struct PreparedTerminalReplacement {
     decision: QemuNodeLifecycleDecision,
     snapshot: QemuVmSnapshot,
+    source_run_directory: PathBuf,
     run_directory: PathBuf,
     launch: ProductionLiveNodeStepGateConfig,
     generation: u64,
@@ -1154,32 +1155,6 @@ impl ProductionVmLifecycleLoop {
                     .join("lifecycle-generations")
                     .join(format!("node-{index}-generation-{generation}"))
             };
-            fs::create_dir_all(&run_directory).map_err(|error| {
-                SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "create terminal lifecycle generation directory {}: {error}",
-                        run_directory.display()
-                    ),
-                }
-            })?;
-            if run_directory != *current_directory {
-                for artifact in [
-                    PRODUCTION_ROOT_OVERLAY_FILE_NAME,
-                    PRODUCTION_VMSTATE_FILE_NAME,
-                ] {
-                    let source = current_directory.join(artifact);
-                    let target = run_directory.join(artifact);
-                    fs::copy(&source, &target).map_err(|error| {
-                        SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "copy terminal lifecycle artifact {} to {}: {error}",
-                                source.display(),
-                                target.display()
-                            ),
-                        }
-                    })?;
-                }
-            }
             let mut launch = self
                 .launch_configs
                 .get(&decision.node)
@@ -1224,6 +1199,7 @@ impl ProductionVmLifecycleLoop {
             prepared.push(PreparedTerminalReplacement {
                 decision,
                 snapshot,
+                source_run_directory: current_directory.clone(),
                 run_directory,
                 launch,
                 generation,
@@ -1344,14 +1320,20 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         let node = prepared.decision.node.clone();
         let crash_detector = format!("lifecycle-{}-generation-{}", node.name, prepared.generation);
+        let preparation = ProductionVmNodePreparationKind::Replacement {
+            source_run_directory: &prepared.source_run_directory,
+        };
         let launched = match prepared.service_state {
             ProductionNodeServiceState::Running => Some(launch_production_node_generation(
                 self.node_launcher.as_mut(),
-                &prepared.launch,
-                &prepared.run_directory,
-                &node,
-                prepared.generation,
+                ProductionVmNodeLaunchBasis::new(
+                    &prepared.launch,
+                    &prepared.run_directory,
+                    &node,
+                    prepared.generation,
+                ),
                 &crash_detector,
+                preparation,
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &prepared.snapshot,
                     paused: false,
@@ -1359,11 +1341,14 @@ impl ProductionVmLifecycleLoop {
             )),
             ProductionNodeServiceState::PoweredOff => Some(launch_production_node_generation(
                 self.node_launcher.as_mut(),
-                &prepared.launch,
-                &prepared.run_directory,
-                &node,
-                prepared.generation,
+                ProductionVmNodeLaunchBasis::new(
+                    &prepared.launch,
+                    &prepared.run_directory,
+                    &node,
+                    prepared.generation,
+                ),
                 &crash_detector,
+                preparation,
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &prepared.snapshot,
                     paused: true,

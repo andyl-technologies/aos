@@ -325,6 +325,7 @@ mod tests {
         generation: u64,
         router: String,
         crash_detector: String,
+        preparation: &'static str,
         exact: Option<(ContentHash, bool)>,
     }
 
@@ -337,6 +338,11 @@ mod tests {
             &mut self,
             request: ProductionVmNodeLaunchRequest<'_>,
         ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+            let preparation = match request.preparation() {
+                ProductionVmNodePreparationKind::Fresh { .. } => "fresh",
+                ProductionVmNodePreparationKind::Exact { .. } => "exact",
+                ProductionVmNodePreparationKind::Replacement { .. } => "replacement",
+            };
             let exact = match request.kind() {
                 ProductionVmNodeLaunchKind::Fresh => None,
                 ProductionVmNodeLaunchKind::Exact { snapshot, paused } => {
@@ -351,6 +357,7 @@ mod tests {
                     generation: request.generation(),
                     router: request.router_name().to_owned(),
                     crash_detector: request.crash_detector().to_owned(),
+                    preparation,
                     exact,
                 });
             Err(loop_factory_error(
@@ -415,10 +422,20 @@ mod tests {
             name: String::from("node-a"),
         };
 
-        for (crash_detector, kind) in [
-            ("fresh", ProductionVmNodeLaunchKind::Fresh),
+        for (crash_detector, preparation, kind) in [
+            (
+                "fresh",
+                ProductionVmNodePreparationKind::Fresh {
+                    qemu_executable: Path::new("qemu"),
+                    root_image: Path::new("root"),
+                },
+                ProductionVmNodeLaunchKind::Fresh,
+            ),
             (
                 "exact-running",
+                ProductionVmNodePreparationKind::Replacement {
+                    source_run_directory: Path::new("prior-run-directory"),
+                },
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &snapshot,
                     paused: false,
@@ -426,6 +443,9 @@ mod tests {
             ),
             (
                 "exact-paused",
+                ProductionVmNodePreparationKind::Replacement {
+                    source_run_directory: Path::new("prior-run-directory"),
+                },
                 ProductionVmNodeLaunchKind::Exact {
                     snapshot: &snapshot,
                     paused: true,
@@ -434,11 +454,9 @@ mod tests {
         ] {
             let error = launch_production_node_generation(
                 &mut launcher,
-                &profile,
-                Path::new("run-directory"),
-                &node,
-                7,
+                ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 7),
                 crash_detector,
+                preparation,
                 kind,
             )
             .err()
@@ -448,16 +466,34 @@ mod tests {
 
         let zero_generation = launch_production_node_generation(
             &mut launcher,
-            &profile,
-            Path::new("run-directory"),
-            &node,
-            0,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 0),
             "invalid-generation",
+            ProductionVmNodePreparationKind::Fresh {
+                qemu_executable: Path::new("qemu"),
+                root_image: Path::new("root"),
+            },
             ProductionVmNodeLaunchKind::Fresh,
         )
         .err()
         .unwrap_or_else(|| panic!("zero process generation should fail before launch"));
         assert!(zero_generation.to_string().contains("must be positive"));
+
+        let mismatched_preparation = launch_production_node_generation(
+            &mut launcher,
+            ProductionVmNodeLaunchBasis::new(&profile, Path::new("run-directory"), &node, 8),
+            "mismatched-preparation",
+            ProductionVmNodePreparationKind::Replacement {
+                source_run_directory: Path::new("prior-run-directory"),
+            },
+            ProductionVmNodeLaunchKind::Fresh,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("mismatched preparation should fail before launch"));
+        assert!(
+            mismatched_preparation
+                .to_string()
+                .contains("preparation does not match")
+        );
 
         assert!(launcher.replay_candidate().is_err());
         assert_eq!(
@@ -470,6 +506,7 @@ mod tests {
                     generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("fresh"),
+                    preparation: "fresh",
                     exact: None,
                 },
                 RecordedLaunch {
@@ -477,6 +514,7 @@ mod tests {
                     generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("exact-running"),
+                    preparation: "replacement",
                     exact: Some((snapshot.id(), false)),
                 },
                 RecordedLaunch {
@@ -484,6 +522,7 @@ mod tests {
                     generation: 7,
                     router: String::from("crucible-router"),
                     crash_detector: String::from("exact-paused"),
+                    preparation: "replacement",
                     exact: Some((snapshot.id(), true)),
                 },
             ]
