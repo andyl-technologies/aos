@@ -777,11 +777,19 @@ mod tests {
             .ok_or("test target PID was not representable")?;
         let pidfd = pidfd_open(raw_pid, PidfdFlags::empty())?;
         let cancel = AtomicBool::new(false);
-        let timed_out = AtomicBool::new(true);
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let watchdog_timed_out = Arc::clone(&timed_out);
+        let watchdog = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            watchdog_timed_out.store(true, Ordering::Release);
+        });
 
         let error = observe_pidfd_stopped(&pidfd, &cancel, &timed_out)
             .err()
             .ok_or("stop observation ignored an active timeout")?;
+        watchdog
+            .join()
+            .map_err(|_panic| "test timeout publisher panicked")?;
 
         assert!(matches!(
             error,
