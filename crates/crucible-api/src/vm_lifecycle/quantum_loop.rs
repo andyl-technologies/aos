@@ -624,19 +624,54 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 })
         });
         let shutdown = self.inner.shutdown();
-        if let Some(gateway_shutdown) = gateway_shutdown {
-            gateway_shutdown?;
+        let launcher_shutdown =
+            self.node_launcher
+                .finish()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("finish production node-launch authority: {error}"),
+                });
+
+        let mut failures = Vec::new();
+        if let Some(Err(error)) = gateway_shutdown {
+            failures.push(error);
         }
-        let events = shutdown?;
+        let events = match shutdown {
+            Ok(events) => Some(events),
+            Err(error) => {
+                failures.push(error);
+                None
+            }
+        };
+        if let Err(error) = launcher_shutdown {
+            failures.push(error);
+        }
         if let Some(error) = pending_error {
-            return Err(error);
+            failures.push(error);
         }
         if let Some(error) = replay_error {
-            return Err(error);
+            failures.push(error);
         }
         if let Some(error) = search_override_error {
-            return Err(error);
+            failures.push(error);
         }
+        if failures.len() == 1 {
+            return Err(failures.remove(0));
+        }
+        if !failures.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "production lifecycle shutdown failed: {}",
+                    failures
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            });
+        }
+        let events = events.ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("production lifecycle shutdown lost its event-log result"),
+        })?;
         self.run_manifest.clean_shutdown = true;
         self.persist_run_manifest()?;
         Ok(events)
@@ -1267,32 +1302,34 @@ impl ProductionVmLifecycleLoop {
     }
 
     fn stage_terminal_replacement(
-        &self,
+        &mut self,
         prepared: &mut PreparedTerminalReplacement,
     ) -> Result<(), SchedulerError> {
         let node = prepared.decision.node.clone();
         let crash_detector = format!("lifecycle-{}-generation-{}", node.name, prepared.generation);
         let launched = match prepared.service_state {
-            ProductionNodeServiceState::Running => {
-                Some(launch_production_live_node_exact_snapshot(
-                    &prepared.launch,
-                    &prepared.run_directory,
-                    &node.name,
-                    "crucible-router",
-                    &crash_detector,
-                    &prepared.snapshot,
-                ))
-            }
-            ProductionNodeServiceState::PoweredOff => {
-                Some(launch_production_live_node_exact_snapshot_paused(
-                    &prepared.launch,
-                    &prepared.run_directory,
-                    &node.name,
-                    "crucible-router",
-                    &crash_detector,
-                    &prepared.snapshot,
-                ))
-            }
+            ProductionNodeServiceState::Running => Some(launch_production_node_generation(
+                self.node_launcher.as_mut(),
+                &prepared.launch,
+                &prepared.run_directory,
+                &node.name,
+                &crash_detector,
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &prepared.snapshot,
+                    paused: false,
+                },
+            )),
+            ProductionNodeServiceState::PoweredOff => Some(launch_production_node_generation(
+                self.node_launcher.as_mut(),
+                &prepared.launch,
+                &prepared.run_directory,
+                &node.name,
+                &crash_detector,
+                ProductionVmNodeLaunchKind::Exact {
+                    snapshot: &prepared.snapshot,
+                    paused: true,
+                },
+            )),
             ProductionNodeServiceState::PermanentlyFailed => None,
         };
         if let Some(launched) = launched {

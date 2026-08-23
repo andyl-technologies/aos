@@ -29,6 +29,8 @@ pub use crucible_qemu::LivePluginInstallReport as ProductionPluginInstallReport;
 pub(crate) use crucible_qemu::QemuLaunchAppRandomConfig as ProductionAppRandomConfig;
 /// Production plugin feature switch pinned into launch identity.
 pub use crucible_qemu::QemuLaunchPluginSwitch as ProductionPluginSwitch;
+/// Validated production live-node launch profile.
+pub use crucible_qemu::QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig;
 /// Root-image format pinned into production launch identity.
 pub use crucible_qemu::QemuRootImageFormat as ProductionRootImageFormat;
 /// Runs the bounded production plugin-installation probe.
@@ -36,9 +38,8 @@ pub use crucible_qemu::run_live_plugin_install_gate as run_production_plugin_ins
 pub(crate) use crucible_qemu::{
     DEFAULT_ROOT_OVERLAY_FILE_NAME as PRODUCTION_ROOT_OVERLAY_FILE_NAME,
     DEFAULT_VMSTATE_FILE_NAME as PRODUCTION_VMSTATE_FILE_NAME,
-    QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
-    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig,
-    QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+    QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig, QemuNodeSet as ProductionNodeSet,
+    launch_qemu_live_node as launch_production_live_node,
     launch_qemu_live_node_exact_snapshot as launch_production_live_node_exact_snapshot,
     launch_qemu_live_node_exact_snapshot_paused as launch_production_live_node_exact_snapshot_paused,
 };

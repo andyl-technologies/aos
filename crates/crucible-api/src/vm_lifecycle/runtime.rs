@@ -396,11 +396,21 @@ impl ProductionVmLifecycleLoop {
         request: &DebugRuntimeRepositionRequest,
     ) -> Result<ProductionVmLifecycleLoop, SchedulerError> {
         let replay_config = self.config.clone();
-        let mut replay =
-            build_production_vm_lifecycle_loop(&self.scenario, &self.source, &replay_config)
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("construct whole-world debug replay candidate: {error}"),
-                })?;
+        let replay_launcher = self.node_launcher.replay_candidate().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("admit whole-world debug replay launch authority: {error}"),
+            }
+        })?;
+        let mut replay = build_production_vm_lifecycle_loop_with_restore(
+            &self.scenario,
+            &self.source,
+            &replay_config,
+            None,
+            replay_launcher,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("construct whole-world debug replay candidate: {error}"),
+        })?;
         let target = &request.target;
         let controls = self.recorded_controls.clone();
         let mut control_index = 0_usize;
