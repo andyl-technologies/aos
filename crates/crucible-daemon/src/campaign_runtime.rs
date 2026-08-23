@@ -77,8 +77,7 @@ pub struct CampaignRuntimeWake {
 impl CampaignRuntimeWake {
     /// Wakes the attached runtime after externally visible progress.
     pub fn wake(&self) {
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        self.shared.changed.notify_all();
+        self.shared.signal(false);
     }
 
     /// Returns whether terminal runtime shutdown has been requested.
@@ -224,8 +223,7 @@ where
 
     /// Requests sticky shutdown and interrupts any quiescent wait.
     pub fn request_shutdown(&self) {
-        self.wake.shared.shutdown.store(true, Ordering::Release);
-        self.wake.wake();
+        self.wake.shared.signal(true);
     }
 
     /// Requests shutdown, joins the fixed thread, and returns final counters.
@@ -255,8 +253,7 @@ where
     D: CampaignRuntimeDriver,
 {
     fn drop(&mut self) {
-        self.wake.shared.shutdown.store(true, Ordering::Release);
-        self.wake.wake();
+        self.wake.shared.signal(true);
         // Dropping the handle detaches, but the fixed thread observes sticky
         // shutdown before another component call and then releases the driver.
         drop(self.worker.take());
@@ -291,6 +288,28 @@ struct CampaignRuntimeShared {
     generation: AtomicU64,
     wait: Mutex<()>,
     changed: Condvar,
+}
+
+impl CampaignRuntimeShared {
+    fn signal(&self, shutdown: bool) {
+        match self.wait.lock() {
+            Ok(_wait) => {
+                if shutdown {
+                    self.shutdown.store(true, Ordering::Release);
+                }
+                self.generation.fetch_add(1, Ordering::AcqRel);
+                self.changed.notify_all();
+            }
+            Err(_) => {
+                // A poisoned wait mutex is terminal for the runtime. Publish
+                // shutdown even for an ordinary wake so no component call can
+                // begin after the synchronization invariant was lost.
+                self.shutdown.store(true, Ordering::Release);
+                self.generation.fetch_add(1, Ordering::AcqRel);
+                self.changed.notify_all();
+            }
+        }
+    }
 }
 
 fn campaign_runtime_loop<D>(
