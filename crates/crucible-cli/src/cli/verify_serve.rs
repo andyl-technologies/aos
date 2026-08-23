@@ -1075,7 +1075,7 @@ pub(super) fn open_local_campaign_service(
         args.campaign_socket_mode,
     )
     .map_err(|error| serve_error(format!("campaign endpoint configuration error: {error}")))?;
-    let config = crucible_daemon::CampaignLocalServiceConfig::new(
+    let mut config = crucible_daemon::CampaignLocalServiceConfig::new(
         endpoint,
         state,
         policy,
@@ -1087,6 +1087,13 @@ pub(super) fn open_local_campaign_service(
         crucible_daemon::CampaignLoopbackServerConfig::default(),
     )
     .map_err(|error| serve_error(format!("campaign service configuration error: {error}")))?;
+    if let Some(path) = args.campaign_component_authority.as_ref() {
+        config = config
+            .with_component_authority_path(path)
+            .map_err(|error| {
+                serve_error(format!("campaign service configuration error: {error}"))
+            })?;
+    }
     let prepared = config
         .prepare()
         .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;

@@ -932,13 +932,30 @@ regular policy file, each owned by the daemon's exact effective UID/GID with no
 group/other write bits. Both paths are free of NUL/dot components and at most
 4,095 bytes. Policy open uses `O_NOFOLLOW`, authenticates the opened inode, and
 reads at most the 1-MiB policy ceiling before any repository or socket write.
+An optional `--campaign-component-authority` path uses the same absolute path
+profile and names an exact-owner mode-`0600` regular file opened with
+`O_NOFOLLOW` before repository state is opened. Its fixed version-one binary
+form is exactly 72 bytes:
+
+```text
+"CRUCCA01" | planner-key[32] | debugger-key[32]
+```
+
+Both 256-bit keys are nonzero and byte-distinct. They are operational secrets,
+never campaign objects, logs, exports, or transport fields. When present, the
+daemon constructs the repository with those exact planner and debugger
+authorities; malformed, exposed, replaced, zero, or equal key material fails
+before any state-directory or socket mutation. Omitting the file leaves the
+control/query service usable but does not authorize planner or debugger
+component acceptance; production runtime attachment will require it.
 The state root retains a stable owner-only exclusive lock across the complete
 listener lifetime, creates or validates private `objects/` and `refs/`
 subdirectories, and rejects a second cooperating daemon even if it names a
 different socket. Its directory identity is rechecked before the path-backed
 stores become reachable. `crucible serve` enables this composition only when
 `--campaign-socket`, `--campaign-state`, and `--campaign-policy` are supplied
-together; `--campaign-socket-mode` is octal and defaults to `600`. SIGINT,
+together; `--campaign-component-authority` is valid only with that profile,
+and `--campaign-socket-mode` is octal and defaults to `600`. SIGINT,
 SIGTERM, lifecycle-server failure, or CampaignService failure shuts down both
 services and joins the campaign workers before releasing either lock.
 `--read-only` also wraps the campaign authorizer and denies Create, Derive,

@@ -1625,10 +1625,11 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_socket",
                 "campaign_state",
                 "campaign_policy",
+                "campaign_component_authority",
                 "campaign_import_manifest",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "debug",
@@ -2063,6 +2064,14 @@ campaign = "*"
     .expect("campaign policy");
     fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
         .expect("secure campaign policy");
+    let component_authority = directory.path().join("component-authorities.bin");
+    let mut component_authority_bytes = Vec::from(*b"CRUCCA01");
+    component_authority_bytes.extend_from_slice(&[0x31; 32]);
+    component_authority_bytes.extend_from_slice(&[0x73; 32]);
+    fs::write(&component_authority, component_authority_bytes)
+        .expect("campaign component authority");
+    fs::set_permissions(&component_authority, std::fs::Permissions::from_mode(0o600))
+        .expect("secure component authority");
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
@@ -2109,6 +2118,10 @@ schedule = {:?}
         state.to_str().expect("state path"),
         "--campaign-policy",
         policy.to_str().expect("policy path"),
+        "--campaign-component-authority",
+        component_authority
+            .to_str()
+            .expect("component authority path"),
         "--campaign-import-manifest",
         manifest.to_str().expect("manifest path"),
     ]);
@@ -2175,6 +2188,22 @@ schedule = {:?}
             Ok(())
         }))
         .expect("campaign service restarts over durable state");
+    assert!(!socket.exists());
+
+    let mut invalid_authority_bytes = Vec::from(*b"CRUCCA01");
+    invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
+    invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
+    fs::write(&component_authority, invalid_authority_bytes).expect("replace component authority");
+    let error = match open_local_campaign_service(args) {
+        Ok(_) => panic!("equal component authorities must fail before bind"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Serve(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("component-authority file is invalid")
+    );
     assert!(!socket.exists());
 }
 

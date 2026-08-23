@@ -1309,6 +1309,9 @@ struct ServeArgs {
     /// Load the strict local campaign peer policy from this file.
     #[arg(long, value_name = "path", requires = "campaign_socket")]
     campaign_policy: Option<PathBuf>,
+    /// Load distinct planner/debugger component authority keys from this file.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_component_authority: Option<PathBuf>,
     /// Import verified campaign creation artifacts before binding the socket.
     #[arg(
         long,
