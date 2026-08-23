@@ -58,9 +58,9 @@ Apache/GPL process boundary.
 ## Required gates
 
 1. The single-vCPU S1 workload must leave startup, reach the exact horizon,
-   pause, checkpoint, and reproduce under host load.
+   pause, checkpoint, and reproduce under bounded scheduler preemption.
 2. The production multi-vCPU fingerprint must remain byte-identical under its
-   host-load adversary.
+   bounded-scheduler-preemption adversary.
 3. The live network workload must retain deterministic delivery and
    acknowledgement coordinates.
 4. Patch microtests must prove that the state-free path publishes an atomic

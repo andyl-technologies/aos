@@ -16,7 +16,7 @@
   # sector write, not only the firmware's early capacity probe.
   busyCeiling ? "10000000000",
   blockTimeoutSecs ? "60",
-  secondRunLoad ? "1",
+  secondRunSchedulerPreemption ? "1",
 }: let
   liveIoRunner = import ./_live-io-runner.nix {inherit pkgs lib;};
   blockWriteInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
@@ -43,7 +43,7 @@ in
     GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
     CRUCIBLE_BLOCK_IO_BUSY_CEILING = busyCeiling;
     CRUCIBLE_BLOCK_IO_TIMEOUT_SECS = blockTimeoutSecs;
-    CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunLoad;
+    CRUCIBLE_BLOCK_IO_SECOND_RUN_SCHEDULER_PREEMPTION = secondRunSchedulerPreemption;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;

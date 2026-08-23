@@ -48,7 +48,8 @@
       label = "crates/crucible-qemu/src/live_plugin_quantum_gate";
       source =
         builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate.rs
-        + builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate/preemption_gate.rs;
+        + builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate/preemption_gate.rs
+        + builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate/scheduler.rs;
     }
     {
       label = "crates/crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs";
@@ -182,6 +183,14 @@
         needle = "BOUNDED_PREEMPTION_WALL_TIMEOUT";
       }
       {
+        label = "pending-work start barrier";
+        needle = "start_rx.recv()";
+      }
+      {
+        label = "unreleased controller fails closed";
+        needle = "BoundedSchedulerPreemptionError::NotStarted";
+      }
+      {
         label = "synchronous controller cleanup";
         needle = "controller.join()";
       }
@@ -204,8 +213,12 @@
             needle = "HostAdversary::start_if";
           }
           {
-            label = "verified contention completion";
-            needle = ".finish()";
+            label = "pending quantum releases controller";
+            needle = "HostAdversary::begin_if_present";
+          }
+          {
+            label = "verified preemption completion";
+            needle = "HostAdversary::finish_if_present";
           }
         ]
         ++ lib.optionals (

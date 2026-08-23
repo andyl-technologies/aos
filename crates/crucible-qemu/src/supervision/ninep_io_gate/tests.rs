@@ -59,7 +59,7 @@ fn certifying_outcome() -> NinepIoRunOutcome {
 fn certification_requires_forwarding_completion_and_progress() {
     let outcome = certifying_outcome();
     assert!(certify_run("reference", &outcome, false).is_ok());
-    assert!(certify_run("host-load", &outcome, true).is_ok());
+    assert!(certify_run("scheduler-preemption", &outcome, true).is_ok());
 
     let mut quiescent = certifying_outcome();
     quiescent.advance = NinepIoAdvanceOutcome::QuiescentThroughCeiling {
@@ -67,7 +67,7 @@ fn certification_requires_forwarding_completion_and_progress() {
         idle_wake_icount: 101,
     };
     quiescent.diagnostics.last_current_icount = 99;
-    assert!(certify_run("host-load", &quiescent, true).is_ok());
+    assert!(certify_run("scheduler-preemption", &quiescent, true).is_ok());
 
     let mut missing_forward = certifying_outcome();
     missing_forward.diagnostics.frames_processed = 0;

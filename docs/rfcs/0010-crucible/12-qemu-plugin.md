@@ -1090,7 +1090,7 @@ component that makes that purity true *inside* the QEMU process.
   attribution. A real Linux guest forwards `Tversion` through `SLOT_9P_IO`,
   receives the modeled response at an 821-icount latency, releases the
   burst-wide device hold, and closes the scheduler ceiling either by retiring
-  to it or by publishing an idle wake strictly beyond it. The host-load leg
+  to it or by publishing an idle wake strictly beyond it. The scheduler-preemption leg
   delays response publication by 100 ms while preserving the modeled latency.
 - [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the

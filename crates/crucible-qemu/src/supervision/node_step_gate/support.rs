@@ -39,10 +39,11 @@ pub(super) fn launch_profile_candidate(
 pub(super) fn drive_busy_window_steps(
     node: &mut QemuNode,
     ceilings: &[u64],
+    host_adversary: &mut Option<HostAdversary>,
 ) -> Result<Vec<QemuLiveNodeStepQuantum>, QemuLiveNodeStepGateError> {
     let mut quanta = Vec::with_capacity(ceilings.len());
     for &ceiling in ceilings {
-        let quantum = advance_to_busy_ceiling(node, ceiling)?;
+        let quantum = advance_to_busy_ceiling_with_adversary(node, ceiling, host_adversary)?;
         quanta.push(quantum);
     }
     Ok(quanta)
@@ -52,6 +53,14 @@ pub(super) fn advance_to_busy_ceiling(
     node: &mut QemuNode,
     ceiling: u64,
 ) -> Result<QemuLiveNodeStepQuantum, QemuLiveNodeStepGateError> {
+    advance_to_busy_ceiling_with_adversary(node, ceiling, &mut None)
+}
+
+fn advance_to_busy_ceiling_with_adversary(
+    node: &mut QemuNode,
+    ceiling: u64,
+    host_adversary: &mut Option<HostAdversary>,
+) -> Result<QemuLiveNodeStepQuantum, QemuLiveNodeStepGateError> {
     let mut reissue_count = 0;
     let mut last_icount = node
         .current_icount()
@@ -59,7 +68,15 @@ pub(super) fn advance_to_busy_ceiling(
         .retired;
     loop {
         let outcome = node
-            .advance_to_ceiling(Icount { retired: ceiling })
+            .advance_to_ceiling_after_publish(Icount { retired: ceiling }, || {
+                HostAdversary::begin_if_present(host_adversary).map_err(|source| {
+                    QemuNodeChannelError::new(
+                        "release scheduler preemption over pending quantum",
+                        source.to_string(),
+                    )
+                })?;
+                Ok(())
+            })
             .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
         let idle = node.idle_state().map_err(|source| {
             QemuLiveNodeStepGateError::node_op("read post-advance idle state", source)

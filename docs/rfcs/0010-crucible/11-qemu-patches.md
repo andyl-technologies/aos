@@ -1108,7 +1108,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   integration test: a request submitted after device realization must stop at
   its request icount, consume its deterministic response from a later doorbell,
   clear `device_io_active`, and close the scheduler ceiling in both reference
-  and host-load legs.
+  and bounded-scheduler-preemption legs.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — stock 9p processing never creates a
   Crucible pending PDU, so the registered notifier observes no work and leaves
   upstream device behavior unchanged when sim forwarding is not installed.
