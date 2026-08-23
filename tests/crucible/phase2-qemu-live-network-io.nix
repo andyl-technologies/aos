@@ -111,6 +111,7 @@ in
             disabled_adversary_spawns_no_controller \
             dropping_controller_resumes_and_joins_stopped_target \
             exited_target_fails_after_pending_work_release \
+            first_stop_rejects_an_already_completed_quantum \
             signal_failure_is_reported_and_joined \
             watchdog_expiry_directly_resumes_stopped_target; do
             grep -Fxq \
@@ -127,6 +128,16 @@ in
             bounded_scheduler_preemption::tests:: \
             -- \
             --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            supervision::network_io_gate::tests::certification_rejects_ack_before_router_delivery_or_with_wrong_mac \
+            -- \
+            --exact
 
           cargo build \
             --frozen \
@@ -192,6 +203,7 @@ in
           grep -Fxq 'host_adversary=bounded-scheduler-preemption' "$report"
           grep -Fxq 'host_scheduler_preemption_count=6' "$report"
           grep -Fxq 'host_scheduler_preemption_pending_quantum=true' "$report"
+          grep -Eq '^completion_owned_frames=[1-9][0-9]*$' "$report"
           grep -Fxq 'host_scheduler_preemption_requested_milliseconds=90' "$report"
           grep -Fxq 'delayed_reply_applied=false' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"

@@ -1078,7 +1078,7 @@ component that makes that purity true *inside* the QEMU process.
   `SLOT_BLK_IO`; the host servicer publishes the exact future completion
   horizon, the production plugin advances to it, validates and delivers the
   response, releases the device hold, and lets the guest progress. A second run
-  combines host CPU load with a 100 ms delayed response publication while
+  combines bounded QEMU scheduler preemption with a 100 ms delayed response publication while
   preserving the same request/completion observations. The drop-one gate proves
   patch 0017 is load-bearing: without its zero-byte completion fix, request-token
   ordering fails before the guest can progress.

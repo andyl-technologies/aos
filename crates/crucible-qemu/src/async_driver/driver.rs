@@ -27,7 +27,7 @@ where
         policy,
         crash_detector,
         horizon,
-        || Ok(()),
+        |_target, _pending| Ok(()),
     )
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn run_bounded_qemu_node_step_with_start_hook<T, R, F>(
 where
     T: QemuAsyncNodeStepTarget,
     R: QemuHostIoRuntime + ?Sized,
-    F: FnOnce() -> Result<(), QemuNodeChannelError>,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
 {
     policy.validate()?;
 
@@ -66,7 +66,7 @@ where
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
-    after_start().map_err(QemuAsyncDriverError::Channel)?;
+    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;

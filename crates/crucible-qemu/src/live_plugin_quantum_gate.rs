@@ -517,7 +517,7 @@ fn run_one_scenario(
     })
 }
 
-/// Requires the load run to reproduce the reference run byte for byte.
+/// Requires the scheduler-preempted run to reproduce the reference byte for byte.
 fn assert_runs_match(
     reference: &ScenarioOutcome,
     second: &ScenarioOutcome,
