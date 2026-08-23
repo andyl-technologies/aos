@@ -3891,12 +3891,18 @@ impl Database {
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
                     }
-                    catalog_artifacts.extend(
-                        entry
-                            .images
-                            .iter()
-                            .map(|image| ("image", image.store_path.as_str())),
-                    );
+                    for image in &entry.images {
+                        catalog_artifacts.push(("image", image.store_path.as_str()));
+                        if image.delivery.is_store_backed() {
+                            catalog_artifacts.push((
+                                "image",
+                                image.delivery.image_info.store_path.as_str(),
+                            ));
+                            if let Some(payload) = &image.delivery.update_payload {
+                                catalog_artifacts.push(("image", payload.store_path.as_str()));
+                            }
+                        }
+                    }
                     for (artifact_kind, store_path) in catalog_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
@@ -14128,6 +14134,21 @@ impl Database {
                         artifact_kind: "image".to_string(),
                         store_hash: store_hash_component(image_info_path),
                         store_path: image_info_path.to_string(),
+                    });
+                }
+                if let Some(update_payload_path) = image
+                    .get("delivery")
+                    .and_then(|delivery| delivery.get("update_payload"))
+                    .and_then(|payload| payload.get("store_path"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package_name.clone(),
+                        package_version: package_version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "image".to_string(),
+                        store_hash: store_hash_component(update_payload_path),
+                        store_path: update_payload_path.to_string(),
                     });
                 }
             }
@@ -24931,6 +24952,7 @@ mod tests {
                     byte_size: 512,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             }
         };
         let mut images = String::new();

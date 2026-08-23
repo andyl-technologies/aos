@@ -3083,7 +3083,13 @@ async fn ensure_image_imported(
     image: &SysrootImageEntry,
     printer: &Printer,
 ) -> Result<PathBuf> {
-    let store_path = PathBuf::from(&image.store_path);
+    let (authenticated_path, authenticated_hash) = image
+        .delivery
+        .update_payload
+        .as_ref()
+        .map(|payload| (payload.store_path.as_str(), payload.nar_hash.as_str()))
+        .unwrap_or((image.store_path.as_str(), image.nar_hash.as_str()));
+    let store_path = PathBuf::from(authenticated_path);
     if store_path.exists() {
         return Ok(store_path);
     }
@@ -3091,7 +3097,7 @@ async fn ensure_image_imported(
     let chain = resolve_image_mirror(config, package);
     let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let request = DownloadRequest {
-        store_path: image.store_path.clone(),
+        store_path: authenticated_path.to_string(),
         mirror_url,
         fallback_mirrors,
     };
@@ -3114,8 +3120,8 @@ async fn ensure_image_imported(
         .first()
         .context("image artifact download returned no result")?;
     verify_download_hash(&result.local_path, &result.download_hash)?;
-    verify_nar_hash(&result.local_path, &image.nar_hash)
-        .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
+    verify_nar_hash(&result.local_path, authenticated_hash)
+        .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
     import_nar(
         &result.local_path,
         &result.store_path,
@@ -3130,6 +3136,18 @@ async fn ensure_image_imported(
         );
     }
     Ok(store_path)
+}
+
+/// Returns the directory that carries authenticated in-place update artifacts.
+fn image_update_store_path(image: &SysrootImageEntry) -> &Path {
+    Path::new(
+        image
+            .delivery
+            .update_payload
+            .as_ref()
+            .map(|payload| payload.store_path.as_str())
+            .unwrap_or(image.store_path.as_str()),
+    )
 }
 
 /// Download a pre-compiled image from a sysroot package (`--image <FMT>`).
@@ -4703,7 +4721,7 @@ fn validate_image_secure_boot(
 
     // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
     if let Some(db_cert) = db_cert {
-        if let Some(uki) = find_uki_in_image(&img.store_path)? {
+        if let Some(uki) = find_uki_in_image(image_update_store_path(img))? {
             reverify_uki(&uki, db_cert).with_context(|| {
                 format!(
                     "re-verifying downloaded UKI for image '{}' against the \
@@ -4729,7 +4747,7 @@ fn validate_recovery_bundle_files(
     };
     for component in &bundle.components {
         let artifact = image_artifact_path(
-            Path::new(&image.store_path),
+            image_update_store_path(image),
             Some(&component.path),
             "recovery bundle component",
         )?;
@@ -4740,7 +4758,7 @@ fn validate_recovery_bundle_files(
             "recovery bundle component",
         )?;
     }
-    let store = Path::new(&image.store_path);
+    let store = image_update_store_path(image);
     let manifest = image_artifact_path(store, Some("recovery-bundle.json"), "recovery bundle")?;
     let signature = image_artifact_path(
         store,
@@ -4785,7 +4803,7 @@ fn validate_recovery_uki_secure_boot(
         );
     }
     let artifact = image_artifact_path(
-        Path::new(&image.store_path),
+        image_update_store_path(image),
         Some(&recovery.path),
         "recovery UKI",
     )?;
@@ -4859,7 +4877,8 @@ fn validate_uki_secure_boot(
             image.format, uki.slot
         )
     })?;
-    let artifact = image_artifact_path(Path::new(&image.store_path), Some(&uki.path), "slot UKI")?;
+    let artifact =
+        image_artifact_path(image_update_store_path(image), Some(&uki.path), "slot UKI")?;
     if let Some(db_cert) = db_cert {
         reverify_uki(&artifact, db_cert).with_context(|| {
             format!(
@@ -4900,7 +4919,7 @@ fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
 }
 
 /// Find a UKI (`.efi` PE file) inside an imported image store path.
-fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
+fn find_uki_in_image(root: &Path) -> Result<Option<PathBuf>> {
     fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
         let mut entries = std::fs::read_dir(dir)
             .with_context(|| format!("reading image artifact {}", dir.display()))?
@@ -4919,7 +4938,6 @@ fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
         }
         Ok(())
     }
-    let root = Path::new(store_path);
     if root.is_file() {
         return Ok(root
             .extension()
@@ -4932,7 +4950,8 @@ fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
         0 => Ok(None),
         1 => Ok(found.pop()),
         count => bail!(
-            "legacy image artifact {store_path} contains {count} UKIs; deterministic selection requires slot metadata"
+            "legacy image artifact {} contains {count} UKIs; deterministic selection requires slot metadata",
+            root.display()
         ),
     }
 }
@@ -5292,6 +5311,25 @@ mod tests {
             root_hash: None,
             root_hash_sig: None,
         }
+    }
+
+    #[test]
+    fn update_staging_prefers_separately_authenticated_payload() {
+        let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 1)]);
+        assert_eq!(
+            image_update_store_path(&image),
+            Path::new(&image.store_path)
+        );
+
+        image.delivery.update_payload = Some(crate::types::ImageStoreReference {
+            store_path: "/nix/store/11111111111111111111111111111111-update-payload".into(),
+            nar_hash: format!("sha256:{}", "1".repeat(52)),
+            nar_size: 4096,
+        });
+        assert_eq!(
+            image_update_store_path(&image),
+            Path::new("/nix/store/11111111111111111111111111111111-update-payload")
+        );
     }
 
     #[test]

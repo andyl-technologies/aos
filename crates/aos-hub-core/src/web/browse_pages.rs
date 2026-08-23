@@ -2585,6 +2585,7 @@ mod tests {
                     byte_size: 512,
                     sha256: info_sha256,
                 },
+                update_payload: None,
             },
         }
     }

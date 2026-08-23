@@ -1954,6 +1954,12 @@ fn validate_image_uki_entries(image: &SysrootImageEntry) -> Result<()> {
     if image.ukis.is_empty() {
         return Ok(());
     }
+    if image.delivery.is_store_backed() && image.delivery.update_payload.is_none() {
+        bail!(
+            "image '{}' slot-specific UKIs require an authenticated update payload",
+            image.store_path
+        );
+    }
     let mut slots = std::collections::BTreeSet::new();
     let mut measurements = std::collections::BTreeSet::new();
     let mut signed_count = 0usize;
@@ -2999,8 +3005,8 @@ pub use aos_registry_surface::manifest::{
 // runtime image entry share one type. Re-exported here so
 // `aos_package::types::SysrootImageEntry` is unchanged.
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-    ImageVerificationState, RecoveryBundleComponent, RecoveryBundleComponentId,
+    ImageCompression, ImageDelivery, ImageInfoReference, ImageStoreReference, ImageTarget,
+    ImageUkiIdentity, ImageVerificationState, RecoveryBundleComponent, RecoveryBundleComponentId,
     RecoveryBundleManifest, RecoveryUkiEntry, SbatEntry, SysrootImageEntry, SysrootUkiEntry,
     UkiSlot,
 };
@@ -3070,6 +3076,7 @@ pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
             byte_size: 1,
             sha256: info_sha256,
         },
+        update_payload: None,
     }
 }
 
@@ -5145,6 +5152,26 @@ last_update = "2026-02-13T10:30:00Z"
         image.ukis.pop();
         let error = validate_image_uki_entries(&image).unwrap_err();
         assert!(error.to_string().contains("exactly slots a and b"));
+    }
+
+    #[test]
+    fn store_backed_ab_metadata_requires_update_payload_identity() {
+        let mut image = verity_image_entry();
+        image.delivery.schema_version = 2;
+        image.ukis = vec![
+            slot_uki(UkiSlot::A, "uki-a.efi", '1'),
+            slot_uki(UkiSlot::B, "uki-b.efi", '2'),
+        ];
+
+        let error = validate_image_uki_entries(&image).unwrap_err();
+        assert!(error.to_string().contains("authenticated update payload"));
+
+        image.delivery.update_payload = Some(ImageStoreReference {
+            store_path: "/nix/store/11111111111111111111111111111111-update-payload".into(),
+            nar_hash: format!("sha256:{}", "1".repeat(52)),
+            nar_size: 4096,
+        });
+        validate_image_uki_entries(&image).unwrap();
     }
 
     #[test]

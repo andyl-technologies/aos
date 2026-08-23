@@ -75,8 +75,8 @@ use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
 use crate::registry::parse::{
-    ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-    ImageVerificationState,
+    ImageCompression, ImageDelivery, ImageInfoReference, ImageStoreReference, ImageTarget,
+    ImageUkiIdentity, ImageVerificationState,
 };
 use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
@@ -1931,9 +1931,9 @@ pub async fn publish(
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
     let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
         .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
-    let mut image_store_reports = Vec::with_capacity(image_infos.len() * 2);
+    let mut image_store_reports = Vec::with_capacity(image_infos.len() * 3);
     for image in &image_infos {
-        for artifact in [&image.store, &image.info_store] {
+        for artifact in [&image.payload, &image.store, &image.info_store] {
             image_store_reports.push(
                 write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
                     .with_context(|| {
@@ -3427,6 +3427,8 @@ struct SbFacts {
 /// producer metadata that direct-download consumers receive.
 struct PublishedImage {
     format: String,
+    /// Canonical directory store output carrying the A/B update artifacts.
+    payload: StorePathInfo,
     /// Canonical regular-file store output containing the disk encoding.
     store: StorePathInfo,
     /// Canonical regular-file store output containing `image-info.json`.
@@ -4175,12 +4177,18 @@ where
             byte_size: published_info_bytes.len() as u64,
             sha256: info_sha256.clone(),
         },
+        update_payload: Some(ImageStoreReference {
+            store_path: payload.path.clone(),
+            nar_hash: payload.nar_hash.clone(),
+            nar_size: payload.nar_size,
+        }),
     };
     delivery
         .validate(format, release, platform)
         .with_context(|| format!("validating direct delivery contract for {format}"))?;
     Ok(PublishedImage {
         format: format.to_string(),
+        payload,
         store: disk_store,
         info_store,
         sb,
@@ -15541,6 +15549,10 @@ mod tests {
         assert_eq!(image.delivery.schema_version, 2);
         assert!(image.delivery.object_key.is_empty());
         assert_eq!(image.delivery.image_info.store_path, image.info_store.path);
+        let update_payload = image.delivery.update_payload.as_ref().unwrap();
+        assert_eq!(update_payload.store_path, image.payload.path);
+        assert_eq!(update_payload.nar_hash, image.payload.nar_hash);
+        assert_eq!(update_payload.nar_size, image.payload.nar_size);
         assert_eq!(image.disk.identity.len, image.delivery.byte_size);
         assert_eq!(
             image.uki.path.extension().and_then(|value| value.to_str()),
