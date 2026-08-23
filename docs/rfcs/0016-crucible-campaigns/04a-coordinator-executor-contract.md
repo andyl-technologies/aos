@@ -1965,16 +1965,33 @@ process and filesystem authority to quarantine, and dropping a live wrapper
 performs that transfer. A pre-canceled or mismatched installation is rolled back
 before the factory returns an error.
 
+The QEMU host crate now contains the crate-internal ext4 project-quota
+transaction needed by that owner. It accepts pinned filesystem and fresh run-
+directory descriptors plus an exclusively allocated nonzero project ID,
+requires active project quotas and a completely unused quota record, installs
+equal hard and soft block/inode limits, synchronizes and reads back the quota,
+then assigns the directory's project ID and inheritance flag. The generic quota
+interface counts 1,024-byte blocks, so a non-aligned admitted byte ceiling is
+rounded down and can never be exceeded. Release is ordered after process reap:
+the empty directory is restored to its original project attributes before the
+zero-use quota record is cleared, synchronized, and read back. Every partial
+install or release error retains the pinned authority, and an unowned drop
+leaves the kernel limit active fail-closed. The transaction does not allocate
+project IDs or run-directory names and is not yet reachable from the public
+launch path; the daemon-incarnation allocator, nondroppable combined owner, and
+an ext4 project-quota enforcement VM gate remain mandatory before wiring.
+
 This authority is not yet the production guard. The guarded launch/session
 path now transfers a retained pre-install child into the abstract attempt
 guard, and the daemon guard now composes cancellation, quantum accounting, and
 all-or-quarantine cleanup around a host owner. The Linux host owner still must
 bind that interface to the nondroppable cgroup owner, a real aggregate
-filesystem quota, exclusive run-directory namespace ownership through QEMU
-artifact open, and active-node failure handoff. That Linux adapter and final
-session wiring remain mandatory before the guarded path may launch a campaign
-QEMU. A process-only Linux facade now validates a daemon-incarnation namespace,
-non-root child IDs, task and finish bounds before acquiring the delegated root;
+filesystem-quota reservation, exclusive run-directory namespace ownership
+through QEMU artifact open, and active-node failure handoff. That Linux adapter
+and final session wiring remain mandatory before the guarded path may launch a
+campaign QEMU. A process-only Linux facade now validates a daemon-incarnation
+namespace, non-root child IDs, task and finish bounds before acquiring the
+delegated root;
 it creates fixed-width unique child names, exposes only the sealed contract and
 sticky signal, and completes or quarantines the underlying owner. A partial
 setup poisons that allocator and retains authority fail-closed rather than
