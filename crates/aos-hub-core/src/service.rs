@@ -24932,7 +24932,22 @@ impl RpcService {
                 ));
             }
         }
-        let completion_token = uuid::Uuid::new_v4().simple().to_string();
+        // The token identifies the durable logical completion, not one HTTP
+        // request. Reuse it after cancellation so a client retry can reconcile
+        // an object that may already have landed at the provider.
+        let completion_token = match upload.state.as_str() {
+            "active" => uuid::Uuid::new_v4().simple().to_string(),
+            "completing" => upload.completion_token.clone().ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "multipart completion has no durable ownership token".into(),
+                )
+            })?,
+            _ => {
+                return Err(RpcError::FailedPrecondition(
+                    "publication multipart upload is not completable".into(),
+                ));
+            }
+        };
         let completion_claimed_at = clock::now_unix_secs();
         self.db
             .begin_registry_publication_multipart_completion(
@@ -24980,27 +24995,53 @@ impl RpcService {
                         .map_err(RpcError::internal)?;
                 }
             }
-            if completion_etag.is_none() {
-                return Err(RpcError::FailedPrecondition(
-                    "multipart backend does not provide a predictable completion identity".into(),
-                ));
-            }
-
-            let observed_before_size = fetch
-                .inventory_size(&object.object_key)
-                .await
-                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            let observed_before_etag = fetch
-                .inventory_strong_etag(&object.object_key)
-                .await
-                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
-                .transpose()
-                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            let already_landed = completion_etag.as_ref().is_some_and(|etag| {
-                observed_before_size == Some(object.expected_size)
-                    && observed_before_etag.as_ref() == Some(etag)
-            });
+            let already_landed = if let Some(expected_etag) = &completion_etag {
+                let observed_size = fetch
+                    .inventory_size(&object.object_key)
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                let observed_etag = fetch
+                    .inventory_strong_etag(&object.object_key)
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                    .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                    .transpose()
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                observed_size == Some(object.expected_size)
+                    && observed_etag.as_ref() == Some(expected_etag)
+            } else {
+                // Native filesystems cannot predict their metadata-derived
+                // strong tag before rename. On a retry, hash the landed bytes
+                // against the frozen manifest before adopting that backend tag.
+                let evidence = fetch
+                    .inventory_evidence(&object.object_key)
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                let expected_hash =
+                    hex::decode(&object.expected_hash).map_err(RpcError::internal)?;
+                let exact = evidence.as_ref().is_some_and(|evidence| {
+                    evidence.size == object.expected_size
+                        && evidence.sha256.as_slice() == expected_hash.as_slice()
+                });
+                if exact {
+                    completion_etag = evidence
+                        .and_then(|evidence| evidence.strong_etag)
+                        .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                        .transpose()
+                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+                    if let Some(etag) = &completion_etag {
+                        self.db
+                            .record_registry_publication_multipart_completion_etag(
+                                &upload.upload_id,
+                                backend.placement_id,
+                                etag,
+                            )
+                            .await
+                            .map_err(RpcError::internal)?;
+                    }
+                }
+                exact && completion_etag.is_some()
+            };
             if !already_landed {
                 let returned_etag = match writer
                     .complete_multipart(
@@ -25012,7 +25053,32 @@ impl RpcService {
                 {
                     Ok(etag) => crate::surface_write::strong_if_match_etag(&etag)
                         .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?,
-                    Err(error) => return Err(RpcError::Unavailable(format!("{error:#}"))),
+                    Err(error) => {
+                        let recovered = fetch
+                            .inventory_evidence(&object.object_key)
+                            .await
+                            .map_err(|observe_error| {
+                                RpcError::Unavailable(format!(
+                                    "multipart completion failed: {error:#}; recovery observation failed: {observe_error:#}"
+                                ))
+                            })?;
+                        let expected_hash =
+                            hex::decode(&object.expected_hash).map_err(RpcError::internal)?;
+                        let Some(evidence) = recovered.filter(|evidence| {
+                            evidence.size == object.expected_size
+                                && evidence.sha256.as_slice() == expected_hash.as_slice()
+                        }) else {
+                            return Err(RpcError::Unavailable(format!("{error:#}")));
+                        };
+                        let etag = evidence.strong_etag.ok_or_else(|| {
+                            RpcError::Unavailable(format!(
+                                "multipart completion failed without recoverable strong identity: {error:#}"
+                            ))
+                        })?;
+                        crate::surface_write::strong_if_match_etag(&etag).map_err(|etag_error| {
+                            RpcError::Unavailable(format!("{etag_error:#}"))
+                        })?
+                    }
                 };
                 if completion_etag
                     .as_ref()
