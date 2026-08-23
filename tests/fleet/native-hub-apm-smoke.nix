@@ -76,6 +76,29 @@ in {
       HELPER_V2 = "${fixture.helperV2}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       CLOSURE_INFO = "${publisherClosureInfo}"
+      OPERATOR_PATH = ":".join(
+          [
+              "${pkgs.coreutils}/bin",
+              "${pkgs.gawk}/bin",
+              "${pkgs.grep}/bin",
+              "${pkgs.sed}/bin",
+          ]
+      )
+
+
+      def add_operator_path(machine):
+          """Run guest commands with the qualification's explicit tool set."""
+          execute = machine.execute
+
+          def execute_with_operator_path(command, timeout=300):
+              prefix = f"export PATH={shlex.quote(OPERATOR_PATH)}:$PATH\n"
+              return execute(prefix + command, timeout=timeout)
+
+          machine.execute = execute_with_operator_path
+
+
+      for guest in (hub, publisher, consumer):
+          add_operator_path(guest)
 
 
       def hub_command(subcommand, token, mutation=""):
