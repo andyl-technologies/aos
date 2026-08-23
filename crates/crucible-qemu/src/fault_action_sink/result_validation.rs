@@ -2,6 +2,36 @@
 
 use super::*;
 
+pub(super) fn reserve_fault_result_storage(
+    resource_limits: FaultResourceLimits,
+    requested: usize,
+) -> Result<Vec<u8>, FaultActionCommitError> {
+    let requested = u64::try_from(requested).map_err(|_source| {
+        FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch)
+    })?;
+    resource_limits
+        .reserve("effect_payload_bytes", 0, requested)
+        .map_err(|source| {
+            FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(source))
+        })?;
+    let capacity = usize::try_from(requested).map_err(|_source| {
+        FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch)
+    })?;
+    let mut storage = Vec::new();
+    storage.try_reserve_exact(capacity).map_err(|_| {
+        FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "effect_payload_bytes",
+                current: 0,
+                requested,
+                configured: resource_limits.effect_payload_bytes,
+                hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
+            },
+        ))
+    })?;
+    Ok(storage)
+}
+
 pub(crate) fn validate_typed_node_result(
     request_payload: &[u8],
     result: DequeuedFaultResult,

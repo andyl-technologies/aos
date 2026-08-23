@@ -24,7 +24,8 @@ use crucible_shmem::{
     MEMORY_MUTATION_BATCH_EVIDENCE_RECORD_LENGTH_OFFSET, MEMORY_MUTATION_NO_VCPU,
     MemoryMutationAddressSpace, MemoryMutationAtomicity, MemoryMutationBatchActionV1,
     MemoryMutationBatchEvidenceV1, MemoryMutationBatchV1, MemoryMutationEvidenceV1,
-    MemoryMutationPayloadV1, MemoryMutationTransformKind, NodeFaultEvidenceV1, NodeFaultPayloadV1,
+    MemoryMutationPayloadV1, MemoryMutationTransformKind, NODE_FAULT_EVIDENCE_V1_BYTES,
+    NodeFaultEvidenceV1, NodeFaultPayloadV1,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
@@ -38,9 +39,9 @@ mod node_payload;
 #[path = "fault_action_sink/result_validation.rs"]
 mod result_validation;
 use evidence::*;
-use memory_payload::prepare_memory_action_payload;
+use memory_payload::{memory_batch, memory_batch_evidence_matches, prepare_memory_action_payload};
 pub(crate) use result_validation::validate_typed_node_result;
-use result_validation::validate_typed_node_result_decoded;
+use result_validation::{reserve_fault_result_storage, validate_typed_node_result_decoded};
 
 #[derive(Clone)]
 struct PreparedMemoryAction {
@@ -575,6 +576,8 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             let request = NodeFaultPayloadV1::decode(&prepared.payload).map_err(|_source| {
                 FaultActionCommitError::Fatal(FaultRuntimeError::IncompleteAdapterState)
             })?;
+            let result_buffer =
+                reserve_fault_result_storage(self.resource_limits, NODE_FAULT_EVIDENCE_V1_BYTES)?;
             let coordinate = prepared.coordinate;
             let sequence = self
                 .nodes
@@ -593,7 +596,12 @@ impl FaultActionSink for QemuFaultActionSink<'_> {
             )?;
             let result = self
                 .nodes
-                .apply_fault_command_at_current_boundary(&prepared.node, header, &prepared.payload)
+                .apply_fault_command_at_current_boundary_with_result_buffer(
+                    &prepared.node,
+                    header,
+                    &prepared.payload,
+                    result_buffer,
+                )
                 .map_err(|_source| {
                     FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback)
                 })?;
@@ -843,42 +851,6 @@ fn memory_command_header(
             FaultActionCommitError::Fatal(FaultRuntimeError::AdapterActionMismatch)
         })?,
     })
-}
-
-fn memory_batch(
-    actions: &[PreparedMemoryAction],
-    expected_precondition_sha256: [u8; 32],
-) -> MemoryMutationBatchV1 {
-    MemoryMutationBatchV1 {
-        actions: actions
-            .iter()
-            .map(|prepared| MemoryMutationBatchActionV1 {
-                action_hash: prepared.action.id().bytes,
-                mutation: prepared.payload.clone(),
-            })
-            .collect(),
-        expected_precondition_sha256,
-    }
-}
-
-fn memory_batch_evidence_matches(
-    evidence: &MemoryMutationBatchEvidenceV1,
-    prepared: &PreparedQemuNodeBatch,
-) -> bool {
-    evidence.actions.len() == prepared.actions.len()
-        && evidence
-            .actions
-            .iter()
-            .zip(&prepared.actions)
-            .all(|(evidence, prepared_action)| {
-                evidence.action_hash == prepared_action.action.id().bytes
-                    && memory_evidence_matches(
-                        &evidence.evidence,
-                        &prepared_action.payload,
-                        prepared.coordinate,
-                        qemu_fault_target_hash(&prepared.node.name),
-                    )
-            })
 }
 
 #[cfg(test)]
