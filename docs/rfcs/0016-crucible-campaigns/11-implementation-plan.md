@@ -111,6 +111,13 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
+The current incremental checkpoint implements the pure application-random
+normalization and application contract plus executor-side verification of its
+uniform model samples. The live doorbell still records the legacy `RngDraw` and
+`AppRandom` pair, and the legacy raw-width branch generator remains available;
+therefore T-CAM-2.3 and T-CAM-2.7 intentionally remain unchecked until producer
+routing, retained-artifact migration/rejection, and the real-guest flight land.
+
 ## 11.5 Phase 3 — Measurements and objectives
 
 Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and

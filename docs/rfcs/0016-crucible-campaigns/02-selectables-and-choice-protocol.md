@@ -389,6 +389,41 @@ random_u16(stream="backoff", instance=epoch)
 Campaigns may propose alternate values using the same bounded sampling budget
 as any large integer domain. Replay returns the recorded integer.
 
+The Crucible application-random producer uses the following version-1
+normalization contract. Let `LP(s) = u64be(len(utf8(s))) || utf8(s)`, and let
+`H(domain, bytes)` be `CampaignHash::derive` as defined by the campaign identity
+schema.
+
+```text
+choice_stream = H("crucible.app-random.choice-rng-stream.v1",
+                  LP(engine_stream_domain) || LP(engine_stream_name))
+model         = H("crucible.app-random.uniform-model.v1", u8(width_bits))
+domain        = unsigned64 [0, 2^width_bits - 1], step 1, scale 1, version 1
+default       = unsigned64(0)
+instance      = "request-" || lower_hex16(request_id)
+sample        = unsigned64(raw_seeded_draw & (2^width_bits - 1))
+```
+
+For width 64 the mask is `u64::MAX`. Width is restricted to `1..=64`. The
+declaration source is the requesting guest node under white-box doorbell
+protocol version 2. Its class context is exactly `app-random` plus the
+hex-encoded `choice_stream`; its semantic tags are exactly `app-random`,
+`uniform-unsigned`, and `width-N`. The scheduler coordinate is
+`H("crucible.app-random.scheduler-coordinate.v1", scenario_id || LP(node))`.
+The producer coordinate is
+`H("crucible.app-random.producer-coordinate.v1", choice_stream || u8(width))`.
+These coordinates deliberately exclude schedule position and process-global
+occurrence counts, so unrelated decisions and RNG streams do not perturb an
+existing opportunity.
+
+The engine adapter now constructs and applies this typed contract, and the
+executor resolves the declaration, domain, and opportunity and verifies the
+exact low-bit mapping before accepting a model-sampled configuration. Other
+probability models remain fail-closed. Routing the live doorbell producer to
+emit this envelope, migrating retained legacy `AppRandom` entries, and removing
+the older raw-width branch generator remain required before T-CAM-2.3 and
+T-CAM-2.7 are complete.
+
 ## 02.10 Admission limits
 
 The scenario declares ceilings for:

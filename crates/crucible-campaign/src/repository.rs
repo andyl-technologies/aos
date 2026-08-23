@@ -362,6 +362,7 @@ impl ObservationCandidate {
 pub struct ResolvedSelection {
     selection: Selection,
     opportunity: Arc<ChoiceOpportunity>,
+    declaration: Arc<SelectableDeclaration>,
     domain: Arc<ChoiceDomain>,
 }
 
@@ -510,6 +511,12 @@ impl ResolvedSelection {
     #[must_use]
     pub fn opportunity(&self) -> &ChoiceOpportunity {
         self.opportunity.as_ref()
+    }
+
+    /// Returns the authenticated reusable selectable declaration.
+    #[must_use]
+    pub fn declaration(&self) -> &SelectableDeclaration {
+        self.declaration.as_ref()
     }
 
     /// Returns the authenticated effective choice domain.

@@ -386,9 +386,10 @@ pub fn decode_crucible_configuration_artifact(
 /// Strictly decodes a configuration and resolves every embedded selection.
 ///
 /// Each selection must equal its authenticated repository record. Branch
-/// provenance is recomputed from the exact schedule prefix and opportunity;
-/// model-sampled selections remain fail-closed until a pure model verifier is
-/// registered with the executor.
+/// provenance is recomputed from the exact schedule prefix and opportunity.
+/// Model-sampled selections are accepted only when the authenticated records
+/// reconstruct Crucible's standardized app-random uniform model; every other
+/// model remains fail-closed until its pure verifier is implemented.
 ///
 /// # Errors
 ///
@@ -515,7 +516,13 @@ fn validate_selection_decisions(
                 )?;
             }
             SelectionOrigin::ModelSample(_) => {
-                return Err(CrucibleArtifactError::UnverifiedModelSelection);
+                crucible::validate_app_random_model_selection(
+                    &selection,
+                    resolved.declaration(),
+                    resolved.opportunity(),
+                    resolved.domain(),
+                )
+                .map_err(|_| CrucibleArtifactError::UnverifiedModelSelection)?;
             }
         }
     }
@@ -674,6 +681,62 @@ mod tests {
             .schedule,
             schedule
         );
+    }
+
+    #[test]
+    fn resolved_app_random_model_sample_is_verified_before_execution() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let scenario_artifact =
+            encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+        let selectable = crucible::AppRandomSelectable::new(
+            &scenario.scenario_def(),
+            crucible::NodeId {
+                name: String::from("node-a"),
+            },
+            crucible::RngStreamId::for_node("guest/backoff"),
+            11,
+            16,
+        )
+        .expect("app-random selectable");
+        let selection = selectable
+            .sampled_selection(0x1234_5678_9abc_def0)
+            .expect("sampled selection");
+        let schedule =
+            Schedule::empty().appended(Decision::Selection(SelectionDecision::new(&selection)));
+        let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
+            .expect("configuration artifact");
+
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(
+                "crucible-app-random-selection",
+                u64::MAX,
+            )),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        repository
+            .publish_choice_domain(selectable.domain())
+            .expect("publish app-random domain");
+        repository
+            .publish_selectable(selectable.declaration())
+            .expect("publish app-random declaration");
+        repository
+            .publish_choice_opportunity(selectable.opportunity())
+            .expect("publish app-random opportunity");
+        repository
+            .publish_selection(&selection)
+            .expect("publish app-random selection");
+        let store = CampaignExecutorStore::new(repository);
+
+        let decoded = decode_crucible_configuration_artifact_with_selections(
+            &scenario,
+            &scenario_artifact,
+            &artifact,
+            &store,
+        )
+        .expect("standardized model sample should pass executor verification");
+        assert_eq!(decoded.schedule, schedule);
     }
 
     #[test]

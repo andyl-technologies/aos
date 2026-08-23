@@ -5,7 +5,12 @@
 //! by drawing from [`DecisionRng`] forks and appending the resulting
 //! [`Decision`] values in scheduler order.
 
+mod app_random_selectable;
 mod reseed;
+
+pub use app_random_selectable::{
+    AppRandomSelectable, AppRandomSelectableError, validate_app_random_model_selection,
+};
 
 use std::collections::BTreeMap;
 use std::error::Error;
