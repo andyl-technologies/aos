@@ -62,7 +62,10 @@ in {
       system = fixture.publisherSystem;
       bootMode = "image";
       hostStoreMount = true;
-      imageDiskMiB = 16384;
+      # A production release host retains its APR checkout/cache while staging
+      # another complete upload tree. Keep both on the writable data disk and
+      # leave headroom for a full AOS closure plus its A/B image payload.
+      imageDiskMiB = 32768;
       # Nix's canonical NAR writer can transiently exceed 6 GiB while hashing
       # the production-sized raw disk and A/B payload imported over 9p.
       memoryMiB = 8192;
@@ -314,7 +317,7 @@ in {
       # registry, just as an organization would establish its trust root.
       trust = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/publisher USER=publisher
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
           mkdir -p "$HOME"
           keygen=$({APR} keys generate initial --registry production 2>&1)
           printf '%s\\n' "$keygen" >&2
@@ -542,11 +545,11 @@ in {
       # managed-publication API into the Hub.
       publication = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/publisher USER=publisher
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/nix-conf
-          mkdir -p "$NIX_CONF_DIR" /tmp/publication-v1
+          export NIX_CONF_DIR="$HOME/.config/nix"
+          mkdir -p "$NIX_CONF_DIR" /var/tmp/aos-publication-v1
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
           git config --global user.name 'Fleet Publisher'
@@ -563,11 +566,11 @@ in {
             --description 'Native Hub production fixture' --license MIT \\
             --maintainer publisher@example.test --key "$key" \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
-            --upload-url file:///tmp/publication-v1
+            --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
-            --root /tmp/publication-v1
+            --root /var/tmp/aos-publication-v1
       """), timeout=900)
       publication_data = json.loads(publication)["data"]
       assert publication_data["state"] == "ready", publication_data
@@ -697,13 +700,13 @@ in {
       # signed producer and managed Hub boundary.
       publication_v2 = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/publisher USER=publisher
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/nix-conf
+          export NIX_CONF_DIR="$HOME/.config/nix"
           key="$HOME/.config/apm/keys/production-initial.key"
-          rm -rf /tmp/publication-v2
-          mkdir -p /tmp/publication-v2
+          rm -rf /var/tmp/aos-publication-v2
+          mkdir -p /var/tmp/aos-publication-v2
           {APR} publish {HELPER_V2} --registry production \\
             --name hub-helper --version 2.0.0 --previous 1.0.0 \\
             --description 'Native Hub helper fixture update' --license MIT \\
@@ -714,11 +717,11 @@ in {
             --description 'Native Hub production fixture update' --license MIT \\
             --maintainer publisher@example.test --key "$key" \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
-            --upload-url file:///tmp/publication-v2
+            --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
-            --root /tmp/publication-v2
+            --root /var/tmp/aos-publication-v2
       """), timeout=900)
       publication_v2_data = json.loads(publication_v2)["data"]
       assert publication_v2_data["state"] == "ready", publication_v2_data
@@ -784,15 +787,21 @@ in {
       # UEFI, then exercise durable image rollback and roll-forward.
       publication_system = publisher.succeed(textwrap.dedent(f"""
           set -eu
-          export HOME=/tmp/publisher USER=publisher
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH
           export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/nix-conf
+          export NIX_CONF_DIR="$HOME/.config/nix"
           export TMPDIR=/var/tmp/apr-release
           mkdir -p "$TMPDIR"
+          available_mib=$(df -Pm "$HOME" | awk 'NR == 2 {{ print $4 }}')
+          if [ "$available_mib" -lt 12288 ]; then
+            printf 'publisher data disk has only %s MiB free; 12288 MiB required\\n' \
+              "$available_mib" >&2
+            exit 1
+          fi
           key="$HOME/.config/apm/keys/production-initial.key"
-          rm -rf /tmp/publication-system
-          mkdir -p /tmp/publication-system
+          rm -rf /var/tmp/aos-publication-system
+          mkdir -p /var/tmp/aos-publication-system
           set -- {UPGRADE_UKI}/*.efi
           test "$#" -eq 1
           candidate_uki="$1"
@@ -806,11 +815,11 @@ in {
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key "$key" \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
-            --upload-url file:///tmp/publication-system
+            --upload-url file:///var/tmp/aos-publication-system
           {APR} verify --registry production
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
-            --root /tmp/publication-system
+            --root /var/tmp/aos-publication-system
       """), timeout=1800)
       publication_system_data = json.loads(publication_system)["data"]
       assert publication_system_data["state"] == "ready", publication_system_data

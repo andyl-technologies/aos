@@ -3894,10 +3894,8 @@ impl Database {
                     for image in &entry.images {
                         catalog_artifacts.push(("image", image.store_path.as_str()));
                         if image.delivery.is_store_backed() {
-                            catalog_artifacts.push((
-                                "image",
-                                image.delivery.image_info.store_path.as_str(),
-                            ));
+                            catalog_artifacts
+                                .push(("image", image.delivery.image_info.store_path.as_str()));
                             if let Some(payload) = &image.delivery.update_payload {
                                 catalog_artifacts.push(("image", payload.store_path.as_str()));
                             }
