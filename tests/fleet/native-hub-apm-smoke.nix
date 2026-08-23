@@ -143,6 +143,40 @@ in {
           return json.loads(applied)
 
 
+      def reviewed_control(machine, label, plan_command, apply_command, token, timeout=120):
+          """Plan and apply retained-control porcelain with explicit subcommands."""
+          planned = machine.succeed(
+              hub_command(
+                  plan_command,
+                  token,
+                  f"--idempotency-key {shlex.quote(label + '-plan')}",
+              ),
+              timeout=timeout,
+          )
+          envelope = json.loads(planned)
+          assert envelope["schema_version"] == "aos.hub.cli/v1", envelope
+          plan = envelope["data"]["plan"]
+          assert plan["effects"], plan
+          applied = machine.succeed(
+              hub_command(
+                  apply_command,
+                  token,
+                  " ".join(
+                      [
+                          "--plan-id",
+                          shlex.quote(plan["plan_id"]),
+                          "--confirm-hash",
+                          shlex.quote(plan["confirmation_hash"]),
+                          "--yes --idempotency-key",
+                          shlex.quote(label + "-apply"),
+                      ]
+                  ),
+              ),
+              timeout=timeout,
+          )
+          return json.loads(applied)
+
+
       # The native service must boot under its hardened unit before any local
       # recovery/bootstrap action is taken. The database starts empty.
       hub.succeed(textwrap.dedent("""
@@ -285,6 +319,49 @@ in {
           grant["consumer_scope_key"] == org_scope
           for grant in public_boundary["grants"]
       ), public_boundary
+
+      # A production topology controller is a scoped machine principal, not a
+      # human administrator. Provision its account, role, and short-lived token
+      # through the same reviewed IAM surface an operator uses.
+      reviewed_control(
+          publisher,
+          "controller-account-create",
+          "org service-account create plan acme fleet-controller",
+          "org service-account create apply",
+          token,
+      )
+      reviewed_control(
+          publisher,
+          "controller-membership-create",
+          "org member set-role plan --principal-kind service_account "
+          f"--principal acme/fleet-controller --scope {shlex.quote(org_scope)} "
+          "--role owner --if-version absent",
+          "org member set-role apply",
+          token,
+      )
+      controller_token_response = reviewed_control(
+          publisher,
+          "controller-token-issue",
+          f"access-token issue plan {shlex.quote(org_scope)} "
+          "--owner service_account:acme/fleet-controller "
+          "--permission endpoint.read --permission endpoint.manage "
+          "--ttl-secs 3600 --comment 'fleet topology controller'",
+          "access-token issue apply",
+          token,
+      )
+      controller_secret = controller_token_response["data"]["result"]["secret"]
+      assert controller_secret.startswith("aos_"), controller_token_response
+      controller_grant = json.loads(publisher.succeed(
+          f"{CURL} -fsS -X POST "
+          "-H 'Content-Type: application/x-www-form-urlencoded' "
+          f"-H 'Authorization: Bearer {controller_secret}' "
+          "--data-urlencode "
+          "'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
+          f"{HUB}/oauth2/token"
+      ))
+      controller_token = controller_grant["access_token"]
+      assert controller_grant["token_type"] == "Bearer", controller_grant
+
       bindings = json.loads(
           publisher.succeed(hub_command("binding list", token))
       )["data"]["bindings"]
@@ -363,6 +440,36 @@ in {
       )["data"]["endpoint"]
       endpoint_generation = int(endpoint["desired_generation"])
       assert endpoint_generation > 0, endpoint
+
+      # Emulate the deployment controller's independent listener check, then
+      # report its exact generation-fenced observation with machine authority.
+      publisher.succeed(
+          f"{CURL} -sS -o /dev/null http://192.168.50.11:8420/healthz"
+      )
+      endpoint_observation = {
+          "stableId": "fleet-native-hub",
+          "expectedObservationVersion": endpoint["resource_version"],
+          "controllerLeaseId": "fleet-controller-lease",
+          "controllerGeneration": 1,
+          "observation": {
+              "observedGeneration": endpoint_generation,
+              "boundaryRevision": endpoint["desired"]["boundary_revision"],
+              "state": "healthy",
+              "listenerObserved": True,
+              "tlsObserved": False,
+          },
+      }
+      observed_endpoint = json.loads(publisher.succeed(
+          f"{CURL} -fsS -X POST "
+          "-H 'Content-Type: application/json' "
+          "-H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {controller_token}' "
+          f"--data {shlex.quote(json.dumps(endpoint_observation))} "
+          f"{HUB}/aos.hub.v1.DeliveryControllerService/ReportEndpoint"
+      ))["endpoint"]
+      assert observed_endpoint["observed"]["state"] == "healthy", observed_endpoint
+      assert observed_endpoint["observed"]["listenerObserved"], observed_endpoint
+
       reviewed(
           publisher,
           "route-create",
@@ -391,10 +498,10 @@ in {
           token,
       )
       publisher.wait_until_succeeds(
-          hub_command(
-              "route explain fleet-production --access-class nix_cache",
-              token,
-          ) + f" | {JQ} -e '.data | tostring | test(\"healthy\")'",
+          hub_command("route list registry:acme/production", token)
+          + f" | {JQ} -e '.data.routes[] "
+          "| select(.stable_id == \"fleet-production\") "
+          "| .observation.state == \"healthy\"'",
           timeout=180,
       )
       for audience in ("git", "nix_cache", "web"):
@@ -422,6 +529,10 @@ in {
           key="$HOME/.config/apm/keys/production-initial.key"
           {APR} create production --trust-key {shlex.quote(trust)} \\
             --trust-key-id initial --key "$key"
+          {APR} publish {HELPER_V1} --registry production \\
+            --name hub-helper --version 1.0.0 \\
+            --description 'Native Hub helper fixture' --license MIT \\
+            --maintainer publisher@example.test --key "$key"
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
             --description 'Native Hub production fixture' --license MIT \\
@@ -465,10 +576,11 @@ in {
           printf '%s\\n' "$keygen" | awk '/Public key:/ {{print $NF; exit}}'
       """), timeout=120).strip()
       consumer.fail(textwrap.dedent(f"""
-          HOME=/tmp/untrusted-consumer USER=consumer \
-            {APM} registry add {REGISTRY} --name production \
-              --channel stable --trust-key {shlex.quote(wrong_trust)} \
-              >/tmp/wrong-trust.out 2>&1
+          set -eu
+          export HOME=/tmp/untrusted-consumer USER=consumer
+          {APM} registry add {REGISTRY} --name production \
+            --channel stable --trust-key {shlex.quote(wrong_trust)}
+          {APM} update --registry production >/tmp/wrong-trust.out 2>&1
       """), timeout=180)
 
       # Exercise normal discovery, install, verification, dependency, file,
@@ -480,13 +592,13 @@ in {
           mkdir -p "$HOME"
           {APM} registry add {REGISTRY} --name production --priority 900 \\
             --channel stable --trust-key {shlex.quote(trust)}
-          {APM} registry list | grep -q production
+          {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
-          {APM} search hub-tool --registry production | grep -q hub-tool
-          {APM} search hub --names-only --registry production | grep -q hub-tool
-          {APM} show hub-tool --registry production | grep -q 1.0.0
-          {APM} info hub-tool --registry production | grep -q hub-tool
-          {APM} policy hub-tool | grep -q 1.0.0
+          {APM} search hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
+          {APM} search hub --names-only --registry production 2>&1 | grep hub-tool >/dev/null
+          {APM} show hub-tool --registry production 2>&1 | grep 1.0.0 >/dev/null
+          {APM} info hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
+          {APM} policy hub-tool 2>&1 | grep 1.0.0 >/dev/null
           {APM} install hub-tool --registry production --dry-run
           {APM} install hub-tool --registry production --download-only --yes
           {APM} install hub-tool --registry production --yes 2>&1
@@ -497,18 +609,20 @@ in {
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} verify hub-tool
-          {APM} list --installed | grep -q hub-tool
-          {APM} search hub-tool --installed | grep -q hub-tool
-          {APM} depends hub-tool | grep -q hub-helper
-          {APM} rdepends hub-helper | grep -q hub-tool
-          {APM} files hub-tool | grep -q /bin/hub-tool
+          {APM} list --installed 2>&1 | grep hub-tool >/dev/null
+          {APM} search hub-tool --installed 2>&1 | grep hub-tool >/dev/null
+          {APM} depends hub-tool >/dev/null 2>&1
+          {APM} rdepends hub-helper 2>&1 | grep hub-tool >/dev/null
+          {NIX_STORE} -q --references {TOOL_V1} | \\
+            grep "$(basename {HELPER_V1})" >/dev/null
+          {APM} files hub-tool 2>&1 | grep 'bin/hub-tool' >/dev/null
           /var/lib/profiles/per-user/consumer/current/bin/hub-tool > /tmp/hub-tool.out
           grep -qx 'hub-helper 1.0.0' /tmp/hub-tool.out
           grep -qx 'hub-tool 1.0.0' /tmp/hub-tool.out
           {APM} reinstall hub-tool --yes
           {APM} remove hub-tool --dry-run
           {APM} remove hub-tool --autoremove --yes
-          ! {APM} list --installed | grep -q hub-tool
+          ! {APM} list --installed 2>&1 | grep hub-tool >/dev/null
           {APM} orphans
           {APM} clean --generations --keep 1
           {APM} gc --dry-run
@@ -528,11 +642,16 @@ in {
       # a process restart. Anonymous package consumption stays available.
       hub.succeed("systemctl restart aos-hub.service")
       hub.wait_until_succeeds(f"{CURL} -fsS {HUB}/healthz", timeout=120)
+      restarted_identity = json.loads(
+          publisher.succeed(hub_command("whoami", token))
+      )
+      assert restarted_identity["data"]["principal_ref"] == \
+          "fleet-root@example.test", restarted_identity
       consumer.succeed(textwrap.dedent(f"""
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} update --registry production
-          {APM} show hub-tool --registry production | grep -q 1.0.0
+          {APM} show hub-tool --registry production 2>&1 | grep 1.0.0 >/dev/null
           /var/lib/profiles/per-user/consumer/current/bin/hub-tool \\
             | grep -q 'hub-tool 1.0.0'
       """), timeout=180)
@@ -548,6 +667,10 @@ in {
           key="$HOME/.config/apm/keys/production-initial.key"
           rm -rf /tmp/publication-v2
           mkdir -p /tmp/publication-v2
+          {APR} publish {HELPER_V2} --registry production \\
+            --name hub-helper --version 2.0.0 --previous 1.0.0 \\
+            --description 'Native Hub helper fixture update' --license MIT \\
+            --maintainer publisher@example.test --key "$key"
           {APR} release 2.0.0 --registry production \\
             --store-path {TOOL_V2} --name hub-tool --version 2.0.0 \\
             --previous 1.0.0 \\
@@ -583,14 +706,14 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           profile=/var/lib/profiles/per-user/consumer
           {APM} hold hub-tool
-          {APM} held | grep -q hub-tool
+          {APM} held 2>&1 | grep hub-tool >/dev/null
           {APM} update --registry production
           {APM} upgrade hub-tool --yes
           "$profile/current/bin/hub-tool" | grep -q 'hub-tool 1.0.0'
           {APM} unhold hub-tool
-          ! {APM} held | grep -q hub-tool
-          {APM} list --upgradable | grep -q 2.0.0
-          {APM} upgrade hub-tool --dry-run | grep -q 2.0.0
+          ! {APM} held 2>&1 | grep hub-tool >/dev/null
+          {APM} list --upgradable 2>&1 | grep 2.0.0 >/dev/null
+          {APM} upgrade hub-tool --dry-run 2>&1 | grep 2.0.0 >/dev/null
           {APM} upgrade hub-tool --yes 2>&1
       """), timeout=600)
       assert "Downloading" in upgrade_output, upgrade_output
@@ -610,7 +733,7 @@ in {
           "$profile/current/bin/hub-tool" | grep -q 'hub-tool 2.0.0'
           {APM} full-upgrade --dry-run
           {APM} registry disable production
-          {APM} registry list | grep -q production
+          {APM} registry list 2>&1 | grep production >/dev/null
           {APM} registry enable production
           {APM} update --registry production
       """), timeout=600)
@@ -659,9 +782,9 @@ in {
           {APM} registry --system add {REGISTRY} --name production \\
             --priority 900 --channel stable --trust-key {shlex.quote(trust)}
           {APM} update --system --registry production
-          {APM} show aos --system --registry production | grep -q test-2
-          {APM} list --system --upgradable | grep -q test-2
-          {APM} upgrade --system --dry-run | grep -q test-2
+          {APM} show aos --system --registry production 2>&1 | grep test-2 >/dev/null
+          {APM} list --system --upgradable 2>&1 | grep test-2 >/dev/null
+          {APM} upgrade --system --dry-run 2>&1 | grep test-2 >/dev/null
           {APM} upgrade --system --live --yes 2>&1
       """), timeout=1200)
       assert "Downloading" in system_upgrade, system_upgrade
