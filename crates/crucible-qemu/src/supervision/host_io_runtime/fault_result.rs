@@ -8,6 +8,19 @@ use crucible_shmem::{
 };
 use std::{thread, time::Duration};
 
+pub(super) fn admit_fault_preparation_result(
+    requested: usize,
+    maximum_payload_bytes: usize,
+) -> Result<(), QemuAsyncDriverRuntimeError> {
+    if requested > maximum_payload_bytes {
+        return Err(QemuAsyncDriverRuntimeError::fault_result_storage(
+            requested,
+            maximum_payload_bytes,
+        ));
+    }
+    Ok(())
+}
+
 impl QemuLiveHostIoRuntime {
     /// Polls the lossless result ring while repeatedly waking QEMU.
     pub(super) fn poll_fault_result(
@@ -62,6 +75,7 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn poll_fault_preparation_result(
         &mut self,
         timeout: Duration,
+        maximum_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
         if timeout.is_zero() {
             return Err(QemuAsyncDriverRuntimeError::new(
@@ -91,9 +105,13 @@ impl QemuLiveHostIoRuntime {
                 payload_buffer,
             ) {
                 Err(FaultTransportError::PayloadBufferTooSmall { requested, .. }) => {
+                    admit_fault_preparation_result(requested, maximum_payload_bytes)?;
                     let mut exact = Vec::new();
                     exact.try_reserve_exact(requested).map_err(|_| {
-                        QemuAsyncDriverRuntimeError::fault_result_storage(requested)
+                        QemuAsyncDriverRuntimeError::fault_result_storage(
+                            requested,
+                            maximum_payload_bytes,
+                        )
                     })?;
                     dequeue_fault_result_with_buffer(
                         transport.ring,

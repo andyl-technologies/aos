@@ -494,11 +494,28 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
     fn await_fault_preparation_result(
         &mut self,
         _timeout: Duration,
+        maximum_payload_bytes: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        self.fault_results.pop_front().ok_or_else(|| {
+        let result = self.fault_results.front().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
                 "await fault preparation result",
                 "no scripted fault result",
+            )
+        })?;
+        let required = match result {
+            DequeuedFaultResult::Valid { payload, .. } => payload.len(),
+            DequeuedFaultResult::Invalid { .. } => 0,
+        };
+        if required > maximum_payload_bytes {
+            return Err(QemuAsyncDriverRuntimeError::fault_result_storage(
+                required,
+                maximum_payload_bytes,
+            ));
+        }
+        self.fault_results.pop_front().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "await fault preparation result",
+                "scripted fault result disappeared after admission",
             )
         })
     }

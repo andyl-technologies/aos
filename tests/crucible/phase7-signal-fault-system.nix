@@ -231,7 +231,9 @@ in
           run_exact_qemu_test \
             fault_action_sink::tests::typed_prepare_reserves_only_the_exact_evidence_capacity
           run_exact_qemu_test \
-            fault_action_sink::tests::dynamic_prepare_retains_only_the_exact_published_evidence
+            fault_action_sink::tests::dynamic_prepare_limit_preserves_authored_coordinates
+          run_exact_qemu_test \
+            supervision::host_io_runtime::tests::preparation_result_is_admitted_before_exact_storage_allocation
           run_exact_qemu_test \
             fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask
           run_exact_qemu_test \

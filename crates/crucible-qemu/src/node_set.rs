@@ -21,7 +21,7 @@ use crucible_shmem::{
 #[cfg(target_os = "linux")]
 use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
-use crate::{QemuNode, QemuNodeIdleState};
+use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
@@ -576,6 +576,19 @@ impl QemuNodeSet {
                 result_buffer,
             )
             .map_err(BackendError::from)
+    }
+
+    pub(crate) fn apply_fault_preparation_at_current_boundary(
+        &mut self,
+        node: &NodeId,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+        maximum_payload_bytes: usize,
+    ) -> Result<DequeuedFaultResult, QemuNodeError> {
+        self.nodes
+            .get_mut(node)
+            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+            .apply_fault_preparation_at_current_boundary(header, payload, maximum_payload_bytes)
     }
 
     /// Reads one live node's authoritative fault-command coordinate.
