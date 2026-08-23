@@ -611,29 +611,34 @@ in {
       assert install_status == 0, (install_status, install_stdout, install_stderr)
       install_output = install_stdout + install_stderr
       assert b"Downloading" in install_output, install_output
-      consumer.succeed(textwrap.dedent(f"""
-          set -eu
-          export HOME=/tmp/consumer USER=consumer
-          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} verify hub-tool
-          {APM} list --installed 2>&1 | grep hub-tool >/dev/null
-          {APM} search hub-tool --installed 2>&1 | grep hub-tool >/dev/null
-          {APM} depends hub-tool >/dev/null 2>&1
-          {APM} rdepends hub-helper 2>&1 | grep hub-tool >/dev/null
-          {NIX_STORE} -q --references {TOOL_V1} | \\
-            grep "$(basename {HELPER_V1})" >/dev/null
-          {APM} files hub-tool 2>&1 | grep 'bin/hub-tool' >/dev/null
-          /var/lib/profiles/per-user/consumer/current/bin/hub-tool > /tmp/hub-tool.out
-          grep -qx 'hub-helper 1.0.0' /tmp/hub-tool.out
-          grep -qx 'hub-tool 1.0.0' /tmp/hub-tool.out
-          {APM} reinstall hub-tool --yes
-          {APM} remove hub-tool --dry-run
-          {APM} remove hub-tool --autoremove --yes
-          ! {APM} list --installed 2>&1 | grep hub-tool >/dev/null
-          {APM} orphans
-          {APM} clean --generations --keep 1
-          {APM} gc --dry-run
-      """), timeout=600)
+      lifecycle_commands = (
+          f"{APM} verify hub-tool",
+          f"{APM} list --installed 2>&1 | grep hub-tool >/dev/null",
+          f"{APM} search hub-tool --installed 2>&1 | grep hub-tool >/dev/null",
+          f"{APM} depends hub-tool >/dev/null 2>&1",
+          f"{APM} rdepends hub-helper 2>&1 | grep hub-tool >/dev/null",
+          f"{NIX_STORE} -q --references {TOOL_V1} "
+          f"| grep {shlex.quote(HELPER_V1.rsplit('/', 1)[-1])} >/dev/null",
+          f"{APM} files hub-tool 2>&1 | grep 'bin/hub-tool' >/dev/null",
+          "/var/lib/profiles/per-user/consumer/current/bin/hub-tool "
+          "> /tmp/hub-tool.out",
+          "grep -qx 'hub-helper 1.0.0' /tmp/hub-tool.out",
+          "grep -qx 'hub-tool 1.0.0' /tmp/hub-tool.out",
+          f"{APM} reinstall hub-tool --yes",
+          f"{APM} remove hub-tool --dry-run",
+          f"{APM} remove hub-tool --autoremove --yes",
+          f"! {APM} list --installed 2>&1 | grep hub-tool >/dev/null",
+          f"{APM} orphans",
+          f"{APM} clean --generations --keep 1",
+          f"{APM} gc --dry-run",
+      )
+      for lifecycle_command in lifecycle_commands:
+          status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
+              export HOME=/tmp/consumer USER=consumer
+              export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+              {lifecycle_command}
+          """), timeout=600)
+          assert status == 0, (lifecycle_command, status, stdout, stderr)
 
       # Reinstall for persistence checks and prove all closure members arrived
       # via the data plane.
@@ -707,7 +712,7 @@ in {
       # Holds must survive metadata refresh and suppress a targeted upgrade.
       # Unholding then exercises plan, download, activation, rollback and an
       # explicit roll-forward to the already-created generation.
-      upgrade_output = consumer.succeed(textwrap.dedent(f"""
+      upgrade_status, upgrade_stdout, upgrade_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
@@ -723,7 +728,9 @@ in {
           {APM} upgrade hub-tool --dry-run 2>&1 | grep 2.0.0 >/dev/null
           {APM} upgrade hub-tool --yes 2>&1
       """), timeout=600)
-      assert "Downloading" in upgrade_output, upgrade_output
+      assert upgrade_status == 0, (upgrade_status, upgrade_stdout, upgrade_stderr)
+      upgrade_output = upgrade_stdout + upgrade_stderr
+      assert b"Downloading" in upgrade_output, upgrade_output
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
@@ -783,7 +790,7 @@ in {
           ">/tmp/expected-system-store-miss 2>&1"
       )
 
-      system_upgrade = consumer.succeed(textwrap.dedent(f"""
+      system_status, system_stdout, system_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} registry --system add {REGISTRY} --name production \\
@@ -794,7 +801,9 @@ in {
           {APM} upgrade --system --dry-run 2>&1 | grep test-2 >/dev/null
           {APM} upgrade --system --live --yes 2>&1
       """), timeout=1200)
-      assert "Downloading" in system_upgrade, system_upgrade
+      assert system_status == 0, (system_status, system_stdout, system_stderr)
+      system_upgrade = system_stdout + system_stderr
+      assert b"Downloading" in system_upgrade, system_upgrade
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
