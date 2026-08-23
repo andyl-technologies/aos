@@ -259,6 +259,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   queued work without launching it, and releases capacity only after worker
   exit. Blocked-guest, blocked-admission, queued-shutdown, retry, and caught-
   panic regressions exercise the responsive bounded owner.
+  A fixed local executor listener now lends cloneable pool-service handles to
+  at most 256 connection workers, retains at most 1,024 pending sockets, and
+  caps one connection at 65,536 complete requests. It authenticates one exact
+  effective UID/GID through Linux `SO_PEERCRED` before decoding component
+  bytes, rejects excess or foreign sockets, distinguishes protocol from service
+  failure telemetry, interrupts active connections on sticky shutdown, and
+  joins every connection worker before returning. The production filesystem
+  endpoint owner and concrete QEMU worker selection remain open.
   A bounded `CampaignSupervisor` now composes one planner driver and one
   executor driver over the same repository, reloads exact lifecycle intent on
   every step, and performs at most one component operation. Running execution

@@ -1511,6 +1511,21 @@ deadline, so partial/drip headers and bodies or a peer that stops reading cannot
 pin a connection indefinitely. Any framing, semantic, I/O, or service error
 shuts down both stream directions before the server returns.
 
+The local executor listener authenticates Linux `SO_PEERCRED` before decoding
+the first component frame and admits only one startup-fixed effective
+`(uid,gid)` identity. PID never selects authority. It uses
+`1..=256` fixed connection workers, retains at most `1..=1,024` accepted
+sockets outside those workers, and serves `1..=65,536` complete exchanges on
+one connection before closing it after the last response. Defaults are four
+workers, sixteen queued sockets, and 4,096 exchanges. A full queue closes the
+new socket without decoding it. Sticky shutdown stops acceptance, closes every
+active and queued socket, and joins every connection worker before returning
+accepted, capacity-rejected, completed, peer-rejected, protocol-failed, and
+service-failed counters. The listener receives an already-bound socket; the
+production daemon must additionally retain its authenticated filesystem
+namespace owner through listener join before exposing this component as a
+standalone endpoint.
+
 The single-host daemon persists two bounded operational record families:
 
 ```text
