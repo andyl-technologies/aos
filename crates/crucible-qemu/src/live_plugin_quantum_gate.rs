@@ -38,11 +38,13 @@ use crucible_shmem::{
 };
 
 use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    LaunchProfileCandidate, QEMU_CONSOLE_SOCKET_FILE_NAME, QemuLaunchArtifact,
+    QemuLaunchCommandBuilder, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuLiveHostIoRuntime, QemuMappedQuantumShmemHotPath, QemuNodeChannelError,
+    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
 pub use errors::LivePluginQuantumGateError;
@@ -112,6 +114,7 @@ pub struct LivePluginQuantumGateConfig {
     smp_vcpus: u16,
     memory_mib: u32,
     rr_switch_quantum: u64,
+    require_guest_smp_pause_rendezvous: bool,
 }
 
 impl LivePluginQuantumGateConfig {
@@ -139,6 +142,7 @@ impl LivePluginQuantumGateConfig {
             smp_vcpus: 1,
             memory_mib: GATE_MEMORY_MIB,
             rr_switch_quantum: 4096,
+            require_guest_smp_pause_rendezvous: false,
         }
     }
 
@@ -199,6 +203,18 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub const fn with_smp_vcpus(mut self, smp_vcpus: u16) -> Self {
         self.smp_vcpus = smp_vcpus;
+        self
+    }
+
+    /// Requires exact guest output from the PAUSE-dependent SMP rendezvous.
+    ///
+    /// The purpose-built guest emits one online marker per AP, a BSP release
+    /// marker, one post-release marker per AP, and a final BSP marker. Reaching
+    /// that sequence requires PAUSE to hand the zero-instruction RR turn to the
+    /// next vCPU; INIT/SIPI publication alone is insufficient.
+    #[must_use]
+    pub const fn with_guest_smp_pause_rendezvous(mut self, required: bool) -> Self {
+        self.require_guest_smp_pause_rendezvous = required;
         self
     }
 
@@ -300,6 +316,7 @@ struct ScenarioOutcome {
     rates: LivePluginAdvancementRates,
     fingerprint: ExecutionFingerprint,
     host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
+    guest_smp_pause_rendezvous_observed: bool,
 }
 
 /// Successful evidence from the production loaded-QEMU plugin quantum gate.
@@ -329,6 +346,8 @@ pub struct LivePluginQuantumReport {
     pub idle_jump_proven: bool,
     /// No plugin other than the Rust control plugin owned time control.
     pub time_authority_is_rust_plugin: bool,
+    /// The live guest completed the AP/BSP PAUSE handoff rendezvous in both runs.
+    pub guest_smp_pause_rendezvous_observed: bool,
 }
 
 /// Runs the Rust control plugin through the full idle/time-authority lifecycle.
@@ -381,6 +400,7 @@ pub fn run_live_plugin_quantum_gate(
         host_observable_schedule_len: reference.host_observable_schedule.len(),
         idle_jump_proven,
         time_authority_is_rust_plugin: true,
+        guest_smp_pause_rendezvous_observed: reference.guest_smp_pause_rendezvous_observed,
     })
 }
 
@@ -441,13 +461,18 @@ fn run_one_scenario(
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_fault_target_node(GATE_NODE)
         .with_fingerprint(QemuLaunchPluginSwitch::On);
-    let command = profile
-        .qemu_launch_command_for_live_gate(
-            vm_launch_config(config),
-            path_text(&config.qemu_executable),
-            plugin,
-            crate::LivePluginGuestArchitecture::X86_64,
-        )
+    let mut command_builder = QemuLaunchCommandBuilder::new_for_live_gate(
+        profile,
+        vm_launch_config(config),
+        path_text(&config.qemu_executable),
+        plugin,
+        crate::LivePluginGuestArchitecture::X86_64,
+    );
+    if config.require_guest_smp_pause_rendezvous {
+        command_builder = command_builder.with_console_capture();
+    }
+    let command = command_builder
+        .build()
         .map_err(|source| LivePluginQuantumGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
@@ -472,6 +497,21 @@ fn run_one_scenario(
         return Err(LivePluginQuantumGateError::SetupAckNotReady);
     }
 
+    // QEMU realizes the output-only UART socket before SetupAck, and the boot
+    // barrier remains closed until the first host quantum. Connecting here
+    // therefore cannot miss an AP marker or feed any host input to the guest.
+    let guest_evidence_spool = config
+        .require_guest_smp_pause_rendezvous
+        .then(QemuConsoleObservationSpool::new);
+    let mut guest_evidence_reader = guest_evidence_spool
+        .as_ref()
+        .map(|spool| {
+            crate::unix_socket_path::connect(&run_directory.join(QEMU_CONSOLE_SOCKET_FILE_NAME))
+                .and_then(|stream| QemuConsoleObservationReader::new(stream, spool.clone()))
+        })
+        .transpose()
+        .map_err(|source| LivePluginQuantumGateError::GuestEvidenceIo { source })?;
+
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| LivePluginQuantumGateError::RegionMap { source })?;
     let hot_path_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
@@ -479,6 +519,18 @@ fn run_one_scenario(
     let mut hot_path =
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+    let mut fingerprint_runtime = QemuLiveHostIoRuntime::from_shmem_fd(
+        setup.shmem_as_fd(),
+        setup.wake_as_fd(),
+        setup.region().region_len,
+        GATE_SLOT,
+    )
+    .map_err(|source| {
+        channel_error(
+            "construct production fingerprint runtime",
+            QemuNodeChannelError::new("map production host runtime", source.to_string()),
+        )
+    })?;
 
     // Start only after setup, adjacent to the guest schedule being perturbed.
     let mut host_adversary =
@@ -493,14 +545,40 @@ fn run_one_scenario(
         &mut host_adversary,
     )?;
     scheduler::publish_terminal_fingerprint(
+        &mut fingerprint_runtime,
         &hot_path,
         &mut child,
-        &setup,
         rates.terminal_icount,
         config,
     )?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
+    if let Some(reader) = guest_evidence_reader.as_mut() {
+        reader
+            .drain_available()
+            .map_err(|source| LivePluginQuantumGateError::Channel {
+                operation: "drain SMP rendezvous evidence",
+                source: QemuNodeChannelError::new("drain guest console", source.to_string()),
+            })?;
+    }
+    let guest_smp_pause_rendezvous_observed = if let Some(spool) = guest_evidence_spool {
+        let observed = spool
+            .take()
+            .map_err(|source| LivePluginQuantumGateError::Channel {
+                operation: "take SMP rendezvous evidence",
+                source: QemuNodeChannelError::new("take guest console", source.to_string()),
+            })?;
+        let expected = expected_smp_pause_rendezvous(config.smp_vcpus);
+        if observed != expected {
+            return Err(LivePluginQuantumGateError::GuestSmpRendezvousMismatch {
+                expected,
+                observed,
+            });
+        }
+        true
+    } else {
+        false
+    };
     HostAdversary::finish_if_present(&mut host_adversary)
         .map_err(|source| LivePluginQuantumGateError::SchedulerPreemption { source })?;
     setup
@@ -522,6 +600,7 @@ fn run_one_scenario(
         rates,
         fingerprint,
         host_observable_schedule,
+        guest_smp_pause_rendezvous_observed,
     })
 }
 
@@ -563,7 +642,22 @@ fn assert_runs_match(
             ),
         });
     }
+    if reference.guest_smp_pause_rendezvous_observed != second.guest_smp_pause_rendezvous_observed {
+        return Err(LivePluginQuantumGateError::SecondRunDiverged {
+            reason: String::from("guest SMP PAUSE rendezvous evidence differed between runs"),
+        });
+    }
     Ok(())
+}
+
+fn expected_smp_pause_rendezvous(vcpus: u16) -> Vec<u8> {
+    let application_processors = usize::from(vcpus.saturating_sub(1));
+    let mut expected = Vec::with_capacity(application_processors.saturating_mul(2) + 2);
+    expected.extend(std::iter::repeat_n(b'A', application_processors));
+    expected.push(b'B');
+    expected.extend(std::iter::repeat_n(b'P', application_processors));
+    expected.push(b'R');
+    expected
 }
 
 /// Replays a production-plugin host schedule through the in-process double.

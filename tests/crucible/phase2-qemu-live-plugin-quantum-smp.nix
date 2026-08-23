@@ -12,6 +12,7 @@
     openTaskIds = [];
     smpVcpus = "4";
     memoryMib = "64";
+    requireSmpPauseRendezvous = "1";
     maxSearch = "80000000";
     idleHorizonMargin = "80000000";
     customGuestKernel = "${smpGuest}/smp-idle-guest.elf";
@@ -22,6 +23,8 @@
   haltedRrPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0110-crucible-release-halted-rr-turn.patch;
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   quantumGate = builtins.readFile ./phase2-qemu-live-plugin-quantum.nix;
+  nodeSource = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  hostRuntimeSource = builtins.readFile ../../crates/crucible-qemu/src/supervision/host_io_runtime.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -66,6 +69,18 @@
         needle = "icount_crucible_rr_yield_cpu(cpu);";
       }
       {
+        label = "guest PAUSE explicit marker";
+        needle = "cs->crucible_guest_pause_yield = true;";
+      }
+      {
+        label = "guest PAUSE marker consumed";
+        needle = "cpu->crucible_guest_pause_yield = false;";
+      }
+      {
+        label = "generic interrupt excluded";
+        needle = "guest_pause_yield &&";
+      }
+      {
         label = "host kick excluded from guest yield";
         needle = "cpu && !cpu->exit_request && !cpu->stop && !cpu->unplug";
       }
@@ -91,6 +106,18 @@
         label = "runtime AP trampoline copy";
         needle = "movl $ap_trampoline_start, %esi";
       }
+      {
+        label = "AP online PAUSE rendezvous";
+        needle = "ap_wait_for_release:";
+      }
+      {
+        label = "BSP observes every AP online";
+        needle = "wait_for_all_aps_online:";
+      }
+      {
+        label = "post-PAUSE AP acknowledgement";
+        needle = "lock incw 0x7004";
+      }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-live-plugin-quantum.nix" quantumGate [
       {
@@ -100,6 +127,30 @@
       {
         label = "all-vCPUs-halted live result assertion";
         needle = "all_vcpus_halted_idle_observed=true";
+      }
+      {
+        label = "live guest PAUSE rendezvous assertion";
+        needle = "guest_smp_pause_rendezvous_observed=true";
+      }
+      {
+        label = "exact production fingerprint regression";
+        needle = "stale_execution_fingerprint_requests_production_control_boundary";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeSource [
+      {
+        label = "node requests stale fingerprint boundary";
+        needle = ".publish_current_execution_fingerprint(remaining)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/supervision/host_io_runtime.rs" hostRuntimeSource [
+      {
+        label = "production fingerprint control request";
+        needle = "fn publish_current_execution_fingerprint(";
+      }
+      {
+        label = "production fingerprint ack ownership";
+        needle = "control_boundary_request_is_acknowledged(request, &snapshot)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -132,6 +183,7 @@ in
             grep -Fxq 'smp_vcpus=4' ${liveQuantumSmp}/result
             grep -Fxq 'memory_mib=64' ${liveQuantumSmp}/result
             grep -Fxq 'all_vcpus_halted_idle_observed=true' ${liveQuantumSmp}/result
+            grep -Fxq 'guest_smp_pause_rendezvous_observed=true' ${liveQuantumSmp}/result
             grep -Fxq 'idle_kind=timer-deadline' ${liveQuantumSmp}/result
             grep -Fxq 'idle_jump_proven=true' ${liveQuantumSmp}/result
             grep -Fxq 'deterministic_under_scheduler_preemption=true' ${liveQuantumSmp}/result
@@ -151,6 +203,9 @@ in
             all_vcpus_halted_idle_observed=true
             halted_partial_rr_turn_reaches_idle=true
             guest_pause_rr_handoff=canonical-cursor-zero
+            guest_pause_classification=dedicated-transient-marker
+            guest_pause_rendezvous=ap-online-bsp-release-ap-past-pause
+            guest_smp_pause_rendezvous_observed=true
             ap_trampoline=high-load-copy-to-sipi-vector
             guest_load_segments=compact-high-only
             exact_rr_handoff_register_capture=safe-zero-cursor

@@ -1239,12 +1239,20 @@ component that makes that purity true *inside* the QEMU process.
   RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
   quantum gate boots a hermetic multiboot guest with the same production plugin
   at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
-  parks all four vCPUs in HLT, and arms a periodic PIT deadline on the BSP.
+  then runs a two-phase AP/BSP rendezvous whose exact `AAABPPPR` console record
+  can complete only when each `PAUSE` hands its zero-instruction partial turn to
+  another vCPU. It then parks all four vCPUs in HLT and arms a periodic PIT
+  deadline on the BSP.
   Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
   hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
   the parked APs have none. The gate performs the authorized idle jump, observes
-  the BSP wake and re-halt, and repeats under bounded scheduler preemption with an identical
-  idle observation, execution fingerprint, and host-observable schedule.
+  the BSP wake and re-halt, then uses the production host-I/O runtime to request,
+  wake, and await the exact all-halted fingerprint control boundary. Production
+  `QemuNode::execution_fingerprint` owns the same bounded refresh whenever its
+  first sample is absent or stale; it does not poll for a callback that an
+  all-halted executor will never publish. The scenario repeats under bounded
+  scheduler preemption with an identical idle observation, execution
+  fingerprint, and host-observable schedule.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an

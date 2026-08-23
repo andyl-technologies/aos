@@ -66,6 +66,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fault_commands: Arc::clone(&fault_commands),
                 stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
                 fault_events: Arc::new(Mutex::new(VecDeque::new())),
+                fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
