@@ -2940,11 +2940,15 @@ async fn watch_hub_operation(
         .transpose()?;
     let started = std::time::Instant::now();
     let mut after_resource_version = String::new();
+    let mut last_response = None;
     loop {
         let remaining = total_timeout.map(|seconds| {
             seconds.saturating_sub(i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX))
         });
         if remaining == Some(0) {
+            if let Some(response) = last_response {
+                print_topology_message(printer, &response)?;
+            }
             return Ok(());
         }
         let response: hub_types::WatchOperationResponse = client
@@ -2962,10 +2966,16 @@ async fn watch_hub_operation(
             .as_ref()
             .map(|operation| operation.resource_version.clone())
             .unwrap_or_default();
-        print_topology_message(printer, &response)?;
+        if printer.mode() != OutputMode::Json {
+            print_topology_message(printer, &response)?;
+        }
         if response.terminal {
+            if printer.mode() == OutputMode::Json {
+                print_topology_message(printer, &response)?;
+            }
             return Ok(());
         }
+        last_response = Some(response);
     }
 }
 
@@ -2975,9 +2985,11 @@ async fn print_or_wait_operation(
     response: &hub_types::OperationResponse,
     options: &HubOperationArgs,
 ) -> Result<()> {
-    print_topology_message(printer, response)?;
     if !options.wait {
-        return Ok(());
+        return print_topology_message(printer, response);
+    }
+    if printer.mode() != OutputMode::Json {
+        print_topology_message(printer, response)?;
     }
     let operation_id = &response
         .operation
@@ -3069,9 +3081,11 @@ async fn operation(printer: &Printer, command: &HubOperationCmd) -> Result<()> {
                     },
                 )
                 .await?;
-            print_topology_message(printer, &response)?;
             if !operation.wait {
-                return Ok(());
+                return print_topology_message(printer, &response);
+            }
+            if printer.mode() != OutputMode::Json {
+                print_topology_message(printer, &response)?;
             }
             let operation_id = &response
                 .operation
@@ -3836,7 +3850,7 @@ fn qualified_cache_owner(cache: &str) -> Result<&str> {
 
 async fn organization_scope_key(client: &HubClient, org: Option<&str>) -> Result<String> {
     let Some(slug) = org else {
-        return Ok(String::new());
+        return Ok("instance".into());
     };
     let response: hub_types::OrganizationResponse = client
         .call_topology(
@@ -4582,7 +4596,7 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::ListBindings,
                 &hub_types::ListBindingsRequest {
-                    owner_scope_key: organization_scope_key(&client, Some(org)).await?,
+                    owner_scope_key: organization_scope_key(&client, org.as_deref()).await?,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
