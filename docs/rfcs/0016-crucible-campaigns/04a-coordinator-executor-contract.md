@@ -193,6 +193,7 @@ QueryFrontier          GetFrontierObject    QueryChoices
 GetChoiceObject        PinCampaign
 SubmitBranchRequest    DeriveCampaign       QueryFindings
 ExplainObject          ExplainAttempt       WatchCampaign
+GetPlannerRankings
 ```
 
 Every operator-command mutation of an existing campaign carries an idempotent
@@ -208,8 +209,8 @@ The strict service checkpoint defines principal-aware `CreateCampaign`,
 `DeriveCampaign`, `GetCampaign`, `GetSnapshot`, `WatchCampaign`,
 `ApplyCampaignCommand`, `QueryGraph`, `GetGraphObject`, and
 `QueryChoices`, `QueryFrontier`, `QueryFindings`, `GetFindingObject`,
-`ExplainAttempt`, `GetFrontierObject`, `GetChoiceObject`, `PinCampaign`, and
-`SubmitBranchRequest` messages. All use
+`ExplainAttempt`, `GetPlannerRankings`, `GetFrontierObject`, `GetChoiceObject`,
+`PinCampaign`, and `SubmitBranchRequest` messages. All use
 canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
@@ -277,6 +278,13 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    optional MerkleLookupProofV1 proposal_proof |
                                    optional MerkleLookupProofV1 planner_step_proof |
                                    MerkleLookupProofV1 observation_proof
+
+GetCampaignPlannerRankingsRequestV1 = version | principal | campaign |
+                                      snapshot | PlannerStepId
+GetCampaignPlannerRankingsResponseV1 = version | request_digest |
+                                       CampaignSnapshotV2 | PlannerStepV4 |
+                                       RetainedPlannerRequestV1 |
+                                       MerkleLookupProofV1
 
 Response version 2 requires a planner step and proof exactly when the selected
 proposal names a planner invocation. The proof resolves
@@ -408,7 +416,7 @@ Every operation permits tags 0, 1, 8, 9, 10, 11, 12, and 13.
 permit 2;
 `QueryGraph`, `GetGraphObject`, `QueryChoices`, `QueryFrontier`,
 `QueryFindings`, `GetFindingObject`, `ExplainAttempt`, `GetFrontierObject`, and
-`GetChoiceObject`
+`GetChoiceObject`, `GetPlannerRankings`
 additionally permit 2 and 4;
 `ApplyCampaignCommand` permits 2, 4, 5, 6, and 7; `PinCampaign` permits
 2, 4, 5, and 6; and `SubmitCampaignBranch` permits 2, 4, 5, and 6. For every
@@ -452,6 +460,9 @@ get_finding_object_request_digest =
 explain_attempt_request_digest =
   H("crucible.campaign-service.explain-campaign-attempt.v1",
     ExplainCampaignAttemptRequestV1)
+get_planner_rankings_request_digest =
+  H("crucible.campaign-service.get-campaign-planner-rankings.v1",
+    GetCampaignPlannerRankingsRequestV1)
 get_graph_object_request_digest =
   H("crucible.campaign-service.get-campaign-graph-object.v1",
     GetCampaignGraphObjectRequestV1)
@@ -800,12 +811,25 @@ admission ordinal, branch selection and proposal, optional completion, and the
 coordinator-accepted planner step with its exact fixed-point guidance terms and
 resource accounting. The planner-step proof is bound to the proposal's exact
 invocation in the anchoring coordination root. Arbitrary non-graph object reads
-and aggregate ranking across unselected proposals remain open. The strict local
-transport frames exactly one
-canonical request or response as:
+remain open. `campaign rankings` begins at one accepted planner step,
+authenticates that exact step through `coordination.planner-step(step)` under
+the requested snapshot's coordination root, reloads the step's complete
+retained request, and recomputes every PUCT score from its by-value policy and
+owner-built guidance. Each response carries one bounded step/request page and
+returns the step's optional parent; the CLI follows at most 64 pages, charges at
+most 128 MiB of aggregate canonical response bytes, and applies the packaged
+planner's score/edge/position order across all returned candidates. Traversal
+stops before a parent whose policy, engine, policy artifact, or planning view
+differs, because scores from another interpretation basis are not comparable.
+The proof
+key uses the membership-key derivation above with namespace
+`coordination.planner-step` and the planner step's canonical underlying
+`ContentId` string.
+The strict
+local transport frames exactly one canonical request or response as:
 
 ```text
-CampaignLoopbackFrameV17 = "CRUCCS17" | kind:u8 | reserved[3] |
+CampaignLoopbackFrameV18 = "CRUCCS18" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
        2 (GetCampaignResponseV1) |
@@ -841,10 +865,12 @@ kind = 1 (GetCampaignRequestV1) |
       32 (GetCampaignFindingObjectRequestV1) |
       33 (GetCampaignFindingObjectResponseV1) |
       34 (ExplainCampaignAttemptRequestV1) |
-      35 (ExplainCampaignAttemptResponseV2)
+      35 (ExplainCampaignAttemptResponseV2) |
+      36 (GetCampaignPlannerRankingsRequestV1) |
+      37 (GetCampaignPlannerRankingsResponseV1)
 ```
 
-Loopback frame versions 1 through 16 are rejected rather than reinterpreted
+Loopback frame versions 1 through 17 are rejected rather than reinterpreted
 under the expanded kind table.
 
 The canonical body is at most 64 MiB, so the complete frame is at most 64 MiB
@@ -926,7 +952,7 @@ wildcard. The closed operation labels are `create-campaign`,
 `derive-campaign`, `get-campaign`, `get-campaign-snapshot`, `watch-campaign`,
 `query-campaign-graph`, `query-campaign-findings`,
 `get-campaign-finding-object`, `explain-campaign-attempt`,
-`get-campaign-graph-object`,
+`get-campaign-planner-rankings`, `get-campaign-graph-object`,
 `query-campaign-choices`, `query-campaign-frontier`,
 `get-campaign-frontier-object`, `get-campaign-choice-object`,
 `apply-campaign-command`, `pin-campaign`, and `submit-branch-request`.

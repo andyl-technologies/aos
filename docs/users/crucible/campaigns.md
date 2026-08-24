@@ -259,6 +259,22 @@ Use `explain` for a choice/frontier legality join and `explain-finding` for the
 representative observation plus original reproduction. Each operation rejects
 individually valid records whose cross-object basis does not agree.
 
+To compare every PUCT candidate served across a bounded planner scan, start at
+the newest accepted planner step reported by `explain-attempt`:
+
+```sh
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  rankings network-recovery \
+  --snapshot "$SNAPSHOT" --step "$PLANNER_STEP" --pages 16 --format json
+```
+
+Each page authenticates one step under the snapshot's coordination root and
+recomputes scores from its complete retained request. The report is globally
+best-first across the returned pages. If `next_step` is present, repeat from
+that step to continue beyond the selected page bound. The command stops at a
+different policy, engine, policy artifact, or planning view instead of merging
+incomparable score bases.
+
 ## Recovery rules
 
 - Preserve the campaign state directory and every configured immutable leaf as

@@ -96,6 +96,16 @@ impl PlannerCandidateRanking {
         self.score
     }
 
+    /// Compares two candidates in deterministic best-first selection order.
+    ///
+    /// Passing this method directly to a slice sort places higher scores first,
+    /// followed by the canonical smaller-edge and smaller-position tie breaks
+    /// used by the packaged planner.
+    #[must_use]
+    pub fn best_first_cmp(&self, other: &Self) -> Ordering {
+        other.selection_cmp(self)
+    }
+
     fn selection_cmp(&self, other: &Self) -> Ordering {
         compare_puct_selection_basis(
             self.score,

@@ -24,6 +24,7 @@ mod derive;
 mod get_snapshot;
 mod pin;
 mod query;
+mod ranking;
 mod watch;
 
 pub use create::{
@@ -46,6 +47,7 @@ pub use query::{
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
 };
+pub use ranking::{GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse};
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
@@ -157,6 +159,8 @@ pub enum CampaignServiceOperation {
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
     ExplainCampaignAttempt,
+    /// Read one accepted planner step and its proof-bearing PUCT rankings.
+    GetCampaignPlannerRankings,
     /// Read one exact branch-request body named by the authenticated frontier.
     GetCampaignFrontierObject,
     /// Read one exact declaration or domain named by an authenticated choice.
@@ -373,6 +377,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this lookup's exact snapshot.
     pub fn validate_for_get_campaign_graph_object(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact planner-ranking lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
+    /// or when a stale failure does not describe this lookup's exact snapshot.
+    pub fn validate_for_get_campaign_planner_rankings(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1506,6 +1523,18 @@ pub trait CampaignService {
         request: &ExplainCampaignAttemptRequest,
     ) -> Result<ExplainCampaignAttemptResponse, Self::Error>;
 
+    /// Returns one owner-authenticated planner step and its retained ranking basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, planner-step membership, retained-request
+    /// validation, repository access, or response construction fails.
+    fn get_campaign_planner_rankings(
+        &self,
+        request: &GetCampaignPlannerRankingsRequest,
+    ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error>;
+
     /// Returns one exact branch-request body authenticated by the frontier.
     ///
     /// # Errors
@@ -1735,6 +1764,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_graph(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Gets one proof-bearing planner-ranking page and validates exact binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, planner step, retained request, or proof.
+    pub fn get_campaign_planner_rankings(
+        &self,
+        request: &GetCampaignPlannerRankingsRequest,
+    ) -> Result<GetCampaignPlannerRankingsResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_planner_rankings(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_planner_rankings(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
@@ -2603,6 +2658,37 @@ where
         )?)
     }
 
+    fn get_campaign_planner_rankings(
+        &self,
+        request: &GetCampaignPlannerRankingsRequest,
+    ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignPlannerRankings,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let (step, proof) = self
+            .repository
+            .planner_step_with_proof(head.snapshot().roots().coordination, request.step())?;
+        let planner_request = self.repository.load_planner_request(step.request())?;
+        Ok(GetCampaignPlannerRankingsResponse::new(
+            request,
+            head.snapshot().clone(),
+            step,
+            planner_request,
+            proof,
+        )?)
+    }
+
     fn get_campaign_frontier_object(
         &self,
         request: &GetCampaignFrontierObjectRequest,
@@ -3052,6 +3138,13 @@ mod tests {
             unreachable!("test service only handles GetCampaign")
         }
 
+        fn get_campaign_planner_rankings(
+            &self,
+            _request: &GetCampaignPlannerRankingsRequest,
+        ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+            unreachable!("test service only handles GetCampaign")
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -3202,6 +3295,13 @@ mod tests {
             Err(self.0)
         }
 
+        fn get_campaign_planner_rankings(
+            &self,
+            _request: &GetCampaignPlannerRankingsRequest,
+        ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+            Err(self.0)
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -3322,6 +3422,13 @@ mod tests {
             &self,
             _request: &ExplainCampaignAttemptRequest,
         ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+            unreachable!("test service only handles ApplyCampaignCommand")
+        }
+
+        fn get_campaign_planner_rankings(
+            &self,
+            _request: &GetCampaignPlannerRankingsRequest,
+        ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
             unreachable!("test service only handles ApplyCampaignCommand")
         }
 

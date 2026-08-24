@@ -326,8 +326,14 @@ evidence-set IDs, replay configuration, and payload profile.
 `explain-attempt` performs one separately authorized proof-bearing read and
 reports the immutable attempt start and path, execution-basis cause and ordinal,
 branch selection and proposal provenance when present, plus a proved canonical
-completion or proved absence. Aggregate proposal-ranking and richer
-filtered/aggregated inspection remain open.
+completion or proved absence. `rankings --snapshot SNAPSHOT --step STEP` follows
+the accepted planner step's authenticated parent chain and renders a globally
+best-first view of every PUCT candidate served by those bounded retained
+requests. `--pages` is limited to 64 and the client stops after 128 MiB of
+canonical responses; a returned `next_step` continues a deliberately truncated
+query. The chain also stops at a different policy, engine, policy artifact, or
+planning view rather than comparing scores from incompatible bases. Richer
+filtered or policy-aggregated inspection remains open.
 
 A concise status view includes:
 

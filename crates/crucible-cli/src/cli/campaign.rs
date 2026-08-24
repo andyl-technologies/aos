@@ -11,6 +11,8 @@ mod explain;
 mod fixture;
 #[path = "campaign/object.rs"]
 mod object;
+#[path = "campaign/ranking.rs"]
+mod ranking;
 #[path = "campaign/snapshot.rs"]
 mod snapshot;
 
@@ -23,6 +25,9 @@ use explain::{
 };
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
+use ranking::{
+    query_campaign_rankings, render_campaign_rankings, validate_campaign_rankings_command,
+};
 use snapshot::{
     query_campaign_snapshot, render_campaign_snapshot, validate_campaign_snapshot_command,
 };
@@ -305,6 +310,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_attempt_explanation(&client, principal, &args.command)?;
             render_campaign_attempt_explanation(&report, cli.output_format())?
         }
+        CampaignCommand::Rankings(_) => {
+            let report = query_campaign_rankings(&client, principal, &args.command)?;
+            render_campaign_rankings(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_)
         | CampaignCommand::Choices(_)
         | CampaignCommand::Frontier(_)
@@ -507,6 +516,10 @@ fn prepare_campaign_command(
         }
         CampaignCommand::ExplainAttempt(_) => {
             validate_campaign_attempt_explain_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::Rankings(_) => {
+            validate_campaign_rankings_command(command)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -1702,6 +1715,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Explain(_)
         | CampaignCommand::ExplainFinding(_)
         | CampaignCommand::ExplainAttempt(_)
+        | CampaignCommand::Rankings(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
@@ -2169,6 +2183,13 @@ mod tests {
             unreachable!("unused campaign-service operation")
         }
 
+        fn get_campaign_planner_rankings(
+            &self,
+            _request: &GetCampaignPlannerRankingsRequest,
+        ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+            unreachable!("unused campaign-service operation")
+        }
+
         fn get_campaign_graph_object(
             &self,
             _request: &GetCampaignGraphObjectRequest,
@@ -2445,6 +2466,13 @@ mod tests {
                 observation_proof,
             )
             .expect("bound attempt explanation response"))
+        }
+
+        fn get_campaign_planner_rankings(
+            &self,
+            _request: &GetCampaignPlannerRankingsRequest,
+        ) -> Result<GetCampaignPlannerRankingsResponse, Self::Error> {
+            unreachable!("graph fixture has no retained planner request")
         }
 
         fn get_campaign_graph_object(
@@ -4218,6 +4246,40 @@ mod tests {
             start.command,
             Commands::Campaign(CampaignArgs {
                 command: CampaignCommand::Start(_),
+                ..
+            })
+        ));
+
+        let planner_step = PlannerStepId::parse(&format!(
+            "crucible.campaign.planner-step@{}",
+            ContentId::for_bytes(
+                CampaignRecordKind::PlannerStep.object_kind(),
+                CampaignRecordKind::PlannerStep.schema_version(),
+                b"planner ranking step",
+            )
+        ))
+        .expect("planner step ID");
+        let rankings = Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "--socket",
+            "/run/crucible/campaign.sock",
+            "--principal",
+            "operator",
+            "rankings",
+            "created",
+            "--snapshot",
+            &snapshot("created").to_string(),
+            "--step",
+            &planner_step.to_string(),
+            "--pages",
+            "4",
+        ])
+        .expect("campaign rankings arguments");
+        assert!(matches!(
+            rankings.command,
+            Commands::Campaign(CampaignArgs {
+                command: CampaignCommand::Rankings(CampaignRankingsArgs { pages: 4, .. }),
                 ..
             })
         ));
