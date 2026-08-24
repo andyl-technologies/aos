@@ -3,6 +3,12 @@
 use super::*;
 
 impl ProductionFaultRuntime {
+    /// Returns the admitted scenario resource ceilings.
+    #[must_use]
+    pub const fn resource_limits(&self) -> FaultResourceLimits {
+        self.resource_limits
+    }
+
     /// Captures the complete evaluator, host-device, and live-QEMU continuation.
     ///
     /// # Errors

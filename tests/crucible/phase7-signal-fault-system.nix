@@ -282,6 +282,8 @@ in
             production_fault_runtime::evaluation::publication::tests::production_evaluation_publication_is_owned_before_commit
           run_exact_qemu_test \
             production_fault_runtime::lifecycle_tests::lifecycle_work_transfer_preserves_buffers_and_holds_checkpoint_barrier_until_ack
+          run_exact_qemu_test \
+            production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_includes_only_pending_active_qemu_actions
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_plugin_test \

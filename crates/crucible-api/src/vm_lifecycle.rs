@@ -4,15 +4,6 @@
 //! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
 //! backend loop consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
 
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write as _;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
     ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
@@ -21,8 +12,9 @@ use crate::vm_resume::{
     launch_production_live_node_exact_snapshot_paused,
 };
 use crucible::model::{
-    FaultCoordinate, HostFaultAdapterManifests, OwnedDagSignalArtifactProvider,
-    ResolvedEffectTrace, SignalArtifactProvider, SignalBoundarySnapshot,
+    FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
+    OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
@@ -40,9 +32,17 @@ use crucible::{
 };
 use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuNode, QemuNodeLifecycleDecision, QemuProcessIdentity, QemuVmSnapshot,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent, QemuProcessIdentity,
+    QemuVmSnapshot, linux_process_identity, quarantine_orphaned_qemu_process,
 };
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{LifecycleApiError, debug_gateway::DebugGatewayProcess};
 
@@ -691,6 +691,12 @@ fn production_run_directory(
                 .processes
                 .values()
                 .chain(manifest.staged_processes.values())
+                .chain(
+                    journal
+                        .nodes
+                        .iter()
+                        .filter_map(|node| node.replacement_process.as_ref()),
+                )
             {
                 quarantine_orphaned_qemu_process(identity, config.completion_timeout).map_err(
                     |error| {

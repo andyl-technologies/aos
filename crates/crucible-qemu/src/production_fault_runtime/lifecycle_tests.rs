@@ -4,6 +4,66 @@ use super::test_support::*;
 use super::*;
 
 #[test]
+fn lifecycle_intent_preview_includes_only_pending_active_qemu_actions() {
+    let active = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
+    let mut inactive =
+        lifecycle_action(NodeLifecycleTransition::PowerOff, NodeBootPolicy::Immediate);
+    inactive.binding = object_id("node-power-off");
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("empty test plan should be valid: {error}"));
+    let nodes = QemuNodeSet::new();
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"lifecycle-intent-preview"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
+    runtime
+        .qemu_issued_actions
+        .try_insert(active.id(), active.clone())
+        .unwrap_or_else(|error| panic!("active action should enter the test ledger: {error}"));
+    runtime
+        .qemu_issued_actions
+        .try_insert(inactive.id(), inactive)
+        .unwrap_or_else(|error| panic!("inactive action should enter the test ledger: {error}"));
+    runtime
+        .qemu_active_rule_ids
+        .try_insert(active.id())
+        .unwrap_or_else(|error| panic!("active action identity should enter the set: {error}"));
+    runtime
+        .pending_qemu_events
+        .try_insert(
+            NodeId {
+                name: "node-a".to_owned(),
+            },
+            vec![lifecycle_event(&active)],
+        )
+        .unwrap_or_else(|error| panic!("pending lifecycle event should enter the map: {error}"));
+
+    let intents = runtime
+        .preview_node_lifecycle_intents(
+            FaultCoordinate {
+                virtual_nanos: 17,
+                retired_instructions: None,
+            },
+            0,
+            &mut QemuNodeSet::new(),
+        )
+        .unwrap_or_else(|error| panic!("lifecycle intent preview should succeed: {error}"));
+
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].action, active.id());
+    assert_eq!(intents[0].node.name, "node-a");
+    assert_eq!(
+        intents[0].requested_transition,
+        NodeLifecycleTransition::Crash
+    );
+}
+
+#[test]
 fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
     let immediate = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
     let event = lifecycle_event(&immediate);

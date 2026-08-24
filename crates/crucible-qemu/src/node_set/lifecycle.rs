@@ -1,7 +1,7 @@
 //! Transactional QEMU generation replacement and exact-snapshot operations.
 
 use super::*;
-use crate::QemuNodeLifecycleDecision;
+use crate::{QemuNodeLifecycleDecision, QemuNodeLifecycleIntent};
 
 impl QemuNodeSet {
     /// Atomically replaces or removes a validated set of node generations.
@@ -15,11 +15,10 @@ impl QemuNodeSet {
     /// Returns [`BackendError`] when a node appears twice or does not name an
     /// authoritative current generation. The node set is unchanged on error.
     pub fn prepare_terminal_replacements(
-        &self,
-        replacements: &[NodeId],
+        &mut self,
+        replacements: Vec<NodeId>,
     ) -> Result<QemuNodeTerminalReplacementPlan, BackendError> {
-        let mut staged = BTreeSet::new();
-        for node in replacements {
+        for (index, node) in replacements.iter().enumerate() {
             if !self.nodes.contains_key(node) {
                 return Err(BackendError::Rejected {
                     message: format!(
@@ -28,14 +27,27 @@ impl QemuNodeSet {
                     ),
                 });
             }
-            if !staged.insert(node.clone()) {
+            if replacements[..index].contains(node) {
                 return Err(BackendError::Rejected {
                     message: format!("terminal replacement repeats node `{}`", node.name),
                 });
             }
         }
-
-        Ok(QemuNodeTerminalReplacementPlan { nodes: staged })
+        let mut retired = Vec::new();
+        retired
+            .try_reserve_exact(replacements.len())
+            .map_err(|_| BackendError::Rejected {
+                message: String::from("terminal replacement retirement storage is exhausted"),
+            })?;
+        self.permanently_closed
+            .try_reserve_exact(replacements.len())
+            .map_err(|_| BackendError::Rejected {
+                message: String::from("terminal closed-node storage is exhausted"),
+            })?;
+        Ok(QemuNodeTerminalReplacementPlan {
+            nodes: replacements,
+            retired,
+        })
     }
 
     /// Validates that every retiring QEMU generation has been reaped.
@@ -111,6 +123,33 @@ impl QemuNodeSet {
         })
     }
 
+    /// Contains every node named by one precommit lifecycle intent batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any present process cannot be killed and
+    /// reaped. Every named node is attempted even after one cleanup failure.
+    #[cfg(target_os = "linux")]
+    pub fn quarantine_terminal_lifecycle_intents(
+        &mut self,
+        intents: &[QemuNodeLifecycleIntent],
+    ) -> Result<(), BackendError> {
+        let mut first_error = None;
+        for intent in intents {
+            if let Some(mut backend) = self.nodes.remove(&intent.node)
+                && let Err(error) = backend.force_quarantine_and_reap()
+                && first_error.is_none()
+            {
+                first_error = Some(error.to_string());
+            }
+        }
+        first_error.map_or(Ok(()), |message| {
+            Err(BackendError::Rejected {
+                message: format!("precommit lifecycle quarantine failed: {message}"),
+            })
+        })
+    }
+
     /// Commits a previously validated terminal generation update.
     ///
     /// This operation has no fallible step. It returns the retired generations
@@ -123,30 +162,27 @@ impl QemuNodeSet {
     #[must_use]
     pub fn commit_terminal_replacements(
         &mut self,
-        plan: QemuNodeTerminalReplacementPlan,
-        mut replacements: BTreeMap<NodeId, Option<QemuNode>>,
+        mut plan: QemuNodeTerminalReplacementPlan,
+        replacements: Vec<Option<QemuNode>>,
     ) -> Vec<(NodeId, QemuNode)> {
-        debug_assert_eq!(plan.nodes, replacements.keys().cloned().collect());
-        let current = std::mem::take(&mut self.nodes);
-        let mut retired = Vec::with_capacity(replacements.len());
-        for (node, backend) in current {
-            match replacements.remove(&node) {
-                Some(Some(replacement)) => {
-                    retired.push((node.clone(), backend));
-                    self.permanently_closed.remove(&node);
-                    self.nodes.insert(node, replacement);
+        debug_assert_eq!(plan.nodes.len(), replacements.len());
+        for (node, replacement) in plan.nodes.into_iter().zip(replacements) {
+            match replacement {
+                Some(replacement) => {
+                    let current = self
+                        .nodes
+                        .get_mut(&node)
+                        .map(|current| std::mem::replace(current, replacement));
+                    debug_assert!(current.is_some());
+                    self.permanently_closed.retain(|closed| closed != &node);
+                    if let Some(current) = current {
+                        plan.retired.push((node, current));
+                    }
                 }
-                Some(None) => {
-                    self.permanently_closed.insert(node.clone());
-                    self.nodes.insert(node, backend);
-                }
-                None => {
-                    self.nodes.insert(node, backend);
-                }
+                None => self.permanently_closed.push(node),
             }
         }
-        debug_assert!(replacements.is_empty());
-        retired
+        plan.retired
     }
 
     /// Captures one live node's complete exact snapshot at a completed boundary.
