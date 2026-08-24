@@ -1229,8 +1229,10 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   and exposes the parent step as the next page. CLI `campaign rankings` follows
   at most 64 such pages under a 128 MiB aggregate response-byte budget and
   applies the same deterministic comparator across all candidates, stopping at
-  a policy/engine/artifact/view boundary. Richer filtered or policy-aggregated
-  views remain open.
+  a policy/engine/artifact/view boundary. Exact branch-point and source filters
+  run after proof validation, and an at-most-65,536 top-result cap runs after
+  global best-first ordering; the versioned machine report retains the filter
+  basis and pre-truncation match count. Policy-aggregated views remain open.
 - [ ] **T-CAM-8.3** Complete pin/unpin by consuming its authenticated semantic
   projection in generation-bound GC retention plans. Snapshot-bound semantic
   and operational root inventory plus the exclusive generation-bound memory,

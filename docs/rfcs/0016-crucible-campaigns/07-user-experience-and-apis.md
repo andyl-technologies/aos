@@ -332,8 +332,12 @@ best-first view of every PUCT candidate served by those bounded retained
 requests. `--pages` is limited to 64 and the client stops after 128 MiB of
 canonical responses; a returned `next_step` continues a deliberately truncated
 query. The chain also stops at a different policy, engine, policy artifact, or
-planning view rather than comparing scores from incompatible bases. Richer
-filtered or policy-aggregated inspection remains open.
+planning view rather than comparing scores from incompatible bases. Optional
+`--branch-point` and `--source` filters accept exact canonical IDs and are
+applied only after every returned page passes proof and retained-request
+validation. `--top` keeps at most 65,536 candidates after the packaged
+best-first comparator runs; the version-2 machine report echoes all filters and
+the pre-truncation matching count. Policy-aggregated inspection remains open.
 
 A concise status view includes:
 

@@ -4259,6 +4259,16 @@ mod tests {
             )
         ))
         .expect("planner step ID");
+        let branch_point = BranchPointId::from_hash(hash("planner-ranking-branch-point"));
+        let source = BranchRequestId::parse(&format!(
+            "crucible.campaign.branch-request@{}",
+            ContentId::for_bytes(
+                CampaignRecordKind::BranchRequest.object_kind(),
+                CampaignRecordKind::BranchRequest.schema_version(),
+                b"planner ranking source",
+            )
+        ))
+        .expect("branch request ID");
         let rankings = Cli::try_parse_from([
             "crucible",
             "campaign",
@@ -4274,12 +4284,24 @@ mod tests {
             &planner_step.to_string(),
             "--pages",
             "4",
+            "--branch-point",
+            &branch_point.to_string(),
+            "--source",
+            &source.to_string(),
+            "--top",
+            "2",
         ])
         .expect("campaign rankings arguments");
         assert!(matches!(
             rankings.command,
             Commands::Campaign(CampaignArgs {
-                command: CampaignCommand::Rankings(CampaignRankingsArgs { pages: 4, .. }),
+                command: CampaignCommand::Rankings(CampaignRankingsArgs {
+                    pages: 4,
+                    branch_point: Some(_),
+                    source: Some(_),
+                    top: Some(2),
+                    ..
+                }),
                 ..
             })
         ));
