@@ -4,6 +4,7 @@ use std::os::unix::net::UnixStream;
 
 use super::*;
 pub(super) use crate::bounded_scheduler_preemption::BoundedSchedulerPreemption as HostAdversary;
+use crate::supervision::HostSupervisionDeadline;
 
 const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
 const X86_64_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
@@ -163,8 +164,8 @@ pub(super) fn prime_guest_off_boot_barrier(
     timeout: Duration,
     identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
-    mut block: Option<&mut QemuLiveBlockIoServicer>,
-    mut ninep: Option<&mut QemuLive9pIoServicer>,
+    block: Option<&mut QemuLiveBlockIoServicer>,
+    ninep: Option<&mut QemuLive9pIoServicer>,
     boot_backpressure_payload: Option<&[u8]>,
 ) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
@@ -191,21 +192,132 @@ pub(super) fn prime_guest_off_boot_barrier(
     } else {
         PRIME_CEILING_ICOUNT
     };
+    let emitted_frames = drive_mapped_prime_chain(
+        setup,
+        timeout,
+        &mut hot_path,
+        prime_ceiling,
+        block,
+        ninep,
+        false,
+    )?;
+    QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
+        .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming observations", source))?;
+    QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
+        .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming decisions", source))?;
+    let retained_network = if let Some(payload) = boot_backpressure_payload {
+        Some(retained_network_at_capture(
+            &mut hot_path,
+            payload,
+            prime_ceiling,
+        )?)
+    } else {
+        None
+    };
+    Ok(PrimeGuestOutcome {
+        emitted_frames,
+        retained_network,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn continue_boot_network_backpressure_capture(
+    setup: &crate::QemuHostPluginSetup,
+    timeout: Duration,
+    identity: QemuLiveNodeIdentity<'_>,
+    coverage: QemuLaunchPluginSwitch,
+    block: Option<&mut QemuLiveBlockIoServicer>,
+    ninep: Option<&mut QemuLive9pIoServicer>,
+    payload: &[u8],
+    capture_icount: u64,
+    initial_network: crate::QemuNetworkTransportCheckpoint,
+    mut emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
+) -> Result<PrimeGuestOutcome, QemuLiveNodeStepGateError> {
+    if capture_icount <= 1 {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("continued boot backpressure capture must be later than icount 1"),
+        });
+    }
+    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
+        .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
+    let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
+        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
+        .with_coverage(basic_block_coverage_config(coverage));
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
+        .map_err(|source| QemuLiveNodeStepGateError::PrimeHotPath { source })?;
+    let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::prime("read continued priming origin", source)
+        })?
+        .retired;
+    if current != 1 {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "continued boot backpressure capture started at icount {current} instead of 1"
+            ),
+        });
+    }
+    QemuShmemHotPathChannel::restore_network_transport(&mut hot_path, &initial_network).map_err(
+        |source| {
+            QemuLiveNodeStepGateError::prime(
+                "bind continued boot backpressure transport cursors",
+                source,
+            )
+        },
+    )?;
+    let continued = drive_mapped_prime_chain(
+        setup,
+        timeout,
+        &mut hot_path,
+        capture_icount,
+        block,
+        ninep,
+        true,
+    )?;
+    emitted_frames.extend(continued);
+    QemuShmemHotPathChannel::drain_observable_events(&mut hot_path).map_err(|source| {
+        QemuLiveNodeStepGateError::prime("drain continued priming observations", source)
+    })?;
+    QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path).map_err(|source| {
+        QemuLiveNodeStepGateError::prime("drain continued priming decisions", source)
+    })?;
+    let retained_network = Some(retained_network_at_capture(
+        &mut hot_path,
+        payload,
+        capture_icount,
+    )?);
+    Ok(PrimeGuestOutcome {
+        emitted_frames,
+        retained_network,
+    })
+}
+
+fn drive_mapped_prime_chain(
+    setup: &crate::QemuHostPluginSetup,
+    timeout: Duration,
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    prime_ceiling: u64,
+    mut block: Option<&mut QemuLiveBlockIoServicer>,
+    mut ninep: Option<&mut QemuLive9pIoServicer>,
+    report_progress: bool,
+) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let horizon = crucible::ExecutionHorizon {
         icount: Icount {
             retired: prime_ceiling,
         },
     };
-    let pending = QemuShmemHotPathChannel::start_quantum(&mut hot_path, horizon)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
-
-    let max_polls = bounded_prime_polls(timeout);
-    let mut reached = false;
-    for _ in 0..max_polls {
+    let mut pending = Some(
+        QemuShmemHotPathChannel::start_quantum(hot_path, horizon)
+            .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?,
+    );
+    let deadline = HostSupervisionDeadline::start(timeout);
+    let mut emitted_frames = Vec::new();
+    let mut next_progress_icount = 250_000_000_u64;
+    while deadline.has_time_remaining() {
         setup
             .signal_plugin_wake()
             .map_err(|source| QemuLiveNodeStepGateError::prime("wake priming guest", source))?;
-        let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
+        let current = QemuShmemHotPathChannel::current_icount(hot_path)
             .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
             .retired;
         if let Some(servicer) = block.as_deref_mut() {
@@ -218,61 +330,82 @@ pub(super) fn prime_guest_off_boot_barrier(
                 .service(current)
                 .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })?;
         }
-        if current >= prime_ceiling {
-            reached = true;
-            break;
-        }
-        thread::sleep(PRIME_POLL_INTERVAL);
-    }
-
-    if !reached {
-        return Err(QemuLiveNodeStepGateError::PrimeStalled {
-            ceiling_icount: prime_ceiling,
-        });
-    }
-    let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("finish priming quantum", source))?;
-    QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming observations", source))?;
-    QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming decisions", source))?;
-    let retained_network = if boot_backpressure_payload.is_some() {
-        let checkpoint = QemuShmemHotPathChannel::checkpoint_network_transport(&mut hot_path)
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::prime("capture retained boot network frame", source)
+        let completion = {
+            let active = pending.as_mut().ok_or_else(|| {
+                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                    reason: String::from("priming quantum token was unexpectedly absent"),
+                }
             })?;
-        let retained = checkpoint.inbound.frames.first().is_some_and(|frame| {
-            frame.delivery_icount == prime_ceiling
-                && frame.delivery_attempts() > 0
-                && frame
-                    .delivery_state()
-                    .is_ok_and(|state| state == FrameDeliveryState::Retained)
-                && boot_backpressure_payload
-                    .is_some_and(|payload| frame.payload().is_ok_and(|actual| actual == payload))
-        });
-        if !retained || checkpoint.inbound.frames.len() != 1 {
-            return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!(
-                    "boot backpressure canary was not retained exactly at icount {prime_ceiling}: {:?}",
-                    checkpoint.inbound.frames
-                ),
-            });
+            match QemuShmemHotPathChannel::poll_quantum(hot_path, active) {
+                Ok(completion) => Some(completion),
+                Err(source) if source.retryable => None,
+                Err(source) => {
+                    return Err(QemuLiveNodeStepGateError::prime(
+                        "poll priming quantum",
+                        source,
+                    ));
+                }
+            }
+        };
+        if let Some(completion) = completion {
+            emitted_frames.extend(completion.emitted_frames);
+            drop(pending.take());
+            let completed_current = QemuShmemHotPathChannel::current_icount(hot_path)
+                .map_err(|source| {
+                    QemuLiveNodeStepGateError::prime("read completed priming icount", source)
+                })?
+                .retired;
+            if report_progress && completed_current >= next_progress_icount {
+                eprintln!(
+                    "crucible-live-network-io phase=retained-capture status=retry-progress icount={completed_current}"
+                );
+                next_progress_icount = completed_current.saturating_add(250_000_000);
+            }
+            if completed_current >= prime_ceiling {
+                return Ok(emitted_frames);
+            }
+            pending = Some(
+                QemuShmemHotPathChannel::start_quantum(hot_path, horizon).map_err(|source| {
+                    QemuLiveNodeStepGateError::prime("reissue priming quantum", source)
+                })?,
+            );
         }
-        Some(checkpoint)
-    } else {
-        None
-    };
-    Ok(PrimeGuestOutcome {
-        emitted_frames: completion.emitted_frames,
-        retained_network,
+        if deadline.has_time_remaining() {
+            thread::sleep(PRIME_POLL_INTERVAL);
+        }
+    }
+    Err(QemuLiveNodeStepGateError::PrimeStalled {
+        ceiling_icount: prime_ceiling,
     })
 }
 
-/// Returns the number of priming polls that fit within `timeout`, at least one.
-pub(super) fn bounded_prime_polls(timeout: Duration) -> u64 {
-    let interval = PRIME_POLL_INTERVAL.as_micros().max(1);
-    let budget = timeout.as_micros();
-    u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
+fn retained_network_at_capture(
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    payload: &[u8],
+    capture_icount: u64,
+) -> Result<crate::QemuNetworkTransportCheckpoint, QemuLiveNodeStepGateError> {
+    let checkpoint =
+        QemuShmemHotPathChannel::checkpoint_network_transport(hot_path).map_err(|source| {
+            QemuLiveNodeStepGateError::prime("capture retained boot network frame", source)
+        })?;
+    let retained = checkpoint.inbound.frames.first().is_some_and(|frame| {
+        frame.delivery_icount == 1
+            && frame.delivery_attempts() > 0
+            && frame
+                .delivery_state()
+                .is_ok_and(|state| state == FrameDeliveryState::Retained)
+            && frame.payload().is_ok_and(|actual| actual == payload)
+            && frame.last_delivery_attempt_icount() <= capture_icount
+    });
+    if !retained || checkpoint.inbound.frames.len() != 1 {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "boot backpressure canary was not retained at capture icount {capture_icount}: {:?}",
+                checkpoint.inbound.frames
+            ),
+        });
+    }
+    Ok(checkpoint)
 }
 
 /// Connects the typed QMP VMState channel while pulsing the plugin wake eventfd.

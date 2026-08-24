@@ -206,9 +206,14 @@ struct NetworkIoRunOutcome {
 pub fn run_qemu_live_network_io_gate(
     config: &QemuLiveNetworkIoGateConfig,
 ) -> Result<QemuLiveNetworkIoReport, QemuLiveNetworkIoGateError> {
+    // These diagnostics are deliberately wall-clock-only gate progress. They
+    // never enter canonical observations or deterministic comparison state.
+    eprintln!("crucible-live-network-io phase=reference status=starting");
     let reference = run_once(config, RunRole::Reference)?;
     certify_run("reference", &reference, false)?;
+    eprintln!("crucible-live-network-io phase=reference status=certified");
 
+    eprintln!("crucible-live-network-io phase=hostile status=starting");
     let hostile = run_once(config, RunRole::Hostile)?;
     certify_run("hostile-host", &hostile, false)?;
     if deterministic_projection(&reference) != deterministic_projection(&hostile) {
@@ -217,6 +222,7 @@ pub fn run_qemu_live_network_io_gate(
             hostile: format!("{:?}", deterministic_projection(&hostile)),
         });
     }
+    eprintln!("crucible-live-network-io phase=hostile status=certified");
 
     let reference_probe_emit_icount = probe_emit_icount(&reference);
     let hostile_probe_emit_icount = probe_emit_icount(&hostile);
@@ -238,6 +244,7 @@ pub fn run_qemu_live_network_io_gate(
     if let Some(cmdline) = &config.kernel_cmdline {
         retained_config = retained_config.with_kernel_cmdline(cmdline.clone());
     }
+    eprintln!("crucible-live-network-io phase=retained-restore status=starting");
     let retained_report = run_qemu_live_retained_network_snapshot_gate(
         &retained_config,
         &QemuLiveNetworkIoServicer::boot_backpressure_probe(),
@@ -245,6 +252,7 @@ pub fn run_qemu_live_network_io_gate(
         config.busy_ceiling_icount,
     )
     .map_err(|source| QemuLiveNetworkIoGateError::RetainedExactSnapshot { source })?;
+    eprintln!("crucible-live-network-io phase=retained-restore status=certified");
     Ok(QemuLiveNetworkIoReport {
         reference: reference.snapshot,
         acknowledgement_seen: reference.acknowledgement_icount.is_some(),
