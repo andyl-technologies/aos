@@ -19,6 +19,29 @@ pub(super) struct NodeEventEnvelope<'a> {
     pub(super) evidence: &'a [u8],
 }
 
+#[cfg(test)]
+pub(super) fn encode_test_node_event_envelope(
+    request: &[u8],
+    evidence: &[u8],
+    event: &QemuFaultEvent,
+    target_node_hash: [u8; 32],
+) -> Vec<u8> {
+    let mut envelope = vec![0; NODE_EVENT_ENVELOPE_HEADER_BYTES];
+    envelope[..8].copy_from_slice(NODE_EVENT_ENVELOPE_MAGIC);
+    envelope[8..10].copy_from_slice(&(NODE_EVENT_ENVELOPE_VERSION as u16).to_le_bytes());
+    envelope[12..16].copy_from_slice(&(request.len() as u32).to_le_bytes());
+    envelope[16..20].copy_from_slice(&(evidence.len() as u32).to_le_bytes());
+    envelope[24..56].copy_from_slice(&sha2::Sha256::digest(request));
+    envelope[56..88].copy_from_slice(&sha2::Sha256::digest(evidence));
+    envelope[88..120].copy_from_slice(&event.binding_hash);
+    envelope[120..128].copy_from_slice(&event.rule_command_sequence.to_le_bytes());
+    envelope[128..160].copy_from_slice(&target_node_hash);
+    envelope[160..192].copy_from_slice(&event.opportunity_hash);
+    envelope.extend_from_slice(request);
+    envelope.extend_from_slice(evidence);
+    envelope
+}
+
 pub(super) fn decode_node_event_envelope<'a>(
     bytes: &'a [u8],
     event: &QemuFaultEvent,
@@ -120,28 +143,6 @@ mod tests {
         bytes
     }
 
-    fn envelope(
-        request: &[u8],
-        evidence: &[u8],
-        event: &QemuFaultEvent,
-        target_node_hash: [u8; 32],
-    ) -> Vec<u8> {
-        let mut envelope = vec![0; NODE_EVENT_ENVELOPE_HEADER_BYTES];
-        envelope[..8].copy_from_slice(NODE_EVENT_ENVELOPE_MAGIC);
-        envelope[8..10].copy_from_slice(&(NODE_EVENT_ENVELOPE_VERSION as u16).to_le_bytes());
-        envelope[12..16].copy_from_slice(&(request.len() as u32).to_le_bytes());
-        envelope[16..20].copy_from_slice(&(evidence.len() as u32).to_le_bytes());
-        envelope[24..56].copy_from_slice(&sha2::Sha256::digest(request));
-        envelope[56..88].copy_from_slice(&sha2::Sha256::digest(evidence));
-        envelope[88..120].copy_from_slice(&event.binding_hash);
-        envelope[120..128].copy_from_slice(&event.rule_command_sequence.to_le_bytes());
-        envelope[128..160].copy_from_slice(&target_node_hash);
-        envelope[160..192].copy_from_slice(&event.opportunity_hash);
-        envelope.extend_from_slice(request);
-        envelope.extend_from_slice(evidence);
-        envelope
-    }
-
     fn fixture() -> (Vec<u8>, QemuFaultEvent, [u8; 32]) {
         let target_node_hash = [9; 32];
         let request = NodeFaultPayloadV1 {
@@ -180,7 +181,8 @@ mod tests {
             before_hash: [6; 32],
             after_hash: [7; 32],
         };
-        let envelope = envelope(&request, evidence, &event, target_node_hash);
+        let envelope =
+            encode_test_node_event_envelope(&request, evidence, &event, target_node_hash);
         (envelope, event, target_node_hash)
     }
 
@@ -252,7 +254,7 @@ mod tests {
             before_hash: [6; 32],
             after_hash: [7; 32],
         };
-        let mut encoded = envelope(&request, &[1], &event, target_node_hash);
+        let mut encoded = encode_test_node_event_envelope(&request, &[1], &event, target_node_hash);
         assert!(decode_node_event_envelope(&encoded, &event, target_node_hash).is_ok());
         encoded[160] ^= 1;
         assert!(decode_node_event_envelope(&encoded, &event, target_node_hash).is_err());

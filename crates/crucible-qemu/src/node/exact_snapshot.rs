@@ -131,6 +131,11 @@ impl QemuNode {
                 "fault-event transport is terminally invalid: {message}"
             )));
         }
+        if self.fault_event_pending()? {
+            return Err(QemuNodeError::checkpoint(
+                "exact snapshot capture requires an empty fault-event continuation",
+            ));
+        }
         let expected_icount = checkpoint.node_icounts.get(node).ok_or_else(|| {
             QemuNodeError::checkpoint(format!(
                 "checkpoint has no instruction counter for QEMU node `{}`",
@@ -188,6 +193,31 @@ impl QemuNode {
                 .map_err(|source| {
                     QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
                 })?;
+            let pending_fault_event = match self.fault_event_pending() {
+                Ok(pending) => pending,
+                Err(source) => {
+                    self.host_io_runtime
+                        .abort_checkpoint_pause()
+                        .map_err(|cleanup| {
+                            QemuNodeError::checkpoint(format!(
+                                "fault-event inspection failed while quiescing exact snapshot ({source}); aborting the plugin pause also failed ({cleanup})"
+                            ))
+                        })?;
+                    return Err(source);
+                }
+            };
+            if pending_fault_event {
+                self.host_io_runtime
+                    .abort_checkpoint_pause()
+                    .map_err(|cleanup| {
+                        QemuNodeError::checkpoint(format!(
+                            "fault events appeared while quiescing exact snapshot; aborting the plugin pause failed ({cleanup})"
+                        ))
+                    })?;
+                return Err(QemuNodeError::checkpoint(
+                    "fault events appeared while quiescing exact snapshot",
+                ));
+            }
             if let Err(source) = self.channels.qmp_machine_control.stop_for_checkpoint() {
                 self.host_io_runtime
                     .abort_checkpoint_pause()

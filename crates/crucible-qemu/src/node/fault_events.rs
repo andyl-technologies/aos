@@ -13,9 +13,32 @@ impl QemuNode {
         &mut self,
         events: &mut Vec<DequeuedFaultEvent>,
     ) -> Result<(), QemuNodeError> {
+        let mut current = events.len();
+        self.drain_fault_events_with_budget(
+            events,
+            &mut current,
+            crucible_shmem::HARD_FAULT_EVENT_CAPACITY as usize,
+        )
+    }
+
+    pub(crate) fn drain_fault_events_with_budget(
+        &mut self,
+        events: &mut Vec<DequeuedFaultEvent>,
+        canonical_current: &mut usize,
+        configured_event_records: usize,
+    ) -> Result<(), QemuNodeError> {
         if let Some(message) = &self.fault_event_terminal_failure {
             return Err(QemuNodeError::fault_command(message.clone()));
         }
+        let staged = self.host_io_runtime.staged_fault_event_count();
+        admit_fault_event_records(*canonical_current, staged, configured_event_records)?;
+        events
+            .try_reserve_exact(staged)
+            .map_err(|_| QemuNodeError::FaultEventStorage {
+                current: u64::try_from(*canonical_current).unwrap_or(u64::MAX),
+                requested: u64::try_from(staged).unwrap_or(u64::MAX),
+                configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+            })?;
         for event in self
             .host_io_runtime
             .take_staged_fault_events()
@@ -24,16 +47,46 @@ impl QemuNode {
             })?
         {
             self.accept_fault_event(event, events)?;
+            *canonical_current =
+                canonical_current
+                    .checked_add(1)
+                    .ok_or(QemuNodeError::FaultEventStorage {
+                        current: u64::MAX,
+                        requested: 1,
+                        configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+                    })?;
         }
-        while let Some(event) =
-            self.channels
-                .shmem_hot_path
-                .dequeue_fault_event()
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?
-        {
+        loop {
+            // Reserve the destination slot before consuming the shared-memory
+            // owner. Allocation refusal therefore leaves the public event in
+            // the ring for a later typed retry instead of losing it.
+            admit_fault_event_records(*canonical_current, 1, configured_event_records)?;
+            events
+                .try_reserve(1)
+                .map_err(|_| QemuNodeError::FaultEventStorage {
+                    current: u64::try_from(*canonical_current).unwrap_or(u64::MAX),
+                    requested: 1,
+                    configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+                })?;
+            let Some(event) =
+                self.channels
+                    .shmem_hot_path
+                    .dequeue_fault_event()
+                    .map_err(|source| {
+                        QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                    })?
+            else {
+                break;
+            };
             self.accept_fault_event(event, events)?;
+            *canonical_current =
+                canonical_current
+                    .checked_add(1)
+                    .ok_or(QemuNodeError::FaultEventStorage {
+                        current: u64::MAX,
+                        requested: 1,
+                        configured: u64::try_from(configured_event_records).unwrap_or(u64::MAX),
+                    })?;
         }
         Ok(())
     }
@@ -83,4 +136,20 @@ impl QemuNode {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
     }
+}
+
+fn admit_fault_event_records(
+    current: usize,
+    requested: usize,
+    configured: usize,
+) -> Result<(), QemuNodeError> {
+    let admitted = current.checked_add(requested);
+    if admitted.is_some_and(|total| total <= configured) {
+        return Ok(());
+    }
+    Err(QemuNodeError::FaultEventStorage {
+        current: u64::try_from(current).unwrap_or(u64::MAX),
+        requested: u64::try_from(requested).unwrap_or(u64::MAX),
+        configured: u64::try_from(configured).unwrap_or(u64::MAX),
+    })
 }

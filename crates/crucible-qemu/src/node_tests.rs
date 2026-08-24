@@ -107,6 +107,11 @@ enum ChannelCall {
     HostFingerprintBoundary,
     HostCheckpointClearWhileStopped,
     HostCheckpointAbort,
+    HostFaultEventLimit {
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
+    },
     QmpStop,
     QmpContinue,
     QmpTerminalLifecycle {
@@ -146,6 +151,7 @@ struct ScriptedHostIoRuntime {
     outcomes: VecDeque<QemuAsyncWaitOutcome>,
     fault_results: VecDeque<DequeuedFaultResult>,
     staged_fault_events: Vec<DequeuedFaultEvent>,
+    fingerprint_fault_events: VecDeque<DequeuedFaultEvent>,
 }
 
 #[derive(Clone)]
@@ -434,6 +440,30 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn set_fault_event_staging_limit(
+        &mut self,
+        maximum_local_records: usize,
+        canonical_current_offset: usize,
+        configured_event_records: usize,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self.staged_fault_events.len() > maximum_local_records {
+            return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
+                canonical_current_offset.saturating_add(self.staged_fault_events.len()),
+                0,
+                configured_event_records,
+            ));
+        }
+        self.log
+            .lock()
+            .unwrap()
+            .push(ChannelCall::HostFaultEventLimit {
+                maximum_local_records,
+                canonical_current_offset,
+                configured_event_records,
+            });
+        Ok(())
+    }
+
     fn publish_current_execution_fingerprint(
         &mut self,
         _timeout: Duration,
@@ -442,6 +472,9 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
             .lock()
             .unwrap()
             .push(ChannelCall::HostFingerprintBoundary);
+        if let Some(event) = self.fingerprint_fault_events.pop_front() {
+            self.staged_fault_events.push(event);
+        }
         Ok(())
     }
 
@@ -552,6 +585,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
 
     fn staged_fault_events_pending(&self) -> bool {
         !self.staged_fault_events.is_empty()
+    }
+
+    fn staged_fault_event_count(&self) -> usize {
+        self.staged_fault_events.len()
     }
 }
 
@@ -706,41 +743,12 @@ fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Bo
     Ok(())
 }
 
-#[test]
-fn stale_execution_fingerprint_requests_production_control_boundary() -> Result<(), Box<dyn Error>>
-{
-    let log = shared_log();
-    let mut node = scripted_node_with_options(
-        Arc::clone(&log),
-        ScriptedNodeOptions {
-            fingerprint_retry_countdown: 1,
-            ..ScriptedNodeOptions::default()
-        },
-        std::iter::empty(),
-    )?;
-
-    assert_eq!(
-        node.execution_fingerprint()?,
-        ExecutionFingerprint {
-            hash: content_hash("fingerprint", "vm-a"),
-        }
-    );
-    node.shutdown_child()?;
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemFingerprint,
-            ChannelCall::HostFingerprintBoundary,
-            ChannelCall::ShmemFingerprint,
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-    Ok(())
-}
-
 #[path = "node_tests/exact_lifecycle_tests.rs"]
 mod exact_lifecycle;
+#[path = "node_tests/fault_event_budget.rs"]
+mod fault_event_budget;
+#[path = "node_tests/fingerprint.rs"]
+mod fingerprint;
 
 fn scripted_node(
     log: SharedLog,
@@ -773,6 +781,7 @@ fn scripted_node_with_runtime(
             fail_qmp_snapshot,
             qmp_snapshot_timeout: false,
             fingerprint_retry_countdown: 0,
+            fingerprint_fault_event_count: 0,
         },
         runtime_outcomes,
     )
@@ -786,6 +795,7 @@ struct ScriptedNodeOptions {
     fail_qmp_snapshot: bool,
     qmp_snapshot_timeout: bool,
     fingerprint_retry_countdown: u8,
+    fingerprint_fault_event_count: u8,
 }
 
 fn scripted_node_with_options(
@@ -843,6 +853,7 @@ fn scripted_node_with_fault_events(
             outcomes: VecDeque::new(),
             fault_results: VecDeque::new(),
             staged_fault_events,
+            fingerprint_fault_events: VecDeque::new(),
         },
         2,
     ))
@@ -920,6 +931,9 @@ fn scripted_node_with_coverage(
             outcomes: runtime_outcomes.into_iter().collect(),
             fault_results: VecDeque::new(),
             staged_fault_events: Vec::new(),
+            fingerprint_fault_events: (1..=options.fingerprint_fault_event_count)
+                .map(|sequence| fault_event_with_sequence(u64::from(sequence)))
+                .collect(),
         },
         2,
     ))

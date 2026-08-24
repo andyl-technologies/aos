@@ -71,7 +71,7 @@ fn try_clone_string<E>(source: &str, allocation_error: impl FnOnce() -> E) -> Re
     Ok(value)
 }
 
-fn try_clone_fault_id<E>(
+pub(super) fn try_clone_fault_id<E>(
     source: &FaultObjectId,
     allocation_error: &mut impl FnMut() -> E,
 ) -> Result<FaultObjectId, E> {
@@ -215,7 +215,7 @@ fn try_clone_slice<T: Copy, E>(
     Ok(values)
 }
 
-fn try_clone_target<E>(
+pub(super) fn try_clone_target<E>(
     source: &ResolvedFaultTarget,
     allocation_error: &mut impl FnMut() -> E,
 ) -> Result<ResolvedFaultTarget, E> {

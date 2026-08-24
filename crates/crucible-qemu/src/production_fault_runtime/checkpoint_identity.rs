@@ -4,8 +4,11 @@ use super::*;
 
 #[path = "checkpoint_identity_material.rs"]
 mod material;
+#[path = "checkpoint_identity/record_state.rs"]
+mod record_state;
 
 use material::*;
+pub(super) use record_state::*;
 
 pub(super) trait NodeSequenceLookup {
     fn sequence(&self, node: &NodeId) -> Option<u64>;
@@ -28,25 +31,6 @@ impl NodeSequenceLookup for QemuNodeMap<u64> {
     fn sequence(&self, node: &NodeId) -> Option<u64> {
         self.get(node).copied()
     }
-}
-
-pub(super) fn validate_production_event_state(
-    emitted_events: &[ReferencedSignalEvent],
-    additional_emitted_events: &[ReferencedSignalEvent],
-    pending_observations: &[FaultObservation],
-    additional_observations: &[FaultObservation],
-    pending_qemu_events: &PendingQemuEventMap,
-    resource_limits: FaultResourceLimits,
-) -> Result<(), ProductionFaultRuntimeError> {
-    let (records, bytes) = extend_referenced_event_usage(emitted_events, resource_limits, 0, 0)?;
-    let (records, bytes) =
-        extend_referenced_event_usage(additional_emitted_events, resource_limits, records, bytes)?;
-    let (records, bytes) =
-        extend_observation_usage(pending_observations, resource_limits, records, bytes)?;
-    let (records, bytes) =
-        extend_observation_usage(additional_observations, resource_limits, records, bytes)?;
-    let _ = extend_pending_qemu_event_usage(pending_qemu_events, resource_limits, records, bytes)?;
-    Ok(())
 }
 
 pub(super) fn validate_pending_qemu_event_sequences(
