@@ -775,11 +775,14 @@ impl PuctCarriedCandidate {
     ) -> Result<Ordering, CampaignCodecError> {
         let score = self.guidance.score_for_policy(policy, view)?;
         let other_score = other.guidance.score_for_policy(policy, view)?;
-        Ok(score
-            .total_micros()
-            .cmp(&other_score.total_micros())
-            .then_with(|| other.guidance.edge().cmp(&self.guidance.edge()))
-            .then_with(|| other.guidance.position().cmp(&self.guidance.position())))
+        Ok(compare_puct_selection_basis(
+            score,
+            self.guidance.edge(),
+            self.guidance.position(),
+            other_score,
+            other.guidance.edge(),
+            other.guidance.position(),
+        ))
     }
 
     fn to_proposal(

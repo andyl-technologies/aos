@@ -6,7 +6,10 @@
 //! capability. Its output is authenticated by a supervised adapter before the
 //! coordinator independently validates and admits it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use crucible_cas::content_store::ContentId;
 
@@ -59,6 +62,65 @@ pub(crate) struct PlannerCandidateInput {
     pub(crate) continuation: ContinuationProjection,
     pub(crate) offer: Option<Proposal>,
     pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
+}
+
+/// One validated PUCT candidate in deterministic best-first order.
+///
+/// The proposal and owner-built guidance remain available for detailed
+/// explanation. `score` is recomputed from that guidance and the by-value
+/// policy carried by the same [`PlannerRequest`]; it is not a planner-supplied
+/// claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannerCandidateRanking {
+    proposal: Proposal,
+    guidance: crate::PlannerCandidateGuidance,
+    score: crate::PuctScore,
+}
+
+impl PlannerCandidateRanking {
+    /// Returns the exact invocation-bound candidate offer.
+    #[must_use]
+    pub const fn proposal(&self) -> &Proposal {
+        &self.proposal
+    }
+
+    /// Returns the owner-built statistics and semantic edge basis.
+    #[must_use]
+    pub const fn guidance(&self) -> &crate::PlannerCandidateGuidance {
+        &self.guidance
+    }
+
+    /// Returns the recomputed decomposed fixed-point score.
+    #[must_use]
+    pub const fn score(&self) -> crate::PuctScore {
+        self.score
+    }
+
+    fn selection_cmp(&self, other: &Self) -> Ordering {
+        compare_puct_selection_basis(
+            self.score,
+            self.guidance.edge(),
+            self.guidance.position(),
+            other.score,
+            other.guidance.edge(),
+            other.guidance.position(),
+        )
+    }
+}
+
+pub(crate) fn compare_puct_selection_basis(
+    score: crate::PuctScore,
+    edge: crate::BranchEdgeId,
+    position: PlanningScanPosition,
+    other_score: crate::PuctScore,
+    other_edge: crate::BranchEdgeId,
+    other_position: PlanningScanPosition,
+) -> Ordering {
+    score
+        .total_micros()
+        .cmp(&other_score.total_micros())
+        .then_with(|| other_edge.cmp(&edge))
+        .then_with(|| other_position.cmp(&position))
 }
 
 impl CampaignPlanningBundle {
@@ -600,6 +662,49 @@ impl PlannerRequest {
     #[must_use]
     pub const fn input_bundle(&self) -> &CampaignPlanningBundle {
         &self.input_bundle
+    }
+
+    /// Recomputes this request's PUCT candidates in deterministic best-first order.
+    ///
+    /// The projection covers the Ready candidates served in this one bounded
+    /// request. A multi-page invocation can aggregate the projections by
+    /// following its authenticated planner-step/request chain. Ties use the
+    /// exact built-in planner rule: smaller semantic edge and then smaller scan
+    /// position win after equal total scores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the request does not declare the
+    /// canonical PUCT capability or when an offer, guidance record, active
+    /// policy, fixed-point statistic, or derived score disagrees.
+    pub fn ranked_candidates(&self) -> Result<Vec<PlannerCandidateRanking>, CampaignCodecError> {
+        if !self
+            .engine
+            .capabilities()
+            .contains(CANONICAL_FRONTIER_PUCT_CAPABILITY)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "planner request has no canonical PUCT guidance",
+            });
+        }
+
+        let input_view = self.invocation.input_view();
+        let mut rankings = self
+            .input_bundle
+            .candidate_inputs(self)?
+            .into_values()
+            .filter_map(|input| input.offer.zip(input.guidance))
+            .map(|(proposal, guidance)| {
+                let score = guidance.validate_for(&proposal, &self.policy, input_view)?;
+                Ok(PlannerCandidateRanking {
+                    proposal,
+                    guidance,
+                    score,
+                })
+            })
+            .collect::<Result<Vec<_>, CampaignCodecError>>()?;
+        rankings.sort_by(|left, right| right.selection_cmp(left));
+        Ok(rankings)
     }
 
     /// Returns the domain-separated digest of every canonical request byte.
