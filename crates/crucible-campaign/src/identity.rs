@@ -565,6 +565,24 @@ content_object_id!(
     "Identifies one canonical attempt observation."
 );
 content_object_id!(
+    ObjectiveEvaluationId,
+    ObjectKind::Observation,
+    "crucible.campaign.objective-evaluation",
+    "Identifies one policy-bound exact objective evaluation."
+);
+content_object_id!(
+    RankingExplanationId,
+    ObjectKind::Projection,
+    "crucible.campaign.ranking-explanation",
+    "Identifies one deterministic explanation for a ranked observation."
+);
+content_object_id!(
+    SurvivorSelectionId,
+    ObjectKind::CampaignFact,
+    "crucible.campaign.survivor-selection",
+    "Identifies one bounded deterministic survivor-selection decision."
+);
+content_object_id!(
     FindingId,
     ObjectKind::Finding,
     "crucible.campaign.finding",

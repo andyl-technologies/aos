@@ -3,7 +3,8 @@
 use super::*;
 use crate::{
     CampaignCommandId, ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation,
-    IntegerValue, PinChange, PinRetention,
+    IntegerValue, Objective, ObjectiveGoal, ObjectiveValue, PinChange, PinRetention,
+    RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives, rank_survivors,
 };
 
 struct PermitExhaustive;
@@ -18,6 +19,109 @@ impl crate::CampaignPrincipalAuthorizer for PermitExhaustive {
     ) -> Result<(), crate::CampaignAuthorizationError> {
         Ok(())
     }
+}
+
+#[test]
+fn survivor_decision_publication_is_failure_atomic_and_replayable() {
+    let (repository, lineage, base, blobs) = counted_fixture();
+    let objective_name = "latency";
+    let policy = CampaignPolicy::new(
+        base.scenario(),
+        base.campaign_seed(),
+        base.mode(),
+        base.explorer().clone(),
+        base.choice_policies().clone(),
+        BTreeMap::from([(
+            objective_name.to_owned(),
+            Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000).expect("objective"),
+        )]),
+        base.guidance().clone(),
+        base.stop_conditions().clone(),
+        base.fairness(),
+        base.retention(),
+        base.admits_scenario_defaults(),
+    )
+    .expect("objective policy");
+    repository.publish_policy(&policy).expect("publish policy");
+    let campaign_observations = (0_u64..16)
+        .map(|ordinal| {
+            let name = format!("objective-publication-{ordinal}");
+            let (_created, _admitted, observation) =
+                admitted_observation_fixture(&repository, &lineage, &policy, &name);
+            (name, observation)
+        })
+        .collect::<Vec<_>>();
+    let candidates = campaign_observations
+        .iter()
+        .map(|(_name, observation)| {
+            let properties = repository
+                .load_property_verdict_set(observation.properties())
+                .expect("properties");
+            let evaluation = evaluate_objectives(
+                &policy,
+                observation,
+                &properties,
+                BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(7))]),
+            )
+            .expect("evaluation");
+            RankingCandidate::new(evaluation, 3, 0)
+        })
+        .collect();
+    let bundle = rank_survivors(
+        &policy,
+        SurvivorRule::new(RankingMethod::WeightedTopK, 8, 2, 2).expect("rule"),
+        candidates,
+    )
+    .expect("ranking");
+
+    let before = blobs
+        .object_count()
+        .expect("objects before rejected publication");
+    assert!(matches!(
+        repository.publish_survivor_selection(&bundle),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after rejected publication"),
+        before
+    );
+
+    for (name, observation) in &campaign_observations {
+        let current = repository
+            .head(name)
+            .expect("current campaign")
+            .snapshot_id();
+        repository
+            .publish_observation(name, current, observation)
+            .expect("publish observation");
+    }
+    let selection = repository
+        .publish_survivor_selection(&bundle)
+        .expect("publish survivor selection");
+    assert_eq!(
+        repository
+            .load_survivor_selection(selection)
+            .expect("load and replay survivor selection"),
+        bundle
+    );
+    let mut cache = ChoiceValidationCache::default();
+    assert_eq!(
+        repository
+            .read_survivor_selection_bundle_cached(selection.content_id(), &mut cache)
+            .expect("load shared-policy survivor selection"),
+        bundle
+    );
+    assert_eq!(cache.objective_contracts.len(), 1);
+    let after = blobs.object_count().expect("objects after publication");
+    assert_eq!(
+        repository
+            .publish_survivor_selection(&bundle)
+            .expect("idempotent publication"),
+        selection
+    );
+    assert_eq!(blobs.object_count().expect("objects after replay"), after);
 }
 
 #[test]

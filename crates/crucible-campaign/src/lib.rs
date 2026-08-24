@@ -23,6 +23,7 @@ mod identity;
 mod merkle;
 mod model;
 mod object;
+mod objective;
 mod observation;
 mod planner_service;
 mod policy;
@@ -101,10 +102,11 @@ pub use identity::{
     ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
     ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
     ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
-    ExpansionStateId, FindingId, MeasurementSetId, ObservationId, PlannerEngineId,
-    PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId, ProbabilityModelId,
-    PropertyVerdictSetId, ProposalId, ReproductionArtifactId, RetainedPlannerRequestId,
-    ScenarioArtifactId, ScenarioDefId, SelectableId, SelectableSemanticId, SelectionId,
+    ExpansionStateId, FindingId, MeasurementSetId, ObjectiveEvaluationId, ObservationId,
+    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlannerStepId, PolicyArtifactId,
+    ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
+    SelectableId, SelectableSemanticId, SelectionId, SurvivorSelectionId,
 };
 pub use merkle::{
     CampaignStoreError, MAX_PROVEN_PAGE_ITEMS, MerkleMap, MerkleMapLookupProof, MerkleMapPage,
@@ -118,6 +120,13 @@ pub use model::{
     PolicyArtifact,
 };
 pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
+pub use objective::{
+    FixedReward, MAX_LEXICOGRAPHIC_COMPONENT_VISITS, MAX_PARETO_COMPONENT_VISITS,
+    MAX_SURVIVOR_CANDIDATES, MAX_SURVIVOR_EVIDENCE_BYTES, MAX_WEIGHTED_RANKING_BYTE_VISITS,
+    ObjectiveComponent, ObjectiveEvaluation, ObjectiveRejection, ObjectiveValue, RankingCandidate,
+    RankingDisposition, RankingExplanation, RankingMethod, SurvivorRule, SurvivorSelection,
+    SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
+};
 pub use observation::{
     CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries, MeasurementSet,
     MetricValue, Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,

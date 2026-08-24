@@ -413,14 +413,51 @@ paths:
 
 1. reject branches with disqualifying property failures, crashes, or missing
    required measurements;
-2. compute a canonical metric vector;
-3. retain a Pareto frontier or lexicographic/top-`K` order;
-4. reserve configured capacity for coverage novelty, rare states, or
-   underexplored choice classes;
+2. compute the canonical objective vector and exact weighted reward;
+3. compute the declared Pareto-top-`K`, lexicographic, or weighted-top-`K`
+   primary order;
+4. reserve breadth-first capacity first and novelty capacity second, then fill
+   remaining capacity from the primary order;
 5. retain or materialize survivor checkpoints according to policy.
 
-Canonical ties break by configuration ID. A survivor decision is stored as a
-planner fact naming all considered observations and the selection rule.
+The breadth-first reserve orders admissible candidates by
+`(breadth_ordinal, ConfigurationId)`. The novelty reserve orders them by
+descending `(novelty_score, ConfigurationId)`, with configuration identity as
+the ascending tie-break. A candidate already selected by an earlier reserve
+does not consume a later reserve slot. Filtered candidates never consume a
+reserve. Reserves deliberately consider every admissible candidate, including
+a Pareto-dominated candidate, because exploration capacity is independent of
+the primary exploitation order.
+
+Lexicographic comparison follows objective-name order. Each component applies
+its minimize or maximize direction before the next component is considered.
+Weighted comparison uses the exact sum of signed objective values multiplied by
+their millionth-denominated policy weights; minimize terms are negated. Pareto
+dominance requires one component to be strictly better and none worse. The
+nondominated Pareto set is ordered by exact weighted reward when it exceeds the
+remaining capacity. Every remaining tie breaks by `ConfigurationId`; input,
+map, and executor-arrival order are irrelevant.
+
+One decision admits at most 16,384 distinct configurations. Pareto evaluation
+preflights `candidate_count * (candidate_count - 1) * max(objective_count, 1)`
+and rejects more than 4,000,000 pair-by-component visits before comparison.
+Lexicographic ranking conservatively charges
+`candidate_count^2 * max(objective_count, 1)` against the same 4,000,000-visit
+ceiling. Weighted ordering conservatively charges
+`candidate_count^2 * maximum_reward_operand_bytes` and rejects more than
+512 MiB of operand-byte visits. Exact weighted arithmetic permits at most
+8 KiB in either reduced reward magnitude and at most 64 MiB of accumulated
+arithmetic work. Evaluation and explanation records are each at most 4 MiB; the
+survivor-selection record is at most 32 MiB. One decision admits at most 128 MiB
+of aggregate canonical evaluation and explanation bodies, charged while
+records are loaded or built.
+
+A survivor decision is a content-addressed fact naming the exact policy,
+selection rule, every considered objective evaluation, selected configuration
+set, and one explanation per considered configuration. Explanations distinguish
+objective selection, breadth-first selection, novelty selection, property or
+measurement filtering, Pareto domination with a canonical dominator, and rank
+pruning.
 
 - **[GUIDE-12]** A “best-performing” campaign SHOULD reserve explicit
   exploration capacity when bug discovery is also a goal. Pure top-`K`

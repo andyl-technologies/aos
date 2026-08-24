@@ -191,6 +191,7 @@ pub use crucible_execution::{
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1, CrucibleMeasurementError,
     encode_crucible_measurement_set, evaluate_crucible_measurement_set,
+    evaluate_crucible_objectives, project_crucible_objective_values,
     verify_crucible_measurement_set,
 };
 pub use crucible_qemu_runner::{

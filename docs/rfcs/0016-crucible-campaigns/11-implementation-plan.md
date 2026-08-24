@@ -164,11 +164,23 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   independently validated guest stream before common windowing and exact
   aggregation. Source, replay, malformed-event, visit-bound, and end-to-end
   driver regressions pin the projection and retained evaluation.
-- [ ] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,
+- [x] **T-CAM-3.4** Implement observation, objective-evaluation, Pareto,
   lexicographic, top-`K`, fairness-reserve, and explanation records.
   The canonical bounded observation, verified-evaluation measurement-set v2,
-  property-verdict-set, and coverage-projection record layer is implemented;
-  objectives, ranking, explanations, and the Phase 3 flight remain open.
+  property-verdict-set, and coverage-projection record layer now feeds exact
+  signed, unsigned, and reduced-rational objective values. Arbitrary-precision
+  reduced reward arithmetic, Pareto/lexicographic/weighted top-`K` ranking,
+  breadth-first and novelty reserves, and complete selected/filtered/dominated/
+  pruned explanations are content-addressed and replay-validated. The Crucible
+  adapter authenticates its exact model evaluation before projecting numeric
+  aggregates. Candidate, aggregate-evidence-byte, Pareto-work, scalar-work,
+  magnitude, and encoded-record bounds fail closed before unbounded work or
+  publication, and repository publication preflights the complete dependency
+  union before its first write.
+  Exact-arithmetic, input-order, reserve, filtering, work-bound, model-adapter,
+  failure-atomicity, load, and idempotent-replay regressions cover the contract.
+  The integrated Phase 3 measurement/finding flight remains open under
+  T-CAM-3.6.
 - [ ] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
   Canonical bounded finding signatures, clusters, exact child closures, and

@@ -31,16 +31,17 @@ use crate::{
     ExecutorCompatibilityProfile, ExecutorRejection, ExpansionCredit, ExpansionState,
     ExpansionStateId, Finding, FindingId, FindingOccurrenceSet, MeasurementSet, MeasurementSetId,
     MerkleMap, MerkleMapLookupProof, MerkleMapPage, MerkleMapPageProof, MerkleMapRoot,
-    NonModeledAttemptDisposition, ObjectEnvelope, Observation, ObservationId, PinRequest,
-    PlannerAuthorityKey, PlannerDisposition, PlannerEngine, PlannerInvocation, PlannerInvocationId,
-    PlannerProposalDisposition, PlannerRequest, PlannerState, PlannerStep, PlannerStepId,
-    PlannerStepProposal, PlanningAccounting, PlanningBudget, PlanningScanPage,
-    PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
-    PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
-    ReproductionArtifact, ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse,
+    NonModeledAttemptDisposition, ObjectEnvelope, ObjectiveEvaluation, ObjectiveEvaluationId,
+    Observation, ObservationId, PinRequest, PlannerAuthorityKey, PlannerDisposition, PlannerEngine,
+    PlannerInvocation, PlannerInvocationId, PlannerProposalDisposition, PlannerRequest,
+    PlannerState, PlannerStep, PlannerStepId, PlannerStepProposal, PlanningAccounting,
+    PlanningBudget, PlanningScanPage, PlanningScanPosition, PlanningUsage, PolicyActivation,
+    PolicyArtifact, PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, Proposal,
+    ProposalId, PurePlannerEngine, RankingExplanation, RankingExplanationId, ReproductionArtifact,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifact, ScenarioArtifactId,
+    ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
+    SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
 };
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
@@ -836,6 +837,7 @@ mod closure;
 mod execution;
 mod executor_driver;
 mod finding;
+mod objective;
 mod observation;
 mod planner_driver;
 mod planner_issue;
@@ -879,6 +881,8 @@ struct LoadedSnapshot {
 struct ChoiceValidationCache {
     contracts: BTreeMap<(ContentId, ContentId), CampaignHash>,
     insertion_order: VecDeque<(ContentId, ContentId)>,
+    objective_contracts: BTreeMap<CampaignPolicyId, CampaignHash>,
+    objective_insertion_order: VecDeque<CampaignPolicyId>,
 }
 
 impl ChoiceValidationCache {
@@ -897,6 +901,23 @@ impl ChoiceValidationCache {
         }
         self.contracts.insert(key, contract);
         self.insertion_order.push_back(key);
+    }
+
+    fn objective_contract(&self, policy: CampaignPolicyId) -> Option<CampaignHash> {
+        self.objective_contracts.get(&policy).copied()
+    }
+
+    fn insert_objective_contract(&mut self, policy: CampaignPolicyId, contract: CampaignHash) {
+        if self.objective_contracts.contains_key(&policy) {
+            return;
+        }
+        if self.objective_contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
+            && let Some(evicted) = self.objective_insertion_order.pop_front()
+        {
+            self.objective_contracts.remove(&evicted);
+        }
+        self.objective_contracts.insert(policy, contract);
+        self.objective_insertion_order.push_back(policy);
     }
 }
 

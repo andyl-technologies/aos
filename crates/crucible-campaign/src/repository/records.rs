@@ -102,6 +102,51 @@ impl CampaignRepository {
         Ok(value)
     }
 
+    /// Loads one exact objective evaluation and validates its complete basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, malformed, or
+    /// semantically inconsistent evaluation closure.
+    pub fn load_objective_evaluation(
+        &self,
+        id: ObjectiveEvaluationId,
+    ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
+        let value = self.read_objective_evaluation(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
+    /// Loads one exact ranking explanation and validates its references.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for a missing, malformed, or
+    /// incorrectly referenced explanation closure.
+    pub fn load_ranking_explanation(
+        &self,
+        id: RankingExplanationId,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        let value = self.read_ranking_explanation(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(value)
+    }
+
+    /// Loads and exactly replays one survivor-selection decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the complete selection
+    /// closure is missing, malformed, or differs from deterministic replay.
+    pub fn load_survivor_selection(
+        &self,
+        id: SurvivorSelectionId,
+    ) -> Result<SurvivorSelectionBundle, CampaignRepositoryError> {
+        let bundle = self.read_survivor_selection_bundle(id.content_id())?;
+        self.verify_campaign_closure(id.content_id())?;
+        Ok(bundle)
+    }
+
     /// Loads an exact proposal and validates its request, domain, policy, and planner basis.
     ///
     /// # Errors
@@ -892,6 +937,39 @@ impl CampaignRepository {
     ) -> Result<ContentId, CampaignRepositoryError> {
         self.put_envelope(ObjectEnvelope::for_record(
             crate::CampaignRecordKind::Observation,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_objective_evaluation(
+        &self,
+        value: &ObjectiveEvaluation,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::ObjectiveEvaluation,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_ranking_explanation(
+        &self,
+        value: &RankingExplanation,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::RankingExplanation,
+            crate::object::content_children(value.content_children())?,
+            value.canonical_bytes(),
+        )?)
+    }
+
+    pub(super) fn put_survivor_selection(
+        &self,
+        value: &SurvivorSelection,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.put_envelope(ObjectEnvelope::for_record(
+            crate::CampaignRecordKind::SurvivorSelection,
             crate::object::content_children(value.content_children())?,
             value.canonical_bytes(),
         )?)
@@ -1751,6 +1829,138 @@ impl CampaignRepository {
             return Err(integrity("observation-envelope-shape"));
         }
         Ok(observation)
+    }
+
+    pub(super) fn read_objective_evaluation(
+        &self,
+        id: ContentId,
+    ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
+        self.read_objective_evaluation_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_objective_evaluation_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::ObjectiveEvaluation)?;
+        let evaluation = ObjectiveEvaluation::from_canonical_bytes(envelope.body())?;
+        if evaluation.id()?.content_id() != id {
+            return Err(integrity("objective-evaluation-envelope-shape"));
+        }
+        let policy = evaluation.policy();
+        let contract = if let Some(contract) = cache.objective_contract(policy) {
+            contract
+        } else {
+            let value = self.read_policy(policy.content_id())?;
+            let contract = value.objective_contract_hash();
+            cache.insert_objective_contract(policy, contract);
+            contract
+        };
+        let observation = self.decode_observation(evaluation.observation().content_id())?;
+        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
+        evaluation.validate_compact_basis(policy, contract, &observation, &properties)?;
+        Ok(evaluation)
+    }
+
+    pub(super) fn read_ranking_explanation(
+        &self,
+        id: ContentId,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        self.read_ranking_explanation_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_ranking_explanation_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        let explanation = self.decode_ranking_explanation(id)?;
+        self.read_objective_evaluation_cached(explanation.evaluation().content_id(), cache)?;
+        if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition() {
+            self.read_objective_evaluation_cached(dominator.content_id(), cache)?;
+        }
+        Ok(explanation)
+    }
+
+    pub(super) fn decode_ranking_explanation(
+        &self,
+        id: ContentId,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::RankingExplanation)?;
+        let explanation = RankingExplanation::from_canonical_bytes(envelope.body())?;
+        if explanation.id()?.content_id() != id {
+            return Err(integrity("ranking-explanation-envelope-shape"));
+        }
+        Ok(explanation)
+    }
+
+    pub(super) fn read_survivor_selection_bundle(
+        &self,
+        id: ContentId,
+    ) -> Result<SurvivorSelectionBundle, CampaignRepositoryError> {
+        self.read_survivor_selection_bundle_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(super) fn read_survivor_selection_bundle_cached(
+        &self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<SurvivorSelectionBundle, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::SurvivorSelection)?;
+        let selection = SurvivorSelection::from_canonical_bytes(envelope.body())?;
+        if selection.id()?.content_id() != id {
+            return Err(integrity("survivor-selection-envelope-shape"));
+        }
+        let policy = self.read_policy(selection.policy().content_id())?;
+        cache.insert_objective_contract(selection.policy(), policy.objective_contract_hash());
+        let considered_evaluations = selection
+            .considered()
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut candidates = Vec::with_capacity(selection.considered().len());
+        let mut evidence_bytes = 0;
+        for (configuration, evaluation_id) in selection.considered() {
+            let evaluation =
+                self.read_objective_evaluation_cached(evaluation_id.content_id(), cache)?;
+            crate::objective::charge_survivor_evidence_bytes(
+                &mut evidence_bytes,
+                evaluation.canonical_bytes().len(),
+            )?;
+            let explanation_id = selection
+                .explanations()
+                .get(configuration)
+                .ok_or_else(|| integrity("survivor-selection-explanation-missing"))?;
+            let explanation = self.decode_ranking_explanation(explanation_id.content_id())?;
+            crate::objective::charge_survivor_evidence_bytes(
+                &mut evidence_bytes,
+                explanation.canonical_bytes().len(),
+            )?;
+            if evaluation.configuration() != *configuration
+                || explanation.evaluation() != *evaluation_id
+            {
+                return Err(integrity("survivor-selection-candidate-basis-mismatch"));
+            }
+            if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition()
+                && !considered_evaluations.contains(dominator)
+            {
+                return Err(integrity("survivor-selection-dominator-is-not-considered"));
+            }
+            candidates.push(crate::RankingCandidate::new(
+                evaluation,
+                explanation.novelty_score(),
+                explanation.breadth_ordinal(),
+            ));
+        }
+        let replayed = crate::rank_survivors(&policy, selection.rule(), candidates)?;
+        if replayed.selection() != &selection {
+            return Err(integrity("survivor-selection-replay-mismatch"));
+        }
+        Ok(replayed)
     }
 
     pub(super) fn validate_observation_references(

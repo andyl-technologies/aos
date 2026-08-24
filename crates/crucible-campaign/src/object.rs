@@ -18,9 +18,10 @@ use crate::{
     Attempt, AttemptAdmission, BranchPath, BranchRequest, CampaignCodecError,
     CampaignControlAction, CampaignFact, CampaignLineage, CampaignPlanningView, CampaignPolicy,
     CampaignSnapshot, ConfigurationArtifact, ContinuationProjection, CoverageProjection,
-    ExpansionCredit, ExpansionState, Finding, MeasurementSet, Observation, PlannerEngine,
-    PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
-    PropertyVerdictSet, Proposal, ReproductionArtifact, ScenarioArtifact,
+    ExpansionCredit, ExpansionState, Finding, MeasurementSet, ObjectiveEvaluation, Observation,
+    PlannerEngine, PlannerInvocation, PlannerRequest, PlannerState, PlannerStep, PolicyArtifact,
+    PropertyVerdictSet, Proposal, RankingExplanation, ReproductionArtifact, ScenarioArtifact,
+    SurvivorSelection,
 };
 
 pub use crucible_cas::content_envelope::ContentChild as ChildReference;
@@ -88,6 +89,12 @@ pub enum CampaignRecordKind {
     CoverageProjection,
     /// Canonical modeled result of one admitted attempt.
     Observation,
+    /// Exact policy-bound objective vector and admissibility evidence.
+    ObjectiveEvaluation,
+    /// Deterministic per-candidate ranking explanation.
+    RankingExplanation,
+    /// Bounded survivor selection over an exact considered set.
+    SurvivorSelection,
     /// Retained canonical pure-planner component request.
     RetainedPlannerRequest,
     /// Authenticated per-request continuation projection.
@@ -102,7 +109,7 @@ pub enum CampaignRecordKind {
 
 impl CampaignRecordKind {
     /// Every campaign record schema admitted by this crate.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 37] = [
         Self::Lineage,
         Self::Policy,
         Self::Snapshot,
@@ -132,6 +139,9 @@ impl CampaignRecordKind {
         Self::PropertyVerdictSet,
         Self::CoverageProjection,
         Self::Observation,
+        Self::ObjectiveEvaluation,
+        Self::RankingExplanation,
+        Self::SurvivorSelection,
         Self::RetainedPlannerRequest,
         Self::ContinuationProjection,
         Self::ExpansionCredit,
@@ -172,6 +182,9 @@ impl CampaignRecordKind {
             Self::PropertyVerdictSet => "crucible.campaign.property-verdict-set",
             Self::CoverageProjection => "crucible.campaign.coverage-projection",
             Self::Observation => "crucible.campaign.observation",
+            Self::ObjectiveEvaluation => "crucible.campaign.objective-evaluation",
+            Self::RankingExplanation => "crucible.campaign.ranking-explanation",
+            Self::SurvivorSelection => "crucible.campaign.survivor-selection",
             Self::RetainedPlannerRequest => "crucible.campaign.retained-planner-request",
             Self::ContinuationProjection => "crucible.campaign.continuation-projection",
             Self::ExpansionCredit => "crucible.campaign.expansion-credit",
@@ -215,12 +228,14 @@ impl CampaignRecordKind {
             Self::MerkleNode => ObjectKind::MerkleNode,
             Self::ScenarioArtifact => ObjectKind::Scenario,
             Self::ConfigurationArtifact => ObjectKind::Configuration,
-            Self::ExpansionState | Self::ContinuationProjection | Self::CoverageProjection => {
-                ObjectKind::Projection
-            }
-            Self::MeasurementSet | Self::PropertyVerdictSet | Self::Observation => {
-                ObjectKind::Observation
-            }
+            Self::ExpansionState
+            | Self::ContinuationProjection
+            | Self::CoverageProjection
+            | Self::RankingExplanation => ObjectKind::Projection,
+            Self::MeasurementSet
+            | Self::PropertyVerdictSet
+            | Self::Observation
+            | Self::ObjectiveEvaluation => ObjectKind::Observation,
             Self::ReproductionArtifact | Self::Finding => ObjectKind::Finding,
             Self::Lineage
             | Self::Fact
@@ -236,7 +251,8 @@ impl CampaignRecordKind {
             | Self::Attempt
             | Self::AttemptAdmission
             | Self::PlannerStep
-            | Self::ExpansionCredit => ObjectKind::CampaignFact,
+            | Self::ExpansionCredit
+            | Self::SurvivorSelection => ObjectKind::CampaignFact,
             Self::RetainedPlannerRequest => ObjectKind::Policy,
         }
     }
@@ -279,6 +295,9 @@ impl Canonical for CampaignRecordKind {
             Self::ExpansionCredit => 31,
             Self::ReproductionArtifact => 32,
             Self::Finding => 33,
+            Self::ObjectiveEvaluation => 34,
+            Self::RankingExplanation => 35,
+            Self::SurvivorSelection => 36,
         });
     }
 
@@ -318,6 +337,9 @@ impl Canonical for CampaignRecordKind {
             31 => Ok(Self::ExpansionCredit),
             32 => Ok(Self::ReproductionArtifact),
             33 => Ok(Self::Finding),
+            34 => Ok(Self::ObjectiveEvaluation),
+            35 => Ok(Self::RankingExplanation),
+            36 => Ok(Self::SurvivorSelection),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-record-kind",
                 tag,
@@ -706,6 +728,18 @@ fn expected_children(
         }
         CampaignRecordKind::Observation => {
             let value = Observation::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::ObjectiveEvaluation => {
+            let value = ObjectiveEvaluation::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::RankingExplanation => {
+            let value = RankingExplanation::from_canonical_bytes(body)?;
+            content_children(value.content_children())
+        }
+        CampaignRecordKind::SurvivorSelection => {
+            let value = SurvivorSelection::from_canonical_bytes(body)?;
             content_children(value.content_children())
         }
         CampaignRecordKind::RetainedPlannerRequest => {

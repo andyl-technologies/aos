@@ -195,6 +195,9 @@ fn schema_registry_is_unique_complete_and_names_real_gates() {
             | CampaignRecordKind::PropertyVerdictSet
             | CampaignRecordKind::CoverageProjection
             | CampaignRecordKind::Observation => "crucible-campaign::observation",
+            CampaignRecordKind::ObjectiveEvaluation
+            | CampaignRecordKind::RankingExplanation
+            | CampaignRecordKind::SurvivorSelection => "crucible-campaign::objective",
             CampaignRecordKind::ReproductionArtifact | CampaignRecordKind::Finding => {
                 "crucible-campaign::finding"
             }

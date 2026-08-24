@@ -7,11 +7,12 @@ use crucible_cas::content_store::ContentId;
 
 use super::codec::{self, Canonical, Decoder, Encoder};
 use super::{
-    AlternativeId, CampaignCodecError, CampaignPolicyId, CandidateGeneratorSpecId, ScenarioDefId,
+    AlternativeId, CampaignCodecError, CampaignHash, CampaignPolicyId, CandidateGeneratorSpecId,
+    ScenarioDefId,
 };
 
 const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
-const MAX_POLICY_ENTRIES: usize = 4_096;
+pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 512;
 const CANDIDATE_GENERATOR_SCHEMA_VERSION: u32 = 1;
@@ -1336,6 +1337,16 @@ impl CampaignPolicy {
     #[must_use]
     pub const fn objectives(&self) -> &BTreeMap<String, Objective> {
         &self.objectives
+    }
+
+    pub(crate) fn objective_contract_hash(&self) -> CampaignHash {
+        crate::objective::objective_contract_hash(self.objectives.values().map(|objective| {
+            (
+                objective.measurement(),
+                objective.goal(),
+                objective.weight_micros(),
+            )
+        }))
     }
 
     /// Returns guidance weights keyed by signal name.
