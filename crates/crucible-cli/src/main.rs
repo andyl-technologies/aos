@@ -397,6 +397,9 @@ struct CampaignCreateArgs {
     /// Canonical binary CampaignPolicy record whose generators are already imported.
     #[arg(long, value_name = "FILE", required = true)]
     policy: PathBuf,
+    /// Resume the new campaign immediately after creation with this idempotency key.
+    #[arg(long, value_name = "COMMAND")]
+    start_command: Option<String>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
