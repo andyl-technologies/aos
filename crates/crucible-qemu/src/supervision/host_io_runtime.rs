@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use crucible::model::ContentHash;
 use crucible_shmem::{
-    DequeuedFaultResult, MappedSetupRegion, STATUS_DONE, STATUS_IDLE, authorize_advance_ceiling,
-    mmap_setup_region,
+    DequeuedFaultEvent, DequeuedFaultResult, HARD_FAULT_EVENT_CAPACITY, MappedSetupRegion,
+    STATUS_DONE, STATUS_IDLE, authorize_advance_ceiling, mmap_setup_region,
 };
 
 use super::accelerator_io_servicer::QemuLiveAcceleratorServicer;
@@ -82,6 +82,8 @@ pub struct QemuLiveHostIoRuntime {
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
     console: Option<QemuConsoleObservationReader>,
+    /// Events physically consumed to release a fault-pump control fence.
+    staged_fault_events: Vec<DequeuedFaultEvent>,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -219,6 +221,7 @@ impl QemuLiveHostIoRuntime {
             ninep: None,
             accelerator: None,
             console: None,
+            staged_fault_events: Vec::new(),
         })
     }
 
@@ -565,6 +568,7 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         for attempt in 0..attempts {
+            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
             self.service_console_output()?;
             let observed = self
                 .region
@@ -740,36 +744,6 @@ impl QemuLiveHostIoRuntime {
         }
         Ok(made_progress)
     }
-
-    /// Publishes the earliest exact completion across every attached host device.
-    fn publish_device_completion_deadline(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let block = self
-            .block
-            .as_ref()
-            .map(|block| block.servicer.next_completion_icount())
-            .transpose()
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
-                    "inspect block completion deadline",
-                    source.to_string(),
-                )
-            })?
-            .flatten();
-        let ninep = self
-            .ninep
-            .as_ref()
-            .and_then(|ninep| ninep.servicer.next_completion_icount());
-        let accelerator = self
-            .accelerator
-            .as_ref()
-            .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
-        let deadline = [block, ninep, accelerator].into_iter().flatten().min();
-        self.region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .store_device_completion_deadline_icount(deadline.unwrap_or(0));
-        Ok(())
-    }
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
@@ -806,6 +780,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
+            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -859,6 +834,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
+            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -1524,16 +1500,28 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
         payload_buffer: Vec<u8>,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        self.poll_fault_result(timeout, payload_buffer)
+        self.poll_fault_result(timeout, payload_buffer, maximum_event_records)
     }
 
     fn await_fault_preparation_result(
         &mut self,
         timeout: Duration,
         maximum_payload_bytes: usize,
+        maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        self.poll_fault_preparation_result(timeout, maximum_payload_bytes)
+        self.poll_fault_preparation_result(timeout, maximum_payload_bytes, maximum_event_records)
+    }
+
+    fn take_staged_fault_events(
+        &mut self,
+    ) -> Result<Vec<DequeuedFaultEvent>, QemuAsyncDriverRuntimeError> {
+        Ok(std::mem::take(&mut self.staged_fault_events))
+    }
+
+    fn staged_fault_events_pending(&self) -> bool {
+        !self.staged_fault_events.is_empty()
     }
 }
 

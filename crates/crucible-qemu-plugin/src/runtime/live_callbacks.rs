@@ -1201,7 +1201,7 @@ impl LiveVcpuTimeCallbackState {
         // first so a same-icount fingerprint captures the committed state, not
         // the pre-mutation state that happened to share its coordinate. The
         // pump's reentrancy guard keeps nested max-advance queries inert.
-        self.pump_fault_commands(raw_icount)?;
+        let fault_pump_drained = self.pump_fault_commands(raw_icount)?;
         if boundary_requested && let Some(fingerprint) = self.fingerprint.as_ref() {
             // A checkpoint control wake can revisit an icount already sampled
             // by the preceding scheduler quantum. Replace that sample with the
@@ -1243,7 +1243,12 @@ impl LiveVcpuTimeCallbackState {
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
         }
-        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        // A control acknowledgement fences both result and occurrence-event
+        // publication. If the lossless event ring is full, leave the request
+        // outstanding so the host can drain it and wake this callback again.
+        if fault_pump_drained {
+            PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        }
         Ok(())
     }
 
@@ -1269,7 +1274,7 @@ impl LiveVcpuTimeCallbackState {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
-        self.pump_fault_commands(raw_icount)?;
+        let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
         let latest_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
         if raw_icount_publication_is_superseded(raw_icount_at_entry, raw_icount, latest_raw_icount)?
         {
@@ -1996,7 +2001,7 @@ impl LiveVcpuTimeCallbackState {
         if self.publish_pause_for_boundary(raw_icount, true, false, false, "max-advance")? {
             return Ok(raw_icount);
         }
-        self.pump_fault_commands(raw_icount)?;
+        let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
         let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
@@ -2054,7 +2059,7 @@ impl LiveVcpuTimeCallbackState {
         Ok(raw_ceiling.min(raw_at))
     }
 
-    fn pump_fault_commands(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+    fn pump_fault_commands(&self, raw_icount: u64) -> Result<bool, LiveVcpuTimeCallbackError> {
         if self
             .fault_command_pump_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -2064,7 +2069,7 @@ impl LiveVcpuTimeCallbackState {
             // simulator ceiling. The outer pump still owns the command and
             // result transports, so the nested query must use the already
             // published scheduling state without trying to dequeue again.
-            return Ok(());
+            return Ok(true);
         }
         let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
         let logical_icount_offset = self.logical_icount_offset.load(Ordering::Acquire);
@@ -2081,7 +2086,7 @@ impl LiveVcpuTimeCallbackState {
         let bridge = &mut *bridge;
         #[cfg(test)]
         let Some(bridge) = bridge.as_mut() else {
-            return Ok(());
+            return Ok(true);
         };
         bridge
             .pump(logical_icount_offset, raw_icount)
@@ -2112,7 +2117,7 @@ impl LiveVcpuTimeCallbackState {
     /// Processes setup-time capability admission before the ready ACK.
     pub(crate) fn admit_fault_capabilities(&self) -> Result<(), LiveVcpuTimeCallbackError> {
         self.initialize_fault_commands()?;
-        self.pump_fault_commands((self.icount_raw)())
+        self.pump_fault_commands((self.icount_raw)()).map(|_| ())
     }
 
     fn vcpu_flag(&self, vcpu_index: u32) -> Result<&AtomicBool, LiveVcpuTimeCallbackError> {

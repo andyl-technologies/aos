@@ -13,6 +13,8 @@ pub struct QemuAsyncDriverRuntimeError {
     pub message: String,
     /// Exact PREPARE result allocation or admission that failed, when applicable.
     pub fault_result_storage: Option<(u32, u32)>,
+    /// Exact event-record staging allocation or admission that failed.
+    pub fault_event_storage: Option<(u64, u64, u64)>,
 }
 
 impl QemuAsyncDriverRuntimeError {
@@ -23,6 +25,7 @@ impl QemuAsyncDriverRuntimeError {
             operation,
             message: message.into(),
             fault_result_storage: None,
+            fault_event_storage: None,
         }
     }
 
@@ -38,6 +41,22 @@ impl QemuAsyncDriverRuntimeError {
             fault_result_storage: Some((
                 u32::try_from(requested).unwrap_or(u32::MAX),
                 u32::try_from(configured).unwrap_or(u32::MAX),
+            )),
+            fault_event_storage: None,
+        }
+    }
+
+    /// Creates an allocation-free fault-event staging limit failure.
+    #[must_use]
+    pub fn fault_event_storage(current: usize, requested: usize, configured: usize) -> Self {
+        Self {
+            operation: "stage fault occurrence event",
+            message: String::new(),
+            fault_result_storage: None,
+            fault_event_storage: Some((
+                u64::try_from(current).unwrap_or(u64::MAX),
+                u64::try_from(requested).unwrap_or(u64::MAX),
+                u64::try_from(configured).unwrap_or(u64::MAX),
             )),
         }
     }

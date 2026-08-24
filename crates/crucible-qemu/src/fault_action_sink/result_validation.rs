@@ -46,6 +46,19 @@ pub(super) fn map_preparation_result_error(source: crate::QemuNodeError) -> Faul
                 hard: FaultResourceLimits::compiled_maximum().effect_payload_bytes,
             },
         )),
+        crate::QemuNodeError::FaultEventStorage {
+            current,
+            requested,
+            configured,
+        } => FaultActionCommitError::Fatal(FaultRuntimeError::ResourceLimit(
+            FaultResourceLimitError::Exceeded {
+                field: "event_records",
+                current,
+                requested,
+                configured,
+                hard: FaultResourceLimits::compiled_maximum().event_records,
+            },
+        )),
         _ => FaultActionCommitError::Fatal(FaultRuntimeError::AdapterTransactionRollback),
     }
 }

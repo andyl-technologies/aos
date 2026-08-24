@@ -3,6 +3,35 @@
 use super::*;
 
 #[test]
+fn invalid_fault_event_sequence_is_terminal_across_retries() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_fault_events(
+        Arc::clone(&log),
+        [fault_event_with_sequence(1), fault_event_with_sequence(3)],
+    )?;
+    let mut retained = Vec::new();
+    assert!(node.fault_event_pending()?);
+
+    let first_error = node
+        .drain_fault_events(&mut retained)
+        .expect_err("a sequence gap must fail closed");
+    assert_eq!(retained.len(), 2);
+    let second_error = node
+        .drain_fault_events(&mut retained)
+        .expect_err("retry must preserve the terminal sequence failure");
+    assert_eq!(retained.len(), 2);
+    assert_eq!(first_error.to_string(), second_error.to_string());
+    assert!(first_error.to_string().contains("expected 2, observed 3"));
+    let pending_error = node
+        .fault_event_pending()
+        .expect_err("checkpoint admission must observe the terminal failure");
+    assert_eq!(first_error.to_string(), pending_error.to_string());
+
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
 -> Result<(), Box<dyn Error>> {
     for (command_flags, status) in [
@@ -86,6 +115,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 log,
                 outcomes: VecDeque::new(),
                 fault_results: VecDeque::from([result.clone()]),
+                staged_fault_events: Vec::new(),
             },
             2,
         )
@@ -106,6 +136,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                     command.clone(),
                     &payload,
                     32,
+                    crucible_shmem::HARD_FAULT_EVENT_CAPACITY as usize,
                 ),
                 Err(QemuNodeError::FaultCommand { message })
                     if message.contains("restricted to non-mutating PREPARE")
@@ -113,7 +144,12 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             assert!(fault_commands.lock().unwrap().is_empty());
         } else {
             assert_eq!(
-                node.apply_fault_preparation_at_current_boundary(command.clone(), &payload, 31,),
+                node.apply_fault_preparation_at_current_boundary(
+                    command.clone(),
+                    &payload,
+                    31,
+                    crucible_shmem::HARD_FAULT_EVENT_CAPACITY as usize,
+                ),
                 Err(QemuNodeError::FaultResultStorage {
                     requested: 32,
                     configured: 31,
