@@ -2615,8 +2615,11 @@ time-control primitives the whole design rests on.
     preemption callbacks onto the architecture's hard-interrupt path; non-sim,
     unpinned, and self-IPI paths fall through to upstream behavior; and
     the trace plugin records `det_ipi` delivery rows while the bounded
-    multi-vCPU S11 fixture diffs INIT/SIPI delivery-icount traces plus an
-    opt-in commanded FIXED delivery probe across jittered runs.
+    multi-vCPU S11 fixture diffs the exact causal INIT, SIPI, and reverse-path
+    commanded FIXED triple across scheduler-preempted runs. A bounded live
+    firmware fixture enables the same probe under ordinary TCG, proves guest
+    instruction retirement, and requires zero deterministic-delivery rows,
+    executing the non-sim fallback control.
 - [x] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
   read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
   side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec
