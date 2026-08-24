@@ -12,6 +12,7 @@ in
 
     buildDeps = [
       pkgs.coreutils
+      pkgs.grep
       pkgs.rust
       pkgs.sed
     ];
@@ -56,6 +57,35 @@ in
             -p crucible-qemu \
             --example crucible-qemu-live-block-io \
             --example crucible-qemu-live-ninep-io
+
+          # The live 9p binary depends on an event-driven device cursor: an
+          # empty host poll must not outrun a request whose active flag becomes
+          # visible just before its ring publication. List the exact regression
+          # first so removing or renaming it cannot turn Cargo's zero-test
+          # success into certifying evidence.
+          test_name='supervision::ninep_io_servicer::tests::empty_poll_cannot_advance_past_later_request_completion'
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            -- \
+            --list > "$TMPDIR/live-io-tests"
+          grep -Fxq "$test_name: test" "$TMPDIR/live-io-tests"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-qemu \
+            --lib \
+            "$test_name" \
+            -- \
+            --exact
+          printf 'empty_poll_request_publication_race=passed\n' \
+            > "$TMPDIR/live-io-regressions"
         '';
       }
       {
@@ -66,6 +96,7 @@ in
             "$TMPDIR/live-io-target/debug/examples/crucible-qemu-live-block-io" \
             "$TMPDIR/live-io-target/debug/examples/crucible-qemu-live-ninep-io" \
             "$out/bin/"
+          cp "$TMPDIR/live-io-regressions" "$out/regressions"
         '';
       }
     ];

@@ -1513,8 +1513,9 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Micro-test:** the production shared-cause gate reaches the event with a
   halted real guest, requires typed lifecycle PREPARE and APPLY to complete,
   and compares uninterrupted execution with fresh-process restore. The plugin
-  unit regression proves command pumping precedes the control-token release
-  acknowledgement.
+  unit regression fills the lossless event ring and proves command pumping
+  withholds the control-token release acknowledgement until the host consumes
+  enough capacity and the complete private event queue is published.
 - **Inertness:** the added dispatch runs only inside the existing exact drained
   control callback and only when a due node-boundary command is pending. It does
   not advance guest time, synthesize a result, or affect ordinary QEMU modes.
