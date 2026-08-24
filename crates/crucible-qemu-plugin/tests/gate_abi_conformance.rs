@@ -16,6 +16,8 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     let ninep_io = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/ninep_io.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
     let harness_spec =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
 
@@ -54,7 +56,7 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     assert_contains(&harness_spec, "- [x] **T-HARN-19**");
     assert_contains(&harness_spec, "filesystem semantics");
 
-    assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&phase_check);
+    assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate);
 
     Ok(())
 }
@@ -71,6 +73,8 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     let guest_lib = fs::read_to_string(root.join("crates/crucible-guest/src/lib.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
     let guest_host_spec =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/16-guest-host-channel.md"))?;
 
@@ -119,7 +123,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
     assert_contains(&guest_host_spec, "aarch64  hint #0x4c");
 
-    assert_doorbell_abi_unit_targets_are_gate_wired(&phase_check);
+    assert_doorbell_abi_unit_targets_are_gate_wired(&canonical_gate);
 
     Ok(())
 }
@@ -159,6 +163,6 @@ fn assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(phase_check: &str) {
     // The gate owns the hermetic Cargo invocation; this integration test owns
     // the cross-file proof that the executable target remains attached to it.
     assert_contains(phase_check, "-p crucible-qemu-plugin");
-    assert_contains(phase_check, "io_wire_fuzz \\");
-    assert_contains(phase_check, "rust_test=crucible-qemu-plugin::io_wire_fuzz");
+    assert_contains(phase_check, "--lib io_wire_fuzz \\");
+    assert_contains(phase_check, "plugin_io_wire_fuzz_executed=true");
 }

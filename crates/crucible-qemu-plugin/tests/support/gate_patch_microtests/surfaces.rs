@@ -1,14 +1,12 @@
-//! Second half of `assert_covers_carried_qemu_patch_series`: the plugin ABI
-//! surface, per-patch nix fixtures, `qemu.nix`, and the roster-wide aggregate
-//! result-line checks.
+//! Second half of `assert_covers_carried_qemu_patch_series`: plugin ABI, Nix
+//! fixtures, `qemu.nix`, and roster-wide aggregate result-line checks.
 
 use std::error::Error;
 use std::fs;
 
 use super::common::{EXPECTED_PATCHES, assert_contains, required, workspace_root};
 
-/// Asserts the plugin ABI, per-patch nix fixtures, `qemu.nix`, and the
-/// aggregate result-line contract for every carried patch.
+/// Asserts plugin ABI, Nix fixtures, and aggregate contracts for every patch.
 ///
 /// # Errors
 ///
@@ -17,9 +15,8 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     let root = workspace_root()?;
     let aggregate = fs::read_to_string(root.join("tests/crucible/phase2-patch-microtests.nix"))?;
 
-    // The ABI module is split across `abi.rs` and the `abi/inert_callbacks.rs`
-    // child module (the inert scaffold callbacks live there); concatenate both so
-    // needles for either half resolve against a single checked-source haystack.
+    // Concatenate `abi.rs` and `abi/inert_callbacks.rs` so needles for the inert
+    // scaffold and the primary ABI resolve against one checked-source haystack.
     let abi = format!(
         "{}\n{}",
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/abi.rs"))?,

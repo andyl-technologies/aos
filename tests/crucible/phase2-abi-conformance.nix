@@ -17,6 +17,7 @@
   protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
   protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
   pluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  guestGateTest = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
   engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
@@ -74,6 +75,15 @@
         needle = ''
           gate: "gate:abi-conformance",
                   package: "crucible-qemu-plugin",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "guest ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-guest",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
                   placeholder: false,'';
@@ -175,7 +185,17 @@
       }
       {
         label = "plugin owner binds I/O wire unit target to executable gate";
-        needle = "assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&phase_check)";
+        needle = "assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-guest/tests/gate_abi_conformance.rs" guestGateTest [
+      {
+        label = "guest command ABI owner";
+        needle = "guest_cli_verbs_encode_shared_marker_payloads";
+      }
+      {
+        label = "guest architecture ABI owner";
+        needle = "guest_emitter_uses_single_source_doorbell_abi_table";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_abi_conformance.rs" engineGateTest [
@@ -424,6 +444,14 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-abi-conformance-target" \
               --manifest-path crates/Cargo.toml \
+              -p crucible-protocol \
+              doorbell_abi \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
               -p crucible-api \
               --test gate_abi_conformance \
               -- --test-threads=1
@@ -433,6 +461,30 @@ in
               --target-dir "$TMPDIR/crucible-abi-conformance-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
+              --lib io_wire_fuzz \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --lib whitebox_doorbell \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-guest \
               --test gate_abi_conformance \
               -- --test-threads=1
             cargo test \
@@ -460,6 +512,9 @@ in
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
             rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied
             plugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz
+            plugin_io_wire_fuzz_executed=true
+            doorbell_abi_unit_targets_executed=true
+            guest_abi_target_executed=true
             engine_abi_aggregate=true
             version_bump_rule=shmem+protocol+rpc-golden-corpora
             rpc_major_mismatch_rejection=true
