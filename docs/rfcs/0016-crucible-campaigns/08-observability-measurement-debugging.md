@@ -112,6 +112,78 @@ Model-owned virtual time, node icount, event counts, network drops, and storage
 completions require `virtual_nanoseconds`, `instructions`, `events`, `packets`,
 and `operations` respectively.
 
+The pure replay result is
+`crucible.model.measurement-evaluation.v1`. Evaluation first authenticates a
+dense scheduler-log range, then admits at most 1,000,000 normalized samples and
+1,000,000 scheduler entries. Normalized samples have a separate aggregate
+64-MiB canonical-body limit, and terminal input contains at most 65,536 node
+counters. The checked product of all begin/end selector-tree nodes and scheduler
+entries plus the terminal visit is at most 4,000,000 visits. A fixed-memory
+preflight also caps the final canonical evaluation body at 64 MiB. These are
+deliberate aggregate work bounds: individual schema maxima are not promised to
+compose without limit.
+
+The canonical v1 evaluation body is whitespace-free UTF-8 JSON with this
+language-neutral shape (brackets denote ordered collections, not literal JSON
+syntax):
+
+```text
+Evaluation = {
+  definitions: ContentHash,
+  measurement: { MeasurementId: { window: Window, metrics: { MetricId: Metric } } }
+}
+Metric = {
+  samples: [{ sequence, measurement, metric, value }],
+  aggregate: Aggregate,
+  evidence: [ContentHash]
+}
+Boundary = { sequence: u64|null, at: VirtualTime, events: [Event], cohort: [NodeId] }
+Event = { sequence: u64, content_hash: ContentHash }
+Window = { kind: not_started }
+       | { kind: open, begin: Boundary }
+       | { kind: completed, begin: Boundary, end: Boundary }
+       | { kind: timed_out, begin: Boundary, timeout: Boundary }
+```
+
+The `measurement` and `metrics` object keys are lexicographically ordered.
+Struct fields retain the order above. Sample and aggregate values use a
+lowercase `snake_case` `kind` plus `value`; their common tags are `signed`,
+`unsigned`, `rational`, `boolean`, `enumerated`, `signed_vector`, and
+`unsigned_vector`, and aggregates additionally admit `histogram`. A rational
+value is `{negative,numerator,denominator}` in that order. `ContentHash` remains
+`{bytes:[32 u8]}`. The identity is
+`H("crucible.model.measurement-evaluation.v1", lowercase_hex(body))`.
+
+Each satisfying boundary retains its completing sequence and virtual-time
+coordinate plus the exact scheduler-entry hashes in scheduler order and the
+exact selected cohort members. Compound `all` evidence is the ordered union of
+its children; `any` chooses the first child in declared order at the first
+satisfying scheduler boundary. Cohort `any` chooses the first member in event
+order, `all` retains every declared member, and `quorum` retains the first
+declared number of distinct members in event order. Samples on both the begin
+and end/timeout entries are included. When an end selector and timeout become
+true on the same scheduler entry, the declared end wins.
+
+Virtual-time, node-icount, event-count, and scheduler-quiescence terminal
+coordinates and the scenario-ready coordinate are modeled replay inputs, never
+wall-clock observations. Samples are filtered by both the exact virtual-time
+coordinates and scheduler sequences of their window. A network-idle end
+selector starts its idle interval when the measurement opens rather than at
+scenario genesis. Exact integer arithmetic rejects overflow; rationals use a
+reduced signed-magnitude numerator and positive denominator; integer histograms
+use inclusive declared upper bounds plus one overflow bin. `count`, numeric
+`sum`, and histogram may aggregate an empty window, while `first`, `last`,
+`min`, `max`, exact mean, and event delta require samples. Retained evaluation
+bytes are accepted only by recomputing the complete result and comparing the
+canonical body exactly.
+
+The evaluator accepts only normalized typed samples already attached to an
+authenticated scheduler sequence. T-CAM-3.2 owns conversion of bounded guest
+messages, including marker instance keys; an instance-bearing selector cannot
+match the legacy instance-free marker payload. T-CAM-3.3 owns projection of
+model-derived sources. Those producers cannot alter window or aggregation
+semantics.
+
 Example:
 
 ```toml
