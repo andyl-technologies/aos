@@ -8,7 +8,8 @@ use std::io::Read as _;
 mod error;
 
 pub(in crate::vm_lifecycle) use error::DurableRunStateError;
-use error::{decode_allocation_error, map_limit};
+pub(super) use error::map_limit;
+use error::decode_allocation_error;
 
 const RUN_STATE_BYTES_FIELD: &str = "lifecycle_run_state_bytes";
 
@@ -396,6 +397,7 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
         if node.current_generation == 0
             || !valid_lifecycle_generation(&journal.phase, node)
             || !valid_lifecycle_transition(&node.transition)
+            || !valid_lifecycle_expected_exit(&journal.phase, node)
             || !valid_lifecycle_hash(&node.action_sha256)
             || !valid_lifecycle_hash(&node.evidence_sha256)
             || !valid_process_identity(&node.current_process)
@@ -440,6 +442,24 @@ fn expected_lifecycle_exit_code(value: &str) -> Option<i32> {
         "PowerOff" => Some(71),
         "PermanentFailure" => Some(72),
         _ => None,
+    }
+}
+
+fn valid_lifecycle_expected_exit(
+    phase: &ProductionLifecycleJournalPhase,
+    node: &ProductionLifecycleJournalNode,
+) -> bool {
+    let effective = expected_lifecycle_exit_code(&node.transition);
+    match phase {
+        ProductionLifecycleJournalPhase::Intent
+        | ProductionLifecycleJournalPhase::Quarantined => {
+            node.expected_exit_code.is_none() || node.expected_exit_code == effective
+        }
+        ProductionLifecycleJournalPhase::Prepared
+        | ProductionLifecycleJournalPhase::ExitsReaped => node.expected_exit_code == effective,
+        ProductionLifecycleJournalPhase::Idle | ProductionLifecycleJournalPhase::Committed => {
+            false
+        }
     }
 }
 

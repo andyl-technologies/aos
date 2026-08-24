@@ -3,6 +3,7 @@
 use super::*;
 
 mod persistence;
+mod publication;
 mod process_ownership;
 mod staging;
 pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
@@ -16,6 +17,7 @@ pub(in crate::vm_lifecycle) use persistence::{
     HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal,
 };
 pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
+pub(in crate::vm_lifecycle::quantum_loop) use publication::release_restored_generation_after_scheduler_publication;
 
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(

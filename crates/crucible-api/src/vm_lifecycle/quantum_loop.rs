@@ -11,7 +11,8 @@ pub(super) use lifecycle::{
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
     PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
-    map_journal_limit, try_lifecycle_crash_detector,
+    map_journal_limit, release_restored_generation_after_scheduler_publication,
+    try_lifecycle_crash_detector,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -1194,13 +1195,10 @@ impl ProductionVmLifecycleLoop {
             .iter()
             .filter(|item| item.service_state == ProductionNodeServiceState::Running)
         {
-            self.inner.loop_impl().require_vm_node_activity(
+            release_restored_generation_after_scheduler_publication(
+                self,
                 &item.decision.node,
-                SchedulerNodeActivity::Runnable,
             )?;
-            self.inner
-                .backend_mut()
-                .resume_restored_generation(&item.decision.node)?;
         }
 
         for item in prepared.drain(..) {
