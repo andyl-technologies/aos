@@ -12,7 +12,6 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
 use worker::{Env, Method, Request, RequestInit};
 
@@ -21,48 +20,12 @@ use aos_hub_core::dialect::Dialect;
 use aos_hub_core::value::{Row, Value};
 
 use crate::handlers::bindings::HUB_DB;
+use crate::remoteprotocol::{RemoteSqlRequest, RemoteSqlResponse, RemoteStatement};
 
 const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
 
 /// Internal path serving the remote SQL protocol.
 pub(crate) const REMOTE_SQL_PATH: &str = "/_internal/sql";
-
-/// One serialized SQL operation sent to `HubDb`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
-pub(crate) enum RemoteSqlRequest {
-    /// Executes one mutation and returns its affected-row count.
-    Execute { sql: String, params: Vec<Value> },
-    /// Executes one mutation without reading its affected-row count.
-    ExecuteDiscardingCount { sql: String, params: Vec<Value> },
-    /// Executes one insert and returns its generated relational id.
-    ExecuteInsert { sql: String, params: Vec<Value> },
-    /// Executes one query and returns all rows.
-    Query { sql: String, params: Vec<Value> },
-    /// Applies a DDL script.
-    ExecuteBatch { sql: String },
-    /// Applies one ordinary or checked atomic statement batch.
-    Batch { statements: Vec<RemoteStatement> },
-}
-
-/// One statement and optional row-count assertion in a remote batch.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct RemoteStatement {
-    sql: String,
-    params: Vec<Value>,
-    expected_rows: Option<u64>,
-}
-
-/// Result union returned by the internal SQL endpoint.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub(crate) struct RemoteSqlResponse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    count: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    inserted_id: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rows: Option<Vec<Row>>,
-}
 
 /// Per-activation counters for SQL operations crossing into `HubDb`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -177,10 +140,12 @@ impl RemoteHubBackend {
             let detail = response.text().await.unwrap_or_default();
             bail!("remote SQL returned {}: {detail}", response.status_code());
         }
-        let decoded: RemoteSqlResponse = response
-            .json()
+        let body = response
+            .bytes()
             .await
-            .map_err(|error| anyhow!("decoding remote SQL response: {error}"))?;
+            .map_err(|error| anyhow!("reading remote SQL response: {error}"))?;
+        let decoded: RemoteSqlResponse =
+            serde_json::from_slice(&body).context("decoding remote SQL response JSON")?;
         self.metrics.record(
             worker::Date::now().as_millis().saturating_sub(started_at),
             decoded.rows.as_ref().map_or(0, Vec::len),
