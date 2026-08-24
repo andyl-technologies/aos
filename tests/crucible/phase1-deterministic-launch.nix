@@ -622,8 +622,12 @@
       needle = "hasher.write_bytes(domain.as_bytes());";
     }
     {
-      label = "material enters content hash";
-      needle = "hasher.write_bytes(material.as_bytes());";
+      label = "string material delegates to canonical bytes";
+      needle = "content_hash_from_canonical_material_bytes(domain, material.as_bytes())";
+    }
+    {
+      label = "canonical bytes enter content hash";
+      needle = "hasher.write_bytes(material);";
     }
   ];
 
