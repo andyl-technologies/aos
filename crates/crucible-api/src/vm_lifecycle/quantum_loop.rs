@@ -1205,36 +1205,23 @@ impl ProductionVmLifecycleLoop {
             source_run_directory: &prepared.source_run_directory,
         };
         let launched = match prepared.service_state {
-            ProductionNodeServiceState::Running => Some(launch_production_node_generation(
-                self.node_launcher.as_mut(),
-                ProductionVmNodeLaunchBasis::new(
-                    &prepared.launch,
-                    &prepared.run_directory,
-                    &node,
-                    prepared.generation,
-                ),
-                &prepared.crash_detector,
-                preparation,
-                ProductionVmNodeLaunchKind::Exact {
-                    snapshot: &prepared.snapshot,
-                    paused: false,
-                },
-            )),
-            ProductionNodeServiceState::PoweredOff => Some(launch_production_node_generation(
-                self.node_launcher.as_mut(),
-                ProductionVmNodeLaunchBasis::new(
-                    &prepared.launch,
-                    &prepared.run_directory,
-                    &node,
-                    prepared.generation,
-                ),
-                &prepared.crash_detector,
-                preparation,
-                ProductionVmNodeLaunchKind::Exact {
-                    snapshot: &prepared.snapshot,
-                    paused: true,
-                },
-            )),
+            ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
+                Some(launch_production_node_generation(
+                    self.node_launcher.as_mut(),
+                    ProductionVmNodeLaunchBasis::new(
+                        &prepared.launch,
+                        &prepared.run_directory,
+                        &node,
+                        prepared.generation,
+                    ),
+                    &prepared.crash_detector,
+                    preparation,
+                    ProductionVmNodeLaunchKind::Exact {
+                        snapshot: &prepared.snapshot,
+                        paused: true,
+                    },
+                ))
+            }
             ProductionNodeServiceState::PermanentlyFailed => None,
         };
         if let Some(launched) = launched {
@@ -1393,6 +1380,21 @@ impl ProductionVmLifecycleLoop {
             *slot = handle;
         }
         drop(block_devices);
+
+        // Every Crash replacement is restored under the native QEMU pause.
+        // Publish Runnable scheduler ownership and install the authoritative
+        // backend generation before releasing guest execution.
+        for item in prepared
+            .iter()
+            .filter(|item| item.service_state == ProductionNodeServiceState::Running)
+        {
+            self.inner
+                .loop_impl()
+                .require_vm_node_activity(&item.decision.node, SchedulerNodeActivity::Runnable)?;
+            self.inner
+                .backend_mut()
+                .resume_restored_generation(&item.decision.node)?;
+        }
 
         for item in prepared.drain(..) {
             let node = item.decision.node;

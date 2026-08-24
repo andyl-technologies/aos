@@ -251,6 +251,8 @@ in
           run_exact_crucible_test \
             scheduler::tests::signal_fault_frontier_preserves_parent_time_and_typed_candidates
           run_exact_crucible_test \
+            scheduler::tests::production_backend::lifecycle_activity_requirement_rejects_release_before_scheduler_publication
+          run_exact_crucible_test \
             model::fault_signal::binding_runtime::tests::refined_coordinate::locked_replay_retains_and_enforces_a_backend_refined_coordinate
           run_exact_crucible_test \
             model::fault_signal::runtime::tests::resolved_effect_trace_rejects_unversioned_and_future_envelopes
@@ -286,6 +288,8 @@ in
             node::tests::exact_lifecycle::exact_snapshot_rejects_staged_fault_event_ownership
           run_exact_qemu_test \
             node::tests::exact_lifecycle::permanent_failure_retires_and_removes_the_authoritative_generation
+          run_exact_qemu_test \
+            node::tests::exact_lifecycle::restored_replacement_requires_explicit_release_after_install
           run_exact_qemu_test \
             node::tests::shutdown_and_preemption::process_identity_components_reuse_preowned_executable_storage
           run_exact_qemu_test \
