@@ -8729,7 +8729,12 @@ async fn upload_publication_object_class(
 ) -> Result<()> {
     const CONCURRENT_UPLOADS: usize = 32;
     const SNAPSHOT_PERMIT_BYTES: u64 = 1024 * 1024;
-    const SNAPSHOT_BUDGET_PERMITS: u32 = 128;
+    // Cloudflare Durable Objects have a 128 MiB isolate limit. A request body
+    // exists in both the Worker stream and the verified Rust buffer while R2
+    // accepts it, so bounding client-side snapshots to 32 MiB leaves room for
+    // the router, database transport, and provider SDK. Small objects can still
+    // use all 32 request slots; near-limit objects naturally serialize.
+    const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
     const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
