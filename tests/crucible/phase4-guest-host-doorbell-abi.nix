@@ -218,7 +218,7 @@
       }
       {
         label = "canonical ABI gate runs protocol doorbell ABI tests";
-        needle = "run_doorbell_abi_unit_targets";
+        needle = "assert_doorbell_abi_unit_targets_are_gate_wired";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
