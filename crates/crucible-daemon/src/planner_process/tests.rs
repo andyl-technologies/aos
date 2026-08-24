@@ -8,9 +8,9 @@ use std::io::Cursor;
 
 use crucible_campaign::{
     CampaignHash, CampaignMode, CampaignPlanningBundle, CampaignPlanningView, CampaignPolicy,
-    CampaignSeed, CampaignSnapshotId, ExplorerPolicy, FairnessPolicy, PlannerInvocation,
-    PlannerProposalDisposition, PlanningBudget, PlanningScanPage, PolicyArtifact,
-    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
+    CampaignSeed, CampaignSnapshotId, CanonicalPuctPlanner, ExplorerPolicy, FairnessPolicy,
+    PlannerInvocation, PlannerProposalDisposition, PlanningBudget, PlanningScanPage,
+    PolicyArtifact, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
@@ -100,8 +100,39 @@ fn canonical_worker_returns_only_one_untrusted_proposal_frame() {
     assert_eq!(proposal.usage_claim().fuel, 1);
 }
 
+#[test]
+fn canonical_worker_dispatches_the_puct_engine_version() {
+    let request = canonical_request_for(0x61, true);
+    let mut input = Vec::new();
+    write_frame(&mut input, REQUEST_KIND, &request.canonical_bytes()).expect("request frame");
+    let mut output = Vec::new();
+    serve_canonical_planner_process_once(Cursor::new(input), &mut output)
+        .expect("serve canonical PUCT planner");
+
+    let (kind, body) = parse_frame(&output).expect("proposal frame");
+    assert_eq!(kind, PROPOSAL_KIND);
+    let proposal = PlannerStepProposal::from_canonical_bytes(body).expect("proposal");
+    assert_eq!(
+        proposal.invocation(),
+        request.invocation_id().expect("invocation")
+    );
+    assert!(matches!(
+        proposal.disposition(),
+        PlannerProposalDisposition::NoWork
+    ));
+    assert_eq!(proposal.usage_claim().fuel, 1);
+}
+
 fn canonical_request(byte: u8) -> PlannerRequest {
-    let engine = CanonicalFrontierPlanner::descriptor().expect("canonical engine");
+    canonical_request_for(byte, false)
+}
+
+fn canonical_request_for(byte: u8, use_puct: bool) -> PlannerRequest {
+    let engine = if use_puct {
+        CanonicalPuctPlanner::descriptor().expect("canonical PUCT engine")
+    } else {
+        CanonicalFrontierPlanner::descriptor().expect("canonical engine")
+    };
     let engine_id = engine.id().expect("engine id");
     let policy_artifact = PolicyArtifact::new(
         engine_id,
@@ -140,7 +171,11 @@ fn canonical_request(byte: u8) -> PlannerRequest {
         false,
     )
     .expect("policy");
-    let state = CanonicalFrontierPlanner::initial_state().expect("initial state");
+    let state = if use_puct {
+        CanonicalPuctPlanner::initial_state().expect("initial PUCT state")
+    } else {
+        CanonicalFrontierPlanner::initial_state().expect("initial state")
+    };
     let view = CampaignPlanningView::new(
         content(ObjectKind::MerkleNode, byte.wrapping_add(2)),
         content(ObjectKind::MerkleNode, byte.wrapping_add(3)),

@@ -807,6 +807,21 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Derives the semantic edge for an exact branch point, domain semantics,
+    /// and legal value.
+    ///
+    /// The derivation is pure and does not establish that the semantic domain
+    /// belongs to a particular exact domain record. Owners must authenticate
+    /// that exact-to-semantic binding before using the result.
+    #[must_use]
+    pub fn campaign_edge_id(
+        branch_point: BranchPointId,
+        domain: ChoiceDomainSemanticId,
+        value: &ChoiceValue,
+    ) -> BranchEdgeId {
+        derive_branch_edge(branch_point, domain, value)
+    }
+
     /// Builds a selection after validating its value against the supplied domain.
     ///
     /// # Errors
@@ -886,7 +901,7 @@ impl Selection {
         value: ChoiceValue,
         branch_point: BranchPointId,
     ) -> Result<Self, CampaignCodecError> {
-        let edge = derive_branch_edge(branch_point, domain.semantic_id(), &value);
+        let edge = Self::campaign_edge_id(branch_point, domain.semantic_id(), &value);
         Self::new_with_validated_origin(
             opportunity,
             domain,

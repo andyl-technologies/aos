@@ -254,9 +254,16 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   root/observation/identity/byte bounds, folds owner-verified finding
   occurrences through three closed positive policy-guidance signals under
   finding-root/occurrence/body bounds, holds objective reward neutral, and
-  derives the active policy's exact edge scores with restart equality.
-  Objective reward, model/explicit-prior, interval-feedback, and the planner/
-  generator integrations that consume these owners remain open.
+  derives the active policy's exact edge scores with restart equality. Canonical
+  frontier engine version 2 now consumes those completed/prospective uniform-
+  prior, novelty, finding-reward, and fairness terms from exact owner-built
+  guidance for every Ready offer. It carries the best score across pages,
+  publishes guidance only after zero-write preflight, and reruns identically on
+  restart/import. The request projector batches unique branch points, scans the
+  canonical observation/finding roots once, charges 65,536 aggregate credits,
+  128 MiB of credit/path bodies, and 128 MiB of unique choice-domain bodies.
+  Objective reward, model/explicit prior, interval feedback, and generator
+  integrations that consume those remaining owners remain open.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -302,9 +309,9 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   proposal budget. Static continuation projection remains valid after modeled
   observations exist: it binds the exact observation root and projects exact
   completed visits from canonical branch-point credit sets. The independent
-  exact PUCT
-  arithmetic primitive is available but intentionally cannot affect this
-  engine's canonical ordering. Other
+  exact PUCT arithmetic and guidance projection are consumed only by canonical
+  frontier engine version 2; version 1 retains its original least-position
+  ordering. Other
   generated requests remain conservatively `Open` and
   fail closed when proposal or expansion semantics are requested. Legacy
   snapshots remain unindexed and queries fail closed rather than constructing a
@@ -735,15 +742,18 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   golden vectors, fake engines, and a versioned Unix-loopback adapter with
   finite absolute deadlines, close-on-error behavior, and direct/loopback
   equivalence. The coordinator now supplies capability-gated, snapshot-owner-
-  recomputed continuation projections for every served source and one exact
-  next-candidate offer for the least Ready position on each page. Built-in
-  `crucible-canonical-frontier` version 1 consumes that
+  recomputed continuation projections for every served source. Built-in
+  `crucible-canonical-frontier` version 1 receives one exact next-candidate
+  offer for the least Ready position on each page and consumes that
   bundle without repository authority, carries the least Ready offer across
   pages in bounded portable state, and deterministically returns Continue,
   Issue, or NoWork only at the valid scan boundary. Accepted offer envelopes
   become retained-request children after zero-write semantic preflight, and
-  import/restart recompute the same source ordinal and value. The packaged
-  canonical planner now runs behind a versioned one-request process protocol:
+  import/restart recompute the same source ordinal and value. Version 2 receives
+  an offer and exact bounded PUCT guidance for every Ready source, ranks the
+  owner-derived score across pages, and is now the packaged daemon default;
+  version 1 remains replay-compatible. Both run behind a versioned one-request
+  process protocol:
   a parent-owned supervisor measures deterministic page fuel, enforces a
   finite wall deadline and sticky cancellation, drains bounded pipes, and
   kills and reaps the authority-free worker before returning. The generic
@@ -751,7 +761,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   can now attach that runtime to one explicitly named existing campaign with
   the packaged planner and one authenticated local executor; automatic
   campaign discovery, dynamic/multiple attachment, owner-built objective reward,
-  and complete fixed-point PUCT ranking remain open. The first `CampaignService`
+  and model/explicit-prior ranking remain open. The first `CampaignService`
   checkpoint now provides
   strict principal/name types, 64-MiB canonical request/response messages for
   bounded by-value creation, authenticated current-head reads,

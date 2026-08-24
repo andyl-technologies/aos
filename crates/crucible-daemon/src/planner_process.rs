@@ -30,9 +30,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
-    CampaignCodecError, CanonicalFrontierPlanner, MAX_PLANNER_COMPONENT_MESSAGE_BYTES,
-    PlannerEngineOutput, PlannerExecutionSupervisor, PlannerRequest, PlannerStepProposal,
-    PurePlannerEngine, SupervisedPlannerExecution,
+    CampaignCodecError, CanonicalFrontierPlanner, CanonicalPuctPlanner,
+    MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerEngineOutput, PlannerExecutionSupervisor,
+    PlannerRequest, PlannerStepProposal, PurePlannerEngine, SupervisedPlannerExecution,
 };
 
 const FRAME_MAGIC: &[u8; 8] = b"CRUCPP01";
@@ -285,16 +285,11 @@ impl CanonicalPlannerProcessSupervisor {
             )),
         }
     }
-}
 
-impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for CanonicalPlannerProcessSupervisor {
-    type Error = CanonicalPlannerProcessError;
-
-    fn execute(
+    fn execute_supervised(
         &mut self,
-        _engine: &mut CanonicalFrontierPlanner,
         request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, CanonicalPlannerProcessError> {
         let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
             .ok()
             .and_then(|positions| positions.checked_add(1))
@@ -308,6 +303,30 @@ impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for CanonicalPlannerPr
         }
         let output = self.execute_request(request)?;
         Ok(SupervisedPlannerExecution::new(Ok(output), measured_fuel))
+    }
+}
+
+impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for CanonicalPlannerProcessSupervisor {
+    type Error = CanonicalPlannerProcessError;
+
+    fn execute(
+        &mut self,
+        _engine: &mut CanonicalFrontierPlanner,
+        request: &PlannerRequest,
+    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+        self.execute_supervised(request)
+    }
+}
+
+impl PlannerExecutionSupervisor<CanonicalPuctPlanner> for CanonicalPlannerProcessSupervisor {
+    type Error = CanonicalPlannerProcessError;
+
+    fn execute(
+        &mut self,
+        _engine: &mut CanonicalPuctPlanner,
+        request: &PlannerRequest,
+    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
+        self.execute_supervised(request)
     }
 }
 
@@ -396,8 +415,22 @@ pub fn serve_canonical_planner_process_once(
             return write_frame(&mut output, REJECTION_KIND, rejection.as_bytes());
         }
     };
-    let mut engine = CanonicalFrontierPlanner;
-    match engine.plan(&request) {
+    let result = if request.engine()
+        == &CanonicalFrontierPlanner::descriptor()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    {
+        CanonicalFrontierPlanner.plan(&request)
+    } else if request.engine()
+        == &CanonicalPuctPlanner::descriptor()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    {
+        CanonicalPuctPlanner.plan(&request)
+    } else {
+        Err(CampaignCodecError::InvalidValue {
+            reason: "canonical planner worker received an unsupported engine",
+        })
+    };
+    match result {
         Ok(result) => write_frame(
             &mut output,
             PROPOSAL_KIND,

@@ -442,25 +442,45 @@ finding bodies. Complete snapshot authentication precedes the shallow bounded
 fold, so large reproduction bodies are not reparsed per projection.
 
 Objective reward remains zero. The active tree-search policy produces the exact
-decomposed fixed-point score for every edge. Empty branch points receive no
-synthetic edge, prior, novelty, reward, or fairness reservation. This projection
-is not yet consumed by canonical planner ordering. Model/explicit priors,
-objective reward, and the path-ranking planner integration remain open.
+decomposed fixed-point score for every completed edge. Empty branch points
+retain no synthetic completed edge. For one offered unseen edge, the owner
+instead evaluates exactly one prospective addition: zero visits, reward,
+novelty, and finding events; canonical uniform prior over the completed edges
+plus that edge; and the fairness reservation because every completed edge has a
+positive visit count. The hypothetical contains no other offers, so its score
+is independent of planner page shape.
 
-The first executable closed-planner checkpoint deliberately establishes the
-pure paged frontier loop before adaptive scoring. Engine
+The first executable closed-planner checkpoint established the pure paged
+frontier loop before adaptive scoring. Engine
 `crucible-canonical-frontier` implementation version 1 receives the
 coordinator's exact authenticated continuation state and next legal candidate
 for every served source, considers only `Ready` sources, and chooses the least
 canonical `PlanningScanPosition`. It carries that offer across pages and issues
 only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
-claim that PUCT is complete. Introducing objective reward, prior, or edge-visit
-terms requires the complete owner-built projections and exact arithmetic above
-and a new engine implementation version. The exact scorer, edge-visit
-partition, coverage-novelty fold, finding-reward fold, uniform-prior fallback,
-and fairness owner are now implemented and conformance-tested independently of
-ranking; the remaining owner-built inputs and ranking engine remain the gate
-that prevents them from changing campaign behavior prematurely.
+claim that PUCT is complete.
+
+Implementation version 2 additionally advertises
+`canonical-frontier-puct-v1`. The coordinator supplies an exact
+`PlannerCandidateGuidanceV1` beside every Ready offer, recomputed from the
+authenticated view and active policy. A whole served page is one bounded
+projection batch: at most 65,536 aggregate credited observations and 128 MiB of
+credit/path bodies, one bounded observation-root novelty scan, one bounded
+finding-root scan, and at most 128 MiB of unique decoded choice-domain bodies.
+Shared branch points, observations, findings, coverage bodies, and domains are
+not reparsed per offer. The retained request remains subject to its 32 MiB
+stored-body and 65,529-child profile.
+
+Version 2 derives the exact score from the by-value policy and guidance, carries
+the best candidate across pages, and issues only at EOF. Higher fixed-point
+total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
+`PlanningScanPosition`; this is the closed frontier engine's complete tie rule.
+The engine receives no repository or Merkle authority. Local acceptance,
+restart, and imported-snapshot validation recompute every guidance record and
+rerun the complete pure transition. Version 1 remains replay-compatible and
+keeps its original least-position ordering. Model/explicit priors, objective
+reward, and their corresponding planner versions remain open; version 2 uses
+only uniform prospective/completed priors, global coverage novelty, configured
+closed finding rewards, and fairness.
 
 ## 03.5 Guidance signals and objectives
 

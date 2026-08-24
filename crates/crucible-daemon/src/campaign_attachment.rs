@@ -16,7 +16,7 @@ use crucible_campaign::{
     CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignRepository,
     CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
-    CampaignSupervisorError, CanonicalFrontierPlanner, ExecutionRetentionIntent, ExecutorClient,
+    CampaignSupervisorError, CanonicalPuctPlanner, ExecutionRetentionIntent, ExecutorClient,
     ExecutorClientError, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlanningBudget,
 };
@@ -206,7 +206,7 @@ pub enum CanonicalCampaignRuntimeConfigError {
 }
 
 type CanonicalPlannerService =
-    AuthorizedPlannerService<CanonicalFrontierPlanner, CanonicalPlannerProcessSupervisor>;
+    AuthorizedPlannerService<CanonicalPuctPlanner, CanonicalPlannerProcessSupervisor>;
 type CanonicalSupervisor = CampaignSupervisor<CanonicalPlannerService, LoopbackExecutorService>;
 type CanonicalSupervisorFailure = CampaignSupervisorError<
     AuthorizedPlannerServiceError<CampaignCodecError, CanonicalPlannerProcessError>,
@@ -342,12 +342,12 @@ pub fn prepare_canonical_campaign_runtime(
     }
 
     let basis = repository
-        .publish_canonical_frontier_planner_basis()
+        .publish_canonical_puct_planner_basis()
         .map_err(CanonicalCampaignRuntimeError::Repository)?;
     let (planner_supervisor, planner_cancellation) =
         CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
     let planner_service = AuthorizedPlannerService::new(
-        CanonicalFrontierPlanner,
+        CanonicalPuctPlanner,
         planner_supervisor,
         planner_authority.clone(),
     );

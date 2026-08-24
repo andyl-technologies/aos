@@ -1071,17 +1071,19 @@ included once.
 
 Planner engines advertising `canonical-frontier-offers-v1` additionally
 require, for every served position, the exact `ContinuationProjectionV1`
-envelope authenticated by the expected snapshot's nested frontier index. The
-least Ready position on the page has exactly one `ProposalV1` candidate-offer
-envelope; every other position has none. The offer names the served request, branch point, domain,
-active policy, exact invocation, input view, and next one-based ordinal, and
-contains the owner-computed next legal value. Extra, missing, duplicate,
-cross-invocation, or non-Ready offers fail closed. The coordinator recomputes
-the projection and offer from the expected snapshot before acceptance. Offer
-envelopes need not exist before evaluation; after complete read-only output
-preflight, acceptance publishes them as retained-request children before
-publishing the request. Rejection therefore remains zero-write, while accepted
-requests remain closure-complete and restart-auditable.
+envelope authenticated by the expected snapshot's nested frontier index. For an
+engine that does not also advertise `canonical-frontier-puct-v1`, the least
+Ready position on the page has exactly one `ProposalV1` candidate-offer
+envelope and every other position has none. An offer names the served request,
+branch point, domain, active policy, exact invocation, input view, and next
+one-based ordinal, and contains the owner-computed next legal value. Extra,
+missing, duplicate, cross-invocation, or non-Ready offers fail closed. The
+coordinator recomputes the projection and offer from the expected snapshot
+before acceptance. Offer envelopes need not exist before evaluation; after
+complete read-only output preflight, acceptance publishes them as retained-
+request children before publishing the request. Rejection therefore remains
+zero-write, while accepted requests remain closure-complete and restart-
+auditable.
 
 The built-in `crucible-canonical-frontier` implementation version 1 is a closed
 pure engine for this capability. It considers only `Ready` offers, chooses the
@@ -1095,11 +1097,47 @@ complete executable planner/frontier loop without granting repository or
 Merkle authority to the engine. The first invocation requires the exact empty
 state, and local acceptance plus imported/restart validation rerun this built-in
 pure transition and compare its complete next state, usage claim, evidence, and
-disposition. Exact fixed-point PUCT term arithmetic is implemented as a pure
-bounded primitive. The owner-built globally unique coverage-novelty and policy-
-weighted finding-reward projections are also implemented read-only. Objective
-reward and the planner version that uses those terms for ranking remain an
-implementation-plan gate.
+disposition.
+
+The same engine name at implementation version 2 additionally advertises
+`canonical-frontier-puct-v1`. Every Ready position has one exact offer and one
+`PlannerCandidateGuidanceV1`; non-Ready positions have neither. The guidance
+body is bounded to 64 KiB and encodes, in order:
+
+```text
+schema_version = 1
+input_view: CampaignViewId
+policy: CampaignPolicyId
+position: PlanningScanPosition
+domain: ChoiceDomainId
+domain_semantics: ChoiceDomainSemanticId
+value: ChoiceValue
+ordinal: u64
+edge: BranchEdgeId
+statistics: PuctEdgeStatistics
+novelty_events: u64
+finding_events: map<FindingKind, u64>  # at most three positive entries
+```
+
+Its envelope children are the exact input view, policy, served request, and
+domain. `edge` MUST derive from the branch point, semantic domain, and value;
+the novelty count MUST agree with the Boolean statistic; the reward sum MUST
+equal the saturating sum of the by-value policy's configured closed finding
+weights times occurrence counts. Completed edges reuse exact authenticated
+statistics. An unseen offered edge is the sole prospective addition to the
+completed set, with zero visits/reward/novelty/findings, a uniform prior over
+that set plus itself, and fairness reserved.
+
+The owner computes one batch per page. Aggregate credited observations and
+credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
+observation and finding roots are each scanned at most once; unique decoded
+choice-domain bodies are capped at 128 MiB. Version 2 ranks higher exact total
+first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
+winner across pages in `canonical-frontier-puct-planner` state version 1, and
+issues only at EOF. Acceptance publishes guidance envelopes with offers only
+after complete zero-write preflight and recomputes/reruns the exact transition
+on restart and import. Version 1 remains canonically replayable. Objective
+reward and model/explicit priors remain implementation-plan gates.
 
 The initial coordinator retention profile is deliberately narrower than the
 version-1 wire format: an accepted request body is at most 32 MiB and its bundle

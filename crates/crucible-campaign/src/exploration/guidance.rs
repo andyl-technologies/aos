@@ -3,9 +3,8 @@
 //! This module owns the language-neutral integer arithmetic used by future
 //! adaptive planner engines. The repository supplies an owner-built completed-
 //! visit partition, coverage-novelty fold, and weighted finding reward for each
-//! semantic edge, but this module deliberately does not select a continuation:
-//! objective reward, nonuniform-prior projections, and a new planner version
-//! must land before these scores may change canonical ordering.
+//! semantic edge. A versioned planner may rank prospective candidate edges with
+//! these inputs; objective reward and nonuniform priors remain separate owners.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -122,6 +121,7 @@ impl BranchEdgeVisitStatistics {
 pub struct BranchPuctProjection {
     branch_point: BranchPointId,
     policy: CampaignPolicyId,
+    puct: PuctPolicy,
     parent_visits: u64,
     edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
     edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
@@ -267,6 +267,7 @@ impl BranchPuctProjection {
         Ok(Self {
             branch_point,
             policy,
+            puct,
             parent_visits,
             edge_novelty_events,
             edge_finding_events,
@@ -316,6 +317,85 @@ impl BranchPuctProjection {
     pub const fn edge_scores(&self) -> &BTreeMap<BranchEdgeId, PuctScore> {
         &self.edge_scores
     }
+
+    /// Derives exact evidence for one currently offered semantic edge.
+    ///
+    /// A completed edge reuses its authenticated statistics. An unseen edge is
+    /// evaluated as the sole prospective addition to the completed edge set:
+    /// it has zero visits and reward, participates in the canonical uniform-
+    /// prior division over `completed edges + this edge`, and owns fairness
+    /// because every retained completed edge has a positive visit count. This
+    /// one-edge hypothetical keeps scores independent of planner page shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if adding the prospective edge exceeds
+    /// the fixed edge bound or derived statistics violate the PUCT contract.
+    pub(crate) fn candidate_evidence(
+        &self,
+        edge: BranchEdgeId,
+    ) -> Result<BranchPuctCandidateEvidence, CampaignCodecError> {
+        if let Some(statistics) = self.edge_statistics.get(&edge).copied() {
+            return Ok(BranchPuctCandidateEvidence {
+                statistics,
+                novelty_events: self.edge_novelty_events.get(&edge).copied().unwrap_or(0),
+                finding_events: self
+                    .edge_finding_events
+                    .get(&edge)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
+
+        let edge_count =
+            self.edge_statistics
+                .len()
+                .checked_add(1)
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "branch-edge-visit-projection-count",
+                })?;
+        if edge_count > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            });
+        }
+        let edge_count_u64 =
+            u64::try_from(edge_count).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            })?;
+        let base_prior = GUIDANCE_MICROS_PER_UNIT / edge_count_u64;
+        let remainder = GUIDANCE_MICROS_PER_UNIT % edge_count_u64;
+        let edge_index = self
+            .edge_statistics
+            .keys()
+            .take_while(|current| **current < edge)
+            .count();
+        let edge_index =
+            u64::try_from(edge_index).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "branch-edge-visit-projection-count",
+            })?;
+        let statistics = PuctEdgeStatistics::new(
+            self.parent_visits,
+            0,
+            0,
+            base_prior + u64::from(edge_index < remainder),
+            false,
+            true,
+        )?;
+        PuctScore::derive(self.puct, statistics)?;
+        Ok(BranchPuctCandidateEvidence {
+            statistics,
+            novelty_events: 0,
+            finding_events: BTreeMap::new(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BranchPuctCandidateEvidence {
+    pub(crate) statistics: PuctEdgeStatistics,
+    pub(crate) novelty_events: u64,
+    pub(crate) finding_events: BTreeMap<FindingKind, u64>,
 }
 
 fn finding_reward_sum(
@@ -506,6 +586,28 @@ impl PuctEdgeStatistics {
     #[must_use]
     pub const fn is_fairness_reserved(self) -> bool {
         self.fairness_reserved
+    }
+}
+
+impl crate::codec::Canonical for PuctEdgeStatistics {
+    fn encode(&self, encoder: &mut crate::codec::Encoder) {
+        self.parent_visits.encode(encoder);
+        self.edge_visits.encode(encoder);
+        self.reward_sum_micros.encode(encoder);
+        self.prior_micros.encode(encoder);
+        self.novel.encode(encoder);
+        self.fairness_reserved.encode(encoder);
+    }
+
+    fn decode(decoder: &mut crate::codec::Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            u64::decode(decoder)?,
+            u64::decode(decoder)?,
+            i64::decode(decoder)?,
+            u64::decode(decoder)?,
+            bool::decode(decoder)?,
+            bool::decode(decoder)?,
+        )
     }
 }
 
@@ -847,6 +949,64 @@ mod tests {
             })
         );
         assert_eq!(projection.edge_scores().len(), 3);
+    }
+
+    #[test]
+    fn candidate_evidence_reuses_completed_edges_and_scores_one_prospective_edge() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-candidate",
+            b"branch-point",
+        ));
+        let completed = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-candidate",
+            b"completed",
+        ));
+        let prospective = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-candidate",
+            b"prospective",
+        ));
+        let policy =
+            CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
+                crucible_cas::content_store::ObjectKind::Policy,
+                1,
+                b"test.branch-puct-candidate.policy",
+            ))
+            .expect("policy id");
+        let projection = BranchPuctProjection::new_with_evidence(
+            policy,
+            PuctPolicy::new(1_000_000, 50_000, 25_000),
+            BranchEdgeVisitStatistics::new(branch_point, 2, BTreeMap::from([(completed, 2)]))
+                .expect("completed visit partition"),
+            BTreeMap::from([(completed, 3)]),
+            BTreeMap::from([(FindingKind::Divergence, 7)]),
+            BTreeMap::from([(completed, BTreeMap::from([(FindingKind::Divergence, 1)]))]),
+        )
+        .expect("completed projection");
+
+        let completed_evidence = projection
+            .candidate_evidence(completed)
+            .expect("completed evidence");
+        assert_eq!(
+            completed_evidence.statistics,
+            projection.edge_statistics()[&completed]
+        );
+        assert_eq!(completed_evidence.novelty_events, 3);
+        assert_eq!(
+            completed_evidence.finding_events,
+            BTreeMap::from([(FindingKind::Divergence, 1)])
+        );
+
+        let prospective_evidence = projection
+            .candidate_evidence(prospective)
+            .expect("prospective evidence");
+        assert_eq!(prospective_evidence.statistics.parent_visits(), 2);
+        assert_eq!(prospective_evidence.statistics.edge_visits(), 0);
+        assert_eq!(prospective_evidence.statistics.reward_sum_micros(), 0);
+        assert_eq!(prospective_evidence.statistics.prior_micros(), 500_000);
+        assert!(!prospective_evidence.statistics.is_novel());
+        assert!(prospective_evidence.statistics.is_fairness_reserved());
+        assert_eq!(prospective_evidence.novelty_events, 0);
+        assert!(prospective_evidence.finding_events.is_empty());
     }
 
     #[test]

@@ -80,6 +80,45 @@ impl CampaignRepository {
         Ok(basis)
     }
 
+    /// Publishes and authenticates the deterministic PUCT planner basis.
+    ///
+    /// The version-2 basis has distinct engine, state, artifact, and dependency
+    /// identities from the version-1 fairness bootstrap. Publication is
+    /// idempotent and does not mutate a campaign ref.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec, store, or integrity error if the closed basis cannot be
+    /// derived, placed, or authenticated as one complete repository closure.
+    pub fn publish_canonical_puct_planner_basis(
+        &self,
+    ) -> Result<crate::CanonicalPuctPlannerBasis, CampaignRepositoryError> {
+        let basis = CanonicalPuctPlanner::basis()?;
+        let dependency = CanonicalPuctPlanner::dependency_lock_id();
+        self.blobs.put_if_absent(
+            dependency,
+            &BlobHandle::from_bytes(CanonicalPuctPlanner::dependency_lock_bytes().to_vec()),
+        )?;
+
+        let engine = self.put_planner_engine(basis.engine())?;
+        let artifact = self.put_policy_artifact(basis.artifact())?;
+        let state = self.put_planner_state(basis.initial_state())?;
+        if engine != basis.engine().id()?.content_id()
+            || artifact != basis.artifact().id()?.content_id()
+            || state != basis.initial_state().id()?.content_id()
+        {
+            return Err(integrity(
+                "canonical-PUCT-planner-basis-publication-mismatch",
+            ));
+        }
+        self.verify_campaign_closures_anchored_cached(
+            [artifact, state],
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+        )?;
+        Ok(basis)
+    }
+
     /// Creates a campaign with a canonical genesis snapshot.
     ///
     /// # Errors
@@ -2033,6 +2072,14 @@ impl CampaignRepository {
                     return Err(integrity("planner-candidate-offer-publication-id-mismatch"));
                 }
             }
+            if let Some(guidance) = input.guidance {
+                let guidance_content = self.put_planner_candidate_guidance(&guidance)?;
+                if guidance_content != guidance.id()?.content_id() {
+                    return Err(integrity(
+                        "planner-candidate-guidance-publication-id-mismatch",
+                    ));
+                }
+            }
         }
         let request_content = self.put_planner_request(request)?;
         if request_content != request_id.content_id() {
@@ -2189,33 +2236,85 @@ impl CampaignRepository {
         )?;
 
         let engine: PlannerEngine = crate::codec::decode(engine_envelope.body())?;
-        let mut retained = invocation
-            .scan_page()
-            .positions()
-            .iter()
-            .map(|position| self.read_envelope(position.source().content_id()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut retained = Vec::new();
+        let mut retained_bytes = 0_usize;
+        for position in invocation.scan_page().positions() {
+            push_retained_planner_input(
+                &mut retained,
+                &mut retained_bytes,
+                self.read_envelope(position.source().content_id())?,
+            )?;
+        }
         if engine
             .capabilities()
             .contains(crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY)
         {
-            let mut first_ready = None;
+            let use_puct = engine
+                .capabilities()
+                .contains(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY);
+            let mut ready_offers = Vec::new();
+            let mut domain_cache = BTreeMap::new();
+            let mut domain_bytes = 0_usize;
             for position in invocation.scan_page().positions() {
                 let projection = self.planner_continuation_projection(&snapshot, *position)?;
-                retained.push(self.read_envelope(projection.id()?.content_id())?);
-                if first_ready.is_none() && projection.state() == crate::ContinuationState::Ready {
-                    first_ready = Some(*position);
+                push_retained_planner_input(
+                    &mut retained,
+                    &mut retained_bytes,
+                    self.read_envelope(projection.id()?.content_id())?,
+                )?;
+                if projection.state() != crate::ContinuationState::Ready
+                    || (!use_puct && !ready_offers.is_empty())
+                {
+                    continue;
                 }
-            }
-            if let Some(position) = first_ready {
-                let (_, offer) =
-                    self.planner_candidate_input(&snapshot, invocation_id, position)?;
+                let (_, offer) = self.planner_candidate_input(
+                    &snapshot,
+                    invocation_id,
+                    *position,
+                    &mut domain_cache,
+                    &mut domain_bytes,
+                )?;
                 let offer = offer.ok_or_else(|| integrity("planner-ready-candidate-is-missing"))?;
-                retained.push(ObjectEnvelope::for_record(
-                    crate::CampaignRecordKind::Proposal,
-                    crate::object::content_children(offer.content_children())?,
-                    offer.canonical_bytes(),
-                )?);
+                ready_offers.push((*position, offer));
+            }
+            let puct_projections = if use_puct {
+                self.project_branch_puct_batch_loaded(
+                    &snapshot,
+                    ready_offers
+                        .iter()
+                        .map(|(position, _)| position.branch_point()),
+                )?
+            } else {
+                BTreeMap::new()
+            };
+            for (position, offer) in ready_offers {
+                push_retained_planner_input(
+                    &mut retained,
+                    &mut retained_bytes,
+                    ObjectEnvelope::for_record(
+                        crate::CampaignRecordKind::Proposal,
+                        crate::object::content_children(offer.content_children())?,
+                        offer.canonical_bytes(),
+                    )?,
+                )?;
+                if use_puct {
+                    let guidance = self.planner_candidate_guidance(
+                        &snapshot,
+                        &puct_projections[&position.branch_point()],
+                        &offer,
+                        &mut domain_cache,
+                        &mut domain_bytes,
+                    )?;
+                    push_retained_planner_input(
+                        &mut retained,
+                        &mut retained_bytes,
+                        ObjectEnvelope::for_record(
+                            crate::CampaignRecordKind::PlannerCandidateGuidance,
+                            crate::object::content_children(guidance.content_children())?,
+                            guidance.canonical_bytes(),
+                        )?,
+                    )?;
+                }
             }
         }
 
@@ -2406,6 +2505,19 @@ impl CampaignRepository {
                     != CanonicalFrontierPlanner::initial_state()?
                 {
                     return Err(integrity("builtin-planner-initial-state-mismatch"));
+                }
+            } else {
+                let descriptor = CanonicalPuctPlanner::descriptor()?;
+                if invocation.engine() == descriptor.id()? {
+                    let state = self.require_record_kind(
+                        invocation.planner_state().content_id(),
+                        crate::CampaignRecordKind::PlannerState,
+                    )?;
+                    if crate::codec::decode::<PlannerState>(state.body())?
+                        != CanonicalPuctPlanner::initial_state()?
+                    {
+                        return Err(integrity("builtin-planner-initial-state-mismatch"));
+                    }
                 }
             }
             return Ok(());
@@ -2906,6 +3018,22 @@ fn validate_creation_artifact_basis(
     {
         return Err(integrity("lineage-execution-model-artifact-mismatch"));
     }
+    Ok(())
+}
+
+fn push_retained_planner_input(
+    retained: &mut Vec<ObjectEnvelope>,
+    retained_bytes: &mut usize,
+    envelope: ObjectEnvelope,
+) -> Result<(), CampaignRepositoryError> {
+    if retained.len() >= crate::MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS {
+        return Err(integrity("retained-planner-request-bundle-object-count"));
+    }
+    *retained_bytes = retained_bytes
+        .checked_add(envelope.canonical_bytes().len())
+        .filter(|bytes| *bytes <= crate::MAX_RETAINED_PLANNER_REQUEST_BYTES)
+        .ok_or_else(|| integrity("retained-planner-request-encoded-bytes"))?;
+    retained.push(envelope);
     Ok(())
 }
 

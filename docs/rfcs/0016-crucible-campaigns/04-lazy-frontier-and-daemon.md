@@ -702,9 +702,9 @@ path that reached it; direct non-genesis admission checks membership in that
 set. The compact expansion cache retains neutral guidance fields. Separate
 exact-snapshot coverage-novelty and policy-weighted finding-reward folds
 described in RFC 03 are now implemented read-only. Objective reward remains
-neutral. The exact fixed-point PUCT arithmetic is already a pure conformance-
-tested primitive, but no planner version may consume it before the remaining
-owner projections and ranking integration land. Loading an
+neutral. Canonical frontier engine version 2 consumes their exact decomposed
+PUCT evidence only through the bounded request-batch contract in RFC 03; it
+cannot trust or read compact expansion-cache guidance fields. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.
@@ -740,7 +740,9 @@ admission is rejected.
   wakeup MUST equal the exact nested credit-set count. The compact expansion
   cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
   projection MAY use only the bounded exact-snapshot coverage and weighted-
-  finding owners in RFC 03; objective reward remains neutral.
+  finding owners in RFC 03; canonical frontier engine version 2 consumes that
+  projection through exact owner-built guidance records, while objective reward
+  remains neutral.
 
 ## 04.15 Atomic observation publication
 
