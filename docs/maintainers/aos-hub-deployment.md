@@ -22,7 +22,7 @@ values:
 | R2 bucket | `aos-hub-staging-surfaces` | `aos-hub-surfaces` |
 | KV namespace title | `aos-hub-staging-sessions` | `aos-hub-sessions` |
 | Deferred-jobs Queue | `aos-hub-staging-jobs` | `aos-hub-jobs` |
-| Durable Object state | Owned by the staging Worker | Owned by the production Worker |
+| Durable Object state | `hub-v2` on the staging Worker | `hub` on the production Worker |
 | Rate-limit namespace IDs | `2001` through `2003` | `1001` through `1003` |
 
 Cloudflare rate-limit namespace IDs are account-wide counter identities, not
@@ -121,6 +121,7 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --domain aos.staging.andyl.org \
   --external-url https://aos.staging.andyl.org \
   --deployment-id "$deployment_id" \
+  --database-instance hub-v2 \
   --rate-limit-namespace-base 2000 \
   --disable-delivery-attestation \
   --route-reservation-keys-file "$keyring"
@@ -129,6 +130,9 @@ Confirm that the shell contains the staging runtime values, then deploy:
 Use `worker install` instead of `worker deploy` only when the staging Worker has
 never existed. `worker deploy` deliberately requires an existing Worker so an
 OAuth, account, or provider failure cannot be mistaken for initial provisioning.
+The `hub-v2` database name is the staging schema-v2 cutover completed in August
+2026. Keep it on every subsequent staging deployment; the legacy `hub` object is
+retained only as rollback data and is not compatible with this Worker schema.
 
 ### Configure the direct staging CDN
 
