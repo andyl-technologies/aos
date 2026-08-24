@@ -745,9 +745,45 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     fn snapshot_fault_events(
         &mut self,
         destination: &mut Vec<crucible_shmem::DequeuedFaultEvent>,
-    ) -> Result<(), QemuNodeChannelError> {
-        QemuMappedQuantumShmemHotPath::snapshot_fault_events(self, destination)
-            .map_err(|source| source.into_channel_error("snapshot_fault_events"))
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), crate::QemuNodeError> {
+        QemuMappedQuantumShmemHotPath::snapshot_fault_events(
+            self,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
+        .map_err(|error| match error {
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_shmem::FaultEventError::PreviewPayloadCapacity {
+                        current,
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventPayloadStorage {
+                current,
+                requested,
+                configured,
+            },
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_shmem::FaultEventError::PreviewInlinePayloadCapacity {
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventInlinePayloadStorage {
+                requested,
+                configured,
+            },
+            error => crate::QemuNodeError::from_channel(
+                crate::QemuNodeChannelPlane::ShmemHotPath,
+                error.into_channel_error("snapshot_fault_events"),
+            ),
+        })
     }
 
     fn coverage_enabled(&self) -> bool {

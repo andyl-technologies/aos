@@ -259,16 +259,18 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     fn snapshot_fault_events(
         &mut self,
         destination: &mut Vec<DequeuedFaultEvent>,
-    ) -> Result<(), QemuNodeChannelError> {
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), QemuNodeError> {
         let events = self.fault_events.lock().unwrap();
-        if destination.capacity().saturating_sub(destination.len()) < events.len() {
-            return Err(QemuNodeChannelError::new(
-                "snapshot_fault_events",
-                "scripted destination storage is insufficient",
-            ));
-        }
-        destination.extend(events.iter().cloned());
-        Ok(())
+        fault_event_budget::snapshot_scripted_fault_events(
+            &events,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
@@ -554,6 +556,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         &mut self,
     ) -> Result<Vec<DequeuedFaultEvent>, QemuAsyncDriverRuntimeError> {
         Ok(std::mem::take(&mut self.staged_fault_events))
+    }
+
+    fn staged_fault_events(&self) -> &[DequeuedFaultEvent] {
+        &self.staged_fault_events
     }
 
     fn staged_fault_events_pending(&self) -> bool {

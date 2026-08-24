@@ -41,10 +41,42 @@ impl ProductionFaultRuntime {
             field: "event_records",
             value: u64::MAX,
         })?;
+        let (_event_records, event_log_bytes) = production_event_state_usage(
+            &self.emitted_events,
+            &[],
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
+        let mut canonical_payload_bytes = usize::try_from(event_log_bytes).map_err(|_| {
+            FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: event_log_bytes,
+            }
+        })?;
+        let configured_payload_bytes = usize::try_from(self.resource_limits.event_log_bytes)
+            .map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_log_bytes",
+                value: self.resource_limits.event_log_bytes,
+            })?;
+        let configured_inline_payload_bytes =
+            usize::try_from(self.resource_limits.event_inline_payload_bytes).map_err(|_| {
+                FaultResourceLimitError::Representation {
+                    field: "event_inline_payload_bytes",
+                    value: self.resource_limits.event_inline_payload_bytes,
+                }
+            })?;
         let mut event_decisions = Vec::new();
         nodes.visit_fault_event_nodes(|node, backend| {
             let events = backend
-                .preview_fault_events(&mut canonical_current, configured_event_records)
+                .preview_fault_events(
+                    &mut canonical_current,
+                    configured_event_records,
+                    &mut canonical_payload_bytes,
+                    configured_payload_bytes,
+                    configured_inline_payload_bytes,
+                )
                 .map_err(map_fault_event_drain_error)?;
             event_decisions
                 .try_reserve_exact(events.len())

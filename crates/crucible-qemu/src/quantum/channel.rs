@@ -185,10 +185,16 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
     fn snapshot_fault_events(
         &mut self,
         _destination: &mut Vec<crucible_shmem::DequeuedFaultEvent>,
-    ) -> Result<(), QemuNodeChannelError> {
-        Err(QemuNodeChannelError::new(
-            "snapshot_fault_events",
-            "the borrowed quantum view does not own the mapped fault transport",
+        _canonical_payload_bytes: &mut usize,
+        _configured_payload_bytes: usize,
+        _configured_inline_payload_bytes: usize,
+    ) -> Result<(), crate::QemuNodeError> {
+        Err(crate::QemuNodeError::from_channel(
+            crate::QemuNodeChannelPlane::ShmemHotPath,
+            QemuNodeChannelError::new(
+                "snapshot_fault_events",
+                "the borrowed quantum view does not own the mapped fault transport",
+            ),
         ))
     }
 

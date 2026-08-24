@@ -484,6 +484,29 @@ fn map_fault_event_drain_error(error: QemuNodeError) -> ProductionFaultRuntimeEr
             hard: FaultResourceLimits::compiled_maximum().event_records,
         }
         .into(),
+        QemuNodeError::FaultEventPayloadStorage {
+            current,
+            requested,
+            configured,
+        } => FaultResourceLimitError::Exceeded {
+            field: "event_log_bytes",
+            current,
+            requested,
+            configured,
+            hard: FaultResourceLimits::compiled_maximum().event_log_bytes,
+        }
+        .into(),
+        QemuNodeError::FaultEventInlinePayloadStorage {
+            requested,
+            configured,
+        } => FaultResourceLimitError::Exceeded {
+            field: "event_inline_payload_bytes",
+            current: 0,
+            requested,
+            configured,
+            hard: FaultResourceLimits::compiled_maximum().event_inline_payload_bytes,
+        }
+        .into(),
         error => BackendError::from(error).into(),
     }
 }
