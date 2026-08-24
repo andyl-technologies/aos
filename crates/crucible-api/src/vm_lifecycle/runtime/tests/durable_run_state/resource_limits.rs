@@ -117,14 +117,37 @@ fn durable_run_state_rejects_impossible_completed_exit_history() {
 fn durable_run_state_rejects_oversized_json_before_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
-    let path = root.path().join("oversized.json");
+    let path = root.path().join(PRODUCTION_RUN_STATE_FILE);
     fs::write(&path, b"{\"padding\":\"0123456789\"}")
         .unwrap_or_else(|error| panic!("oversized fixture should write: {error}"));
 
-    let error = decode_run_json_bounded::<ProductionLifecycleJournal>(&path, 8)
+    let limits = FaultResourceLimits {
+        event_log_bytes: 8,
+        ..FaultResourceLimits::default()
+    };
+    let error = quantum_loop::decode_prior_run_state(root.path(), "scenario", limits)
         .err()
         .unwrap_or_else(|| panic!("oversized run state should fail before decode"));
-    assert!(error.contains("above the bounded maximum 8"));
+    assert!(matches!(
+        &error,
+        DurableRunStateError::ResourceLimit {
+            field: "lifecycle_run_state_bytes",
+            current: 0,
+            requested: 24,
+            configured: 8,
+            hard,
+        } if *hard == quantum_loop::HARD_RUN_STATE_JSON_BYTES
+    ));
+    assert!(matches!(
+        durable_run_state_api_error(error),
+        LifecycleApiError::ResourceLimit(LifecycleResourceLimit {
+            field: "lifecycle_run_state_bytes",
+            current: 0,
+            requested: 24,
+            configured: 8,
+            hard,
+        }) if hard == quantum_loop::HARD_RUN_STATE_JSON_BYTES
+    ));
 }
 
 #[test]

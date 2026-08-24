@@ -7,11 +7,13 @@ mod process_ownership;
 mod staging;
 pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
 pub(super) use persistence::map_journal_limit;
-#[cfg(test)]
-pub(in crate::vm_lifecycle) use persistence::validate_recovered_lifecycle_journal;
 pub(in crate::vm_lifecycle) use persistence::{
     DurableRunStateError, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
     decode_run_json_bounded, persist_run_state_atomic,
+};
+#[cfg(test)]
+pub(in crate::vm_lifecycle) use persistence::{
+    HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal,
 };
 pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 

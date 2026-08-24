@@ -1,3 +1,5 @@
+//! Packaged executor composition, endpoint, and lifecycle regression tests.
+
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 

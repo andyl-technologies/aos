@@ -85,75 +85,15 @@ pub(super) struct ProductionRunManifest {
     pub(super) recovered_after_host_exit: bool,
 }
 
-#[derive(Clone, Copy)]
-struct DurableDecodeShape {
-    current_processes: usize,
-    staged_processes: usize,
-    lifecycle_nodes: usize,
-    completed_exits: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct DurableDecodeAllocation {
-    pub(super) field: &'static str,
-    pub(super) current: u64,
-    pub(super) requested: u64,
-}
-
-std::thread_local! {
-    static DURABLE_DECODE_SHAPE: std::cell::Cell<Option<DurableDecodeShape>> = const {
-        std::cell::Cell::new(None)
-    };
-    static DURABLE_DECODE_ALLOCATION: std::cell::Cell<Option<DurableDecodeAllocation>> = const {
-        std::cell::Cell::new(None)
-    };
-}
-
-pub(super) struct DurableDecodeShapeGuard {
-    previous: Option<DurableDecodeShape>,
-    previous_allocation: Option<DurableDecodeAllocation>,
-}
-
-impl Drop for DurableDecodeShapeGuard {
-    fn drop(&mut self) {
-        DURABLE_DECODE_SHAPE.set(self.previous);
-        DURABLE_DECODE_ALLOCATION.set(self.previous_allocation);
-    }
-}
-
-pub(super) fn enter_durable_decode_shape(
-    current_processes: usize,
-    staged_processes: usize,
-    lifecycle_nodes: usize,
-    completed_exits: usize,
-) -> DurableDecodeShapeGuard {
-    let shape = DurableDecodeShape {
-        current_processes,
-        staged_processes,
-        lifecycle_nodes,
-        completed_exits,
-    };
-    let previous = DURABLE_DECODE_SHAPE.replace(Some(shape));
-    let previous_allocation = DURABLE_DECODE_ALLOCATION.replace(None);
-    DurableDecodeShapeGuard {
-        previous,
-        previous_allocation,
-    }
-}
-
-pub(super) fn take_durable_decode_allocation() -> Option<DurableDecodeAllocation> {
-    DURABLE_DECODE_ALLOCATION.take()
-}
-
-fn record_decode_allocation(field: &'static str, current: usize, requested: usize) {
-    if DURABLE_DECODE_ALLOCATION.get().is_none() {
-        DURABLE_DECODE_ALLOCATION.set(Some(DurableDecodeAllocation {
-            field,
-            current: u64::try_from(current).unwrap_or(u64::MAX),
-            requested: u64::try_from(requested).unwrap_or(u64::MAX),
-        }));
-    }
-}
+#[path = "process_owners/decode_budget.rs"]
+mod decode_budget;
+pub(super) use decode_budget::{
+    DurableDecodeAllocation, enter_durable_decode_shape, take_durable_decode_allocation,
+};
+use decode_budget::{
+    account_decode_usage, completed_exits_expected, current_processes_expected, decode_usage,
+    lifecycle_nodes_expected, record_decode_allocation, staged_processes_expected,
+};
 
 struct FallibleOwnedString(String);
 
@@ -165,10 +105,15 @@ impl<'de> serde::Deserialize<'de> for FallibleOwnedString {
         let borrowed: &'de str = serde::Deserialize::deserialize(deserializer)?;
         let mut owned = String::new();
         owned.try_reserve_exact(borrowed.len()).map_err(|_| {
-            record_decode_allocation("event_log_bytes", 0, borrowed.len());
+            record_decode_allocation(
+                "event_log_bytes",
+                decode_usage("event_log_bytes"),
+                borrowed.len(),
+            );
             serde::de::Error::custom("durable string allocation")
         })?;
         owned.push_str(borrowed);
+        account_decode_usage("event_log_bytes", borrowed.len());
         Ok(Self(owned))
     }
 }
@@ -193,10 +138,15 @@ impl<'de> serde::Deserialize<'de> for FallibleProcessIdentity {
         let bytes = borrowed.executable.as_bytes();
         let mut executable = Vec::new();
         executable.try_reserve_exact(bytes.len()).map_err(|_| {
-            record_decode_allocation("event_log_bytes", 0, bytes.len());
+            record_decode_allocation(
+                "event_log_bytes",
+                decode_usage("event_log_bytes"),
+                bytes.len(),
+            );
             serde::de::Error::custom("process executable allocation")
         })?;
         executable.extend_from_slice(bytes);
+        account_decode_usage("event_log_bytes", bytes.len());
         Ok(Self(QemuProcessIdentity {
             process_id: borrowed.process_id,
             start_time_ticks: borrowed.start_time_ticks,
@@ -318,14 +268,18 @@ where
             let mut records = Vec::new();
             if let Some(expected) = self.expected {
                 records.try_reserve_exact(expected).map_err(|_| {
-                    record_decode_allocation("event_records", 0, expected);
+                    record_decode_allocation(
+                        "event_records",
+                        decode_usage("event_records"),
+                        expected,
+                    );
                     serde::de::Error::custom("lifecycle record allocation")
                 })?;
             }
             loop {
                 if self.expected.is_none() {
                     records.try_reserve(1).map_err(|_| {
-                        record_decode_allocation("event_records", records.len(), 1);
+                        record_decode_allocation("event_records", decode_usage("event_records"), 1);
                         serde::de::Error::custom("lifecycle record allocation")
                     })?;
                 }
@@ -341,6 +295,7 @@ where
                     ));
                 }
                 records.push(record);
+                account_decode_usage("event_records", 1);
             }
             if self
                 .expected
@@ -367,9 +322,7 @@ where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,
 {
-    let expected = DURABLE_DECODE_SHAPE
-        .get()
-        .map(|shape| shape.lifecycle_nodes);
+    let expected = lifecycle_nodes_expected();
     deserialize_records(deserializer, expected)
 }
 
@@ -380,9 +333,7 @@ where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,
 {
-    let expected = DURABLE_DECODE_SHAPE
-        .get()
-        .map(|shape| shape.completed_exits);
+    let expected = completed_exits_expected();
     deserialize_records(deserializer, expected)
 }
 
@@ -522,7 +473,11 @@ where
             loop {
                 if self.expected.is_none() {
                     owners.entries.try_reserve(1).map_err(|_| {
-                        record_decode_allocation("nodes", owners.entries.len(), 1);
+                        record_decode_allocation(
+                            "nodes",
+                            u64::try_from(owners.entries.len()).unwrap_or(u64::MAX),
+                            1,
+                        );
                         serde::de::Error::custom("process ownership allocation")
                     })?;
                 }
@@ -561,9 +516,7 @@ pub(super) fn deserialize_current_process_owners<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let expected = DURABLE_DECODE_SHAPE
-        .get()
-        .map(|shape| shape.current_processes);
+    let expected = current_processes_expected();
     deserialize_process_owners(deserializer, expected)
 }
 
@@ -573,9 +526,7 @@ pub(super) fn deserialize_staged_process_owners<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let expected = DURABLE_DECODE_SHAPE
-        .get()
-        .map(|shape| shape.staged_processes);
+    let expected = staged_processes_expected();
     deserialize_process_owners(deserializer, expected)
 }
 
