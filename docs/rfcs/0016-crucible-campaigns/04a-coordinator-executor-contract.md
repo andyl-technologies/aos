@@ -2159,11 +2159,15 @@ the drained dense event-log suffix to result sealing. Driver failure still
 runs that cleanup. A cleanup or quarantine failure takes terminal precedence
 over an otherwise retryable or canceled driver result while retaining both
 diagnostics. The fresh runner independently rejects any exact-resume root before
-calling even an injected lifecycle factory. Concrete fresh-driver selection,
+calling even an injected lifecycle factory. It also rejects a non-genesis
+discovery or selected-branch start before resource installation. A fresh
+process begins at scenario genesis and MUST NOT be reported as thin replay of a
+nonempty schedule until exact prefix replay and live producer selection
+injection are both authenticated. Concrete fresh-driver selection,
 an independently admitted debugger world, and production worker composition
 remain open; no unsupported mode falls back to the packaged authority. The
-concrete fresh modeled driver begins from the authenticated discovery child or
-selected branch child and advances only empty-control scheduler quanta. It
+concrete modeled driver accepts an already-materialized authenticated discovery
+child or selected branch child and advances only empty-control scheduler quanta. It
 checks cancellation and the exact-checkpoint request before and after each
 quantum, preserves the scheduler's typed retry/cancel/terminal failure class,
 and fails closed rather than returning an observation when a checkpoint request

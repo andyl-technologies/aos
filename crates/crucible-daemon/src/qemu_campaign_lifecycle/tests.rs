@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ScenarioDef, SchedulerEventLogEntry, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, Decision, RngDecision, RngStreamId, ScenarioDef,
+    SchedulerEventLogEntry, VirtualTime, step,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -518,6 +519,38 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
 }
 
 #[test]
+fn fresh_runner_rejects_non_genesis_start_before_factory_invocation() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+    let input = non_genesis_fresh_runner_input();
+    let expected = match input.start() {
+        CrucibleResolvedAttemptStart::Discover { configuration } => configuration.id(),
+        CrucibleResolvedAttemptStart::Branch { .. } => panic!("expected discovery fixture"),
+    };
+
+    let error = runner
+        .execute(&input, &fresh_runner_context())
+        .expect_err("fresh runner must reject a non-genesis start");
+
+    assert!(matches!(
+        error,
+        AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartConfigurationUnsupported(actual)
+        ) if actual == expected
+    ));
+    assert!(order.lock().expect("fresh lifecycle order").is_empty());
+}
+
+#[test]
 fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
@@ -650,6 +683,51 @@ fn fresh_runner_input() -> CrucibleAttemptExecution {
 
     CrucibleAttemptExecution::from_test_parts(
         lineage,
+        scenario,
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover { configuration },
+    )
+}
+
+fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
+    let input = fresh_runner_input();
+    let scenario = input.scenario().clone();
+    let definition = scenario.scenario_def();
+    let configuration = step(
+        &Configuration::genesis(definition.clone()),
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
+            value: 7,
+        }),
+    );
+    let scenario_id = input.lineage().scenario();
+    let scenario_content = input.lineage().scenario_content();
+    let configuration_id =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let configuration_artifact = ConfigurationArtifact::new(
+        scenario_id,
+        scenario_content,
+        configuration_id,
+        1,
+        b"non-genesis-configuration".to_vec(),
+    )
+    .expect("non-genesis configuration artifact");
+    let configuration_content = configuration_artifact
+        .id()
+        .expect("non-genesis configuration artifact id");
+    let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: configuration_content,
+        },
+        path.id().expect("branch path id"),
+        StopCondition::Terminal,
+    )
+    .expect("non-genesis discovery attempt");
+
+    CrucibleAttemptExecution::from_test_parts(
+        input.lineage().clone(),
         scenario,
         attempt,
         path,
