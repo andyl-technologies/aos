@@ -290,6 +290,8 @@ pub use planner_process::{
 };
 pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
+    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuFreshExecutionRunnerError,
 };
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
