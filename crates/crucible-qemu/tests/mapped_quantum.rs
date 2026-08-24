@@ -18,13 +18,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, EventLog, EventLogCoverageObservation,
-    ExecutionHorizon, Icount, MarkerId, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer, event_log_coverage_projection,
+    ExecutionHorizon, GuestMeasurementEvent, GuestMeasurementValue, Icount, MarkerId, NodeId,
+    ObservableEventPayload, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
+    SchedulerSendAuthorizer, event_log_coverage_projection,
 };
 #[cfg(unix)]
 use crucible_protocol::{
-    WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload, WhiteboxRandomRequestBody,
-    encode_whitebox_marker_payload_body,
+    WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload, WhiteboxMeasurementValue,
+    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, encode_whitebox_marker_payload_body,
 };
 #[cfg(unix)]
 use crucible_qemu::{
@@ -258,6 +259,40 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
     );
     assert_eq!(projection.entries()[1].at.icount, icount(6));
     assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn mapped_quantum_decodes_typed_guest_measurement_samples() -> Result<(), Box<dyn Error>> {
+    let sample = WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+        measurement: String::from("recovery"),
+        instance: String::from("epoch-7"),
+        metric: String::from("healthy-peers"),
+        value: WhiteboxMeasurementValue::Unsigned(3),
+    });
+    let region = mapped_region_with_markers(6, None, &[], &[marker_entry(5, &sample)?])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+
+    let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?;
+
+    assert_eq!(observations.len(), 1);
+    assert!(matches!(
+        observations[0].payload(),
+        ObservableEventPayload::GuestMeasurement {
+                node,
+                event: GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value: GuestMeasurementValue::Unsigned(3),
+                },
+                ..
+            } if node.name == "vm-a"
+            && measurement == "recovery"
+            && instance == "epoch-7"
+            && metric == "healthy-peers"
+    ));
     Ok(())
 }
 

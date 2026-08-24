@@ -20,7 +20,8 @@ use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagSt
 use crate::node_time::{NodeTimeMapping, NodeTimeProjection};
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
-    EventFirings, EventGraph, EventGraphState, HostAssertionReport, LogLevel, ObservableEvent,
+    EventFirings, EventGraph, EventGraphState, GuestMeasurementEvent, GuestMeasurementValue,
+    GuestSemanticMarkerDetail, HostAssertionReport, LogLevel, ObservableEvent,
     ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
 };
 use crate::{

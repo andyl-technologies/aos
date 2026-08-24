@@ -14,18 +14,25 @@ pub use crucible_protocol::{
     WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
     WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
-    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
+    WHITEBOX_DOORBELL_KIND_MEASUREMENT_BEGIN, WHITEBOX_DOORBELL_KIND_MEASUREMENT_END,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
-    WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
-    WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector,
-    WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind, WhiteboxDoorbellTrapAbi,
-    WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
-    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
-    WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
+    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WHITEBOX_MARKER_BODY_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES, WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS, WHITEBOX_SEMANTIC_MARKER_MAX_DETAILS,
+    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellFrameEncodeError,
+    WhiteboxDoorbellFrameGoldenVector, WhiteboxDoorbellInstruction, WhiteboxDoorbellMarkerKind,
+    WhiteboxDoorbellTrapAbi, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
+    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
+    WhiteboxMarkerPayloadEncodeError, WhiteboxMarkerPayloadGoldenVector,
+    WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue, WhiteboxMeasurementValueKind,
+    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, WhiteboxReducedRational,
+    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, decode_whitebox_marker_payload,
     encode_aarch64_hint_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
@@ -865,6 +872,12 @@ impl AppRandomDecodeDiagnostic {
                     actual: kind,
                 }
             }
+            WhiteboxMarkerPayloadDecodeError::BodyTooLarge { len, max_len } => {
+                AppRandomDecodeDiagnosticKind::PayloadLengthExceedsBound {
+                    declared_len: len,
+                    max_payload_len: max_len,
+                }
+            }
             WhiteboxMarkerPayloadDecodeError::PayloadTooShort { kind, .. }
             | WhiteboxMarkerPayloadDecodeError::LengthPrefixExceedsPayload { kind, .. }
             | WhiteboxMarkerPayloadDecodeError::TrailingBytes { kind, .. }
@@ -885,6 +898,27 @@ impl AppRandomDecodeDiagnostic {
                 AppRandomDecodeDiagnosticKind::UnexpectedKind {
                     expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
                     actual: WHITEBOX_DOORBELL_KIND_LIFECYCLE,
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::InvalidMeasurementIdentifier { kind, .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: kind.wire_value(),
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::InvalidMeasurementValueKind { .. }
+            | WhiteboxMarkerPayloadDecodeError::InvalidReducedRational { .. }
+            | WhiteboxMarkerPayloadDecodeError::MeasurementVectorTooLong { .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+                }
+            }
+            WhiteboxMarkerPayloadDecodeError::TooManyTypedDetails { .. }
+            | WhiteboxMarkerPayloadDecodeError::NonCanonicalDetailOrder { .. } => {
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
                 }
             }
         };

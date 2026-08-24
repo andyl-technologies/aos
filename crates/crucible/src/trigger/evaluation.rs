@@ -523,6 +523,8 @@ pub(super) fn black_box_observation_icount_stamp(
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => black_box_boundary_icount(at),
     }
 }
@@ -880,6 +882,10 @@ where
             marker == expected_marker
                 && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
         }
+        ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
+            marker == &expected_marker.name
+                && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+        }
         ObservableEventPayload::GuestAssertionMarker { .. } => false,
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
@@ -890,6 +896,7 @@ where
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::AssertionProximity { .. } => false,
     }
 }

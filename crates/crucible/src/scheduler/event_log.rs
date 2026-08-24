@@ -1147,6 +1147,64 @@ impl SchedulerEventLogEntry {
         )
     }
 
+    /// Builds a scheduler-owned typed guest-measurement observation.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// a message already decoded through the bounded white-box protocol. This
+    /// constructor is for trusted scheduler loop and conformance-test
+    /// implementations; campaign sealing still validates the exact scenario
+    /// measurement contract before retaining an observation.
+    #[must_use]
+    pub fn guest_measurement_observation(
+        sequence: u64,
+        retired_icount: Icount,
+        node: NodeId,
+        event: GuestMeasurementEvent,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMeasurement {
+                retired_icount,
+                node,
+                event,
+            }),
+        )
+    }
+
+    /// Builds a scheduler-owned typed semantic-marker observation.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// a marker already decoded through the bounded white-box protocol. This
+    /// constructor is for trusted scheduler loop and conformance-test
+    /// implementations; campaign sealing still validates the exact scenario
+    /// marker and instance contract before retaining an observation.
+    #[must_use]
+    pub fn guest_semantic_marker_observation(
+        sequence: u64,
+        retired_icount: Icount,
+        node: NodeId,
+        marker: String,
+        instance: String,
+        details: Vec<GuestSemanticMarkerDetail>,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
+                retired_icount,
+                node,
+                marker,
+                instance,
+                details,
+            }),
+        )
+    }
+
     /// Builds an observable condition entry as if appended by scheduler EMIT.
     #[must_use]
     pub(crate) fn observable(

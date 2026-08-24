@@ -12,13 +12,18 @@ use crucible_protocol::{
     GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
     GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg,
     WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_MAGIC,
-    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
     WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-    WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayloadDecodeError,
-    control_decode_host_msg, control_decode_plugin_msg, control_encode_host_msg,
-    control_encode_plugin_msg, decode_whitebox_marker_payload, encode_whitebox_doorbell_frame,
-    encode_whitebox_marker_frame, run_control_codec_fuzz_target,
+    WHITEBOX_MARKER_BODY_MAX_BYTES, WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS, WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent,
+    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
+    WhiteboxMeasurementValue, WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody,
+    WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail, control_decode_host_msg,
+    control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
+    decode_whitebox_marker_payload, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
+    encode_whitebox_marker_payload_body, run_control_codec_fuzz_target,
 };
 
 #[test]
@@ -132,12 +137,12 @@ fn assert_doorbell_frame_golden_vectors() {
     }
     assert_doorbell_vector_bytes(
         "marker-kind-1-empty",
-        &[0x43, 0x52, 0x42, 0x4c, 2, 0, 1, 0, 0, 0, 0, 0],
+        &[0x43, 0x52, 0x42, 0x4c, 3, 0, 1, 0, 0, 0, 0, 0],
     );
     assert_doorbell_vector_bytes(
         "random-request-kind-5",
         &[
-            0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
+            0x43, 0x52, 0x42, 0x4c, 3, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
             0x6e, 0x67,
         ],
     );
@@ -157,6 +162,10 @@ fn assert_doorbell_marker_payload_golden_vectors() {
             "event-note",
             "coverage-hot-path",
             "random-request",
+            "measurement-begin",
+            "metric-sample",
+            "measurement-end",
+            "semantic-marker",
         ],
     );
     for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
@@ -191,6 +200,18 @@ fn protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned() {
     assert_doorbell_marker_kind_vocabulary();
 }
 
+#[test]
+fn protocol_v3_rejects_the_pre_measurement_v2_doorbell_frame() {
+    let frame = doorbell_frame_with_custom_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 2, 1, 0, &[]);
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode_bounded(&frame, WHITEBOX_MARKER_BODY_MAX_BYTES),
+        Err(WhiteboxDoorbellFrameDecodeError::UnsupportedVersion {
+            expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+            actual: 2,
+        })
+    );
+}
+
 fn assert_doorbell_marker_kind_vocabulary() {
     assert_eq!(
         WhiteboxDoorbellMarkerKind::ALL.map(|kind| (kind.wire_value(), kind.semantic_label())),
@@ -200,6 +221,10 @@ fn assert_doorbell_marker_kind_vocabulary() {
             (3, "guest_event_marker"),
             (4, "guest_coverage_marker"),
             (5, "app_random_request"),
+            (6, "guest_measurement_begin"),
+            (7, "guest_metric_sample"),
+            (8, "guest_measurement_end"),
+            (9, "guest_semantic_marker"),
         ],
     );
     assert_eq!(
@@ -212,9 +237,25 @@ fn assert_doorbell_marker_kind_vocabulary() {
             Some(kind),
         );
     }
-    assert_eq!(WhiteboxDoorbellMarkerKind::from_wire_value(6), None);
+    assert_eq!(WhiteboxDoorbellMarkerKind::from_wire_value(10), None);
     assert!(WhiteboxDoorbellMarkerKind::Assertion.is_observational());
     assert!(!WhiteboxDoorbellMarkerKind::RandomRequest.is_observational());
+
+    assert_eq!(
+        WhiteboxMeasurementValueKind::ALL.map(WhiteboxMeasurementValueKind::wire_value),
+        [0, 1, 2, 3, 4, 5, 6],
+    );
+    assert_eq!(
+        WhiteboxMeasurementValueKind::ALL.len(),
+        WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT,
+    );
+    for kind in WhiteboxMeasurementValueKind::ALL {
+        assert_eq!(
+            WhiteboxMeasurementValueKind::from_wire_value(kind.wire_value()),
+            Some(kind),
+        );
+    }
+    assert_eq!(WhiteboxMeasurementValueKind::from_wire_value(7), None);
 }
 
 #[test]
@@ -261,6 +302,97 @@ fn assert_doorbell_marker_subvocabularies() {
         );
     }
     assert_eq!(WhiteboxLifecycleMarkerEvent::from_wire_value(3), None);
+}
+
+#[test]
+fn measurement_marker_codec_rejects_noncanonical_and_oversized_values() {
+    let invalid_identifier =
+        WhiteboxDoorbellFrame::new(WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, &[0, 0])
+            .unwrap_or_else(|error| panic!("invalid identifier frame should build: {error}"));
+    assert!(matches!(
+        decode_whitebox_marker_payload(&invalid_identifier),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidMeasurementIdentifier { .. })
+    ));
+
+    let unknown_value = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE,
+        &[1, 0, b'm', 1, 0, b'i', 1, 0, b'x', 7],
+    )
+    .unwrap_or_else(|error| panic!("unknown value frame should build: {error}"));
+    assert_eq!(
+        decode_whitebox_marker_payload(&unknown_value),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidMeasurementValueKind { tag: 7 })
+    );
+
+    let oversized_vector = WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+        measurement: String::from("m"),
+        instance: String::from("i"),
+        metric: String::from("x"),
+        value: WhiteboxMeasurementValue::UnsignedVector(vec![
+            0;
+            WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                + 1
+        ]),
+    });
+    assert!(matches!(
+        encode_whitebox_marker_payload_body(&oversized_vector),
+        Err(WhiteboxMarkerPayloadEncodeError::MeasurementVectorTooLong { .. })
+    ));
+
+    let duplicate_details = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+        &[
+            1, 0, b'm', 1, 0, b'i', 2, 0, 1, 0, b'a', 3, 1, 1, 0, b'a', 3, 0,
+        ],
+    )
+    .unwrap_or_else(|error| panic!("duplicate detail frame should build: {error}"));
+    assert!(matches!(
+        decode_whitebox_marker_payload(&duplicate_details),
+        Err(WhiteboxMarkerPayloadDecodeError::NonCanonicalDetailOrder { .. })
+    ));
+
+    let oversized_body = WhiteboxMarkerPayload::SemanticMarker(WhiteboxSemanticMarkerBody {
+        marker: String::from("m"),
+        instance: String::from("i"),
+        details: vec![
+            WhiteboxSemanticMarkerDetail {
+                key: String::from("a"),
+                value: WhiteboxMeasurementValue::UnsignedVector(vec![
+                    0;
+                    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                ]),
+            },
+            WhiteboxSemanticMarkerDetail {
+                key: String::from("b"),
+                value: WhiteboxMeasurementValue::UnsignedVector(vec![
+                    0;
+                    WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS
+                ]),
+            },
+        ],
+    });
+    assert!(matches!(
+        encode_whitebox_marker_payload_body(&oversized_body),
+        Err(WhiteboxMarkerPayloadEncodeError::FramePayloadTooLarge {
+            max_len: WHITEBOX_MARKER_BODY_MAX_BYTES,
+            ..
+        })
+    ));
+
+    let oversized_decode = WhiteboxDoorbellFrame::new(
+        WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER,
+        &vec![0; WHITEBOX_MARKER_BODY_MAX_BYTES + 1],
+    )
+    .unwrap_or_else(|error| {
+        panic!("oversized marker body should reach the marker decoder: {error}")
+    });
+    assert!(matches!(
+        decode_whitebox_marker_payload(&oversized_decode),
+        Err(WhiteboxMarkerPayloadDecodeError::BodyTooLarge {
+            max_len: WHITEBOX_MARKER_BODY_MAX_BYTES,
+            ..
+        })
+    ));
 }
 
 #[test]
