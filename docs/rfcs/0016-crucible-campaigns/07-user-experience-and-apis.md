@@ -124,7 +124,7 @@ campaign explicitly admits defaults; otherwise validation fails.
 crucible campaign create NAME --lineage LINEAGE.bin --policy POLICY.bin \
   [--start-command COMMAND]
 crucible campaign validate NAME|POLICY
-crucible campaign start NAME [--workers N] [--memory SIZE]
+crucible campaign start NAME --expected SNAPSHOT --command COMMAND
 crucible campaign pause NAME --expected SNAPSHOT --command COMMAND \
   [--active drain|checkpoint|retry]
 crucible campaign resume NAME --expected SNAPSHOT --command COMMAND
@@ -176,7 +176,9 @@ service may omit it. Supplying both `--campaign-runtime NAME` and
 `--campaign-executor-socket PATH` attaches the packaged canonical planner and
 one authenticated local executor to that existing campaign; attachment fails
 closed unless the component authority is present and the service is writable.
-`start` then changes desired state through a recorded command. `pause` stops new
+`start` changes desired state through the same recorded `Resume` transition as
+`resume`, but reports the operator's initial-start intent distinctly. Both
+require the exact expected snapshot and an idempotency key. `pause` stops new
 proposals/reservations and applies the selected active-attempt behavior. `stop
 --seal` prevents accidental future budget grants until an explicit unseal
 command.
