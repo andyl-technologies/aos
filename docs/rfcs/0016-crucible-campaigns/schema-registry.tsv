@@ -124,5 +124,8 @@ crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	g
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
 crucible.campaign.observation	1	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
+crucible.campaign.objective-evaluation	1	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
+crucible.campaign.ranking-explanation	1	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
+crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.reproduction-artifact	1	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding	1	crucible-campaign::finding	finding	gate:campaign-replay,gate:content-address

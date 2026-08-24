@@ -108,8 +108,19 @@ storage and scheduler memory while delaying useful feedback.
 
 The initial guided policy uses fixed-point PUCT-style scoring, deterministic
 tie-breaking, explicit novelty and risk terms, and recorded objective
-normalization. Multi-objective campaigns maintain a deterministic Pareto set
-and may use beam admission as a separate, declared policy.
+normalization. Multi-objective survivor barriers use exact signed, unsigned,
+and reduced-rational values and arbitrary-precision reduced weighted rewards.
+They declare Pareto-top-`K`, lexicographic, or weighted-top-`K` primary order
+plus explicit breadth-first and novelty reserves.
+
+Breadth-first capacity is reserved first, novelty capacity second, and the
+primary objective order fills the remainder. Configuration identity breaks
+every otherwise-equal order. Pareto and lexicographic comparison have fixed
+component-visit ceilings; weighted ordering has a conservative
+operand-byte-visit ceiling. Reward numerator, denominator, accumulated
+arithmetic work, and aggregate decision evidence are independently bounded.
+Each decision retains the exact evaluated set, rule, selected set, and one
+deterministic explanation per candidate.
 
 Floating-point implementation details, worker completion order, and map
 iteration order must not alter strict-mode decisions.

@@ -1510,6 +1510,15 @@ impl CampaignRepository {
                     let observation = self.decode_observation(id)?;
                     self.validate_observation_references_cached(&observation, choice_cache)?;
                 }
+                crate::CampaignRecordKind::ObjectiveEvaluation => {
+                    self.read_objective_evaluation_cached(id, choice_cache)?;
+                }
+                crate::CampaignRecordKind::RankingExplanation => {
+                    self.read_ranking_explanation_cached(id, choice_cache)?;
+                }
+                crate::CampaignRecordKind::SurvivorSelection => {
+                    self.read_survivor_selection_bundle_cached(id, choice_cache)?;
+                }
                 crate::CampaignRecordKind::PolicyArtifact => {
                     self.validate_policy_artifact_references(&envelope)?;
                 }

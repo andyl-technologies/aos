@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 blake3 = { workspace = true }
 crucible-cas = { workspace = true }
+num-bigint = { workspace = true }
+num-integer = { workspace = true }
+num-traits = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-normalization = { workspace = true }

@@ -379,9 +379,9 @@ content identity. It contains named `MeasurementSeries` values with a nonempty
 sample vector and claimed same-type aggregate, and is explicitly not a verified
 evaluation or valid new policy input. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
-child-bearing envelopes. Model-owned sample production, complete raw event-log
-retention, and objective evaluation remain owned by T-CAM-3.3 through
-T-CAM-3.5.
+child-bearing envelopes. Model-owned sample production is implemented by
+T-CAM-3.3. Complete raw event-log retention and automatic finding-pin policy
+remain T-CAM-3.5 work.
 
 The observation stores both `ConfigurationId` and
 `ConfigurationArtifactId`. The former is semantic graph identity; the latter is
@@ -389,19 +389,79 @@ the exact replayable child evidence. Coverage storage adds immutable projection
 records and derives their identity union, so a new projector can rebuild the
 same union without mutating an old bitmap in place.
 
-Objective evaluation produces a separate deterministic record naming the
-observation and policy:
+Objective evaluation produces three strict canonical record schemas. Their
+schema-version field is `1`, and fields occur in the order shown:
 
-```rust,illustrative
-pub struct ObjectiveEvaluation {
-    pub observation: ObservationId,
-    pub policy: CampaignPolicyId,
-    pub admissible: bool,
-    pub metric_vector: Vec<ObjectiveValue>,
-    pub scalar_reward: Option<FixedReward>,
-    pub pareto_class: Option<ParetoClassId>,
-}
+```text
+ObjectiveEvaluationV1:
+  schema-version: u32
+  observation: ObservationId
+  configuration: ConfigurationId
+  policy: CampaignPolicyId
+  rejections: sorted set<ObjectiveRejection>
+  components: sorted map<string, ObjectiveComponent>
+  scalar-reward: option<FixedReward>
+
+ObjectiveComponent:
+  measurement: string
+  goal: minimize | maximize
+  weight-micros: nonzero u64
+  value: option<ObjectiveValue>
+
+ObjectiveValue:
+  signed-i64 | unsigned-u64 |
+  reduced-rational(negative: bool, numerator: u128, denominator: nonzero u128)
+
+FixedReward:
+  negative: bool
+  numerator-magnitude: minimal big-endian bytes
+  denominator-magnitude: minimal nonzero big-endian bytes
 ```
+
+The component map exactly repeats the policy's objective names, directions, and
+millionth-denominated weights. A missing verified numeric aggregate retains the
+component with `value = None` and an exact `MissingMeasurement(name)` rejection.
+Failed or inconclusive properties, guest crashes, and assertion failures are
+also retained as closed rejection variants. `scalar-reward` exists only for a
+nonempty, rejection-free vector and is the reduced arbitrary-precision sum of
+direction-adjusted weighted values. Objective values and rewards never use
+floating point.
+
+The execution-model adapter owns the semantic projection from a verified model
+measurement payload to objective values. For Crucible measurement payload
+schema 1, objective names are `measurement-id.metric-id`; the adapter verifies
+the definition hash, evaluation hash, payload bytes, and observation's exact
+measurement-set identity, accepts only scalar numeric aggregates, and rejects
+ambiguous qualified names or nonnumeric aggregates. The generic campaign layer
+then applies the immutable policy and filtering rules.
+
+```text
+RankingExplanationV1:
+  schema-version: u32
+  evaluation: ObjectiveEvaluationId
+  disposition: selected-objective | selected-novelty |
+    selected-breadth-first | filtered(rejections) |
+    pareto-dominated(ObjectiveEvaluationId) | rank-pruned
+  primary-rank: option<u32>
+  novelty-score: u64
+  breadth-ordinal: u64
+
+SurvivorSelectionV1:
+  schema-version: u32
+  policy: CampaignPolicyId
+  rule: (method, keep, novelty-reserve, breadth-first-reserve)
+  considered: sorted map<ConfigurationId, ObjectiveEvaluationId>
+  selected: sorted set<ConfigurationId>
+  explanations: sorted map<ConfigurationId, RankingExplanationId>
+```
+
+The selection's considered and explanation key sets are identical, the selected
+set is a subset of considered configurations and no larger than `keep`, and the
+two reserves sum to at most `keep`. Repository publication authenticates the
+complete dependency union before its first new decision write and is
+content-addressed replayable. Imported and restarted closure validation repeats
+the exact policy, observation, property, evaluation, explanation, and ranking
+basis checks.
 
 - **[CMEAS-8]** Raw canonical samples and aggregation evidence MUST be retained
   or reproducibly derivable for every metric that influences a proposal,
