@@ -8,6 +8,7 @@
 
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  packageSetNix = builtins.readFile ../../pkgs/default.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   expectedCargoDepsHash = "sha256-RvgGglI1TqzOmlqgt3qG+GBHEGd3ZHT9M4CueO0Q/W4=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
@@ -82,6 +83,14 @@
         needle = "doCheck = true;";
       }
       {
+        label = "bounded controller Nextest open-file ceiling";
+        needle = "cargoNextestOpenFilesLimit = 4096;";
+      }
+      {
+        label = "bounded Nextest ceiling recorded in build metadata";
+        needle = "cargo_nextest_open_files_limit=4096";
+      }
+      {
         label = "clippy checks in package build";
         needle = "cargo clippy";
       }
@@ -132,6 +141,12 @@
       {
         label = "workspace build info";
         needle = "cargo_workspace_flags=" + "$" + "{workspaceCargoFlags}";
+      }
+    ]
+    ++ failuresFor "pkgs/default.nix" packageSetNix [
+      {
+        label = "Nextest open-file limit consumed by Cargo wrapper";
+        needle = ''"cargoNextestOpenFilesLimit"'';
       }
     ]
     ++ forbiddenFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
