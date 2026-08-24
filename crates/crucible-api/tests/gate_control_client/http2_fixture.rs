@@ -1,5 +1,4 @@
 //! HTTP/2 lifecycle-server fixtures for control-client tests.
-
 use super::*;
 
 pub(super) struct Http2LifecycleServer {
@@ -811,6 +810,7 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         ),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
+        | LifecycleApiError::ResourceLimit(..)
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }

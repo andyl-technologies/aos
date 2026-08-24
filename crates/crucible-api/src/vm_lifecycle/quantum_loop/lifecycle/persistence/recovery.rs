@@ -4,6 +4,12 @@ use super::*;
 use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::io::Read as _;
 
+#[path = "recovery/error.rs"]
+mod error;
+
+pub(in crate::vm_lifecycle) use error::DurableRunStateError;
+use error::{decode_allocation_error, map_limit};
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProductionRunStatePreflight {
@@ -114,13 +120,17 @@ pub(in crate::vm_lifecycle) fn decode_run_json_bounded<T: DeserializeOwned>(
     path: &Path,
     configured_maximum: u64,
 ) -> Result<T, String> {
-    let bytes = read_run_json_bounded(path, configured_maximum)?;
+    let bytes =
+        read_run_json_bounded(path, configured_maximum).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| format!("decode {}: {error}", path.display()))
 }
 
-fn read_run_json_bounded(path: &Path, configured_maximum: u64) -> Result<Vec<u8>, String> {
+fn read_run_json_bounded(
+    path: &Path,
+    configured_maximum: u64,
+) -> Result<Vec<u8>, DurableRunStateError> {
     let maximum = configured_maximum.min(HARD_RUN_STATE_JSON_BYTES);
-    let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
     let length = file
         .metadata()
         .map_err(|error| format!("inspect {}: {error}", path.display()))?
@@ -129,19 +139,31 @@ fn read_run_json_bounded(path: &Path, configured_maximum: u64) -> Result<Vec<u8>
         return Err(format!(
             "{} contains {length} bytes, above the bounded maximum {maximum}",
             path.display()
-        ));
+        )
+        .into());
     }
     let capacity = usize::try_from(length)
         .map_err(|_| format!("{} length is not representable", path.display()))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
-        .map_err(|_| format!("reserve {capacity} bytes for {}", path.display()))?;
-    file.take(maximum.saturating_add(1))
-        .read_to_end(&mut bytes)
+        .map_err(|_| DurableRunStateError::ResourceLimit {
+            field: "event_log_bytes",
+            current: 0,
+            requested: length,
+            configured: maximum,
+            hard: HARD_RUN_STATE_JSON_BYTES,
+        })?;
+    bytes.resize(capacity, 0);
+    file.read_exact(&mut bytes)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum {
-        return Err(format!("{} grew beyond {maximum} bytes", path.display()));
+    let mut trailing = [0_u8; 1];
+    if file
+        .read(&mut trailing)
+        .map_err(|error| format!("check {} length: {error}", path.display()))?
+        != 0
+    {
+        return Err(format!("{} grew beyond {maximum} bytes", path.display()).into());
     }
     Ok(bytes)
 }
@@ -150,10 +172,15 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
     directory: &Path,
     scenario_identity: &str,
     limits: FaultResourceLimits,
-) -> Result<(ProductionRunManifest, ProductionLifecycleJournal, u64, u64), String> {
+) -> Result<(ProductionRunManifest, ProductionLifecycleJournal, u64, u64), DurableRunStateError> {
     let state_path = directory.join(PRODUCTION_RUN_STATE_FILE);
-    let bytes = read_run_json_bounded(&state_path, limits.event_log_bytes)
-        .map_err(|message| format!("invalid prior run state: {message}"))?;
+    let bytes =
+        read_run_json_bounded(&state_path, limits.event_log_bytes).map_err(
+            |error| match error {
+                DurableRunStateError::ResourceLimit { .. } => error,
+                error => format!("invalid prior run state: {error}").into(),
+            },
+        )?;
     let preflight: ProductionRunStatePreflight = serde_json::from_slice(&bytes)
         .map_err(|error| format!("preflight {}: {error}", state_path.display()))?;
     if preflight.version != PRODUCTION_RUN_STATE_VERSION {
@@ -161,7 +188,8 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             "prior run state {} has incompatible version {}",
             state_path.display(),
             preflight.version
-        ));
+        )
+        .into());
     }
     let state_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     limits
@@ -170,15 +198,13 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             preflight.runtime_event_log_bytes,
             state_bytes,
         )
-        .map_err(|error| format!("admit aggregate prior run state: {error}"))?;
-    for (role, count) in [
-        ("current process", preflight.manifest.processes.0),
-        ("staged process", preflight.manifest.staged_processes.0),
-        ("lifecycle node", preflight.journal.nodes.0),
+        .map_err(map_limit)?;
+    for count in [
+        preflight.manifest.processes.0,
+        preflight.manifest.staged_processes.0,
+        preflight.journal.nodes.0,
     ] {
-        limits
-            .reserve("nodes", 0, count)
-            .map_err(|error| format!("admit {role} count before owned decode: {error}"))?;
+        limits.reserve("nodes", 0, count).map_err(map_limit)?;
     }
     let event_records = preflight
         .journal
@@ -192,7 +218,7 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             preflight.runtime_event_records,
             event_records,
         )
-        .map_err(|error| format!("admit lifecycle record count before owned decode: {error}"))?;
+        .map_err(map_limit)?;
     let admitted_count = |role: &str, count: u64| {
         usize::try_from(count)
             .map_err(|_| format!("admitted {role} count {count} is not representable"))
@@ -203,15 +229,30 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
         admitted_count("lifecycle node", preflight.journal.nodes.0)?,
         admitted_count("completed exit", preflight.journal.completed_exits.0)?,
     );
-    let state: ProductionRunState = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("decode {}: {error}", state_path.display()))?;
+    let state: ProductionRunState = match serde_json::from_slice(&bytes) {
+        Ok(state) => state,
+        Err(error) => {
+            if let Some(allocation) = process_owners::take_durable_decode_allocation() {
+                return Err(decode_allocation_error(
+                    allocation,
+                    limits,
+                    preflight.runtime_event_records,
+                    preflight
+                        .runtime_event_log_bytes
+                        .saturating_add(state_bytes),
+                ));
+            }
+            return Err(format!("decode {}: {error}", state_path.display()).into());
+        }
+    };
     let manifest = state.manifest;
     let journal = state.journal;
     if manifest.version != 2 || manifest.scenario != scenario_identity {
         return Err(format!(
             "prior run manifest {} has incompatible identity or version",
             state_path.display()
-        ));
+        )
+        .into());
     }
     if !valid_process_identity(&manifest.owner)
         || manifest
@@ -226,7 +267,8 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
         return Err(format!(
             "prior run manifest {} has invalid process ownership",
             state_path.display()
-        ));
+        )
+        .into());
     }
     if let Some(node) = manifest
         .staged_processes
@@ -235,7 +277,8 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
     {
         return Err(format!(
             "prior run manifest stages replacement for unknown current node `{node}`"
-        ));
+        )
+        .into());
     }
     validate_recovered_lifecycle_journal(&journal, &manifest, limits).map_err(|message| {
         format!(

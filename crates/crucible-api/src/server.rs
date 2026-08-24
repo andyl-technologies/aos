@@ -4,7 +4,6 @@
 //! RPC ABI that [`crate::RpcControlClient`] emits, dispatches into a
 //! [`LifecycleControlPlane`], and serializes lifecycle, `Control`, `Watch`, and
 //! unary `Send` responses without taking ownership of scheduler semantics.
-
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
@@ -2658,6 +2657,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         ),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
+        | LifecycleApiError::ResourceLimit(..)
         | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
