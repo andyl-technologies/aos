@@ -59,7 +59,7 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
         decoded.build_identity.shmem_abi_version,
         crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string()
     );
-    assert_eq!(decoded.build_identity.guest_host_protocol_version, "1");
+    assert_eq!(decoded.build_identity.guest_host_protocol_version, "2");
     assert_eq!(decoded.build_identity.rpc_abi_version, "5.0.0");
     assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v5");
     assert!(!decoded.fingerprint_tail.is_empty());
@@ -657,7 +657,7 @@ fn campaign_corpus_reuse_refuses_abi_drift() -> Result<(), Box<dyn Error>> {
         prior_identity.clone(),
     )?;
     let mut run_identity = prior_identity;
-    run_identity.guest_host_protocol_version = String::from("2");
+    run_identity.guest_host_protocol_version = String::from("3");
 
     let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
 

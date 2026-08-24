@@ -118,7 +118,7 @@ pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
 /// Lowest control-protocol version this crate can negotiate.
 pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 2;
 /// Highest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_VERSION: u32 = 2;
+pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 /// Byte length of plugin-to-host per-vCPU register digests.
 pub const PLUGIN_NVCPU_REGISTER_DIGEST_BYTES: usize = 32;
 
