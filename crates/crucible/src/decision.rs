@@ -162,6 +162,94 @@ impl DecisionRecorder {
         Ok(discovery)
     }
 
+    /// Applies one authenticated campaign selection to an observed live request.
+    ///
+    /// The recorder advances the same named RNG stream and retains its full raw
+    /// draw, constructs the exact branch parent after that draw, validates the
+    /// supplied selection against the reconstructed opportunity and parent, and
+    /// requires the plugin-served value to equal the selected value. No state
+    /// changes if any check fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the request is malformed, the draw
+    /// cap is exhausted, the selection does not bind the live opportunity and
+    /// exact parent, or the plugin served another value.
+    pub fn apply_app_random_selection(
+        &mut self,
+        decision: AppRandomDecision,
+        selection: &crucible_campaign::Selection,
+    ) -> Result<crucible_campaign::ChoiceDiscovery, DecisionRecordError> {
+        let selectable = AppRandomSelectable::from_decision(&self.configuration.def, &decision)?;
+        self.ensure_app_random_draw_available()?;
+
+        let mut advanced_stream =
+            self.streams
+                .get(&decision.stream)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.rng
+                        .fork_in_domain(&decision.stream.domain, &decision.stream.name)
+                });
+        let raw_value = advanced_stream.next_u64();
+        let parent = step(
+            &self.configuration,
+            Decision::RngDraw(RngDecision {
+                stream: decision.stream.clone(),
+                value: raw_value,
+            }),
+        );
+        let selected = selectable.apply_selection(selection, &parent)?;
+        if selected != decision {
+            return Err(AppRandomSelectableError::AppliedDecisionMismatch.into());
+        }
+        let discovery = selectable.into_discovery()?;
+
+        self.app_random_draws += 1;
+        self.streams
+            .insert(decision.stream.clone(), advanced_stream);
+        self.configuration = parent;
+        self.append_decision(Decision::Selection(SelectionDecision::new(selection)));
+        Ok(discovery)
+    }
+
+    /// Computes the exact branch parent for one observed live random request.
+    ///
+    /// The returned identity includes the full seeded raw draw that must precede
+    /// a campaign selection. This operation does not mutate the recorder, so a
+    /// scheduler can locate an installed selection before committing either the
+    /// draw or the selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the request is malformed or the
+    /// scenario app-random draw cap has already been reached.
+    pub fn app_random_selection_parent(
+        &self,
+        decision: &AppRandomDecision,
+    ) -> Result<crate::ContentHash, DecisionRecordError> {
+        AppRandomSelectable::from_decision(&self.configuration.def, decision)?;
+        self.ensure_app_random_draw_available()?;
+
+        let mut advanced_stream =
+            self.streams
+                .get(&decision.stream)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.rng
+                        .fork_in_domain(&decision.stream.domain, &decision.stream.name)
+                });
+        let raw_value = advanced_stream.next_u64();
+        Ok(step(
+            &self.configuration,
+            Decision::RngDraw(RngDecision {
+                stream: decision.stream.clone(),
+                value: raw_value,
+            }),
+        )
+        .id())
+    }
+
     fn serve_app_random_with_request_id(
         &mut self,
         node: crate::NodeId,
@@ -664,6 +752,72 @@ mod tests {
             &round_tripped.decisions()[1],
             Decision::Selection(selection) if selection.is_app_random_model_sample()
         ));
+    }
+
+    #[test]
+    fn decision_recorder_applies_campaign_branch_only_at_the_exact_live_parent() {
+        let config = Configuration::genesis(default_scenario());
+        let stream = rng_stream("app-random/node:6:node-a/stream:6:branch");
+        let mut expected_stream = config
+            .def
+            .seed()
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let raw_draw = expected_stream.next_u64();
+        let selected_value = mask_to_width(raw_draw, 16) ^ 1;
+        let observed = AppRandomDecision {
+            node: node("node-a"),
+            stream: stream.clone(),
+            request_id: 17,
+            width: 16,
+            value: selected_value,
+        };
+        let parent = step(
+            &config,
+            Decision::RngDraw(RngDecision {
+                stream: stream.clone(),
+                value: raw_draw,
+            }),
+        );
+        let selectable = AppRandomSelectable::from_decision(&config.def, &observed)
+            .expect("live request should reconstruct");
+        let selection = selectable
+            .branch_selection(&parent, selected_value)
+            .expect("exact parent should admit a branch");
+
+        let mut recorder = DecisionRecorder::new(config.clone());
+        assert_eq!(
+            recorder
+                .app_random_selection_parent(&observed)
+                .expect("live parent should derive"),
+            parent.id()
+        );
+        recorder
+            .apply_app_random_selection(observed.clone(), &selection)
+            .expect("plugin-served branch value should validate");
+        assert_eq!(
+            recorder.configuration().id(),
+            step(
+                &parent,
+                Decision::Selection(SelectionDecision::new(&selection))
+            )
+            .id()
+        );
+
+        let mut wrong_parent_recorder = DecisionRecorder::new(step(
+            &config,
+            Decision::RngDraw(RngDecision {
+                stream: rng_stream("unrelated"),
+                value: 9,
+            }),
+        ));
+        let before = wrong_parent_recorder.clone();
+        assert!(
+            wrong_parent_recorder
+                .apply_app_random_selection(observed, &selection)
+                .is_err()
+        );
+        assert_eq!(wrong_parent_recorder, before);
     }
 
     #[test]

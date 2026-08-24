@@ -1,6 +1,7 @@
 //! Terminal conditions, quiescence, World-link runtime, and scheduler-owned state.
 
 use super::*;
+use crate::SelectionDecision;
 
 mod network_checkpoint;
 
@@ -475,6 +476,11 @@ pub struct SingleScheduler {
     pub(super) decision_rng_cursor: DecisionRngState,
     /// Explorer-selected live World-network outcomes awaiting exact emissions.
     pub(super) branch_network_choices: Vec<OverrideDecision>,
+    /// Authenticated app-random branch selections keyed by their exact parent.
+    ///
+    /// The parent includes the seeded raw RNG draw. A selection is removed only
+    /// after the live guest request and selected value validate successfully.
+    pub(super) app_random_branch_selections: BTreeMap<ContentHash, SelectionDecision>,
     /// Live World-network frontiers captured in execution order.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
     pub(super) event_log: EventLog,

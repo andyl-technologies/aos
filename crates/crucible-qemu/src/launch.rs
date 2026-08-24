@@ -452,6 +452,7 @@ pub struct QemuLaunchCommand {
     plugin_fault_node_hash: [u8; 32],
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
+    app_random_branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
 }
 
 /// Static host-resource baseline derived from one validated launch command.
@@ -598,6 +599,14 @@ impl QemuLaunchCommand {
         self.resource_requirements
     }
 
+    /// Returns the immutable node-local app-random campaign branch plan.
+    #[must_use]
+    pub const fn app_random_branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        &self.app_random_branch_plan
+    }
+
     /// Appends one content-addressed observation-only QEMU plugin.
     ///
     /// This is used by loaded-QEMU gates that need an independent fingerprint
@@ -630,7 +639,7 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
         let mut lines = Vec::with_capacity(self.args.len() + 3);
-        lines.push("crucible.qemu-launch-command.v1".to_owned());
+        lines.push("crucible.qemu-launch-command.v2".to_owned());
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
         lines.push(format!(
@@ -640,6 +649,10 @@ impl QemuLaunchCommand {
         lines.push(format!(
             "ready_marker_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.ready_marker_digest())
+        ));
+        lines.push(format!(
+            "app_random_branch_plan_v1={}",
+            lower_hex(*blake3::hash(&self.app_random_branch_plan.encode()).as_bytes())
         ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
@@ -928,6 +941,7 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
+        let app_random_branch_plan = self.plugin.app_random_branch_plan().clone();
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
@@ -939,6 +953,7 @@ impl QemuLaunchCommandBuilder {
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
             fault_capability_requirement,
             resource_requirements,
+            app_random_branch_plan,
         })
     }
 }

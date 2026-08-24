@@ -86,7 +86,7 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -299,7 +299,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 1,
+        proto_version: 2,
         abi_version: 1,
         slot_index: 0,
         node_count: 1,
@@ -307,7 +307,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 1,
+            proto_version: 2,
             abi_version: 1,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
@@ -323,6 +323,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            app_random_branch_plan_fd: shmem.as_raw_fd(),
         },
     )
     .unwrap_or_else(|error| panic!("setup descriptors should send: {error}"));

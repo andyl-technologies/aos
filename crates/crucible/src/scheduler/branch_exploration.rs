@@ -1,7 +1,9 @@
 //! Explorer-selected scheduler branch admission and replay choices.
 
 use super::*;
+use crate::SelectionDecision;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
+use crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
     /// Returns the seed that owns every future authoritative decision stream.
@@ -27,7 +29,8 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] when explorer-selected
     /// branch choices or uncommitted World-network decisions are pending.
     pub fn reseed_future_decisions(&mut self, seed: Seed) -> Result<(), SchedulerError> {
-        if !self.branch_network_choices.is_empty() {
+        if !self.branch_network_choices.is_empty() || !self.app_random_branch_selections.is_empty()
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "cannot re-seed while explicit scheduler branch choices are pending",
@@ -50,7 +53,52 @@ impl SingleScheduler {
     /// Returns the number of installed branch effect choices not yet resolved.
     #[must_use]
     pub fn pending_branch_effect_choice_count(&self) -> usize {
-        self.branch_network_choices.len()
+        self.branch_network_choices
+            .len()
+            .saturating_add(self.app_random_branch_selections.len())
+    }
+
+    /// Installs authenticated app-random selections for exact branch parents.
+    ///
+    /// Each key is the configuration after the live seeded [`Decision::RngDraw`]
+    /// and immediately before the corresponding [`Decision::Selection`]. The
+    /// scheduler consumes a selection only after replay validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a decision is not a
+    /// campaign-branch selection or a parent is duplicated.
+    pub fn install_app_random_branch_selections(
+        &mut self,
+        selections: impl IntoIterator<Item = (ContentHash, SelectionDecision)>,
+    ) -> Result<(), SchedulerError> {
+        let mut installed = BTreeMap::new();
+        for (parent, selection) in selections {
+            if installed.len() >= MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "app-random replay plan exceeds {} selections",
+                        MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
+                    ),
+                });
+            }
+            if !selection.is_campaign_branch() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "app-random replay plan contains a non-campaign selection",
+                    ),
+                });
+            }
+            if installed.insert(parent, selection).is_some() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "app-random replay plan contains a duplicate branch parent",
+                    ),
+                });
+            }
+        }
+        self.app_random_branch_selections = installed;
+        Ok(())
     }
 
     /// Installs explorer-selected World-network outcomes for exact frame emissions.

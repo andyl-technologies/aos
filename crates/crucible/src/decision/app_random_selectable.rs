@@ -484,6 +484,9 @@ pub enum AppRandomSelectableError {
     /// The observed decision names another dynamic request.
     #[error("app-random decision does not name this selectable occurrence")]
     DecisionSiteMismatch,
+    /// The live plugin served a different request or value than the selection.
+    #[error("live app-random decision does not equal the applied selection")]
+    AppliedDecisionMismatch,
     /// The seeded draw does not reproduce the observed served value.
     #[error("app-random seeded draw produced {expected}, not recorded value {actual}")]
     SampleMismatch {

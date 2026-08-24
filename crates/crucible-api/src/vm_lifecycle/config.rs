@@ -65,6 +65,8 @@ impl ProductionVmLifecycleConfig {
             debug: None,
             branch: None,
             branch_network_choices: Vec::new(),
+            app_random_branch_selections: BTreeMap::new(),
+            app_random_branch_plans: BTreeMap::new(),
             signal_artifacts: None,
             fault_replay: None,
             world_artifacts: None,
@@ -257,6 +259,22 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub fn with_branch_network_choices(mut self, choices: Vec<crucible::OverrideDecision>) -> Self {
         self.branch_network_choices = choices;
+        self
+    }
+
+    /// Returns this configuration with exact app-random branch replay inputs.
+    ///
+    /// `selections` binds authenticated schedule selections to their exact
+    /// post-draw parents. `plans` contains the corresponding node-local producer
+    /// substitutions sent to each plugin during setup.
+    #[must_use]
+    pub fn with_app_random_branch_replay(
+        mut self,
+        selections: BTreeMap<ContentHash, crucible::SelectionDecision>,
+        plans: BTreeMap<NodeId, crucible_protocol::app_random_branch_plan::AppRandomBranchPlan>,
+    ) -> Self {
+        self.app_random_branch_selections = selections;
+        self.app_random_branch_plans = plans;
         self
     }
 

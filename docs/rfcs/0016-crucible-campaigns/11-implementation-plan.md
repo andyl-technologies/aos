@@ -493,16 +493,23 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   diagnostic, and the runner itself rejects exact-resume roots before lifecycle
   construction. The fresh runner now reconstructs non-genesis discovery starts
   whose schedules contain only deterministic producer decisions and the
-  standardized model-sampled app-random selection. It starts at scenario
-  genesis, advances under the attempt's exact cancellation and execution-quanta
-  guard, requires every newly appended decision to equal the requested prefix,
-  and retains replayed event history under the same observation bounds before
-  lending the exact target to the modeled driver. Divergence, early terminal
-  state, cancellation, or quantum exhaustion still performs runner-owned
-  teardown. Legacy app-random values, explorer overrides, and every non-model
-  selection are rejected before installing resources. Exact live producer
-  injection for a `CampaignBranch` selection remains mandatory before a
-  selected-branch start can use this path. A
+  standardized app-random model/branch selection. Before launch it derives a
+  bounded per-node producer plan from the repository-resolved target and sends
+  it as the sealed third control-protocol v2 `Setup` descriptor. Lifecycle
+  construction first requires the plugin-plan and scheduler-selection identity
+  sets to match exactly and rejects plans for missing or white-box-disabled
+  nodes. The plugin
+  exact-checks node-local draw ordinal, canonical stream, full seeded raw draw,
+  and that the selected value fits the live width; the scheduler separately
+  validates the exact `SelectionId`, opportunity, domain, provenance, live
+  request width, and post-draw parent. It starts at scenario genesis, advances
+  under the attempt's exact cancellation and execution-quanta guard, requires
+  every newly appended decision to equal the requested prefix, and retains
+  replayed event history under the same observation bounds before lending the
+  exact target to the modeled driver. Divergence, early terminal state,
+  cancellation, or quantum exhaustion still performs runner-owned teardown.
+  Legacy app-random values, explorer overrides, and selections outside this
+  exact app-random contract are rejected before installing resources. A
   concrete modeled driver now projects an already-materialized exact discovery
   or selected-branch child, preserves typed scheduler failures, stops at the
   requested choice/marker/time/event or terminal boundary, rejects uncommitted
@@ -514,8 +521,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   scenario and child artifacts, and emits a complete `ObservationCandidate`.
   It deliberately emits no undeclared measurements; measurement definitions,
   raw event-log evidence, and objective aggregation remain T-CAM-3 work.
-  Concrete driver selection, non-genesis replay/selection materialization,
-  fresh exact-cache, and production worker composition remain open. Real-node exact-checkpoint
+  Concrete driver selection, fresh exact-cache, and production worker
+  composition remain open. Real-node exact-checkpoint
   capture is now an
   executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation

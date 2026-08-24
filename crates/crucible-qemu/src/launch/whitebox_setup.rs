@@ -34,6 +34,14 @@ enum QemuWhiteboxSetupTrap {
 }
 
 impl QemuWhiteboxSetupValidation {
+    #[cfg(test)]
+    pub(super) fn test_x86_unclaimed() -> Self {
+        Self {
+            trap: QemuWhiteboxSetupTrap::X86Port,
+            observed_region: UNASSIGNED_X86_IO_REGION.to_owned(),
+        }
+    }
+
     /// Returns the collision-checked x86 reserved port.
     ///
     /// This compatibility accessor is meaningful only for validation returned

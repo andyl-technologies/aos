@@ -2161,17 +2161,31 @@ over an otherwise retryable or canceled driver result while retaining both
 diagnostics. The fresh runner independently rejects any exact-resume root before
 calling even an injected lifecycle factory. It also rejects a non-genesis
 target before resource installation when its schedule contains a legacy
-app-random value, an explorer override, or a typed selection other than the
-standardized model sample. For every other discovery target, the runner starts
-the fresh process at scenario genesis and performs exact prefix replay under
+app-random value, an explorer override, or a typed selection outside the
+standardized app-random model/branch contract. For every admitted discovery or
+selected-branch target, the runner derives an immutable per-node replay plan
+from the already repository-resolved schedule before launch. Control-protocol
+v2 passes that bounded canonical plan as a sealed third `Setup` descriptor. Each
+entry binds the node-local draw ordinal, canonical stream, full seeded raw draw,
+selected value, and exact `SelectionId`; before any launch the lifecycle
+requires the aggregate plan entries and scheduler selection set to contain the
+same exact selection identities and rejects foreign or white-box-disabled nodes.
+The plugin serves a substitution only
+after the live ordinal, stream, and draw agree and the selected value fits the
+live width. The scheduler independently keys the decoded selection by the exact
+configuration after the raw `RngDraw`, reconstructs the live opportunity/domain
+including the request width, and applies the origin-specific campaign replay
+validator before committing it. A plugin value, stale plan, foreign parent, or
+wrong selection therefore fails before the requested prefix can be accepted.
+The runner starts the fresh process at scenario genesis and performs exact
+prefix replay under
 the attempt's cancellation and execution-quanta guard. Every newly appended
 decision MUST equal the corresponding requested decision; replayed event
 history is retained under the same 1,000,000-entry and 64-MiB bounds used by
 result sealing. Divergence, early terminal state, cancellation, or quantum
-exhaustion fails closed and still tears down the lifecycle. A selected-branch
-start contains a `CampaignBranch` selection and remains rejected before launch
-until the live producer can receive and authenticate that exact alternative;
-the runner MUST NOT substitute seed changes or a post-hoc schedule append.
+exhaustion fails closed and still tears down the lifecycle. The runner MUST NOT
+substitute seed changes or a post-hoc schedule append for a `CampaignBranch`
+selection.
 Concrete fresh-driver selection,
 an independently admitted debugger world, and production worker composition
 remain open; no unsupported mode falls back to the packaged authority. The

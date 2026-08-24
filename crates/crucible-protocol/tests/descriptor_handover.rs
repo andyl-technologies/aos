@@ -15,10 +15,11 @@ use crucible_protocol::{
 };
 
 #[test]
-fn setup_handover_transfers_two_descriptors_in_fixed_order() -> Result<(), Box<dyn Error>> {
+fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box<dyn Error>> {
     let (host, plugin) = UnixStream::pair()?;
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
+    let branch_plan = File::open("/dev/null")?;
 
     send_setup_with_descriptors(
         host.as_raw_fd(),
@@ -26,18 +27,25 @@ fn setup_handover_transfers_two_descriptors_in_fixed_order() -> Result<(), Box<d
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            app_random_branch_plan_fd: branch_plan.as_raw_fd(),
         },
     )?;
 
     let ReceivedSetup {
         region_len,
-        descriptors: ReceivedSetupDescriptors { shmem_fd, wake_fd },
+        descriptors:
+            ReceivedSetupDescriptors {
+                shmem_fd,
+                wake_fd,
+                app_random_branch_plan_fd,
+            },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 450_560);
     assert_close_on_exec(shmem_fd.as_raw_fd())?;
     assert_close_on_exec(wake_fd.as_raw_fd())?;
+    assert_close_on_exec(app_random_branch_plan_fd.as_raw_fd())?;
 
-    assert_received_fd_order(shmem_fd, wake_fd)?;
+    assert_received_fd_order(shmem_fd, wake_fd, app_random_branch_plan_fd)?;
 
     Ok(())
 }
@@ -48,20 +56,26 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
     let (host, plugin) = UnixStream::pair()?;
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
+    let branch_plan = File::open("/dev/null")?;
     let frame = control_encode_host_msg(&HostMsg::Setup { region_len: 8192 });
 
     send_setup_with_split_descriptor_cmsgs(
         host.as_raw_fd(),
         &frame,
-        [shmem.as_raw_fd(), wake.as_raw_fd()],
+        [shmem.as_raw_fd(), wake.as_raw_fd(), branch_plan.as_raw_fd()],
     )?;
 
     let ReceivedSetup {
         region_len,
-        descriptors: ReceivedSetupDescriptors { shmem_fd, wake_fd },
+        descriptors:
+            ReceivedSetupDescriptors {
+                shmem_fd,
+                wake_fd,
+                app_random_branch_plan_fd,
+            },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 8192);
-    assert_received_fd_order(shmem_fd, wake_fd)?;
+    assert_received_fd_order(shmem_fd, wake_fd, app_random_branch_plan_fd)?;
 
     Ok(())
 }
@@ -73,12 +87,14 @@ fn setup_handover_reports_closed_peer_on_send() -> Result<(), Box<dyn Error>> {
 
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
+    let branch_plan = File::open("/dev/null")?;
     let error = send_setup_with_descriptors(
         host.as_raw_fd(),
         4096,
         SetupDescriptorFds {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
+            app_random_branch_plan_fd: branch_plan.as_raw_fd(),
         },
     );
 
@@ -87,16 +103,24 @@ fn setup_handover_reports_closed_peer_on_send() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn assert_received_fd_order(shmem_fd: OwnedFd, wake_fd: OwnedFd) -> Result<(), Box<dyn Error>> {
+fn assert_received_fd_order(
+    shmem_fd: OwnedFd,
+    wake_fd: OwnedFd,
+    branch_plan_fd: OwnedFd,
+) -> Result<(), Box<dyn Error>> {
     let mut received_shmem = File::from(shmem_fd);
     let mut received_wake = File::from(wake_fd);
+    let mut received_branch_plan = File::from(branch_plan_fd);
     let mut shmem_byte = [0xAA];
     let mut wake_byte = [0xAA];
+    let mut branch_plan_byte = [0xAA];
 
     assert_eq!(received_shmem.read(&mut shmem_byte)?, 0);
     assert_eq!(shmem_byte, [0xAA]);
     assert_eq!(received_wake.read(&mut wake_byte)?, 1);
     assert_eq!(wake_byte, [0]);
+    assert_eq!(received_branch_plan.read(&mut branch_plan_byte)?, 0);
+    assert_eq!(branch_plan_byte, [0xAA]);
 
     Ok(())
 }
@@ -119,7 +143,7 @@ fn setup_handover_rejects_wrong_descriptor_count() -> Result<(), Box<dyn Error>>
 fn send_setup_with_split_descriptor_cmsgs(
     socket_fd: RawFd,
     frame: &[u8],
-    fds: [RawFd; 2],
+    fds: [RawFd; 3],
 ) -> Result<(), Box<dyn Error>> {
     let mut iov = libc::iovec {
         iov_base: frame.as_ptr().cast::<libc::c_void>().cast_mut(),
@@ -147,6 +171,11 @@ fn send_setup_with_split_descriptor_cmsgs(
     let second = unsafe { libc::CMSG_NXTHDR(&message, first) };
     assert!(!second.is_null());
     write_single_fd_cmsg(second, fds[1])?;
+
+    // SAFETY: `second` is a valid header and `message` has space for a third one.
+    let third = unsafe { libc::CMSG_NXTHDR(&message, second) };
+    assert!(!third.is_null());
+    write_single_fd_cmsg(third, fds[2])?;
 
     // SAFETY: `message` references live frame and ancillary buffers for this syscall.
     let sent = unsafe { libc::sendmsg(socket_fd, &message, send_flags()) };

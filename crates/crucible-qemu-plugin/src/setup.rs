@@ -2,11 +2,12 @@
 //!
 //! The setup path consumes the `Setup` descriptors, maps the shared-memory
 //! region for exactly the advertised byte length, validates the region header,
-//! and arms the wake fd for later event-loop registration. The caller then
-//! proves plugin callback ownership, registers the wake fd, and sends
-//! `SetupAck(0)` with the returned completion token.
-//! Descriptor validity comes from the fixed SCM_RIGHTS handoff; mmap lifetime is owned by the returned
-//! [`PluginSetupCompletion`] token.
+//! authenticates the sealed app-random branch plan, and arms the wake fd for
+//! later event-loop registration. The caller then proves plugin callback
+//! ownership, registers the wake fd, and sends `SetupAck(0)` with the returned
+//! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
+//! handoff; mmap lifetime is owned by the returned [`PluginSetupCompletion`]
+//! token.
 
 #[cfg(unix)]
 use std::io::Write;
@@ -18,7 +19,11 @@ use thiserror::Error;
 #[cfg(unix)]
 use crucible_protocol::{
     DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
-    SetupCompletionError, plugin_send_setup_ack, recv_setup_with_descriptors,
+    SetupCompletionError,
+    app_random_branch_plan::{
+        AppRandomBranchPlan, AppRandomBranchPlanError, MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+    },
+    plugin_send_setup_ack, recv_setup_with_descriptors,
 };
 #[cfg(unix)]
 use crucible_shmem::{
@@ -163,6 +168,7 @@ pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
     validated_region: ValidatedSetupRegion,
     wake_fd: ArmedWakeFd,
+    app_random_branch_plan: AppRandomBranchPlan,
     registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
@@ -191,6 +197,12 @@ impl PluginSetupCompletion {
         &self.wake_fd
     }
 
+    /// Returns the validated immutable app-random branch replay plan.
+    #[must_use]
+    pub const fn app_random_branch_plan(&self) -> &AppRandomBranchPlan {
+        &self.app_random_branch_plan
+    }
+
     /// Returns evidence that the wake fd was registered with QEMU.
     #[must_use]
     pub const fn registered_wake_fd(&self) -> Option<RegisteredWakeFd> {
@@ -215,12 +227,12 @@ impl PluginReadySetupAck {
     }
 }
 
-/// Receives the setup frame and its fixed-order shared-memory and wake descriptors.
+/// Receives the setup frame and its three fixed-order descriptors.
 ///
 /// # Errors
 ///
 /// Returns [`PluginSetupError::ReceiveSetup`] when the control socket does not
-/// carry a valid `Setup` frame with exactly two `SCM_RIGHTS` descriptors, or
+/// carry a valid `Setup` frame with exactly three `SCM_RIGHTS` descriptors, or
 /// [`PluginSetupError::SendFailureAck`] when that setup failure cannot be
 /// acknowledged.
 #[cfg(unix)]
@@ -283,6 +295,15 @@ where
     let region_len = setup.region_len;
     let shmem_fd = setup.descriptors.shmem_fd;
     let wake_fd = setup.descriptors.wake_fd;
+    let app_random_branch_plan_fd = setup.descriptors.app_random_branch_plan_fd;
+
+    let app_random_branch_plan = match read_app_random_branch_plan(app_random_branch_plan_fd) {
+        Ok(plan) => plan,
+        Err(source) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateAppRandomBranchPlan)?;
+            return Err(PluginSetupError::ValidateAppRandomBranchPlan { source });
+        }
+    };
 
     // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
     // shmem escapes setup without that owner and the validated-region token.
@@ -316,8 +337,114 @@ where
         mapped_region,
         validated_region,
         wake_fd,
+        app_random_branch_plan,
         registered_wake_fd: None,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn read_app_random_branch_plan(
+    fd: OwnedFd,
+) -> Result<AppRandomBranchPlan, AppRandomBranchPlanDescriptorError> {
+    let required_seals =
+        libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let observed_seals = unsafe {
+        // SAFETY: `fd` is a live descriptor received through SCM_RIGHTS and
+        // F_GET_SEALS reads descriptor metadata without pointer arguments.
+        libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS)
+    };
+    if observed_seals < 0 {
+        return Err(AppRandomBranchPlanDescriptorError::Io {
+            operation: "read app-random branch-plan seals",
+            errno: last_errno(),
+        });
+    }
+    if observed_seals & required_seals != required_seals {
+        return Err(AppRandomBranchPlanDescriptorError::MissingSeals {
+            observed: observed_seals,
+            required: required_seals,
+        });
+    }
+
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let status = unsafe {
+        // SAFETY: `stat` points to writable storage for one libc::stat and the
+        // received descriptor remains owned for this call.
+        libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr())
+    };
+    if status != 0 {
+        return Err(AppRandomBranchPlanDescriptorError::Io {
+            operation: "stat app-random branch-plan descriptor",
+            errno: last_errno(),
+        });
+    }
+    let stat = unsafe {
+        // SAFETY: successful fstat initialized the complete libc::stat value.
+        stat.assume_init()
+    };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(AppRandomBranchPlanDescriptorError::NotRegular);
+    }
+    let length = usize::try_from(stat.st_size).map_err(|_error| {
+        AppRandomBranchPlanDescriptorError::InvalidLength {
+            bytes: usize::MAX,
+            maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+        }
+    })?;
+    if length == 0 || length > MAX_APP_RANDOM_BRANCH_PLAN_BYTES {
+        return Err(AppRandomBranchPlanDescriptorError::InvalidLength {
+            bytes: length,
+            maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+        });
+    }
+
+    let mut bytes = vec![0_u8; length];
+    let mut read = 0_usize;
+    while read < bytes.len() {
+        let offset = libc::off_t::try_from(read).map_err(|_error| {
+            AppRandomBranchPlanDescriptorError::InvalidLength {
+                bytes: length,
+                maximum: MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
+            }
+        })?;
+        let result = unsafe {
+            // SAFETY: the destination suffix is writable for its declared
+            // length and pread does not retain the pointer.
+            libc::pread(
+                fd.as_raw_fd(),
+                bytes[read..].as_mut_ptr().cast::<libc::c_void>(),
+                bytes.len() - read,
+                offset,
+            )
+        };
+        if result < 0 {
+            let errno = last_errno();
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(AppRandomBranchPlanDescriptorError::Io {
+                operation: "read app-random branch-plan descriptor",
+                errno,
+            });
+        }
+        let count = usize::try_from(result).unwrap_or(0);
+        if count == 0 {
+            return Err(AppRandomBranchPlanDescriptorError::Truncated {
+                expected: length,
+                actual: read,
+            });
+        }
+        read += count;
+    }
+    AppRandomBranchPlan::decode(&bytes)
+        .map_err(|source| AppRandomBranchPlanDescriptorError::Decode { source })
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn read_app_random_branch_plan(
+    _fd: OwnedFd,
+) -> Result<AppRandomBranchPlan, AppRandomBranchPlanDescriptorError> {
+    Err(AppRandomBranchPlanDescriptorError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]
@@ -537,6 +664,48 @@ fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn test_app_random_branch_plan_fd() -> OwnedFd {
+    use std::os::fd::FromRawFd;
+
+    let bytes = AppRandomBranchPlan::default().encode();
+    let name = c"crucible-test-app-random-branch-plan";
+    let raw_fd = unsafe {
+        // SAFETY: the C string is static and memfd_create returns a new fd.
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+    };
+    assert!(raw_fd >= 0, "test branch-plan memfd should be created");
+    let fd = unsafe {
+        // SAFETY: successful memfd_create returned a uniquely owned fd.
+        OwnedFd::from_raw_fd(raw_fd)
+    };
+    let length = libc::off_t::try_from(bytes.len())
+        .unwrap_or_else(|error| panic!("test plan length should fit off_t: {error}"));
+    let truncate = unsafe {
+        // SAFETY: `fd` is live and `length` is range checked.
+        libc::ftruncate(fd.as_raw_fd(), length)
+    };
+    assert_eq!(truncate, 0, "test branch-plan memfd should size");
+    let written = unsafe {
+        // SAFETY: `bytes` is readable for its complete length and pwrite does
+        // not retain the pointer.
+        libc::pwrite(
+            fd.as_raw_fd(),
+            bytes.as_ptr().cast::<libc::c_void>(),
+            bytes.len(),
+            0,
+        )
+    };
+    assert_eq!(written, bytes.len() as isize, "test plan should write");
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
+    let sealed = unsafe {
+        // SAFETY: `fd` is a live sealable memfd.
+        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals)
+    };
+    assert_eq!(sealed, 0, "test branch-plan memfd should seal");
+    fd
+}
+
 /// An error produced while arming the setup wake fd.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -648,6 +817,12 @@ pub enum PluginSetupError {
         /// Underlying validation error.
         source: RegionSetupValidationError,
     },
+    /// Validating the immutable branch-plan descriptor failed.
+    #[error("setup app-random branch-plan validation failed")]
+    ValidateAppRandomBranchPlan {
+        /// Underlying descriptor or canonical-plan failure.
+        source: AppRandomBranchPlanDescriptorError,
+    },
     /// The handshake node count disagrees with the mapped shared-memory header.
     #[error(
         "setup node_count mismatch: handshake {handshake_node_count}, region {region_node_count}"
@@ -695,6 +870,56 @@ pub enum PluginSetupError {
         /// Underlying frame I/O error.
         source: SetupCompletionError,
     },
+}
+
+/// Invalid immutable descriptor carrying the setup-time app-random branch plan.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AppRandomBranchPlanDescriptorError {
+    /// Descriptor metadata or content I/O failed.
+    #[error("{operation} failed with errno {errno}")]
+    Io {
+        /// Operation being attempted.
+        operation: &'static str,
+        /// Raw OS errno.
+        errno: i32,
+    },
+    /// The descriptor was not a regular memfd-like file.
+    #[error("app-random branch-plan descriptor is not a regular file")]
+    NotRegular,
+    /// The descriptor did not carry every immutability seal.
+    #[error("app-random branch-plan seals {observed:#x} do not include {required:#x}")]
+    MissingSeals {
+        /// Observed seal mask.
+        observed: i32,
+        /// Required seal mask.
+        required: i32,
+    },
+    /// The descriptor length was empty, unrepresentable, or oversized.
+    #[error("app-random branch-plan descriptor has {bytes} bytes, maximum {maximum}")]
+    InvalidLength {
+        /// Actual or overflow-saturated byte count.
+        bytes: usize,
+        /// Maximum admitted byte count.
+        maximum: usize,
+    },
+    /// The descriptor ended before its statted length.
+    #[error("app-random branch-plan descriptor ended at {actual} bytes, expected {expected}")]
+    Truncated {
+        /// Statted byte length.
+        expected: usize,
+        /// Bytes read before EOF.
+        actual: usize,
+    },
+    /// The descriptor body was not a canonical plan.
+    #[error("app-random branch-plan body is invalid: {source}")]
+    Decode {
+        /// Canonical plan failure.
+        source: AppRandomBranchPlanError,
+    },
+    /// Immutable plan descriptors are not implemented on this platform.
+    #[error("app-random branch-plan descriptors require Linux memfd seals")]
+    UnsupportedPlatform,
 }
 
 #[cfg(all(test, unix))]

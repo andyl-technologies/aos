@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, Decision, NodeId, RngDecision,
-    RngStreamId, ScenarioDef, SchedulerEventLogEntry, VirtualTime, step,
+    AppRandomDecision, AppRandomSelectable, Checkpoint, CheckpointKind, Configuration, Decision,
+    NodeId, RngDecision, RngStreamId, ScenarioDef, SchedulerEventLogEntry, Seed, SelectionDecision,
+    VirtualTime, step,
 };
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig,
@@ -30,6 +31,105 @@ use crate::{
     CrucibleResolvedAttemptStart, ExecutionCancellation, ExecutionCheckpointRequest,
     QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
 };
+
+#[test]
+fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
+    let scenario = ScenarioDef::from_canonical_material_with_seed(
+        "crucible.test.campaign.branch-plan",
+        "scenario=branch-plan",
+        Seed::from_u64(0x51ec_7100),
+    );
+    let genesis = Configuration::genesis(scenario.clone());
+    let stream = RngStreamId::from_name("app-random/node:6:node-a/stream:6:branch");
+    let mut seeded = scenario
+        .seed()
+        .decision_rng()
+        .fork_in_domain(&stream.domain, &stream.name);
+    let raw = seeded.next_u64();
+    let selected = raw ^ 1;
+    let live = AppRandomDecision {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        stream: stream.clone(),
+        request_id: 11,
+        width: 64,
+        value: selected,
+    };
+    let parent = step(
+        &genesis,
+        Decision::RngDraw(RngDecision { stream, value: raw }),
+    );
+    let selection = AppRandomSelectable::from_decision(&scenario, &live)
+        .expect("app-random request should reconstruct")
+        .branch_selection(&parent, selected)
+        .expect("exact parent should admit branch selection");
+    let target = step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+
+    let (scheduler, plugins) =
+        app_random_branch_replay(&target).expect("selected target should derive plans");
+
+    assert_eq!(
+        scheduler.get(&parent.id()),
+        Some(&SelectionDecision::new(&selection))
+    );
+    let plugin = plugins
+        .get(&NodeId {
+            name: String::from("node-a"),
+        })
+        .expect("node plan should exist");
+    assert!(matches!(
+        plugin.entries(),
+        [entry]
+            if entry.draw_index() == 0
+                && entry.expected_raw_value() == raw
+                && entry.selected_value() == selected
+                && entry.selection_id()
+                    == selection.id().expect("selection id").content_id().digest()
+    ));
+}
+
+#[test]
+fn selected_start_rejects_a_canonical_name_in_a_foreign_rng_domain() {
+    let scenario = ScenarioDef::from_canonical_material_with_seed(
+        "crucible.test.campaign.branch-plan",
+        "scenario=foreign-stream-domain",
+        Seed::from_u64(0x51ec_7101),
+    );
+    let genesis = Configuration::genesis(scenario.clone());
+    let stream = RngStreamId::for_node("app-random/node:6:node-a/stream:6:branch");
+    let raw = 17;
+    let selected = 23;
+    let live = AppRandomDecision {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        stream: stream.clone(),
+        request_id: 11,
+        width: 64,
+        value: selected,
+    };
+    let parent = step(
+        &genesis,
+        Decision::RngDraw(RngDecision { stream, value: raw }),
+    );
+    let selection = AppRandomSelectable::from_decision(&scenario, &live)
+        .expect("foreign-domain selectable should remain structurally valid")
+        .branch_selection(&parent, selected)
+        .expect("exact parent should admit a structural branch selection");
+    let target = step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+
+    assert!(matches!(
+        app_random_branch_replay(&target),
+        Err(reason) if reason.contains("nonstandard app-random stream")
+    ));
+}
 
 #[derive(Default)]
 struct GuardCounters {
@@ -408,6 +508,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
         &mut self,
         _scenario: &ScenarioDef,
         _source: &crucible::ScenarioDefForm,
+        _start: &Configuration,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         self.order

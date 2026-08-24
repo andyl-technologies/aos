@@ -296,6 +296,7 @@ impl SingleScheduler {
             decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
             branch_network_choices: Vec::new(),
+            app_random_branch_selections: BTreeMap::new(),
             search_frontiers: Vec::new(),
             event_log,
             trigger_actions,

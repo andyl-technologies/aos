@@ -51,6 +51,9 @@ impl ProductionVmLifecycleLoop {
     /// Returns [`SchedulerError`] when a live node is missing from the backend
     /// set or its shared device-I/O state cannot be inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
+        if self.inner.loop_impl().pending_branch_effect_choice_count() != 0 {
+            return Ok(false);
+        }
         let live_nodes = self
             .source
             .world()

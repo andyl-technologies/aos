@@ -546,6 +546,27 @@ pub struct AppRandomDoorbellRequest {
 }
 
 impl AppRandomDoorbellRequest {
+    #[cfg(test)]
+    pub(crate) fn test_request(
+        node_name: &str,
+        guest_request_id: u32,
+        width_bytes: u8,
+        stream_tag: &str,
+    ) -> Self {
+        Self {
+            node_name: node_name.to_owned(),
+            guest_request_id,
+            trap_icount: 1,
+            width_bytes,
+            stream_tag: stream_tag.to_owned(),
+            reply_range: GuestMemoryRange::new(
+                GuestMemoryAddressSpace::Virtual,
+                0x1000,
+                usize::from(width_bytes),
+            ),
+        }
+    }
+
     fn from_frame(
         node_name: &str,
         event: WhiteboxDoorbellTrapEvent,
