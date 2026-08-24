@@ -186,8 +186,9 @@ pub use crucible_execution::{
     CrucibleResolvedAttemptStart,
 };
 pub use crucible_qemu_runner::{
-    QemuCrucibleAttemptSession, QemuCrucibleRealizationStore, QemuCrucibleSessionFactory,
-    QemuExactThinExecutionRunner, QemuExactThinRunnerError,
+    QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuCrucibleAttemptSession,
+    QemuCrucibleRealizationStore, QemuCrucibleSessionFactory, QemuExactThinExecutionRunner,
+    QemuExactThinRunnerError,
 };
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,

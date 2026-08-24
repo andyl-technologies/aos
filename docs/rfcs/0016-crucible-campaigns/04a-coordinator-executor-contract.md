@@ -2143,7 +2143,10 @@ validates the reconstructed scenario identity and bounded VM-node count,
 installs the exact admitted resource and cancellation incarnation, and transfers
 that guard into the multi-generation launcher before lifecycle construction.
 A mismatched guard is released before rejection; construction failure transfers
-the installed guard to quarantine. Campaign-worker selection, modeled-result
+the installed guard to quarantine. The worker's exact-origin router sends a
+durable paused-root incarnation only to its resume runner and a rootless
+incarnation only to its fresh runner while preserving retry, cancellation, and
+terminal classification. Concrete fresh-driver selection, modeled-result
 projection, and an independently admitted debugger world remain open; no
 unsupported mode falls back to the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
