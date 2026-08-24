@@ -226,7 +226,7 @@ pub struct QemuLiveNodeStepGateConfig {
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
-    boot_network_backpressure_capture: Option<Vec<u8>>,
+    boot_network_backpressure_capture: Option<QemuLiveNodeStepNetworkCapture>,
     shmem_block: Option<QemuLiveNodeStepBlockConfig>,
     shmem_ninep: Option<QemuLiveNodeStepNinepConfig>,
     accelerator: bool,
@@ -251,6 +251,12 @@ struct QemuLiveNodeStepBlockConfig {
 struct QemuLiveNodeStepNinepConfig {
     tree: FsTree,
     latency: NinepLatency,
+}
+
+#[derive(Clone, Debug)]
+struct QemuLiveNodeStepNetworkCapture {
+    payload: Vec<u8>,
+    capture_icount: u64,
 }
 
 impl QemuLiveNodeStepGateConfig {
@@ -500,12 +506,20 @@ impl QemuLiveNodeStepGateConfig {
     /// Returns this configuration with one exact-boundary boot RX canary.
     ///
     /// This is reserved for the fresh-process retained-network checkpoint gate.
-    /// The initial process stops at icount 1 after real QEMU backpressure; a
-    /// restore launch does not republish the canary because it comes from the
-    /// authenticated node continuation.
+    /// The canary is published at icount 1 and the initial process advances it
+    /// through canonical retries to `capture_icount`. A restore launch does not
+    /// republish the canary because it comes from the authenticated node
+    /// continuation.
     #[must_use]
-    pub fn with_boot_network_backpressure_capture(mut self, payload: Vec<u8>) -> Self {
-        self.boot_network_backpressure_capture = Some(payload);
+    pub fn with_boot_network_backpressure_capture_at(
+        mut self,
+        payload: Vec<u8>,
+        capture_icount: u64,
+    ) -> Self {
+        self.boot_network_backpressure_capture = Some(QemuLiveNodeStepNetworkCapture {
+            payload,
+            capture_icount,
+        });
         self
     }
 
@@ -1986,7 +2000,7 @@ pub(super) fn build_live_node(
         .transpose()
         .map_err(|source| QemuLiveNodeStepGateError::AcceleratorServicer { source })?;
     let restoring_checkpoint = restore.is_some();
-    let priming = prime_guest_off_boot_barrier(
+    let mut priming = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
         identity,
@@ -1994,9 +2008,40 @@ pub(super) fn build_live_node(
         block_servicer.as_mut(),
         ninep_servicer.as_mut(),
         (!restoring_checkpoint)
-            .then_some(config.boot_network_backpressure_capture.as_deref())
-            .flatten(),
+            .then_some(config.boot_network_backpressure_capture.as_ref())
+            .flatten()
+            .map(|capture| capture.payload.as_slice()),
     )?;
+    let qmp = connect_qmp_priming_main_loop(
+        &setup,
+        &qmp_config.socket_path(run_directory),
+        config.completion_timeout,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+    if !restoring_checkpoint
+        && let Some(capture) = config.boot_network_backpressure_capture.as_ref()
+        && capture.capture_icount > 1
+    {
+        let initial_network = priming.retained_network.take().ok_or_else(|| {
+            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from(
+                    "boot backpressure continuation lost its icount-1 transport state",
+                ),
+            }
+        })?;
+        priming = continue_boot_network_backpressure_capture(
+            &setup,
+            config.completion_timeout,
+            identity,
+            config.coverage,
+            block_servicer.as_mut(),
+            ninep_servicer.as_mut(),
+            capture.payload.as_slice(),
+            capture.capture_icount,
+            initial_network,
+            priming.emitted_frames,
+        )?;
+    }
     if let (Some(servicer), Some(block)) = (block_servicer.as_mut(), config.shmem_block.as_ref()) {
         servicer
             .set_latency_model(block.latency)
@@ -2013,12 +2058,6 @@ pub(super) fn build_live_node(
     if let Some(servicer) = accelerator_servicer {
         runtime = runtime.with_accelerator_servicer(servicer);
     }
-    let qmp = connect_qmp_priming_main_loop(
-        &setup,
-        &qmp_config.socket_path(run_directory),
-        config.completion_timeout,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
         qmp.with_predeclared_debug_guest_endpoint()
             .with_debug_guest_activation_stream(debug_guest_activation_stream.ok_or_else(|| {
