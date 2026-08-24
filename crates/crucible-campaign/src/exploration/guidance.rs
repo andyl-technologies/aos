@@ -2,10 +2,10 @@
 //!
 //! This module owns the language-neutral integer arithmetic used by future
 //! adaptive planner engines. The repository supplies an owner-built completed-
-//! visit partition for each semantic edge, but this module deliberately does
-//! not select a continuation: reward, novelty, finding, and nonuniform-prior
-//! projections must land before a planner version may use these scores to
-//! change canonical ordering.
+//! visit partition and coverage-novelty fold for each semantic edge, but this
+//! module deliberately does not select a continuation: reward, finding,
+//! nonuniform-prior projections, and a new planner version must land before
+//! these scores may change canonical ordering.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -22,6 +22,21 @@ pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS: u64 = 65_536;
 
 /// Maximum canonical evidence bytes folded into one edge-visit projection.
 pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum canonical work bytes inspected by one branch novelty projection.
+pub const MAX_BRANCH_NOVELTY_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum observation-root entries scanned by one branch novelty projection.
+pub const MAX_BRANCH_NOVELTY_ROOT_ENTRIES: u64 = 1_000_000;
+
+/// Maximum canonical observations inspected by one branch novelty projection.
+pub const MAX_BRANCH_NOVELTY_OBSERVATIONS: u64 = 65_536;
+
+/// Maximum coverage-identity visits charged by one branch novelty projection.
+pub const MAX_BRANCH_NOVELTY_IDENTITY_VISITS: u64 = 1_000_000;
+
+/// Maximum branch-relevant unique identities retained during novelty projection.
+pub const MAX_BRANCH_NOVELTY_IDENTITIES: usize = 65_536;
 
 /// Owner-authenticated completed visits partitioned by one branch point's edges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,17 +103,18 @@ impl BranchEdgeVisitStatistics {
     }
 }
 
-/// Policy-bound neutral-input PUCT projection for one semantic branch point.
+/// Policy-bound PUCT projection for one semantic branch point.
 ///
-/// This projection is the exact bootstrap used before reward and novelty
-/// owners are available. It assigns a canonical uniform prior across completed
-/// edges, reserves fairness for the least-visited edge (breaking ties by
-/// [`BranchEdgeId`]), and fixes reward and novelty at their neutral values.
+/// This projection assigns a canonical uniform prior across completed edges,
+/// reserves fairness for the least-visited edge (breaking ties by
+/// [`BranchEdgeId`]), and incorporates owner-derived coverage novelty. Reward
+/// remains at its neutral value until its evidence owner is available.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchPuctProjection {
     branch_point: BranchPointId,
     policy: CampaignPolicyId,
     parent_visits: u64,
+    edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
     edge_statistics: BTreeMap<BranchEdgeId, PuctEdgeStatistics>,
     edge_scores: BTreeMap<BranchEdgeId, PuctScore>,
 }
@@ -114,11 +130,34 @@ impl BranchPuctProjection {
     ///
     /// Returns an error if the supplied visit partition is inconsistent or a
     /// derived PUCT input violates the scorer's fixed-point contract.
+    #[cfg(test)]
     pub(crate) fn new_uniform(
         policy: CampaignPolicyId,
         puct: PuctPolicy,
         visits: BranchEdgeVisitStatistics,
     ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_novelty(policy, puct, visits, BTreeMap::new())
+    }
+
+    /// Builds a policy-bound projection with exact positive novelty evidence.
+    ///
+    /// The novelty map contains only completed edges with one or more
+    /// owner-derived events. Counts remain available for explanation while the
+    /// fixed-point scorer consumes the corresponding Boolean predicate.
+    pub(crate) fn new_with_novelty(
+        policy: CampaignPolicyId,
+        puct: PuctPolicy,
+        visits: BranchEdgeVisitStatistics,
+        edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if edge_novelty_events
+            .iter()
+            .any(|(edge, events)| *events == 0 || !visits.edge_visits.contains_key(edge))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch novelty events disagree with completed edges",
+            });
+        }
         let branch_point = visits.branch_point;
         let parent_visits = visits.parent_visits;
         let edge_count = u64::try_from(visits.edge_visits.len()).map_err(|_| {
@@ -152,7 +191,7 @@ impl BranchPuctProjection {
                 edge_visits,
                 0,
                 prior_micros,
-                false,
+                edge_novelty_events.contains_key(&edge),
                 fairness_edge == Some(edge),
             )?;
             let score = PuctScore::derive(puct, statistics)?;
@@ -173,6 +212,7 @@ impl BranchPuctProjection {
             branch_point,
             policy,
             parent_visits,
+            edge_novelty_events,
             edge_statistics,
             edge_scores,
         })
@@ -196,7 +236,13 @@ impl BranchPuctProjection {
         self.parent_visits
     }
 
-    /// Returns exact neutral-input statistics in semantic edge order.
+    /// Returns counts of globally unique coverage identities by semantic edge.
+    #[must_use]
+    pub const fn edge_novelty_events(&self) -> &BTreeMap<BranchEdgeId, u64> {
+        &self.edge_novelty_events
+    }
+
+    /// Returns exact score inputs in semantic edge order.
     #[must_use]
     pub const fn edge_statistics(&self) -> &BTreeMap<BranchEdgeId, PuctEdgeStatistics> {
         &self.edge_statistics
@@ -748,6 +794,71 @@ mod tests {
         assert_eq!(projection.parent_visits(), 0);
         assert!(projection.edge_statistics().is_empty());
         assert!(projection.edge_scores().is_empty());
+    }
+
+    #[test]
+    fn branch_puct_projection_applies_only_exact_positive_novelty_events() {
+        let branch_point = BranchPointId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-novelty",
+            b"branch-point",
+        ));
+        let edge = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-novelty",
+            b"edge",
+        ));
+        let foreign = BranchEdgeId::from_hash(crate::CampaignHash::derive(
+            "test.branch-puct-novelty",
+            b"foreign",
+        ));
+        let policy =
+            CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
+                crucible_cas::content_store::ObjectKind::Policy,
+                1,
+                b"test.branch-puct-novelty.policy",
+            ))
+            .expect("policy id");
+        let visits = || {
+            BranchEdgeVisitStatistics::new(branch_point, 1, BTreeMap::from([(edge, 1)]))
+                .expect("visit partition")
+        };
+        let projection = BranchPuctProjection::new_with_novelty(
+            policy,
+            PuctPolicy::new(0, 75_000, 0),
+            visits(),
+            BTreeMap::from([(edge, 2)]),
+        )
+        .expect("novel PUCT projection");
+        assert_eq!(
+            projection.edge_novelty_events(),
+            &BTreeMap::from([(edge, 2)])
+        );
+        assert!(projection.edge_statistics()[&edge].is_novel());
+        assert_eq!(
+            projection.edge_scores()[&edge].novelty_bonus_micros(),
+            75_000
+        );
+        assert!(matches!(
+            BranchPuctProjection::new_with_novelty(
+                policy,
+                PuctPolicy::new(0, 75_000, 0),
+                visits(),
+                BTreeMap::from([(foreign, 1)]),
+            ),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "branch novelty events disagree with completed edges"
+            })
+        ));
+        assert!(matches!(
+            BranchPuctProjection::new_with_novelty(
+                policy,
+                PuctPolicy::new(0, 75_000, 0),
+                visits(),
+                BTreeMap::from([(edge, 0)]),
+            ),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "branch novelty events disagree with completed edges"
+            })
+        ));
     }
 
     #[test]

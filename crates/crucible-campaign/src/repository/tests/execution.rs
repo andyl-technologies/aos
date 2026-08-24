@@ -2755,9 +2755,18 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             &PropertyVerdictSet::new(BTreeMap::new()).expect("empty properties"),
         )
         .expect("publish finite expansion properties");
+    let shared_coverage = CampaignHash::derive("test.finite-expansion.coverage", b"shared");
+    let root_unique_coverage =
+        CampaignHash::derive("test.finite-expansion.coverage", b"root-unique");
+    let nested_unique_coverage =
+        CampaignHash::derive("test.finite-expansion.coverage", b"nested-unique");
     let coverage = repository
         .publish_coverage_projection(
-            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("empty coverage"),
+            &CoverageProjection::new(
+                BTreeSet::from([shared_coverage, root_unique_coverage]),
+                BTreeSet::new(),
+            )
+            .expect("root coverage"),
         )
         .expect("publish finite expansion coverage");
     let observation = Observation::new(
@@ -3057,6 +3066,15 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             b"finite expansion nested child".to_vec(),
         )
         .expect("publish nested child");
+    let nested_coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(
+                BTreeSet::from([shared_coverage, nested_unique_coverage]),
+                BTreeSet::new(),
+            )
+            .expect("nested coverage"),
+        )
+        .expect("publish nested coverage");
     let nested_observation = Observation::new(
         nested_admitted.attempt,
         nested_child,
@@ -3065,7 +3083,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         StopOutcome::Reached(StopCondition::NextChoice),
         measurements,
         properties,
-        coverage,
+        nested_coverage,
         BTreeSet::from([first_request.opportunity()]),
     )
     .expect("nested observation");
@@ -3133,9 +3151,28 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         crate::GUIDANCE_MICROS_PER_UNIT
     );
     assert_eq!(root_edge_statistics.reward_sum_micros(), 0);
-    assert!(!root_edge_statistics.is_novel());
+    assert!(root_edge_statistics.is_novel());
     assert!(root_edge_statistics.is_fairness_reserved());
+    // The conflict above repeats the root-only identity but is not canonical;
+    // the shared canonical identity is non-novel, while both path-unique
+    // identities backpropagate to this root edge.
+    assert_eq!(
+        root_puct.edge_novelty_events(),
+        &BTreeMap::from([(first_edge, 2)])
+    );
+    assert_eq!(
+        root_puct.edge_scores()[&first_edge].novelty_bonus_micros(),
+        1
+    );
     assert!(root_puct.edge_scores().contains_key(&first_edge));
+    let nested_puct = repository
+        .project_branch_puct(nested_observed.new_snapshot, nested_branch_point)
+        .expect("project nested PUCT statistics");
+    assert_eq!(
+        nested_puct.edge_novelty_events(),
+        &BTreeMap::from([(nested_edge, 1)])
+    );
+    assert!(nested_puct.edge_statistics()[&nested_edge].is_novel());
     let nested_restarted =
         CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert_eq!(
@@ -3161,6 +3198,12 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .project_branch_puct(nested_observed.new_snapshot, first_request.branch_point())
             .expect("restart-project root PUCT statistics"),
         root_puct
+    );
+    assert_eq!(
+        nested_restarted
+            .project_branch_puct(nested_observed.new_snapshot, nested_branch_point)
+            .expect("restart-project nested PUCT statistics"),
+        nested_puct
     );
 
     let admitted_head = repository.head("finite-expansion").expect("admitted head");
@@ -3353,6 +3396,44 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         ),
         Err(CampaignRepositoryError::Integrity {
             reason: "expansion-state-owner-recomputation-mismatch"
+        })
+    ));
+}
+
+#[test]
+fn branch_novelty_work_budgets_accept_only_the_exact_boundary() {
+    assert_eq!(
+        super::super::projection::charge_branch_novelty_work(
+            crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES - 1,
+            1,
+        )
+        .expect("exact novelty byte boundary"),
+        crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_novelty_work(
+            crate::MAX_BRANCH_NOVELTY_PROJECTION_BYTES,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-novelty-projection-byte-limit"
+        })
+    ));
+    assert_eq!(
+        super::super::projection::charge_branch_novelty_identity_visits(
+            crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS - 1,
+            1,
+        )
+        .expect("exact novelty identity boundary"),
+        crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS
+    );
+    assert!(matches!(
+        super::super::projection::charge_branch_novelty_identity_visits(
+            crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS,
+            1,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "branch-novelty-identity-visit-limit"
         })
     ));
 }
