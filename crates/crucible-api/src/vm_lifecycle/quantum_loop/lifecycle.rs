@@ -4,6 +4,7 @@ use super::*;
 
 mod persistence;
 mod publication;
+mod restart_ownership;
 mod process_ownership;
 mod staging;
 pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
@@ -18,6 +19,7 @@ pub(in crate::vm_lifecycle) use persistence::{
 };
 pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
 pub(in crate::vm_lifecycle::quantum_loop) use publication::release_restored_generation_after_scheduler_publication;
+pub(in crate::vm_lifecycle::quantum_loop) use restart_ownership::*;
 
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
@@ -121,6 +123,13 @@ impl ProductionVmLifecycleLoop {
             } else {
                 current_generation
             };
+            let terminal_ownership = self.prepare_terminal_lifecycle_ownership(
+                intent,
+                current_generation,
+                next_generation,
+                nodes.len(),
+                limits,
+            )?;
             let current_process = self.inner.backend().process_identity(&intent.node)?;
             let journal_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;
             let manifest_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;
@@ -139,6 +148,7 @@ impl ProductionVmLifecycleLoop {
                 observed_exit_node: Some(NodeId {
                     name: try_lifecycle_string(&intent.node.name, nodes.len(), limits)?,
                 }),
+                terminal_ownership: Some(terminal_ownership),
                 manifest_node,
                 manifest_identity: QemuProcessIdentity {
                     process_id: 0,

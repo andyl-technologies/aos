@@ -347,6 +347,25 @@ in
           run_exact_api_test \
             vm_lifecycle::quantum_loop::lifecycle::publication::tests::restored_generation_release_is_causally_gated_by_scheduler_publication
           run_exact_api_test \
+            vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_generation_selection_moves_preowned_storage
+          sed -n \
+            '/fn prepare_terminal_replacements(/,/fn abort_staged_terminal_replacements(/p' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop.rs \
+            > "$TMPDIR/post-apply-terminal-restart"
+          if grep -E \
+            'private_backend_gdbstub_path|qemu_unix_gdbstub_endpoint|try_lifecycle_crash_detector|Production(Block|Ninep)FaultCoordinator::new|launch_configs.*cloned' \
+            "$TMPDIR/post-apply-terminal-restart"
+          then
+            echo 'FAIL: deterministic terminal restart ownership is constructed after APPLY' >&2
+            exit 1
+          fi
+          grep -Fq 'prepare_terminal_lifecycle_ownership(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle.rs
+          grep -Fq 'ProductionBlockFaultCoordinator::new(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs
+          grep -Fq 'ProductionNinepFaultCoordinator::new(' \
+            crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/restart_ownership.rs
+          run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unpublishable_replacement_transitions
           run_exact_api_test \
             vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unjournaled_staged_process_owner

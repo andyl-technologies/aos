@@ -10,9 +10,10 @@ pub(super) use lifecycle::{
 #[cfg(test)]
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
-    PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
-    map_journal_limit, release_restored_generation_after_scheduler_publication,
-    try_lifecycle_crash_detector,
+    PreparedLifecycleFaultCoordinators, PreparedLifecyclePrecommit, PreparedLifecycleTerminal,
+    PreparedTerminalReplacement, map_journal_limit,
+    release_restored_generation_after_scheduler_publication,
+    select_preowned_terminal_generation,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -631,7 +632,6 @@ impl ProductionVmLifecycleLoop {
     fn prepare_terminal_replacements(
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
-        limits: FaultResourceLimits,
         lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<Vec<PreparedTerminalReplacement>, SchedulerError> {
         let terminal_count = decisions
@@ -713,53 +713,18 @@ impl ProductionVmLifecycleLoop {
                     ),
                 });
             }
-            let current_directory =
-                self.node_run_directories
-                    .get(&decision.node)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal lifecycle node `{}` has no process-generation directory",
-                            decision.node.name
-                        ),
-                    })?;
-            let current_generation = self
-                .node_generations
-                .get(&decision.node)
-                .copied()
+            let ownership = terminal
+                .process_owner
+                .terminal_ownership
+                .as_ref()
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!(
-                        "terminal lifecycle node `{}` has no process generation",
+                        "terminal lifecycle node `{}` lost its precommit restart ownership",
                         decision.node.name
                     ),
                 })?;
-            if decision.effective_transition
-                != crucible::model::NodeLifecycleTransition::PermanentFailure
-            {
-                current_generation.checked_add(1).ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal lifecycle generation exhausted for `{}`",
-                            decision.node.name
-                        ),
-                    }
-                })?;
-            }
-            if !self.node_indexes.contains_key(&decision.node)
-                || !self.launch_configs.contains_key(&decision.node)
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "terminal lifecycle node `{}` has incomplete launch identity",
-                        decision.node.name
-                    ),
-                });
-            }
-            for artifact in [
-                PRODUCTION_ROOT_OVERLAY_FILE_NAME,
-                PRODUCTION_VMSTATE_FILE_NAME,
-            ] {
-                let source = current_directory.join(artifact);
-                File::open(&source).map_err(|error| SchedulerError::BoundaryViolation {
+            for source in &ownership.current.artifact_paths {
+                File::open(source).map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!(
                         "open terminal lifecycle source artifact {}: {error}",
                         source.display()
@@ -812,55 +777,28 @@ impl ProductionVmLifecycleLoop {
                     &decision.node,
                     Arc::clone(&lifecycle_precommit.checkpoint),
                 )?;
-            let current_directory =
-                self.node_run_directories
-                    .get(&decision.node)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal lifecycle node `{}` has no process-generation directory",
-                            decision.node.name
-                        ),
-                    })?;
-            let current_generation = self
-                .node_generations
-                .get(&decision.node)
-                .copied()
+            let ownership = process_owner
+                .terminal_ownership
+                .take()
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!(
-                        "terminal lifecycle node `{}` lost its process generation",
+                        "terminal lifecycle node `{}` reused its precommit restart ownership",
                         decision.node.name
                     ),
                 })?;
-            let generation = if service_state == ProductionNodeServiceState::PermanentlyFailed {
-                current_generation
-            } else {
-                current_generation.checked_add(1).ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal lifecycle generation exhausted for `{}`",
-                            decision.node.name
-                        ),
-                    }
-                })?
-            };
-            let index = self
-                .node_indexes
-                .get(&decision.node)
-                .copied()
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "terminal lifecycle node `{}` has no launch index",
-                        decision.node.name
-                    ),
-                })?;
-            let run_directory = if service_state == ProductionNodeServiceState::PermanentlyFailed {
-                current_directory.clone()
-            } else {
-                self._run_directory
-                    .path()
-                    .join("lifecycle-generations")
-                    .join(format!("node-{index}-generation-{generation}"))
-            };
+            let (selected, current_ownership) = select_preowned_terminal_generation(
+                ownership.current,
+                ownership.successor,
+                service_state,
+            )
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "terminal lifecycle node `{}` has no preowned successor",
+                    decision.node.name
+                ),
+            })?;
+            let source_paths = current_ownership.map(|current| current.artifact_paths);
+            let run_directory = selected.run_directory;
             fs::create_dir_all(&run_directory).map_err(|error| {
                 SchedulerError::BoundaryViolation {
                     message: format!(
@@ -869,14 +807,9 @@ impl ProductionVmLifecycleLoop {
                     ),
                 }
             })?;
-            if run_directory != *current_directory {
-                for artifact in [
-                    PRODUCTION_ROOT_OVERLAY_FILE_NAME,
-                    PRODUCTION_VMSTATE_FILE_NAME,
-                ] {
-                    let source = current_directory.join(artifact);
-                    let target = run_directory.join(artifact);
-                    fs::copy(&source, &target).map_err(|error| {
+            if let Some(source_paths) = source_paths {
+                for (source, target) in source_paths.iter().zip(&selected.artifact_paths) {
+                    fs::copy(source, target).map_err(|error| {
                         SchedulerError::BoundaryViolation {
                             message: format!(
                                 "copy terminal lifecycle artifact {} to {}: {error}",
@@ -887,68 +820,19 @@ impl ProductionVmLifecycleLoop {
                     })?;
                 }
             }
-            let mut launch = self
-                .launch_configs
-                .get(&decision.node)
-                .cloned()
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "terminal lifecycle node `{}` has no launch configuration",
-                        decision.node.name
-                    ),
-                })?
-                .with_run_directory(&run_directory)
-                .with_process_generation(generation);
-            if let Some(debug) = &self.config.debug
-                && (debug.all_nodes
-                    || debug
-                        .node
-                        .as_deref()
-                        .map_or(index == 0, |selected| selected == decision.node.name))
-            {
-                let backend_path = private_backend_gdbstub_path(&run_directory);
-                let backend_listen =
-                    qemu_unix_gdbstub_endpoint(&backend_path).map_err(|error| {
-                        SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "derive replacement QEMU gdbstub endpoint for `{}`: {error}",
-                                decision.node.name
-                            ),
-                        }
-                    })?;
-                let gdbstub = ProductionGdbstubChannelConfig::new(
-                    backend_listen,
-                    debug.operator_listen.clone(),
-                )
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "configure replacement QEMU gdbstub for `{}`: {error}",
-                        decision.node.name
-                    ),
-                })?;
-                launch = launch.with_gdbstub(gdbstub);
-            }
-            let crash_detector = try_lifecycle_crash_detector(
-                &decision.node.name,
-                generation,
-                prepared.len(),
-                limits,
-            )?;
             prepared.push(PreparedTerminalReplacement {
-                debug_backend_path: self
-                    .debug_backend_paths
-                    .contains_key(&decision.node)
-                    .then(|| private_backend_gdbstub_path(&run_directory)),
+                debug_backend_path: selected.debug_backend_path,
                 decision,
                 snapshot,
                 run_directory,
-                launch,
-                generation,
+                launch: selected.launch,
+                generation: selected.generation,
                 replacement: None,
                 service_state,
-                crash_detector,
+                crash_detector: selected.crash_detector,
                 backend_node: process_owner.backend_node.take(),
                 observed_exit_node: process_owner.observed_exit_node.take(),
+                fault_coordinators: selected.fault_coordinators,
                 process_owner: Some(process_owner),
             });
         }
@@ -987,12 +871,12 @@ impl ProductionVmLifecycleLoop {
         })
     }
 
-    fn configure_replacement_fault_coordinators(
-        &self,
+    fn install_prepared_fault_coordinators(
         node: &NodeId,
+        coordinators: &mut PreparedLifecycleFaultCoordinators,
         replacement: &mut QemuNode,
     ) -> Result<(), SchedulerError> {
-        if let Some(block) = self.block_bindings.get(node).cloned() {
+        if let Some(block) = coordinators.block.take() {
             if replacement.shared_block_device().is_none() {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1002,17 +886,7 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             replacement
-                .install_block_fault_coordinator(Box::new(ProductionBlockFaultCoordinator::new(
-                    Arc::clone(&self.fault_runtime),
-                    Arc::clone(&self.fault_evaluation_cursor),
-                    Arc::clone(&self.storage_fault_observations),
-                    Arc::clone(&self.block_devices),
-                    self.source.world().clone(),
-                    block.target,
-                    self.source.plan().fault_signals(),
-                    self.scenario.id(),
-                    self.icount_shift,
-                )))
+                .install_block_fault_coordinator(block)
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!(
                         "install replacement block fault coordinator for `{}`: {error}",
@@ -1020,18 +894,9 @@ impl ProductionVmLifecycleLoop {
                     ),
                 })?;
         }
-        if let Some(ninep) = self.ninep_bindings.get(node).cloned() {
+        if let Some(ninep) = coordinators.ninep.take() {
             replacement
-                .install_ninep_fault_coordinator(Box::new(
-                    storage_faults::ProductionNinepFaultCoordinator::new(
-                        Arc::clone(&self.fault_runtime),
-                        Arc::clone(&self.fault_evaluation_cursor),
-                        Arc::clone(&self.storage_fault_observations),
-                        self.source.world().clone(),
-                        ninep.target,
-                        self.icount_shift,
-                    ),
-                ))
+                .install_ninep_fault_coordinator(ninep)
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!(
                         "install replacement 9p fault coordinator for `{}`: {error}",
@@ -1067,7 +932,11 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             })?;
-            if let Err(error) = self.configure_replacement_fault_coordinators(node, &mut launched) {
+            if let Err(error) = Self::install_prepared_fault_coordinators(
+                node,
+                &mut prepared.fault_coordinators,
+                &mut launched,
+            ) {
                 let containment = launched.force_quarantine_and_reap();
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1830,7 +1699,6 @@ impl ProductionVmLifecycleLoop {
         if let Err(error) = self.apply_signal_fault_lifecycle_work(
             lifecycle_work.decisions(),
             lifecycle_work.boot_requests(),
-            resource_limits,
             lifecycle_precommit.as_mut(),
         ) {
             self.fault_runtime
@@ -1857,7 +1725,6 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
         boot_requests: &[NodeId],
-        resource_limits: FaultResourceLimits,
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
@@ -1870,7 +1737,6 @@ impl ProductionVmLifecycleLoop {
         }
         let mut prepared = match self.prepare_terminal_replacements(
             decisions,
-            resource_limits,
             lifecycle_precommit.as_deref_mut(),
         ) {
             Ok(prepared) => prepared,
