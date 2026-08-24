@@ -230,7 +230,6 @@ impl ProductionFaultRuntime {
                     value: resource_limits.event_records,
                 }
             })?;
-        nodes.set_fault_event_staging_limit(remaining_event_records, configured_event_records)?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -251,11 +250,22 @@ impl ProductionFaultRuntime {
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
         }
+        // Authentication precedes every live-node mutation. A rejected
+        // envelope must not change event-staging policy, and a successful
+        // restore starts from the same empty occurrence continuation required
+        // by capture.
+        if nodes.has_pending_fault_events()? {
+            return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
+        nodes.set_fault_event_staging_limit(remaining_event_records, configured_event_records)?;
         let observed_qemu_fingerprints = super::checkpoint::qemu_fingerprint_map(
             nodes,
             resource_limits,
             remaining_event_records,
         )?;
+        if nodes.has_pending_fault_events()? {
+            return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
         validate_checkpoint_qemu_fingerprints(
             &checkpoint.qemu_fingerprints,
             &observed_qemu_fingerprints,

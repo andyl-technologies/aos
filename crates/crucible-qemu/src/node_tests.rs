@@ -151,6 +151,7 @@ struct ScriptedHostIoRuntime {
     outcomes: VecDeque<QemuAsyncWaitOutcome>,
     fault_results: VecDeque<DequeuedFaultResult>,
     staged_fault_events: Vec<DequeuedFaultEvent>,
+    fingerprint_fault_events: VecDeque<DequeuedFaultEvent>,
 }
 
 #[derive(Clone)]
@@ -471,6 +472,9 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
             .lock()
             .unwrap()
             .push(ChannelCall::HostFingerprintBoundary);
+        if let Some(event) = self.fingerprint_fault_events.pop_front() {
+            self.staged_fault_events.push(event);
+        }
         Ok(())
     }
 
@@ -763,6 +767,7 @@ fn scripted_node_with_runtime(
             fail_qmp_snapshot,
             qmp_snapshot_timeout: false,
             fingerprint_retry_countdown: 0,
+            fingerprint_fault_event_count: 0,
         },
         runtime_outcomes,
     )
@@ -776,6 +781,7 @@ struct ScriptedNodeOptions {
     fail_qmp_snapshot: bool,
     qmp_snapshot_timeout: bool,
     fingerprint_retry_countdown: u8,
+    fingerprint_fault_event_count: u8,
 }
 
 fn scripted_node_with_options(
@@ -833,6 +839,7 @@ fn scripted_node_with_fault_events(
             outcomes: VecDeque::new(),
             fault_results: VecDeque::new(),
             staged_fault_events,
+            fingerprint_fault_events: VecDeque::new(),
         },
         2,
     ))
@@ -910,6 +917,9 @@ fn scripted_node_with_coverage(
             outcomes: runtime_outcomes.into_iter().collect(),
             fault_results: VecDeque::new(),
             staged_fault_events: Vec::new(),
+            fingerprint_fault_events: (1..=options.fingerprint_fault_event_count)
+                .map(|sequence| fault_event_with_sequence(u64::from(sequence)))
+                .collect(),
         },
         2,
     ))

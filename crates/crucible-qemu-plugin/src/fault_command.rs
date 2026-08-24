@@ -1987,7 +1987,7 @@ mod event_envelope;
 mod instruction_evidence;
 mod lifecycle_evidence;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 use accelerator_evidence::*;
 use clock_evidence::*;
 use event_envelope::*;
