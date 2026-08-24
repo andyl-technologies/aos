@@ -345,7 +345,7 @@ PackedStore         map many logical small objects into immutable physical packs
 CompressedStore     encode/decode without changing logical identity
 EncryptedStore      authenticated physical encryption outside plaintext identity
 QuotaStore          enforce bounded physical and logical accounting
-MetricsStore        emit operational latency/bytes/errors without changing results
+MetricsStore        emit operation/stream/byte/error counters without changing results
 NamespacedStore     isolate deployments and authorization domains
 ```
 
@@ -440,13 +440,15 @@ not hide the authenticated source object. Ordinary puts go only to `source`, so
 cache durability is never reported as source durability.
 
 `MetricsStore(child)` retains saturating `u64` counters for synchronous
-`contains`, `read`, and `put_if_absent` calls, successful declared logical bytes,
-and failures. Graph introspection returns those counters by bounded node ID
-without returning child paths or credentials. This initial deterministic counter
-view deliberately ends when a read handle is returned: latency plus errors and
-bytes observed later while consuming its deferred authenticated stream remain
-open for a host-side observer boundary rather than introducing host time into
-logical storage code.
+`contains`, `read`, and `put_if_absent` calls, successful declared logical
+bytes, and failures. Each returned read handle also counts stream-open attempts,
+authenticated end-of-stream completions, partial abandonments, deferred
+open/read/length/authentication failures, and bytes actually delivered. Stream
+completion requires observing exact declared length followed by end-of-file;
+dropping a reader before that boundary counts as abandonment rather than
+success. Graph introspection returns those counters by bounded node ID without
+returning child paths or credentials. Host-side latency remains open for an
+observer boundary rather than introducing host time into logical storage code.
 
 Direct constructors for composition layers are private. Callers may use a leaf
 alone or an admitted `StoreGraph`, so arbitrary trait-object nesting cannot
