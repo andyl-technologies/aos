@@ -343,15 +343,12 @@ async fn placement_s3_surface(
     placement: &SurfacePlacementRecord,
     write: bool,
 ) -> Result<Option<S3Surface>> {
-    let binding = db
-        .storage_binding(placement.storage_binding_id)
-        .await?
-        .ok_or_else(|| {
-            aos_hub_core::placement_read::terminal_read_error(format!(
-                "placement '{}' references a missing storage binding",
-                placement.name
-            ))
-        })?;
+    let binding = db.binding(placement.binding_id).await?.ok_or_else(|| {
+        aos_hub_core::placement_read::terminal_read_error(format!(
+            "placement '{}' references a missing binding",
+            placement.name
+        ))
+    })?;
     if binding.is_instance_default {
         return Ok(None);
     }
@@ -407,12 +404,12 @@ async fn placement_s3_delete_surface(
     delete_credential_generation: i64,
 ) -> Result<S3Surface> {
     let binding = db
-        .storage_binding(placement.storage_binding_id)
+        .binding(placement.binding_id)
         .await?
-        .context("deletion placement references a missing storage binding")?;
+        .context("deletion placement references a missing binding")?;
     if binding.resource_version != expected_binding_resource_version {
         anyhow::bail!(
-            "placement '{}' storage binding changed after deletion was planned",
+            "placement '{}' binding changed after deletion was planned",
             placement.name
         );
     }
@@ -591,7 +588,7 @@ fn r2_body_stream(
 /// binding.
 ///
 /// Holds the hub-owned bucket binding plus the shared [`Database`] and
-/// [`SecretVersionResolver`] needed to resolve a per-resource storage binding;
+/// [`SecretVersionResolver`] needed to resolve a per-resource binding;
 /// [`fetcher`](SurfaceProvider::fetcher) scopes a reader to the requested
 /// registry's prefix — proxying to the external origin via signed URLs when the
 /// binding is external ([`S3SurfaceFetch`]), else reading the hub R2 bucket
@@ -606,7 +603,7 @@ pub struct R2SurfaceProvider {
 impl R2SurfaceProvider {
     /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface provider,
     /// with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve external
-    /// S3/R2 storage bindings.
+    /// S3/R2 bindings.
     #[must_use]
     pub fn new(
         bucket: Bucket,
@@ -1321,7 +1318,7 @@ pub struct R2SurfaceWriteProvider {
 impl R2SurfaceWriteProvider {
     /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface write
     /// provider, with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve
-    /// external S3/R2 storage bindings.
+    /// external S3/R2 bindings.
     #[must_use]
     pub fn new(
         bucket: Bucket,

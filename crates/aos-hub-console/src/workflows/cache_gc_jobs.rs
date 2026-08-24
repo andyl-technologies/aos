@@ -7,7 +7,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -97,7 +97,7 @@ fn DeletionJobCard(
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{job.job_id}</strong><code>{job.store_hash}</code></div>
+                <div><strong>{job.job_id}</strong><HashValue value=job.store_hash/></div>
                 <StatusBadge state=job.state.clone() positive=job.state == "completed"/>
             </div>
             <div class="resource-identity">

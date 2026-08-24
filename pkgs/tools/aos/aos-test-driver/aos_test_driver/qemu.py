@@ -86,6 +86,7 @@ class QemuMachine(Machine):
     disk_size_mib: int | None
     var_size_mib: int | None
     extra_disks: list[dict[str, object]]
+    host_store_mount: bool
     extra_disk_copies: list[str]
     memory_mib: int
     vcpu_count: int
@@ -127,6 +128,7 @@ class QemuMachine(Machine):
         disk_size_mib: int | None = None,
         var_size_mib: int | None = None,
         extra_disks: list[dict[str, object]] | None = None,
+        host_store_mount: bool = False,
         tpm: bool = False,
         swtpm_bin: str | None = None,
     ) -> None:
@@ -141,6 +143,7 @@ class QemuMachine(Machine):
         self.disk_size_mib = disk_size_mib
         self.var_size_mib = var_size_mib
         self.extra_disks = extra_disks or []
+        self.host_store_mount = host_store_mount
         self.extra_disk_copies = []
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
@@ -523,6 +526,26 @@ class QemuMachine(Machine):
                 raise RuntimeError(
                     f"[{self.name}] extra disk {index} has invalid interface"
                 )
+
+        # Publisher-style fleet roles can consume host-built store paths
+        # without inflating their disk image. The export is read-only and is
+        # deliberately not mounted automatically: tests must opt individual
+        # paths into the guest's Nix database and bind them at their canonical
+        # store locations. This keeps unrelated host paths unavailable to Nix
+        # and prevents consumers from accidentally inheriting publisher data.
+        if self.host_store_mount:
+            argv += [
+                "-fsdev",
+                (
+                    "local,id=aos_host_store,path=/nix/store,"
+                    "security_model=none,readonly=on"
+                ),
+                "-device",
+                (
+                    "virtio-9p-pci,fsdev=aos_host_store,"
+                    "mount_tag=aos-host-store"
+                ),
+            ]
 
         # Attach native provisioning input for either boot shape. The initrd
         # probes the `aos-metadata` filesystem label before cloud DMI routing.

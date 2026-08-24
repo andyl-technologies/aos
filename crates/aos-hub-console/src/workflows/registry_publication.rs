@@ -9,7 +9,7 @@ use leptos::ev::{Event, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders registry publication begin, resume, upload, commit, and abort flows.
@@ -194,9 +194,9 @@ fn PublicationSession(
                 <StatusBadge state=value.state.clone() positive=value.state == "ready"/>
             </div>
             <div class="resource-identity">
-                <div><span>"Manifest digest"</span><code>{value.manifest_digest.clone()}</code></div>
-                <div><span>"Refs digest"</span><code>{value.refs_digest.clone()}</code></div>
-                <div><span>"Default commit"</span><code>{display_or(&value.default_commit, "none")}</code></div>
+                <div><span>"Manifest digest"</span><HashValue value=value.manifest_digest.clone()/></div>
+                <div><span>"Refs digest"</span><HashValue value=value.refs_digest.clone()/></div>
+                <div><span>"Default commit"</span>{if value.default_commit.is_empty() { view! { <span>"none"</span> }.into_any() } else { view! { <HashValue value=value.default_commit.clone()/> }.into_any() }}</div>
                 <div><span>"Parent publication"</span><code>{display_or(&value.parent_publication_id, "none")}</code></div>
             </div>
             <h3>"Required placements"</h3>
@@ -257,7 +257,7 @@ fn PublicationObjectUpload(
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{object.path}</strong><code>{object.sha256}</code></div>
+                <div><strong>{object.path}</strong><HashValue value=object.sha256/></div>
                 <StatusBadge state=object.kind.clone() positive=object.kind == "immutable"/>
             </div>
             <div class="resource-identity">

@@ -10,40 +10,40 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 
+use super::gateways::GatewayWorkflow;
 use super::organization_scope::organization_authorization_scope;
-use super::storage_gateways::StorageGatewayWorkflow;
 
 /// Renders endpoint workflows and delegates unrelated pages onward.
 #[component]
-pub(super) fn DeliveryEndpointWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+pub(super) fn EndpointWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Instance, "endpoints") => view! {
-            <DeliveryEndpoints client=client owner_scope_key="instance".to_string()/>
+            <Endpoints client=client owner_scope_key="instance".to_string()/>
         }
         .into_any(),
         (ConsoleScope::Instance, "endpoints-new") => view! {
-            <DeliveryEndpoints client=client owner_scope_key="instance".to_string() creation_only=true/>
+            <Endpoints client=client owner_scope_key="instance".to_string() creation_only=true/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "endpoints") => view! {
-            <OrganizationDeliveryEndpoints client=client organization=slug.clone() creation_only=false/>
+            <OrganizationEndpoints client=client organization=slug.clone() creation_only=false/>
         }
         .into_any(),
         (ConsoleScope::Organization { slug }, "endpoints-new") => view! {
-            <OrganizationDeliveryEndpoints client=client organization=slug.clone() creation_only=true/>
+            <OrganizationEndpoints client=client organization=slug.clone() creation_only=true/>
         }
         .into_any(),
-        _ => view! { <StorageGatewayWorkflow route=route client=client/> }.into_any(),
+        _ => view! { <GatewayWorkflow route=route client=client/> }.into_any(),
     }
 }
 
 #[component]
-fn OrganizationDeliveryEndpoints(
+fn OrganizationEndpoints(
     client: ApiClient,
     organization: String,
     creation_only: bool,
@@ -64,7 +64,7 @@ fn OrganizationDeliveryEndpoints(
                 Suspend::new(async move {
                     match scope.await.as_ref() {
                         Ok(owner_scope_key) => view! {
-        <DeliveryEndpoints client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
+        <Endpoints client=client owner_scope_key=owner_scope_key.clone() organization=organization.clone() creation_only=creation_only/>
                         }
                         .into_any(),
                         Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
@@ -76,17 +76,17 @@ fn OrganizationDeliveryEndpoints(
 }
 
 #[component]
-fn DeliveryEndpoints(
+fn Endpoints(
     client: ApiClient,
     owner_scope_key: String,
     #[prop(optional)] organization: Option<String>,
     #[prop(optional)] creation_only: bool,
 ) -> impl IntoView {
-    let can_create = client.allows("delivery_endpoint.manage");
+    let can_create = client.allows("endpoint.manage");
     let create_href = can_create.then(|| {
         organization.as_ref().map_or_else(
-            || "/-/instance/delivery-endpoints/new".to_string(),
-            |slug| format!("/-/org/{slug}/delivery-endpoints/new"),
+            || "/-/instance/endpoints/new".to_string(),
+            |slug| format!("/-/org/{slug}/endpoints/new"),
         )
     });
     let list_client = client.clone();
@@ -96,20 +96,20 @@ fn DeliveryEndpoints(
         let owner_scope_key = list_scope.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
-                    aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+                .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+                    aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
                     move |page_token| aos_proto_types::ListTopologyResourcesRequest {
                         owner_scope_key: owner_scope_key.clone(),
                         page_size: 100,
                         page_token,
                     },
-                    |response| (response.delivery_endpoints, response.next_page_token),
+                    |response| (response.endpoints, response.next_page_token),
                 )
                 .await
         }
     });
     let view_client = client.clone();
-    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Delivery endpoints"</h2><HelpTooltip term="Delivery endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create delivery endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No delivery endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <DeliveryEndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <DeliveryEndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
+    view! { <div class="workflow-stack">{(!creation_only).then(|| view! { <section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Client ingress"</p><div class="section-title"><h2>"Endpoints"</h2><HelpTooltip term="Endpoints" summary="Endpoints bind one stable host identity to exact network-boundary and listener or TLS generations."/></div></div>{create_href.map(|href| view! { <a class="button" href=href>"Create endpoint"</a> })}</div><Suspense fallback=move || view! { <p class="loading-row">"Loading endpoints…"</p> }>{move || { let client = view_client.clone(); Suspend::new(async move { match inventory.await.as_ref() { Ok(endpoints) if endpoints.is_empty() => view! { <p class="muted">"No endpoints in this scope."</p> }.into_any(), Ok(endpoints) => view! { <div class="binding-list">{endpoints.iter().cloned().map(|endpoint| view! { <EndpointCard client=client.clone() endpoint=endpoint/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section> })}{creation_only.then(|| view! { <EndpointCreate client=client owner_scope_key=owner_scope_key/> })}</div> }
 }
 
 #[derive(Clone, Debug)]
@@ -124,11 +124,11 @@ struct EndpointRevisionDraft {
 #[derive(Clone, Debug)]
 struct EndpointCreateChoices {
     domains: Vec<aos_proto_types::Domain>,
-    boundaries: Vec<aos_proto_types::NetworkBoundary>,
+    boundaries: Vec<aos_proto_types::NetworkPolicy>,
 }
 
 #[component]
-fn DeliveryEndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
+fn EndpointCreate(client: ApiClient, owner_scope_key: String) -> impl IntoView {
     let choices_client = client.clone();
     let choices_scope = owner_scope_key.clone();
     let choices = LocalResource::new(move || {
@@ -138,14 +138,14 @@ fn DeliveryEndpointCreate(client: ApiClient, owner_scope_key: String) -> impl In
     });
 
     view! {
-        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading domains and network boundaries…"</p></section> }>
+        <Suspense fallback=move || view! { <section class="panel editor-panel"><p class="loading-row">"Loading domains and network policies…"</p></section> }>
             {move || {
                 let client = client.clone();
                 let owner_scope_key = owner_scope_key.clone();
                 Suspend::new(async move {
                     match choices.await.as_ref() {
                         Ok(choices) => view! {
-                            <DeliveryEndpointCreateForm
+                            <EndpointCreateForm
                                 client=client
                                 owner_scope_key=owner_scope_key
                                 choices=choices.clone()
@@ -177,14 +177,14 @@ async fn load_endpoint_create_choices(
         .await
         .map_err(|failure| failure.to_string())?;
     let boundaries = client
-        .collect_pages::<_, aos_proto_types::ListNetworkBoundariesResponse, _, _, _>(
-            aos_proto_types::NETWORK_BOUNDARY_SERVICE_LIST_NETWORK_BOUNDARIES_PATH,
+        .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+            aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
             move |page_token| aos_proto_types::ListTopologyResourcesRequest {
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.network_boundaries, response.next_page_token),
+            |response| (response.network_policies, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())?;
@@ -196,7 +196,7 @@ async fn load_endpoint_create_choices(
 }
 
 #[component]
-fn DeliveryEndpointCreateForm(
+fn EndpointCreateForm(
     client: ApiClient,
     owner_scope_key: String,
     choices: EndpointCreateChoices,
@@ -325,13 +325,13 @@ fn DeliveryEndpointCreateForm(
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("endpoint-create");
-        let request = aos_proto_types::PlanDeliveryEndpointMutationRequest {
+        let request = aos_proto_types::PlanEndpointMutationRequest {
             stable_id: stable_id.get_untracked().trim().to_string(),
             owner_scope_key: owner_scope_key.clone(),
             scheme: scheme.get_untracked(),
             host: Some(endpoint_host),
             effective_port,
-            network_boundary_id: boundary_id.get_untracked().trim().to_string(),
+            network_policy_id: boundary_id.get_untracked().trim().to_string(),
             revision: Some(revision_message(revision)),
             carry_forward_consumer_scopes: Vec::new(),
             expected_resource_version: String::new(),
@@ -343,7 +343,7 @@ fn DeliveryEndpointCreateForm(
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_PLAN_CREATE_DELIVERY_ENDPOINT_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_CREATE_ENDPOINT_PATH,
                     &request,
                 )
                 .await
@@ -364,9 +364,9 @@ fn DeliveryEndpointCreateForm(
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::DeliveryEndpointResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_CREATE_DELIVERY_ENDPOINT_PATH,
-                    &reviewed.delivery_endpoint_apply(),
+                .call::<_, aos_proto_types::EndpointResponse>(
+                    aos_proto_types::DELIVERY_SERVICE_CREATE_ENDPOINT_PATH,
+                    &reviewed.endpoint_apply(),
                 )
                 .await
             {
@@ -378,9 +378,9 @@ fn DeliveryEndpointCreateForm(
     });
     view! {
         <section class="panel editor-panel">
-            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create delivery endpoint"</h2><p>"Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."</p></div></div>
+            <div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create endpoint"</h2><p>"Choose resources by name. The endpoint pins their immutable identifiers and current generations for you."</p></div></div>
             <form class="editor-form" on:submit=on_plan>
-                <label><span>"Stable ID"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
+                <label><span>"Endpoint name"</span><input required prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label>
                 <label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=on_scheme_change><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label>
                 <label><span>"Host kind"</span><select prop:value=move || host_kind.get() on:change=on_host_kind_change><option value="domain">"Managed domain"</option><option value="ipv4">"IPv4 address"</option><option value="ipv6">"IPv6 address"</option></select></label>
                 {move || if host_kind.get() == "domain" {
@@ -390,7 +390,7 @@ fn DeliveryEndpointCreateForm(
                     view! { <label><span>"IP address"</span><input required prop:value=move || host.get() on:input=move |event| host.set(event_target_value(&event))/></label> }.into_any()
                 }}
                 <label><span>"Port"</span><input readonly aria-readonly="true" prop:value=move || port.get()/><small>"Uses the selected scheme's standard port."</small></label>
-                <label><span>"Network boundary"</span><select required prop:value=move || boundary_id.get() on:change=on_boundary_change>{boundary_choices.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · {}", boundary.name, boundary.kind)}</option> }).collect_view()}</select>{boundary_choices.is_empty().then(|| view! { <small>"No network boundaries exist in this scope. Create one before adding an endpoint."</small> })}</label>
+                <label><span>"Network policy"</span><select required prop:value=move || boundary_id.get() on:change=on_boundary_change>{boundary_choices.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · {}", boundary.name, boundary.kind)}</option> }).collect_view()}</select>{boundary_choices.is_empty().then(|| view! { <small>"No network policies exist in this scope. Create one before adding an endpoint."</small> })}</label>
                 <label><span>"Boundary revision"</span><input readonly aria-readonly="true" prop:value=move || boundary_revision.get()/><small>"Pins the boundary's current default revision."</small></label>
                 <label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="external">"External ingress (CDN or object storage)"</option><option value="hub">"AOS Hub"</option><option value="layer7">"Layer 7 provider"</option></select></label>
                 <label><span>"Listener reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>
@@ -438,26 +438,21 @@ fn EndpointRevisionFields(
     certificate_ref: RwSignal<String>,
     require_client_certificate: RwSignal<bool>,
     probe_ref: RwSignal<String>,
+    #[prop(default = true)] show_boundary: bool,
 ) -> impl IntoView {
-    view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label><label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label><label><span>"Listener configuration reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })}<label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label> }
+    view! { {show_boundary.then(|| view! { <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || boundary_revision.get() on:input=move |event| boundary_revision.set(event_target_value(&event))/></label> })}<label><span>"Ingress kind"</span><select prop:value=move || ingress.get() on:change=move |event| ingress.set(event_target_value(&event))><option value="hub">"AOS Hub"</option><option value="external">"External ingress"</option><option value="layer7">"Layer 7 provider"</option></select></label><label><span>"Listener configuration reference"</span><input required prop:value=move || listener_ref.get() on:input=move |event| listener_ref.set(event_target_value(&event))/></label>{is_https.then(|| view! { <label><span>"TLS provider"</span><input required prop:value=move || tls_provider.get() on:input=move |event| tls_provider.set(event_target_value(&event))/></label><label><span>"Certificate reference"</span><input required prop:value=move || certificate_ref.get() on:input=move |event| certificate_ref.set(event_target_value(&event))/></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || require_client_certificate.get() on:change=move |event| require_client_certificate.set(event_target_checked(&event))/><span>"Require client certificate"</span></label> })}<label class="full-field"><span>"Probe configuration reference"</span><input prop:value=move || probe_ref.get() on:input=move |event| probe_ref.set(event_target_value(&event))/></label> }
 }
 
 #[component]
-fn DeliveryEndpointCard(
-    client: ApiClient,
-    endpoint: aos_proto_types::DeliveryEndpoint,
-) -> impl IntoView {
+fn EndpointCard(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let observed = endpoint.observed.clone().unwrap_or_default();
     let identity = endpoint_identity(&endpoint);
     let positive = observed.state == "ready" && observed.listener_observed && observed.tls_observed;
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{endpoint.scheme.clone()}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_boundary_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}<EndpointGenerations client=client.clone() endpoint=endpoint.clone()/><div class="subworkflow-grid"><EndpointStage client=client.clone() endpoint=endpoint.clone()/><EndpointGrants client=client.clone() endpoint=endpoint.clone()/></div><EndpointDelete client=client endpoint=endpoint/></div></details> }
+    view! { <details class="binding-card"><summary><div><span class="resource-kind">{endpoint.scheme.clone()}</span><h3>{identity}</h3><code>{endpoint.stable_id.clone()}</code></div><div class="binding-summary-state"><StatusBadge state=if observed.state.is_empty() { "unknown".to_string() } else { observed.state.clone() } positive=positive/></div></summary><div class="binding-details"><div class="resource-identity"><div><span>"Boundary"</span><code>{format!("{}@{}", endpoint.network_policy_id, endpoint.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</code></div><div><span>"Desired generation"</span><strong>{endpoint.desired_generation}</strong></div><div><span>"Observed generation"</span><strong>{observed.observed_generation}</strong></div><div><span>"Version"</span><code>{endpoint.resource_version.clone()}</code></div></div>{(!observed.error.is_empty()).then(|| view! { <InlineError detail=observed.error/> })}<EndpointGenerations client=client.clone() endpoint=endpoint.clone()/><div class="subworkflow-grid"><EndpointStage client=client.clone() endpoint=endpoint.clone()/><EndpointGrants client=client.clone() endpoint=endpoint.clone()/></div><EndpointDelete client=client endpoint=endpoint/></div></details> }
 }
 
 #[component]
-fn EndpointGenerations(
-    client: ApiClient,
-    endpoint: aos_proto_types::DeliveryEndpoint,
-) -> impl IntoView {
+fn EndpointGenerations(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let endpoint_id = endpoint.stable_id;
     let endpoint_version = endpoint.resource_version;
     let read_client = client.clone();
@@ -466,9 +461,9 @@ fn EndpointGenerations(
         let endpoint_id = endpoint_id.clone();
         async move {
             client
-                .collect_pages::<_, aos_proto_types::ListDeliveryEndpointGenerationsResponse, _, _, _>(
-                    aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINT_GENERATIONS_PATH,
-                    move |page_token| aos_proto_types::ListDeliveryEndpointGenerationsRequest {
+                .collect_pages::<_, aos_proto_types::ListEndpointGenerationsResponse, _, _, _>(
+                    aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINT_GENERATIONS_PATH,
+                    move |page_token| aos_proto_types::ListEndpointGenerationsRequest {
                         endpoint_id: endpoint_id.clone(),
                         page_size: 100,
                         page_token,
@@ -484,7 +479,7 @@ fn EndpointGenerations(
 #[component]
 fn EndpointGenerationRow(
     client: ApiClient,
-    generation: aos_proto_types::DeliveryEndpointGeneration,
+    generation: aos_proto_types::EndpointGeneration,
     endpoint_version: String,
 ) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
@@ -495,7 +490,7 @@ fn EndpointGenerationRow(
     let on_plan = move |_| {
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("endpoint-activate");
-        let request = aos_proto_types::PlanActivateDeliveryEndpointGenerationRequest {
+        let request = aos_proto_types::PlanActivateEndpointGenerationRequest {
             endpoint_id: request_generation.endpoint_id.clone(),
             generation: request_generation.generation,
             expected_resource_version: endpoint_version.clone(),
@@ -504,7 +499,14 @@ fn EndpointGenerationRow(
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = client.call::<_, aos_proto_types::TopologyPlanResponse>(aos_proto_types::DELIVERY_SERVICE_PLAN_ACTIVATE_DELIVERY_ENDPOINT_GENERATION_PATH, &request).await.map_err(|failure| failure.to_string()).and_then(|response| PendingPlan::from_response(response, idempotency_key));
+            let result = client
+                .call::<_, aos_proto_types::TopologyPlanResponse>(
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_ACTIVATE_ENDPOINT_GENERATION_PATH,
+                    &request,
+                )
+                .await
+                .map_err(|failure| failure.to_string())
+                .and_then(|response| PendingPlan::from_response(response, idempotency_key));
             match result {
                 Ok(reviewed) => pending.set(Some(reviewed)),
                 Err(detail) => error.set(Some(detail)),
@@ -521,9 +523,9 @@ fn EndpointGenerationRow(
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::DeliveryEndpointGenerationResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_ACTIVATE_DELIVERY_ENDPOINT_GENERATION_PATH,
-                    &reviewed.delivery_endpoint_generation_apply(),
+                .call::<_, aos_proto_types::EndpointGenerationResponse>(
+                    aos_proto_types::DELIVERY_SERVICE_ACTIVATE_ENDPOINT_GENERATION_PATH,
+                    &reviewed.endpoint_generation_apply(),
                 )
                 .await
             {
@@ -533,14 +535,33 @@ fn EndpointGenerationRow(
             busy.set(false);
         });
     });
-    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><code>{generation.content_digest}</code></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review activation"</button> }.into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
+    view! { <div class="revision-card"><div class="compact-list-row"><div><strong>{format!("Generation {}", generation.generation)}</strong><span>{format!("boundary revision {}", generation.desired.as_ref().map(|value| value.boundary_revision).unwrap_or_default())}</span><HashValue value=generation.content_digest/></div>{if generation.selected { view! { <StatusBadge state="selected".to_string() positive=true/> }.into_any() } else { view! { <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_plan>"Review activation"</button> }.into_any() }}</div>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</div> }
 }
 
 #[component]
-fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint) -> impl IntoView {
+fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let scheme = endpoint.scheme.clone();
     let is_https = scheme == "https";
     let desired = endpoint.desired.clone().unwrap_or_default();
+    let revisions_client = client.clone();
+    let revisions_boundary = endpoint.network_policy_id.clone();
+    let boundary_revisions = LocalResource::new(move || {
+        let client = revisions_client.clone();
+        let boundary_id = revisions_boundary.clone();
+        async move {
+            client
+                .collect_pages::<_, aos_proto_types::ListNetworkPolicyRevisionsResponse, _, _, _>(
+                    aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICY_REVISIONS_PATH,
+                    move |page_token| aos_proto_types::ListNetworkPolicyRevisionsRequest {
+                        boundary_id: boundary_id.clone(),
+                        page_size: 100,
+                        page_token,
+                    },
+                    |response| (response.revisions, response.next_page_token),
+                )
+                .await
+        }
+    });
     let boundary_revision = RwSignal::new(desired.boundary_revision.to_string());
     let ingress = RwSignal::new(ingress_name(desired.ingress_kind).to_string());
     let listener_ref = RwSignal::new(desired.listener_configuration_ref);
@@ -575,7 +596,7 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
         };
         let client = plan_client.clone();
         let idempotency_key = idempotency_key("endpoint-stage");
-        let request = aos_proto_types::PlanStageDeliveryEndpointGenerationRequest {
+        let request = aos_proto_types::PlanStageEndpointGenerationRequest {
             endpoint_id: endpoint_id.clone(),
             revision: Some(revision_message(revision)),
             carry_forward_consumer_scopes: Vec::new(),
@@ -588,7 +609,7 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_PLAN_STAGE_DELIVERY_ENDPOINT_GENERATION_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_STAGE_ENDPOINT_GENERATION_PATH,
                     &request,
                 )
                 .await
@@ -609,9 +630,9 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::DeliveryEndpointGenerationResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_STAGE_DELIVERY_ENDPOINT_GENERATION_PATH,
-                    &reviewed.delivery_endpoint_generation_apply(),
+                .call::<_, aos_proto_types::EndpointGenerationResponse>(
+                    aos_proto_types::DELIVERY_SERVICE_STAGE_ENDPOINT_GENERATION_PATH,
+                    &reviewed.endpoint_generation_apply(),
                 )
                 .await
             {
@@ -621,11 +642,11 @@ fn EndpointStage(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint)
             busy.set(false);
         });
     });
-    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><EndpointRevisionFields is_https=is_https boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
+    view! { <section class="subworkflow"><h4>"Stage generation"</h4><form class="stacked-form" on:submit=on_plan><label><span>"Network policy revision"</span><select required prop:value=move || boundary_revision.get() on:change=move |event| boundary_revision.set(event_target_value(&event))><Suspense fallback=move || view! { <option value=boundary_revision.get_untracked()>"Loading boundary revisions…"</option> }>{move || Suspend::new(async move { match boundary_revisions.await.as_ref() { Ok(revisions) => revisions.iter().map(|revision| { let lifecycle = revision.lifecycle.as_ref().map(|value| value.state.as_str()).unwrap_or("unknown"); view! { <option value=revision.revision.to_string()>{format!("Revision {} · {}", revision.revision, lifecycle)}</option> } }).collect_view().into_any(), Err(_) => view! { <option value=boundary_revision.get_untracked()>"Current pinned revision"</option> }.into_any() } })}</Suspense></select></label><EndpointRevisionFields is_https=is_https boundary_revision=boundary_revision ingress=ingress listener_ref=listener_ref tls_provider=tls_provider certificate_ref=certificate_ref require_client_certificate=require_client_certificate probe_ref=probe_ref show_boundary=false/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review generation"</button></form>{move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })}</section> }
 }
 
 #[component]
-fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint) -> impl IntoView {
+fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let scope = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -651,7 +672,7 @@ fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_PLAN_GRANT_DELIVERY_ENDPOINT_SCOPE_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_GRANT_ENDPOINT_SCOPE_PATH,
                     &request,
                 )
                 .await
@@ -673,7 +694,7 @@ fn EndpointGrants(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_GRANT_DELIVERY_ENDPOINT_SCOPE_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_GRANT_ENDPOINT_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -712,7 +733,7 @@ fn EndpointGrantRow(
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_PLAN_REVOKE_DELIVERY_ENDPOINT_SCOPE_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_REVOKE_ENDPOINT_SCOPE_PATH,
                     &request,
                 )
                 .await
@@ -734,7 +755,7 @@ fn EndpointGrantRow(
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::ConsumerScopeGrantResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_REVOKE_DELIVERY_ENDPOINT_SCOPE_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_REVOKE_ENDPOINT_SCOPE_PATH,
                     &reviewed.consumer_grant_apply(),
                 )
                 .await
@@ -749,7 +770,7 @@ fn EndpointGrantRow(
 }
 
 #[component]
-fn EndpointDelete(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint) -> impl IntoView {
+fn EndpointDelete(client: ApiClient, endpoint: aos_proto_types::Endpoint) -> impl IntoView {
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -769,7 +790,7 @@ fn EndpointDelete(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint
         spawn_local(async move {
             let result = client
                 .call::<_, aos_proto_types::TopologyPlanResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_PLAN_DELETE_DELIVERY_ENDPOINT_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_PLAN_DELETE_ENDPOINT_PATH,
                     &request,
                 )
                 .await
@@ -791,7 +812,7 @@ fn EndpointDelete(client: ApiClient, endpoint: aos_proto_types::DeliveryEndpoint
         spawn_local(async move {
             match client
                 .call::<_, aos_proto_types::DeleteTopologyResourceResponse>(
-                    aos_proto_types::DELIVERY_SERVICE_DELETE_DELIVERY_ENDPOINT_PATH,
+                    aos_proto_types::DELIVERY_SERVICE_DELETE_ENDPOINT_PATH,
                     &reviewed.delete_apply(),
                 )
                 .await
@@ -872,8 +893,8 @@ fn endpoint_revision(
         probe_ref: probe_ref.trim().to_string(),
     })
 }
-fn revision_message(draft: EndpointRevisionDraft) -> aos_proto_types::DeliveryEndpointRevisionSpec {
-    aos_proto_types::DeliveryEndpointRevisionSpec {
+fn revision_message(draft: EndpointRevisionDraft) -> aos_proto_types::EndpointRevisionSpec {
+    aos_proto_types::EndpointRevisionSpec {
         boundary_revision: draft.boundary_revision,
         ingress_kind: draft.ingress_kind,
         listener_configuration_ref: draft.listener_ref,
@@ -891,7 +912,7 @@ fn ingress_name(value: i32) -> &'static str {
         aos_proto_types::EndpointIngressKind::Unspecified => "hub",
     }
 }
-fn endpoint_identity(endpoint: &aos_proto_types::DeliveryEndpoint) -> String {
+fn endpoint_identity(endpoint: &aos_proto_types::Endpoint) -> String {
     let host = endpoint
         .host
         .as_ref()
@@ -916,7 +937,7 @@ fn grant_request(
     idempotency_key: String,
 ) -> aos_proto_types::PlanConsumerScopeGrantRequest {
     aos_proto_types::PlanConsumerScopeGrantRequest {
-        resource_kind: "delivery_endpoint".to_string(),
+        resource_kind: "endpoint".to_string(),
         resource_stable_id: endpoint_id.to_string(),
         resource_generation: generation,
         consumer_scope_key: scope.trim().to_string(),

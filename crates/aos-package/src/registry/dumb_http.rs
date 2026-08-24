@@ -28,12 +28,13 @@
 //!    (equivalent to `git index-pack`, which regenerates and verifies the
 //!    `.idx`). A registry's whole reachable graph is usually one or a few
 //!    packs, so this replaces thousands of per-object round trips.
-//! 2. **Loose (completeness fallback).** The graph reachable from the targets
+//! 2. **Loose (correctness fallback).** The graph reachable from the targets
 //!    is walked through the local object store (see
-//!    `repo::missing_objects_blocking`); whatever the packs did not cover is
-//!    fetched as loose objects (verified against their SHA-256) and the walk
-//!    repeats to a fixpoint. A registry's dumb-HTTP layout guarantees loose
-//!    completeness, so this always terminates with the full graph local.
+//!    `repo::missing_objects_blocking`); objects absent from packs or
+//!    reconstructed under the wrong SHA-256 identity are fetched loose,
+//!    individually verified, and the walk repeats to a fixpoint. A registry's
+//!    dumb-HTTP layout guarantees loose completeness, so this always
+//!    terminates with the full valid graph local.
 //!
 //! Finally the destination refs are set. Object *content* integrity is enforced
 //! here (loose objects by hash, packed objects by the indexer's content
@@ -202,8 +203,8 @@ pub(crate) async fn fetch_with_progress(
     Ok(())
 }
 
-/// Walk the local object graph and return the OIDs reachable from `targets`
-/// that are still absent. Runs the (blocking) libgit2 walk off-runtime.
+/// Walk the local object graph and return reachable OIDs that are absent or
+/// fail content-address verification. Runs the libgit2 walk off-runtime.
 async fn walk_missing(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
     let repo_path = repo_dir.to_path_buf();
     let targets = targets.to_vec();

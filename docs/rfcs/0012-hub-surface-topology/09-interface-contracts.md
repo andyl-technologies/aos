@@ -44,12 +44,12 @@ reference.
 
 | Settings owner | CLI family | API owner |
 | --- | --- | --- |
-| Storage bindings and defaults | `storage-binding`, `{org,instance} topology-defaults` | `StorageBindingService` |
+| Bindings and defaults | `storage-binding`, `{org,instance} topology-defaults` | `BindingService` |
 | Storage, replicas, and write authority | `placement`, `placement-policy`, `placement-equivalence` | `TopologyService` |
 | DNS domains | `domain` | `DomainService` |
-| Network boundaries | `network-boundary` | `NetworkBoundaryService` |
-| Delivery endpoints | `endpoint` | `DeliveryService` endpoint methods |
-| Storage gateways | `gateway` | `DeliveryService` gateway methods |
+| Network policies | `network-boundary` | `NetworkPolicyService` |
+| Endpoints | `endpoint` | `DeliveryService` endpoint methods |
+| Gateways | `gateway` | `DeliveryService` gateway methods |
 | Delivery | `route` | `RouteService` |
 | Consumer cache stack | `registry cache-stack` | `CacheIntegrationService` consumer methods |
 | Retention subscriptions | `cache retention` | `CacheIntegrationService` retention methods |
@@ -147,16 +147,16 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/registries/new
 /-/org/{org}/caches
 /-/org/{org}/caches/new
-/-/org/{org}/storage-bindings
-/-/org/{org}/storage-bindings/new
+/-/org/{org}/bindings
+/-/org/{org}/bindings/new
 /-/org/{org}/domains
 /-/org/{org}/domains/new
-/-/org/{org}/network-boundaries
-/-/org/{org}/network-boundaries/new
-/-/org/{org}/delivery-endpoints
-/-/org/{org}/delivery-endpoints/new
-/-/org/{org}/storage-gateways
-/-/org/{org}/storage-gateways/new
+/-/org/{org}/network-policies
+/-/org/{org}/network-policies/new
+/-/org/{org}/endpoints
+/-/org/{org}/endpoints/new
+/-/org/{org}/gateways
+/-/org/{org}/gateways/new
 /-/org/{org}/topology-defaults
 /-/org/{org}/members
 /-/org/{org}/members/invitations/new
@@ -211,15 +211,15 @@ The exact grouped labels and ordering are specified in
 /-/instance/tokens
 /-/instance/resource-defaults
 /-/instance/branding
-/-/instance/storage-bindings
+/-/instance/bindings
 /-/instance/domains
 /-/instance/domains/new
-/-/instance/network-boundaries
-/-/instance/network-boundaries/new
-/-/instance/delivery-endpoints
-/-/instance/delivery-endpoints/new
-/-/instance/storage-gateways
-/-/instance/storage-gateways/new
+/-/instance/network-policies
+/-/instance/network-policies/new
+/-/instance/endpoints
+/-/instance/endpoints/new
+/-/instance/gateways
+/-/instance/gateways/new
 /-/instance/topology-defaults
 /-/instance/operations
 ```
@@ -234,12 +234,12 @@ The hard-cutover route mapping is:
 | Removed UI location | Canonical replacement |
 | --- | --- |
 | organization root rendering Registries | organization Overview; registry inventory at `/registries` |
-| organization `/storage` | `/storage-bindings` |
+| organization `/storage` | `/bindings` |
 | organization `/keys` | `/signing-keys` |
 | organization `/audit` | `/audit-log` |
 | organization `/settings` redirect | deleted; use the organization root Overview |
-| organization `/bindings/{id}` | `/storage-bindings/{id}` |
-| organization binding frontend section | `/storage-gateways` and explicit surface delivery routes |
+| organization `/bindings/{id}` | `/bindings/{id}` |
+| organization binding frontend section | `/gateways` and explicit surface routes |
 | registry `/settings` General page | registry `/settings` Overview and `/settings/access` |
 | registry `/settings/storage` | `/settings/placements` |
 | registry `/settings/serving` | `/settings/delivery` and `/settings/upstream-mirror` |
@@ -253,7 +253,7 @@ The hard-cutover route mapping is:
 | cache `/pins` | `/retention` and `/garbage-collection` |
 | instance root General form | instance Overview and `/identity-and-signup` |
 | instance `/serving` | `/resource-defaults` |
-| instance `/storage` | `/storage-bindings` |
+| instance `/storage` | `/bindings` |
 
 Semantically final paths such as registry `/settings/caches` remain canonical;
 they are not compatibility aliases. All removed handlers and paths disappear
@@ -384,7 +384,7 @@ identity, and webhook commands live below `aos hub org`; registry-owned
 package, channel, publication, configuration, mirror, and consumer-cache-stack
 commands live below `aos hub registry`. The former top-level spellings are
 removed rather than retained as aliases. Cross-cutting topology resources such
-as placements, routes, domains, and storage bindings remain top-level families
+as placements, routes, domains, and bindings remain top-level families
 because their typed references can span more than one owner or surface.
 
 The cutover uses a one-shot preflight/transformer artifact. That artifact is
@@ -514,7 +514,7 @@ aos hub placement-policy test <surface-ref> <policy> --revision <revision>
   --object <canonical-object-ref> [--access-class local|remote]
 ```
 
-`placement add` never grants write authority or changes canonical routes by
+`placement add` never grants write authority or changes route advertisements by
 itself. A newly created surface may remain safely read-only until initial
 authority is created from a ready complete placement. `promote` returns an
 impact plan covering writes, fencing/reconciliation, and mutable pointers. Its
@@ -534,7 +534,7 @@ create/update. Binding, prefix, kind, and hash range are immutable in
 `placement update`; changing them uses add/replicate/promote/drain. Web forms
 and API messages use the same defaults and update field set.
 
-Local-then-remote policy messages pin a typed `NetworkBoundaryRevisionRef`.
+Local-then-remote policy messages pin a typed `NetworkPolicyRevisionRef`.
 Plans display the stable boundary identity, exact revision, verification state,
 and digest input; apply rejects a stale or unverified revision. Published
 policy meaning never follows a boundary's moving desired pointer.
@@ -558,7 +558,7 @@ until separately planned updates move them. Test resolves a canonical logical
 object to its stored partition key and prints the normative digest, bucket,
 replica group, fallback decisions, and typed failure contract.
 
-### Storage bindings, defaults, domains, endpoints, gateways, and routes
+### Bindings, defaults, domains, endpoints, gateways, and routes
 
 ```text
 aos hub org update <org> --display-name <name>
@@ -819,7 +819,7 @@ options use namespaced forms rather than a generic secret JSON argument. Secret
 values are read from files/stdin or credential stores and are never echoed.
 
 Endpoint input is parsed into typed scheme, DNS/IPv4/IPv6 host, effective port,
-and network boundary; the URL string is never stored. IPv6 zone ids, userinfo,
+and network policy; the URL string is never stored. IPv6 zone ids, userinfo,
 query, and fragment are rejected. Route and gateway commands reference an
 existing endpoint and never create one implicitly. Default ports are omitted
 only when rendering the canonical origin.
@@ -1071,7 +1071,7 @@ range, and conditional requests consistently in native and Worker runtimes.
 It returns `Content-Disposition` with the signed filename, the exact image
 media type and integrity metadata, range headers, and immutable cache headers.
 Public images permit anonymous access. For a public registry the API selects a
-ready canonical delivery route, falling back to the Hub control origin when no
+ready route advertisement, falling back to the Hub control origin when no
 public route is ready. For a private registry it returns an immutable
 same-origin `/-/images/{registry-id}/...` URL so a browser session or API bearer
 can authorize the byte request through Hub. Independently authenticated CDN,
@@ -1102,19 +1102,19 @@ The public contract defines typed `Placement`, `PlacementObservation`,
 `SurfaceWriteAuthority`, `PlacementAuthorityStatus`, `PlacementPolicy`,
 `PlacementPolicyRevision`, `PlacementPolicyReplicaGroup`, `HashRangeV1`,
 `AccessClass`, `PolicyFailureContract`, `PlacementEquivalence`,
-`ObjectPresence`, `PlacementImpact`, `StorageBinding`,
-`StorageBindingCapabilities`, `StorageBindingHealth`, `Domain`,
+`ObjectPresence`, `PlacementImpact`, `Binding`,
+`BindingCapabilities`, `BindingHealth`, `Domain`,
 `DomainDesiredState`, `DomainObservedState`, `DnsConfiguration`,
-`CertificateConfiguration`, `DeliveryEndpoint`, `EndpointHost`,
-`EndpointDesiredState`, `EndpointObservedState`, `NetworkBoundary`,
-`NetworkBoundaryIdentity`, `NetworkBoundaryRevision`,
-`NetworkBoundaryRevisionRef`, `NetworkBoundaryRevisionLifecycle`,
-`NetworkBoundaryObservation`, `TrustedIngressConfiguration`,
+`CertificateConfiguration`, `Endpoint`, `EndpointHost`,
+`EndpointDesiredState`, `EndpointObservedState`, `NetworkPolicy`,
+`NetworkPolicyIdentity`, `NetworkPolicyRevision`,
+`NetworkPolicyRevisionRef`, `NetworkPolicyRevisionLifecycle`,
+`NetworkPolicyObservation`, `TrustedIngressConfiguration`,
 `DeliveryAccessPolicy`, `ExternalProviderPolicy`, `TlsConfiguration`,
-`ConsumerScopeGrant`, `StorageGateway`, `PlacementDeliveryManifest`,
-`DeliveryRoute`, `DeliveryRouteTarget`, `RouteCapabilities`, `CanonicalRoute`,
-`DeliveryRouteObservation`, `DirectDeliveryRouteEvidence`,
-`DeliveryRouteAccessObservation`,
+`ConsumerScopeGrant`, `Gateway`, `PlacementDeliveryManifest`,
+`Route`, `RouteTarget`, `RouteCapabilities`, `RouteAdvertisement`,
+`RouteObservation`, `DirectRouteEvidence`,
+`RouteAccessObservation`,
 `GatewayRoutePreview`, `InstanceTopologyDefaults`,
 `OrganizationTopologyDefaults`, `ManualRetentionRoot`, `RetentionLease`,
 `RootReason`, `RetentionImpact`, `CacheGcGeneration`, `CacheGcPlan`,
@@ -1292,7 +1292,7 @@ rules after its fencing preconditions have reconciled; an operator can also
 retry the associated operation without creating a new desired generation.
 
 Controller observations are not public operator mutations. They live only on
-`StorageBindingControllerService`, `NetworkBoundaryControllerService`,
+`BindingControllerService`, `NetworkPolicyControllerService`,
 `DeliveryControllerService`, `RouteControllerService`,
 `TopologyControllerService`, and `BinaryCacheUploadControllerService`. Every
 `Report*` or `Complete*` request carries `controller_lease_id`,
@@ -1302,20 +1302,20 @@ stale observation fence. Upload completion uses `ReportCacheUpload` and
 `ReportCacheNarinfos` on that same internal surface, never a public durable
 mutation exception.
 
-### StorageBindingService
+### BindingService
 
 ```text
-ListStorageBindings
-GetStorageBinding
-PlanCreateStorageBinding / CreateStorageBinding
-PlanSetStorageBindingCredential / SetStorageBindingCredential
-PlanRotateStorageBindingCredential / RotateStorageBindingCredential
-PlanValidateStorageBindingCredential / ValidateStorageBindingCredential -> OperationRef
-PlanGrantStorageBindingScope / GrantStorageBindingScope
-PlanRevokeStorageBindingScope / RevokeStorageBindingScope
-ListStorageBindingWriteRevisions
-GetStorageBindingWriteRevision
-PlanDeleteStorageBinding / DeleteStorageBinding
+ListBindings
+GetBinding
+PlanCreateBinding / CreateBinding
+PlanSetBindingCredential / SetBindingCredential
+PlanRotateBindingCredential / RotateBindingCredential
+PlanValidateBindingCredential / ValidateBindingCredential -> OperationRef
+PlanGrantBindingScope / GrantBindingScope
+PlanRevokeBindingScope / RevokeBindingScope
+ListBindingWriteRevisions
+GetBindingWriteRevision
+PlanDeleteBinding / DeleteBinding
 
 GetInstanceTopologyDefaults
 PlanSetInstanceTopologyDefaults / SetInstanceTopologyDefaults
@@ -1323,10 +1323,10 @@ GetOrganizationTopologyDefaults
 PlanSetOrganizationTopologyDefaults / SetOrganizationTopologyDefaults
 ```
 
-`StorageBindingRef` is a oneof of the instance default or an organization
+`BindingRef` is a oneof of the instance default or an organization
 binding reference. Capability and health records contain no credentials.
 Changing defaults does not mutate existing placements, routes, or gateways.
-The provider identity carried by `StorageBindingSpec` is immutable after
+The provider identity carried by `BindingSpec` is immutable after
 creation; endpoint, bucket, prefix, root, region, access-mode, and provider
 changes use replacement plus explicit placement migration rather than update.
 Binding grant/revoke is dual-scope plan/apply. Stable binding refs resolve to
@@ -1341,7 +1341,7 @@ fingerprints do not suppress a revision whose credential-version reference
 changed. Provider invalidation is observed separately and makes affected
 authorities write-blocked.
 
-`ValidateStorageBindingCredential` accepts only the binding, closed purpose,
+`ValidateBindingCredential` accepts only the binding, closed purpose,
 exact credential generation, expected credential-head version, and idempotency
 key. It never accepts a validation state or error supplied by a client. The
 returned operation is executed by a controller-owned adapter that resolves the
@@ -1423,20 +1423,20 @@ remain unready until their provider reports the exact generation installed.
 The verified TLS connection and signed responder identity are both required;
 the manifest is readiness configuration, not certificate evidence.
 
-### NetworkBoundaryService
+### NetworkPolicyService
 
 ```text
-ListNetworkBoundaries
-GetNetworkBoundary
-PlanCreateNetworkBoundary / CreateNetworkBoundary
-ListNetworkBoundaryRevisions
-GetNetworkBoundaryRevision
-PlanReviseNetworkBoundary / ReviseNetworkBoundary
-PlanActivateNetworkBoundaryRevision / ActivateNetworkBoundaryRevision
-PlanRetireNetworkBoundaryRevision / RetireNetworkBoundaryRevision
-PlanGrantNetworkBoundaryScope / GrantNetworkBoundaryScope
-PlanRevokeNetworkBoundaryScope / RevokeNetworkBoundaryScope
-PlanDeleteNetworkBoundary / DeleteNetworkBoundary
+ListNetworkPolicies
+GetNetworkPolicy
+PlanCreateNetworkPolicy / CreateNetworkPolicy
+ListNetworkPolicyRevisions
+GetNetworkPolicyRevision
+PlanReviseNetworkPolicy / ReviseNetworkPolicy
+PlanActivateNetworkPolicyRevision / ActivateNetworkPolicyRevision
+PlanRetireNetworkPolicyRevision / RetireNetworkPolicyRevision
+PlanGrantNetworkPolicyScope / GrantNetworkPolicyScope
+PlanRevokeNetworkPolicyScope / RevokeNetworkPolicyScope
+PlanDeleteNetworkPolicy / DeleteNetworkPolicy
 ```
 
 Boundary responses expose stable realm identity, the desired default immutable
@@ -1444,17 +1444,17 @@ revision, all per-revision verification/enforcement observations and lifecycle
 states, probe provenance, consumer counts/versions, and authorized consumer
 scopes. They never expose
 private keys or assertion secrets. Unknown or mismatched observation is not a
-protected boundary. Read uses `network_boundary.read`; revision, probe, and
-reconcile actions use `network_boundary.manage`; cross-scope grants
-additionally require `network_boundary.grant` in both owner and consumer
+protected boundary. Read uses `network_policy.read`; revision, probe, and
+reconcile actions use `network_policy.manage`; cross-scope grants
+additionally require `network_policy.grant` in both owner and consumer
 scopes. Instance administrators hold these permissions for instance
 boundaries.
 
 Topology authorization uses closed, resource-specific verbs rather than a
-generic storage-management surrogate: `storage_binding.read/manage/grant`,
+generic storage-management surrogate: `binding.read/manage/grant`,
 `placement.read/manage`, `placement_policy.read/manage`, `domain.read/manage`,
-`network_boundary.read/manage/grant`, `delivery_endpoint.read/manage/grant`,
-`storage_gateway.read/manage/grant`, and `route.read/manage`. Every durable
+`network_policy.read/manage/grant`, `endpoint.read/manage/grant`,
+`gateway.read/manage/grant`, and `route.read/manage`. Every durable
 operation persists the exact controlling verb at creation; cancel and retry
 re-authorize that stored verb, so adding a secondary target cannot silently
 change who controls existing work.
@@ -1462,7 +1462,7 @@ change who controls existing work.
 The deployment-provisioned public singleton is returned by list/get but create,
 identity update, transfer, and delete reject it. Its instance-default grant is
 eagerly projected to exact organization scope rows.
-`ReviseNetworkBoundary` creates `staged` revision content and does not move the
+`ReviseNetworkPolicy` creates `staged` revision content and does not move the
 default pointer, activate, or invalidate any older revision. Probe/reconcile
 targets `<boundary>@<revision>`. Activate's required
 `default_for_new_plans` choice controls a versioned default-pointer CAS.
@@ -1480,27 +1480,27 @@ the remaining consumers and offer their move plans.
 ### DeliveryService
 
 ```text
-ListDeliveryEndpoints
-GetDeliveryEndpoint
-PlanCreateDeliveryEndpoint / CreateDeliveryEndpoint
-ListDeliveryEndpointGenerations
-GetDeliveryEndpointGeneration
-PlanStageDeliveryEndpointGeneration / StageDeliveryEndpointGeneration
-PlanActivateDeliveryEndpointGeneration / ActivateDeliveryEndpointGeneration
-PlanGrantDeliveryEndpointScope / GrantDeliveryEndpointScope
-PlanRevokeDeliveryEndpointScope / RevokeDeliveryEndpointScope
-PlanDeleteDeliveryEndpoint / DeleteDeliveryEndpoint
+ListEndpoints
+GetEndpoint
+PlanCreateEndpoint / CreateEndpoint
+ListEndpointGenerations
+GetEndpointGeneration
+PlanStageEndpointGeneration / StageEndpointGeneration
+PlanActivateEndpointGeneration / ActivateEndpointGeneration
+PlanGrantEndpointScope / GrantEndpointScope
+PlanRevokeEndpointScope / RevokeEndpointScope
+PlanDeleteEndpoint / DeleteEndpoint
 
-ListStorageGateways
-GetStorageGateway
-PlanCreateStorageGateway / CreateStorageGateway
-PlanUpdateStorageGateway / UpdateStorageGateway
-PlanGrantStorageGatewayScope / GrantStorageGatewayScope
-PlanRevokeStorageGatewayScope / RevokeStorageGatewayScope
+ListGateways
+GetGateway
+PlanCreateGateway / CreateGateway
+PlanUpdateGateway / UpdateGateway
+PlanGrantGatewayScope / GrantGatewayScope
+PlanRevokeGatewayScope / RevokeGatewayScope
 PreviewGatewayRoutes
-PlanEnableStorageGateway / EnableStorageGateway
-PlanDisableStorageGateway / DisableStorageGateway
-PlanDeleteStorageGateway / DeleteStorageGateway
+PlanEnableGateway / EnableGateway
+PlanDisableGateway / DisableGateway
+PlanDeleteGateway / DeleteGateway
 ```
 
 Endpoint responses report the typed origin, ingress/network realm, desired
@@ -1513,7 +1513,7 @@ Endpoint grant/revoke resolves the stable endpoint ref to its exact desired
 generation in the plan; apply rejects a generation change. Endpoint update
 lists affected routes and grants, and carries forward only explicitly confirmed
 exact active grant generations/pins before route movement. These operations require
-`delivery_endpoint.grant` in both owner and consumer scopes; no old-generation
+`endpoint.grant` in both owner and consumer scopes; no old-generation
 grant acts as a wildcard.
 `endpoint update --boundary-revision` may select only an immutable revision of
 the endpoint's existing boundary. Its plan pins the old/new boundary and
@@ -1525,7 +1525,7 @@ Gateway grants pin the exact immutable generation. A gateway update plan lists
 all existing grants and affected routes; apply creates explicitly confirmed
 replacement-generation grants before moving routes. It never treats an old
 generation grant as a wildcard. Revoke preserves the durable tombstone and
-requires zero live pins. Grant/revoke requires `storage_gateway.grant`
+requires zero live pins. Grant/revoke requires `gateway.grant`
 in both owner and consumer scopes; instance administrators hold it for
 instance gateways.
 
@@ -1540,11 +1540,11 @@ PlanReplaceRoute / ReplaceRoute
 PlanEnableRoute / EnableRoute
 PlanDisableRoute / DisableRoute
 PlanDeleteRoute / DeleteRoute
-PlanSetCanonicalRoute / SetCanonicalRoute
+PlanSetRouteAdvertisement / SetRouteAdvertisement
 ExplainRoute
 ```
 
-Route messages use typed `DeliveryEndpointRef`, `DeliveryMode`, `DeliveryAccessPolicy`,
+Route messages use typed `EndpointRef`, `DeliveryMode`, `DeliveryAccessPolicy`,
 `RouteCapabilities`, and `RouteTarget` fields. `RouteTarget` is a closed union:
 `HubPlacement`, `HubPolicyRevision`, or
 `DirectGatewayPlacement { placement_id, gateway_id, gateway_generation }`.
@@ -1578,7 +1578,7 @@ PlanDeleteRegistryMirror / DeleteRegistryMirror
 SyncRegistryMirror
 ```
 
-The mirror source is registry content acquisition, not a delivery route.
+The mirror source is registry content acquisition, not a route.
 `SyncRegistryMirror` returns `OperationRef`.
 
 ### CacheIntegrationService
@@ -1711,26 +1711,26 @@ placement.promotion.requested
 placement.promotion.completed
 placement.promotion.failed
 placement.drained
-storage_binding.scope.granted
-storage_binding.scope.revoked
-network_boundary.revision.reconciled
-network_boundary.revision.probe.changed
-network_boundary.revision.created
-network_boundary.revision.activated
-network_boundary.revision.retiring
-network_boundary.revision.retired
-network_boundary.coordinated_move.started
-network_boundary.coordinated_move.completed
-network_boundary.scope.granted
-network_boundary.scope.revoked
-delivery_endpoint.reconciled
-delivery_endpoint.probe.changed
-delivery_endpoint.scope.granted
-delivery_endpoint.scope.revoked
-delivery_endpoint.grants.carried_forward
-storage_gateway.scope.granted
-storage_gateway.scope.revoked
-storage_gateway.grants.carried_forward
+binding.scope.granted
+binding.scope.revoked
+network_policy.revision.reconciled
+network_policy.revision.probe.changed
+network_policy.revision.created
+network_policy.revision.activated
+network_policy.revision.retiring
+network_policy.revision.retired
+network_policy.coordinated_move.started
+network_policy.coordinated_move.completed
+network_policy.scope.granted
+network_policy.scope.revoked
+endpoint.reconciled
+endpoint.probe.changed
+endpoint.scope.granted
+endpoint.scope.revoked
+endpoint.grants.carried_forward
+gateway.scope.granted
+gateway.scope.revoked
+gateway.grants.carried_forward
 route.probe.changed
 route.canonical.changed
 retention.subscription.plan.created
@@ -1781,8 +1781,8 @@ and result but exclude credentials and high-cardinality object data.
   documented immediate method.
 - Every new `aos hub` command is a thin client of that API and has a `--json`
   golden test.
-- Web UI, CLI, and API use the same names for DNS domains, network boundaries,
-  delivery endpoints,
+- Web UI, CLI, and API use the same names for DNS domains, network policies,
+  endpoints,
   placements, routes, consumer cache stacks, retention subscriptions,
   population targets, and root reasons.
 - DNS, IPv4, IPv6, default/custom-port, and protected-HTTP endpoint fixtures

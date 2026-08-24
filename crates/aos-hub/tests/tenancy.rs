@@ -197,7 +197,7 @@ async fn serve_managed(
         dir_name,
     )
     .await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(id),
         placement.id,
@@ -286,7 +286,7 @@ async fn flat_explicit_route_resolves_and_unpublished_bytes_fail_closed() {
         "",
     )
     .await;
-    common::configure_hub_delivery_route(
+    common::configure_hub_route(
         &db,
         SurfaceTarget::Registry(registry.id),
         placement.id,
@@ -584,10 +584,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     let owner_token = bearer(
         Principal::user(user),
         &org_scope,
-        &[
-            Permission::RegistryConfigure,
-            Permission::StorageBindingManage,
-        ],
+        &[Permission::RegistryConfigure, Permission::BindingManage],
     );
 
     // CreateProject.
@@ -606,8 +603,8 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     // Create a normalized identity/spec binding.
     let (status, value) = planned_rpc(
         &app,
-        "StorageBindingService/PlanCreateStorageBinding",
-        "StorageBindingService/CreateStorageBinding",
+        "BindingService/PlanCreateBinding",
+        "BindingService/CreateBinding",
         serde_json::json!({
             "stableId": "binding:acme-primary",
             "ownerScopeKey": org_scope,
@@ -631,10 +628,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(
-        value["storageBinding"]["spec"]["s3"]["bucket"],
-        "acme-primary"
-    );
+    assert_eq!(value["binding"]["spec"]["s3"]["bucket"], "acme-primary");
 
     // Registry creation is identity-only; placement is a separate topology step.
     let (status, value) = planned_rpc(

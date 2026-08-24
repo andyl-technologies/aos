@@ -24,7 +24,7 @@ pub async fn create_instance_local_binding(
     name: &str,
     path: &str,
 ) -> i64 {
-    db.create_topology_storage_binding(
+    db.create_topology_binding(
         None,
         &uuid::Uuid::new_v4().simple().to_string(),
         "instance",
@@ -56,7 +56,7 @@ pub async fn create_local_binding(
     // Creating the instance binding eagerly materializes a grant for every
     // existing organization, including this fixture's owner.
     db.org_by_id(org_id).await.unwrap().unwrap();
-    db.create_topology_storage_binding(
+    db.create_topology_binding(
         None,
         &uuid::Uuid::new_v4().simple().to_string(),
         "instance",
@@ -76,8 +76,8 @@ pub async fn create_local_binding(
     .unwrap()
 }
 
-/// Creates and reconciles one native Hub delivery endpoint and route.
-pub async fn configure_hub_delivery_route(
+/// Creates and reconciles one native Hub endpoint and route.
+pub async fn configure_hub_route(
     db: &aos_hub::db::Database,
     surface: aos_hub::db::SurfaceTarget,
     placement_id: i64,
@@ -87,7 +87,7 @@ pub async fn configure_hub_delivery_route(
     base_path: &str,
     audience: &str,
 ) {
-    use aos_hub::db::{DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec};
+    use aos_hub::db::{EndpointHostInput, EndpointRevisionSpec, RouteSpec};
 
     let (org_id, visibility) = match surface {
         aos_hub::db::SurfaceTarget::Registry(id) => {
@@ -99,7 +99,7 @@ pub async fn configure_hub_delivery_route(
             (cache.org_id, cache.visibility)
         }
     };
-    let boundary = aos_hub::db::GrantResource::NetworkBoundary {
+    let boundary = aos_hub::db::GrantResource::NetworkPolicy {
         id: "instance:public",
     };
     let boundary_grants = db.list_consumer_scope_grants(boundary).await.unwrap();
@@ -117,16 +117,16 @@ pub async fn configure_hub_delivery_route(
         .await
         .unwrap();
     }
-    if db.delivery_endpoint(endpoint_id).await.unwrap().is_none() {
-        db.create_delivery_endpoint(
+    if db.endpoint(endpoint_id).await.unwrap().is_none() {
+        db.create_endpoint(
             endpoint_id,
             owner_scope,
             org_id,
             "http",
-            &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
+            &EndpointHostInput::Ipv4([127, 0, 0, 1]),
             8420,
             "instance:public",
-            &DeliveryEndpointRevisionSpec {
+            &EndpointRevisionSpec {
                 boundary_revision: 1,
                 ingress_kind: "hub".to_string(),
                 listener_configuration: format!("listener:{endpoint_id}"),
@@ -139,7 +139,7 @@ pub async fn configure_hub_delivery_route(
         )
         .await
         .unwrap();
-        db.reconcile_delivery_endpoint(endpoint_id, 1, 1, "healthy", true, false, None, 1)
+        db.reconcile_endpoint(endpoint_id, 1, 1, "healthy", true, false, None, 1)
             .await
             .unwrap();
     }
@@ -147,7 +147,7 @@ pub async fn configure_hub_delivery_route(
     let access_policy_json = "{}".to_string();
     let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
     let canonical_url = format!("http://127.0.0.1:8420{base_path}");
-    let endpoint = db.delivery_endpoint(endpoint_id).await.unwrap().unwrap();
+    let endpoint = db.endpoint(endpoint_id).await.unwrap().unwrap();
     let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest).unwrap();
     let reservation_digest = aos_hub::db::Database::route_reservation_digest(
         &[9_u8; 32],
@@ -161,10 +161,10 @@ pub async fn configure_hub_delivery_route(
         aos_hub::db::SurfaceTarget::BinaryCache(_) => (false, true, true),
     };
     let route = db
-        .create_delivery_route(
+        .create_route(
             route_id,
             surface,
-            &DeliveryRouteSpec {
+            &RouteSpec {
                 consumer_scope_key: owner_scope.to_string(),
                 endpoint_id: endpoint_id.to_string(),
                 endpoint_generation: 1,
@@ -183,9 +183,9 @@ pub async fn configure_hub_delivery_route(
                 external_provider_kind: None,
                 external_provider_resource_id: None,
                 external_provider_revision: None,
-                storage_gateway_id: None,
+                gateway_id: None,
                 gateway_generation: None,
-                target_storage_binding_id: None,
+                target_binding_id: None,
                 gateway_client_base_path: None,
                 target_placement_prefix: None,
                 placement_id: Some(placement_id),
@@ -204,7 +204,7 @@ pub async fn configure_hub_delivery_route(
         )
         .await
         .unwrap();
-    db.reconcile_delivery_route(
+    db.reconcile_route(
         route_id,
         route.configuration_generation.unwrap(),
         route.configuration_digest.as_deref().unwrap(),
@@ -223,12 +223,12 @@ pub async fn configure_hub_delivery_route(
     };
     assert!(canonical_audiences.contains(&audience));
     for canonical_audience in canonical_audiences {
-        db.set_canonical_route(surface, canonical_audience, route_id, None)
+        db.set_route_advertisement(surface, canonical_audience, route_id, None)
             .await
             .unwrap();
     }
     let inbound = db
-        .inbound_delivery_routes(
+        .inbound_routes(
             &aos_hub::db::InboundEndpointHost::Ipv4(vec![127, 0, 0, 1]),
             8420,
             "http",
@@ -240,7 +240,7 @@ pub async fn configure_hub_delivery_route(
         .iter()
         .find(|candidate| candidate.id == route_id)
         .unwrap();
-    assert!(configured.ready, "fixture delivery route is not ready");
+    assert!(configured.ready, "fixture route is not ready");
 }
 
 /// Creates and validates the next immutable write-credential generation.
@@ -250,12 +250,12 @@ pub async fn create_valid_write_credential(
     secret_ref: &str,
 ) -> i64 {
     let expected = db
-        .current_storage_binding_credential(binding_id, "write")
+        .current_binding_credential(binding_id, "write")
         .await
         .unwrap()
         .map_or(0, |revision| revision.generation);
     let revision = db
-        .set_storage_binding_credential_revision(
+        .set_binding_credential_revision(
             binding_id,
             "write",
             secret_ref,
@@ -265,7 +265,7 @@ pub async fn create_valid_write_credential(
         )
         .await
         .unwrap();
-    db.validate_storage_binding_credential_revision(
+    db.validate_binding_credential_revision(
         binding_id,
         "write",
         revision.generation,
@@ -302,8 +302,8 @@ pub async fn create_ready_placement(
                 .owner_scope_key
         }
     };
-    let binding = db.storage_binding(binding_id).await.unwrap().unwrap();
-    let resource = aos_hub::db::GrantResource::StorageBinding {
+    let binding = db.binding(binding_id).await.unwrap().unwrap();
+    let resource = aos_hub::db::GrantResource::Binding {
         id: binding_id,
         stable_id: &binding.stable_id,
     };
@@ -326,7 +326,7 @@ pub async fn create_ready_placement(
         .create_surface_placement(&aos_hub::db::NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
-            storage_binding_id: binding_id,
+            binding_id: binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -353,8 +353,8 @@ pub async fn configure_write_authority(
     let credential_generation =
         create_valid_write_credential(db, binding_id, "secret://test/write/v1").await;
     let revision = db
-        .create_storage_binding_write_revision(&aos_hub::db::NewStorageBindingWriteRevision {
-            storage_binding_id: binding_id,
+        .create_binding_write_revision(&aos_hub::db::NewBindingWriteRevision {
+            binding_id: binding_id,
             write_credential_generation: credential_generation,
             writes_supported: true,
             conditional_writes_supported: true,
@@ -363,21 +363,13 @@ pub async fn configure_write_authority(
         })
         .await
         .unwrap();
-    db.observe_storage_binding_write_revision(binding_id, revision.revision, "valid", None, None)
+    db.observe_binding_write_revision(binding_id, revision.revision, "valid", None, None)
         .await
         .unwrap();
-    let state = db
-        .storage_binding_write_state(binding_id)
+    let state = db.binding_write_state(binding_id).await.unwrap().unwrap();
+    db.set_current_binding_write_revision(binding_id, revision.revision, state.resource_version)
         .await
-        .unwrap()
         .unwrap();
-    db.set_current_storage_binding_write_revision(
-        binding_id,
-        revision.revision,
-        state.resource_version,
-    )
-    .await
-    .unwrap();
     db.bind_surface_placement_write_capability(placement.id, revision.revision)
         .await
         .unwrap();
@@ -890,6 +882,7 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                     byte_size: info.len() as u64,
                     sha256: info_sha256.to_string(),
                 },
+                update_payload: None,
             },
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),

@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, StatusBadge};
+use crate::components::{HashValue, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 /// Renders committed configuration history or draft change requests.
@@ -117,7 +117,7 @@ fn CommitCard(commit: aos_proto_types::GitCommit) -> impl IntoView {
             <div class="compact-list-row">
                 <div>
                     <strong>{summary}</strong>
-                    <code>{commit.oid}</code>
+                    <HashValue value=commit.oid/>
                 </div>
                 <StatusBadge state=source.to_string() positive=!commit.change_id.is_empty()/>
             </div>
@@ -517,7 +517,7 @@ fn ChangeRequestCard(request: aos_proto_types::ChangeRequest) -> impl IntoView {
                 </div>
                 <div>
                     <span>"Draft commit"</span>
-                    <code>{request.git_commit}</code>
+                    <HashValue value=request.git_commit/>
                 </div>
                 <div>
                     <span>"Created"</span>

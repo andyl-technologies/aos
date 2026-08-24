@@ -16,9 +16,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::backend::BackendBounds;
 use crate::db::{
-    Database, NetworkBoundaryCoordinationRevisionSeal, NetworkBoundaryDefaultCas,
-    NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
-    TopologyOperationRecord,
+    Database, NetworkPolicyCoordinationRevisionSeal, NetworkPolicyDefaultCas, NewTopologyOperation,
+    NewTopologyOperationTarget, NewTopologyOperationTargetRef, TopologyOperationRecord,
 };
 use crate::domain::Permission;
 use crate::web::console::ports::HttpClient;
@@ -32,7 +31,7 @@ struct BoundaryCoordinationDetail {
     boundary_id: String,
     target_revision: i64,
     target_content_digest: String,
-    old_revisions: Vec<NetworkBoundaryCoordinationRevisionSeal>,
+    old_revisions: Vec<NetworkPolicyCoordinationRevisionSeal>,
     default_cas: Option<BoundaryCoordinationDefaultSeal>,
     actor_kind: String,
     actor_id: Option<i64>,
@@ -111,7 +110,7 @@ pub struct DomainProbeEvidence {
 
 /// Exact active observation returned by a controller-owned route adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryRouteProbeEvidence {
+pub struct RouteProbeEvidence {
     /// Stable route identity.
     pub route_id: String,
     /// Exact desired route generation.
@@ -145,7 +144,7 @@ pub struct DeliveryRouteProbeEvidence {
 /// Typed fail-closed port for direct and external/CDN route observations.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait DeliveryRouteObservationProvider: crate::backend::BackendBounds {
+pub trait RouteObservationProvider: crate::backend::BackendBounds {
     /// Observes one exact immutable desired route at its live edge.
     ///
     /// # Errors
@@ -154,8 +153,8 @@ pub trait DeliveryRouteObservationProvider: crate::backend::BackendBounds {
     /// deployment, access, edge, and publication-manifest evidence.
     async fn observe(
         &self,
-        target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence>;
+        target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence>;
 }
 
 /// Purpose-specific evidence from a controller-owned storage credential probe.
@@ -185,8 +184,8 @@ pub trait StorageCredentialProbeProvider: crate::backend::BackendBounds {
     /// Returns an error when the controller cannot perform a trustworthy probe.
     async fn probe(
         &self,
-        binding: &crate::db::StorageBindingRecord,
-        credential: &crate::db::StorageBindingCredentialRevisionRecord,
+        binding: &crate::db::BindingRecord,
+        credential: &crate::db::BindingCredentialRevisionRecord,
         probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence>;
 }
@@ -198,8 +197,8 @@ struct UnavailableStorageCredentialProbeProvider;
 impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvider {
     async fn probe(
         &self,
-        _binding: &crate::db::StorageBindingRecord,
-        _credential: &crate::db::StorageBindingCredentialRevisionRecord,
+        _binding: &crate::db::BindingRecord,
+        _credential: &crate::db::BindingCredentialRevisionRecord,
         _probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence> {
         anyhow::bail!("no controller-owned storage credential probe adapter is configured")
@@ -213,7 +212,7 @@ impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvide
 /// not evidence and must never be used to implement this port.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait ExternalDeliveryRouteControlPlane: crate::backend::BackendBounds {
+pub trait ExternalRouteControlPlane: crate::backend::BackendBounds {
     /// Observes one exact external-provider resource and deployed revision.
     ///
     /// # Errors
@@ -222,8 +221,8 @@ pub trait ExternalDeliveryRouteControlPlane: crate::backend::BackendBounds {
     /// stale, or disagrees with the exact desired route generation.
     async fn observe_external(
         &self,
-        target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence>;
+        target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence>;
 }
 
 /// Authenticated transport for the fixed Cloudflare v4 control-plane API.
@@ -235,12 +234,12 @@ pub trait CloudflareControlPlaneClient: crate::backend::BackendBounds {
 }
 
 /// Cloudflare CDN adapter using authenticated hostname and Access API state.
-pub struct CloudflareDeliveryRouteControlPlane {
+pub struct CloudflareRouteControlPlane {
     api: Arc<dyn CloudflareControlPlaneClient>,
     edge: Arc<dyn HttpClient>,
 }
 
-impl CloudflareDeliveryRouteControlPlane {
+impl CloudflareRouteControlPlane {
     /// Creates an adapter over authenticated control-plane and hardened edge ports.
     #[must_use]
     pub fn new(api: Arc<dyn CloudflareControlPlaneClient>, edge: Arc<dyn HttpClient>) -> Self {
@@ -263,11 +262,11 @@ fn cloudflare_snapshot_revision(snapshot: &serde_json::Value) -> Result<String> 
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl ExternalDeliveryRouteControlPlane for CloudflareDeliveryRouteControlPlane {
+impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
     async fn observe_external(
         &self,
-        target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence> {
+        target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence> {
         anyhow::ensure!(
             target.external_provider_kind.as_deref() == Some("cloudflare"),
             "Cloudflare adapter cannot observe another provider"
@@ -344,7 +343,7 @@ impl ExternalDeliveryRouteControlPlane for CloudflareDeliveryRouteControlPlane {
             hex::encode(Sha256::digest(&body)) == field("aos_liveness_sha256")?,
             "Cloudflare edge bytes do not match authenticated control-plane metadata"
         );
-        Ok(DeliveryRouteProbeEvidence {
+        Ok(RouteProbeEvidence {
             route_id: target.id.clone(),
             configuration_generation: target.configuration_generation,
             configuration_digest: target.configuration_digest.clone(),
@@ -364,12 +363,12 @@ impl ExternalDeliveryRouteControlPlane for CloudflareDeliveryRouteControlPlane {
 }
 
 /// Dispatches direct and external routes to distinct typed trust adapters.
-pub struct ControllerOwnedDeliveryRouteObservationProvider {
-    direct: Option<Arc<dyn DeliveryRouteObservationProvider>>,
-    external: Option<Arc<dyn ExternalDeliveryRouteControlPlane>>,
+pub struct ControllerOwnedRouteObservationProvider {
+    direct: Option<Arc<dyn RouteObservationProvider>>,
+    external: Option<Arc<dyn ExternalRouteControlPlane>>,
 }
 
-impl ControllerOwnedDeliveryRouteObservationProvider {
+impl ControllerOwnedRouteObservationProvider {
     /// Creates a fail-closed adapter set.
     #[must_use]
     pub fn new() -> Self {
@@ -381,20 +380,20 @@ impl ControllerOwnedDeliveryRouteObservationProvider {
 
     /// Installs signed-publication evidence for direct delivery.
     #[must_use]
-    pub fn with_direct(mut self, direct: Arc<dyn DeliveryRouteObservationProvider>) -> Self {
+    pub fn with_direct(mut self, direct: Arc<dyn RouteObservationProvider>) -> Self {
         self.direct = Some(direct);
         self
     }
 
     /// Installs authenticated provider-control-plane evidence for CDN delivery.
     #[must_use]
-    pub fn with_external(mut self, external: Arc<dyn ExternalDeliveryRouteControlPlane>) -> Self {
+    pub fn with_external(mut self, external: Arc<dyn ExternalRouteControlPlane>) -> Self {
         self.external = Some(external);
         self
     }
 }
 
-impl Default for ControllerOwnedDeliveryRouteObservationProvider {
+impl Default for ControllerOwnedRouteObservationProvider {
     fn default() -> Self {
         Self::new()
     }
@@ -402,11 +401,11 @@ impl Default for ControllerOwnedDeliveryRouteObservationProvider {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl DeliveryRouteObservationProvider for ControllerOwnedDeliveryRouteObservationProvider {
+impl RouteObservationProvider for ControllerOwnedRouteObservationProvider {
     async fn observe(
         &self,
-        target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence> {
+        target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence> {
         if target.mode == "direct" {
             return self
                 .direct
@@ -428,15 +427,15 @@ impl DeliveryRouteObservationProvider for ControllerOwnedDeliveryRouteObservatio
 }
 
 /// Fail-closed route adapter used until a runtime installs controller-owned evidence.
-pub struct UnavailableDeliveryRouteObservationProvider;
+pub struct UnavailableRouteObservationProvider;
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl DeliveryRouteObservationProvider for UnavailableDeliveryRouteObservationProvider {
+impl RouteObservationProvider for UnavailableRouteObservationProvider {
     async fn observe(
         &self,
-        _target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence> {
+        _target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence> {
         anyhow::bail!("no controller-owned delivery-route observation adapter is configured")
     }
 }
@@ -476,12 +475,12 @@ struct PublicationManifestRoute {
 /// The manifest is controller configuration, not content read from the probed
 /// origin. A route becomes observable only when its exact immutable identity is
 /// signed and bytes fetched from that route match the signed liveness digest.
-pub struct SignedManifestDeliveryRouteObservationProvider {
+pub struct SignedManifestRouteObservationProvider {
     http: Arc<dyn HttpClient>,
     manifest: PublicationManifestSet,
 }
 
-impl SignedManifestDeliveryRouteObservationProvider {
+impl SignedManifestRouteObservationProvider {
     /// Verifies and loads a signed direct-publication manifest.
     ///
     /// # Errors
@@ -562,11 +561,11 @@ impl SignedManifestDeliveryRouteObservationProvider {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl DeliveryRouteObservationProvider for SignedManifestDeliveryRouteObservationProvider {
+impl RouteObservationProvider for SignedManifestRouteObservationProvider {
     async fn observe(
         &self,
-        target: &crate::db::DeliveryRouteReconciliationTarget,
-    ) -> Result<DeliveryRouteProbeEvidence> {
+        target: &crate::db::RouteReconciliationTarget,
+    ) -> Result<RouteProbeEvidence> {
         anyhow::ensure!(
             target.mode == "direct",
             "signed publication adapter only observes direct routes"
@@ -600,7 +599,7 @@ impl DeliveryRouteObservationProvider for SignedManifestDeliveryRouteObservation
             hex::encode(Sha256::digest(&body)) == route.liveness_sha256,
             "live edge bytes do not match the signed publication manifest"
         );
-        Ok(DeliveryRouteProbeEvidence {
+        Ok(RouteProbeEvidence {
             route_id: route.route_id.clone(),
             configuration_generation: route.configuration_generation,
             configuration_digest: route.configuration_digest.clone(),
@@ -646,9 +645,9 @@ fn validated_route_liveness_url(canonical_url: &str, liveness_url: &str) -> Resu
     Ok(liveness)
 }
 
-fn validate_delivery_route_evidence(
-    target: &crate::db::DeliveryRouteReconciliationTarget,
-    evidence: &DeliveryRouteProbeEvidence,
+fn validate_route_evidence(
+    target: &crate::db::RouteReconciliationTarget,
+    evidence: &RouteProbeEvidence,
 ) -> Result<()> {
     anyhow::ensure!(
         evidence.route_id == target.id
@@ -1033,7 +1032,7 @@ pub enum TopologyProbe {
         resource_version: i64,
     },
     /// Measures enforcement of one immutable network-boundary revision.
-    NetworkBoundary {
+    NetworkPolicy {
         /// Stable boundary identity.
         stable_id: String,
         /// Exact immutable revision.
@@ -1042,7 +1041,7 @@ pub enum TopologyProbe {
         configuration_digest: String,
     },
     /// Measures one immutable delivery-endpoint generation.
-    DeliveryEndpoint {
+    Endpoint {
         /// Stable endpoint identity.
         stable_id: String,
         /// Exact immutable generation.
@@ -1051,7 +1050,7 @@ pub enum TopologyProbe {
         configuration_digest: String,
     },
     /// Measures one immutable delivery-route configuration.
-    DeliveryRoute {
+    Route {
         /// Stable route identity.
         stable_id: String,
         /// Exact immutable configuration generation.
@@ -1154,43 +1153,43 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
                     "resourceVersion": resource_version,
                 }),
             ),
-            TopologyProbe::NetworkBoundary {
+            TopologyProbe::NetworkPolicy {
                 stable_id,
                 revision,
                 configuration_digest,
             } => (
-                "network_boundary_probe",
-                "network_boundary",
+                "network_policy_probe",
+                "network_policy",
                 stable_id.clone(),
-                NewTopologyOperationTargetRef::NetworkBoundary(stable_id.clone()),
+                NewTopologyOperationTargetRef::NetworkPolicy(stable_id.clone()),
                 revision,
                 configuration_digest.clone(),
-                Permission::NetworkBoundaryManage,
+                Permission::NetworkPolicyManage,
                 serde_json::json!({ "networkBoundaryId": stable_id, "revision": revision }),
             ),
-            TopologyProbe::DeliveryEndpoint {
+            TopologyProbe::Endpoint {
                 stable_id,
                 generation,
                 configuration_digest,
             } => (
-                "delivery_endpoint_probe",
-                "delivery_endpoint",
+                "endpoint_probe",
+                "endpoint",
                 stable_id.clone(),
-                NewTopologyOperationTargetRef::DeliveryEndpoint(stable_id.clone()),
+                NewTopologyOperationTargetRef::Endpoint(stable_id.clone()),
                 generation,
                 configuration_digest.clone(),
-                Permission::DeliveryEndpointManage,
+                Permission::EndpointManage,
                 serde_json::json!({ "deliveryEndpointId": stable_id, "generation": generation }),
             ),
-            TopologyProbe::DeliveryRoute {
+            TopologyProbe::Route {
                 stable_id,
                 generation,
                 configuration_digest,
             } => (
-                "delivery_route_probe",
-                "delivery_route",
+                "route_probe",
+                "route",
                 stable_id.clone(),
-                NewTopologyOperationTargetRef::DeliveryRoute(stable_id.clone()),
+                NewTopologyOperationTargetRef::Route(stable_id.clone()),
                 generation,
                 configuration_digest.clone(),
                 Permission::RouteManage,
@@ -1209,14 +1208,14 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
                 ));
                 (
                     "storage_credential_probe",
-                    "storage_binding",
+                    "binding",
                     stable_id.clone(),
-                    NewTopologyOperationTargetRef::StorageBinding(binding_id),
+                    NewTopologyOperationTargetRef::Binding(binding_id),
                     binding_resource_version,
                     String::new(),
-                    Permission::StorageBindingManage,
+                    Permission::BindingManage,
                     serde_json::json!({
-                        "storageBindingId": stable_id,
+                        "bindingId": stable_id,
                         "purpose": purpose,
                         "credentialGeneration": generation,
                         "credentialHeadResourceVersion": credential_head_resource_version,
@@ -1304,7 +1303,7 @@ pub struct DomainProbeController {
     tls_verifier: DomainTlsProbeVerifier,
     dns_json_endpoint: String,
     probe_location: String,
-    route_observer: Arc<dyn DeliveryRouteObservationProvider>,
+    route_observer: Arc<dyn RouteObservationProvider>,
     storage_credential_probe: Arc<dyn StorageCredentialProbeProvider>,
 }
 
@@ -1339,7 +1338,7 @@ impl DomainProbeController {
         );
         let probe_location = probe_location.into();
         anyhow::ensure!(!probe_location.is_empty(), "domain probe location is empty");
-        let route_observer = Arc::new(UnavailableDeliveryRouteObservationProvider);
+        let route_observer = Arc::new(UnavailableRouteObservationProvider);
         let storage_credential_probe = Arc::new(UnavailableStorageCredentialProbeProvider);
         Ok(Self {
             db,
@@ -1359,7 +1358,7 @@ impl DomainProbeController {
     #[must_use]
     pub fn with_route_observer(
         mut self,
-        route_observer: Arc<dyn DeliveryRouteObservationProvider>,
+        route_observer: Arc<dyn RouteObservationProvider>,
     ) -> Self {
         self.route_observer = route_observer;
         self
@@ -1434,12 +1433,12 @@ impl DomainProbeController {
         let remaining = limit.saturating_sub(completed);
         let due_routes = self
             .db
-            .due_delivery_route_probe_operations(clock::now_unix_secs() - LEASE_SECONDS, remaining)
+            .due_route_probe_operations(clock::now_unix_secs() - LEASE_SECONDS, remaining)
             .await?;
         for operation in due_routes {
             let Some(claimed) = self
                 .db
-                .claim_delivery_route_probe_operation(
+                .claim_route_probe_operation(
                     &operation.operation_id,
                     operation.resource_version,
                     LEASE_SECONDS,
@@ -1503,7 +1502,7 @@ impl DomainProbeController {
         let remaining = limit.saturating_sub(completed);
         let due_coordinations = self
             .db
-            .due_network_boundary_coordination_operations(
+            .due_network_policy_coordination_operations(
                 clock::now_unix_secs() - LEASE_SECONDS,
                 remaining,
             )
@@ -1511,7 +1510,7 @@ impl DomainProbeController {
         for operation in due_coordinations {
             let Some(claimed) = self
                 .db
-                .claim_network_boundary_coordination_operation(
+                .claim_network_policy_coordination_operation(
                     &operation.operation_id,
                     operation.resource_version,
                     LEASE_SECONDS,
@@ -1603,20 +1602,20 @@ impl DomainProbeController {
             .topology_operation_targets(&operation.operation_id)
             .await?
             .into_iter()
-            .find(|target| target.role == "primary" && target.target_kind == "storage_binding")
+            .find(|target| target.role == "primary" && target.target_kind == "binding")
             .context("storage credential operation has no binding target")?;
         let binding = self
             .db
-            .storage_binding_by_stable_id(&target.stable_id)
+            .binding_by_stable_id(&target.stable_id)
             .await?
             .context("storage credential binding no longer exists")?;
         anyhow::ensure!(
             binding.resource_version == target.generation_key,
-            "storage binding changed before credential probe"
+            "binding changed before credential probe"
         );
         let credential = self
             .db
-            .storage_binding_credential_revision(binding.id, &purpose, generation)
+            .binding_credential_revision(binding.id, &purpose, generation)
             .await?
             .context("storage credential generation no longer exists")?;
         let now = clock::now_unix_secs();
@@ -1630,7 +1629,7 @@ impl DomainProbeController {
                 "storage credential adapter returned inconsistent evidence"
             );
             let checkpoint_detail = serde_json::json!({
-                "storageBindingId": target.stable_id,
+                "bindingId": target.stable_id,
                 "purpose": purpose,
                 "credentialGeneration": generation,
                 "credentialHeadResourceVersion": expected_head_version,
@@ -1657,7 +1656,7 @@ impl DomainProbeController {
                 .await?;
             let state = if evidence.valid { "valid" } else { "invalid" };
             self.db
-                .validate_storage_binding_credential_revision(
+                .validate_binding_credential_revision(
                     binding.id,
                     &purpose,
                     generation,
@@ -1719,7 +1718,7 @@ impl DomainProbeController {
             .await?;
         }
         let completed_detail = serde_json::json!({
-            "storageBindingId": target.stable_id,
+            "bindingId": target.stable_id,
             "purpose": purpose,
             "credentialGeneration": generation,
             "credentialHeadResourceVersion": expected_head_version,
@@ -1747,8 +1746,8 @@ impl DomainProbeController {
 
     async fn record_storage_write_evidence(
         &self,
-        binding: &crate::db::StorageBindingRecord,
-        credential: &crate::db::StorageBindingCredentialRevisionRecord,
+        binding: &crate::db::BindingRecord,
+        credential: &crate::db::BindingCredentialRevisionRecord,
         conditional_writes_supported: bool,
     ) -> Result<()> {
         let capability_fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
@@ -1763,8 +1762,8 @@ impl DomainProbeController {
         ))?));
         let revision = self
             .db
-            .create_storage_binding_write_revision(&crate::db::NewStorageBindingWriteRevision {
-                storage_binding_id: binding.id,
+            .create_binding_write_revision(&crate::db::NewBindingWriteRevision {
+                binding_id: binding.id,
                 write_credential_generation: credential.generation,
                 writes_supported: true,
                 conditional_writes_supported,
@@ -1774,14 +1773,14 @@ impl DomainProbeController {
             .await?;
         let observation = self
             .db
-            .storage_binding_write_observation(binding.id, revision.revision)
+            .binding_write_observation(binding.id, revision.revision)
             .await?;
         if !observation
             .as_ref()
             .is_some_and(|observation| observation.state == "valid")
         {
             self.db
-                .observe_storage_binding_write_revision(
+                .observe_binding_write_revision(
                     binding.id,
                     revision.revision,
                     "valid",
@@ -1792,12 +1791,12 @@ impl DomainProbeController {
         }
         let write_state = self
             .db
-            .storage_binding_write_state(binding.id)
+            .binding_write_state(binding.id)
             .await?
-            .context("storage binding write state is missing")?;
+            .context("binding write state is missing")?;
         if write_state.current_write_revision != Some(revision.revision) {
             self.db
-                .set_current_storage_binding_write_revision(
+                .set_current_binding_write_revision(
                     binding.id,
                     revision.revision,
                     write_state.resource_version,
@@ -1846,17 +1845,15 @@ impl DomainProbeController {
                             .await?;
                     }
                     ("endpoint", "release") => {
-                        if let Some(endpoint) = self
-                            .db
-                            .delivery_endpoint(&job.source_target_stable_id)
-                            .await?
+                        if let Some(endpoint) =
+                            self.db.endpoint(&job.source_target_stable_id).await?
                         {
                             anyhow::ensure!(
                                 endpoint.resource_version == job.source_target_resource_version,
                                 "source endpoint changed before release"
                             );
                             self.db
-                                .delete_delivery_endpoint(
+                                .delete_endpoint(
                                     &job.source_target_stable_id,
                                     job.source_target_resource_version,
                                     "system",
@@ -1869,7 +1866,7 @@ impl DomainProbeController {
                     ("route", "replace_route" | "release") => {
                         let route = self
                             .db
-                            .delivery_route(&job.source_target_stable_id)
+                            .route(&job.source_target_stable_id)
                             .await?
                             .context("source route disappeared before disable")?;
                         if route.enabled {
@@ -1883,12 +1880,12 @@ impl DomainProbeController {
                             );
                             let mut snapshot = self
                                 .db
-                                .delivery_route_snapshot(&job.source_target_stable_id)
+                                .route_snapshot(&job.source_target_stable_id)
                                 .await?
                                 .context("source route snapshot disappeared before disable")?;
                             snapshot.spec.enabled = false;
                             self.db
-                                .update_delivery_route(
+                                .update_route(
                                     &job.source_target_stable_id,
                                     &snapshot.spec,
                                     &snapshot.canonical_url,
@@ -1948,13 +1945,13 @@ impl DomainProbeController {
             final_jobs.iter().all(|job| job.state == "succeeded"),
             "boundary coordination left unacknowledged child jobs"
         );
-        let default_cas = detail.default_cas.map(|seal| NetworkBoundaryDefaultCas {
+        let default_cas = detail.default_cas.map(|seal| NetworkPolicyDefaultCas {
             boundary_resource_version: seal.boundary_resource_version,
             previous_revision: seal.previous_revision,
             previous_resource_version: seal.previous_resource_version,
         });
         self.db
-            .finalize_network_boundary_coordination(
+            .finalize_network_policy_coordination(
                 &operation.operation_id,
                 operation.resource_version,
                 &detail.boundary_id,
@@ -1988,11 +1985,11 @@ impl DomainProbeController {
                     if let Some(target) = resolution.replacement.as_ref() {
                         let replacement = self
                             .db
-                            .delivery_route(&target.resource_stable_id)
+                            .route(&target.resource_stable_id)
                             .await?
                             .context("replacement route disappeared")?;
                         anyhow::ensure!(
-                            target.resource_kind == "delivery_route"
+                            target.resource_kind == "route"
                                 && replacement.enabled
                                 && replacement.resource_version
                                     == resolution
@@ -2009,7 +2006,7 @@ impl DomainProbeController {
                     }
                     let route = self
                         .db
-                        .delivery_route(&resolution.source.target_stable_id)
+                        .route(&resolution.source.target_stable_id)
                         .await?
                         .context("source route disappeared")?;
                     if route.enabled {
@@ -2023,12 +2020,12 @@ impl DomainProbeController {
                         );
                         let mut snapshot = self
                             .db
-                            .delivery_route_snapshot(&resolution.source.target_stable_id)
+                            .route_snapshot(&resolution.source.target_stable_id)
                             .await?
                             .context("source route snapshot disappeared")?;
                         snapshot.spec.enabled = false;
                         self.db
-                            .update_delivery_route(
+                            .update_route(
                                 &resolution.source.target_stable_id,
                                 &snapshot.spec,
                                 &snapshot.canonical_url,
@@ -2050,20 +2047,20 @@ impl DomainProbeController {
                         .context("endpoint move has no replacement")?;
                     let endpoint = self
                         .db
-                        .delivery_endpoint(&resolution.source.target_stable_id)
+                        .endpoint(&resolution.source.target_stable_id)
                         .await?
                         .context("source endpoint disappeared")?;
                     if endpoint.desired_generation != Some(target.resource_generation) {
                         let revision = self
                             .db
-                            .delivery_endpoint_revision(
+                            .endpoint_revision(
                                 &target.resource_stable_id,
                                 target.resource_generation,
                             )
                             .await?
                             .context("replacement endpoint generation disappeared")?;
                         anyhow::ensure!(
-                            target.resource_kind == "delivery_endpoint"
+                            target.resource_kind == "endpoint"
                                 && target.resource_stable_id == resolution.source.target_stable_id
                                 && revision.content_digest == target.configuration_digest
                                 && resolution.replacement_resource_version
@@ -2073,7 +2070,7 @@ impl DomainProbeController {
                             "replacement endpoint changed or changes stable identity"
                         );
                         self.db
-                            .activate_staged_delivery_endpoint_generation(
+                            .activate_staged_endpoint_generation(
                                 &target.resource_stable_id,
                                 target.resource_generation,
                                 resolution.source.target_resource_version,
@@ -2094,7 +2091,7 @@ impl DomainProbeController {
                 ("endpoint" | "listener", "release") => {
                     if let Some(endpoint) = self
                         .db
-                        .delivery_endpoint(&resolution.source.target_stable_id)
+                        .endpoint(&resolution.source.target_stable_id)
                         .await?
                     {
                         anyhow::ensure!(
@@ -2104,7 +2101,7 @@ impl DomainProbeController {
                             "source endpoint changed before release"
                         );
                         self.db
-                            .delete_delivery_endpoint(
+                            .delete_endpoint(
                                 &resolution.source.target_stable_id,
                                 resolution.source.target_resource_version,
                                 "system",
@@ -2125,7 +2122,7 @@ impl DomainProbeController {
                     if let Some(placement) = self.db.surface_placement(placement_id).await? {
                         let digest =
                             hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
-                                "storage_binding_id": placement.storage_binding_id,
+                                "binding_id": placement.binding_id,
                                 "prefix": placement.prefix,
                                 "kind": placement.kind,
                                 "desired_state": placement.desired_state,
@@ -2161,30 +2158,30 @@ impl DomainProbeController {
                 ),
             }
         }
-        let binding_id = if detail.resource_kind == "storage_binding" {
+        let binding_id = if detail.resource_kind == "binding" {
             Some(
                 self.db
-                    .storage_binding_by_stable_id(&detail.resource_stable_id)
+                    .binding_by_stable_id(&detail.resource_stable_id)
                     .await?
-                    .context("grant storage binding disappeared")?
+                    .context("grant binding disappeared")?
                     .id,
             )
         } else {
             None
         };
         let resource = match detail.resource_kind.as_str() {
-            "storage_binding" => crate::db::GrantResource::StorageBinding {
-                id: binding_id.context("grant storage binding id is absent")?,
+            "binding" => crate::db::GrantResource::Binding {
+                id: binding_id.context("grant binding id is absent")?,
                 stable_id: &detail.resource_stable_id,
             },
-            "network_boundary" => crate::db::GrantResource::NetworkBoundary {
+            "network_policy" => crate::db::GrantResource::NetworkPolicy {
                 id: &detail.resource_stable_id,
             },
-            "delivery_endpoint" => crate::db::GrantResource::DeliveryEndpoint {
+            "endpoint" => crate::db::GrantResource::Endpoint {
                 id: &detail.resource_stable_id,
                 generation: detail.resource_generation,
             },
-            "storage_gateway" => crate::db::GrantResource::StorageGateway {
+            "gateway" => crate::db::GrantResource::Gateway {
                 id: &detail.resource_stable_id,
                 generation: detail.resource_generation,
             },
@@ -2211,10 +2208,10 @@ impl DomainProbeController {
                     && grant.resource_version == detail.expected_grant_resource_version + 1 => {}
             Some(_) => anyhow::bail!("grant changed before coordinated revocation"),
             None => anyhow::ensure!(
-                detail.resource_kind == "delivery_endpoint"
+                detail.resource_kind == "endpoint"
                     && self
                         .db
-                        .delivery_endpoint(&detail.resource_stable_id)
+                        .endpoint(&detail.resource_stable_id)
                         .await?
                         .is_none(),
                 "grant disappeared without its terminal endpoint deletion"
@@ -2245,11 +2242,11 @@ impl DomainProbeController {
             .topology_operation_targets(&operation.operation_id)
             .await?
             .into_iter()
-            .find(|target| target.role == "primary" && target.target_kind == "delivery_route")
+            .find(|target| target.role == "primary" && target.target_kind == "route")
             .context("delivery-route probe has no primary route target")?;
         let target = self
             .db
-            .delivery_route_reconciliation_target(&target_ref.stable_id)
+            .route_reconciliation_target(&target_ref.stable_id)
             .await?
             .context("delivery-route probe target no longer exists")?;
         anyhow::ensure!(
@@ -2262,7 +2259,7 @@ impl DomainProbeController {
             && target.access_policy_kind != "external_provider";
         let observation = if internal {
             self.db
-                .hub_delivery_route_state_ready(
+                .hub_route_state_ready(
                     &target.id,
                     target.configuration_generation,
                     &target.configuration_digest,
@@ -2275,7 +2272,7 @@ impl DomainProbeController {
                 .observe(&target)
                 .await
                 .and_then(|evidence| {
-                    validate_delivery_route_evidence(&target, &evidence)?;
+                    validate_route_evidence(&target, &evidence)?;
                     Ok(evidence.publication_manifest_id)
                 })
         };
@@ -2289,7 +2286,7 @@ impl DomainProbeController {
             ),
         };
         self.db
-            .reconcile_delivery_route(
+            .reconcile_route(
                 &target.id,
                 target.configuration_generation,
                 &target.configuration_digest,
@@ -2695,14 +2692,14 @@ mod tests {
     fn grant_revocation_detail_accepts_generated_target_field_names() {
         for replacement in [
             serde_json::json!({
-                "resource_kind": "delivery_endpoint",
+                "resource_kind": "endpoint",
                 "resource_stable_id": "endpoint:test",
                 "resource_generation": 2,
                 "configuration_digest": "a".repeat(64),
                 "expected_resource_version": "3"
             }),
             serde_json::json!({
-                "resourceKind": "delivery_endpoint",
+                "resourceKind": "endpoint",
                 "resourceStableId": "endpoint:test",
                 "resourceGeneration": 2,
                 "configurationDigest": "a".repeat(64),
@@ -2746,8 +2743,8 @@ mod tests {
         }
     }
 
-    fn cloudflare_target(revision: String) -> crate::db::DeliveryRouteReconciliationTarget {
-        crate::db::DeliveryRouteReconciliationTarget {
+    fn cloudflare_target(revision: String) -> crate::db::RouteReconciliationTarget {
+        crate::db::RouteReconciliationTarget {
             id: "route:cdn".to_string(),
             configuration_generation: 8,
             configuration_digest: "a".repeat(64),
@@ -2771,8 +2768,8 @@ mod tests {
         edge_body: Vec<u8>,
         access: serde_json::Value,
     ) -> (
-        CloudflareDeliveryRouteControlPlane,
-        crate::db::DeliveryRouteReconciliationTarget,
+        CloudflareRouteControlPlane,
+        crate::db::RouteReconciliationTarget,
     ) {
         let expected_body = vec![9_u8; 4];
         let mut metadata = serde_json::json!({
@@ -2817,7 +2814,7 @@ mod tests {
             ),
         ]);
         (
-            CloudflareDeliveryRouteControlPlane::new(
+            CloudflareRouteControlPlane::new(
                 Arc::new(MockCloudflareApi { responses }),
                 Arc::new(MockRouteHttp {
                     url: "https://cdn.example/cache/live-object".to_string(),
@@ -2828,8 +2825,8 @@ mod tests {
         )
     }
 
-    fn route_target() -> crate::db::DeliveryRouteReconciliationTarget {
-        crate::db::DeliveryRouteReconciliationTarget {
+    fn route_target() -> crate::db::RouteReconciliationTarget {
+        crate::db::RouteReconciliationTarget {
             id: "route:test".to_string(),
             configuration_generation: 4,
             configuration_digest: "a".repeat(64),
@@ -2846,8 +2843,8 @@ mod tests {
         }
     }
 
-    fn route_evidence() -> DeliveryRouteProbeEvidence {
-        DeliveryRouteProbeEvidence {
+    fn route_evidence() -> RouteProbeEvidence {
+        RouteProbeEvidence {
             route_id: "route:test".to_string(),
             configuration_generation: 4,
             configuration_digest: "a".repeat(64),
@@ -2869,20 +2866,20 @@ mod tests {
     fn route_evidence_rejects_stale_generation_manifest_access_and_edge() {
         let target = route_target();
         let evidence = route_evidence();
-        assert!(validate_delivery_route_evidence(&target, &evidence).is_ok());
+        assert!(validate_route_evidence(&target, &evidence).is_ok());
 
         let mut stale = evidence.clone();
         stale.configuration_generation = 3;
-        assert!(validate_delivery_route_evidence(&target, &stale).is_err());
+        assert!(validate_route_evidence(&target, &stale).is_err());
         let mut stale = evidence.clone();
         stale.publication_manifest_id = Some("manifest:3".to_string());
-        assert!(validate_delivery_route_evidence(&target, &stale).is_err());
+        assert!(validate_route_evidence(&target, &stale).is_err());
         let mut stale = evidence.clone();
         stale.access_policy_digest = "c".repeat(64);
-        assert!(validate_delivery_route_evidence(&target, &stale).is_err());
+        assert!(validate_route_evidence(&target, &stale).is_err());
         let mut stale = evidence;
         stale.edge_observed = false;
-        assert!(validate_delivery_route_evidence(&target, &stale).is_err());
+        assert!(validate_route_evidence(&target, &stale).is_err());
     }
 
     #[test]

@@ -7,6 +7,34 @@
 
 use leptos::prelude::*;
 
+use aos_hub_console_contract::HashPresentation;
+
+/// Renders a compact hash with the shared full-value tooltip and copy action.
+#[component]
+pub fn HashValue(
+    /// Complete hash retained for the tooltip and clipboard action.
+    value: String,
+) -> impl IntoView {
+    let presentation = HashPresentation::new(&value);
+    let compact = presentation.compact;
+    view! {
+        <span class="hash-control">
+            <span class="hash-value" data-hash-value=value.clone() tabindex="0">
+                <code aria-label=value.clone()>{compact}</code>
+                <span class="hash-tooltip" role="tooltip">{value.clone()}</span>
+            </span>
+            <button
+                type="button"
+                class="hash-copy"
+                data-copy-value=value
+                aria-label="Copy full hash"
+            >
+                "copy"
+            </button>
+        </span>
+    }
+}
+
 /// Renders secondary guidance through the shared attached-help popover.
 ///
 /// The concise heading remains visible while the explanation stays available

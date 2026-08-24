@@ -40,7 +40,7 @@ impl RouteMethods {
     }
 }
 
-/// One canonical route template and its declared methods.
+/// One route advertisement template and its declared methods.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct RouteSpec {
     /// Axum-style path template.
@@ -126,9 +126,9 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/instance", RouteMethods::Get),
     route("/-/instance/{page}", RouteMethods::Get),
     route("/-/instance/domains/new", RouteMethods::Get),
-    route("/-/instance/network-boundaries/new", RouteMethods::Get),
-    route("/-/instance/delivery-endpoints/new", RouteMethods::Get),
-    route("/-/instance/storage-gateways/new", RouteMethods::Get),
+    route("/-/instance/network-policies/new", RouteMethods::Get),
+    route("/-/instance/endpoints/new", RouteMethods::Get),
+    route("/-/instance/gateways/new", RouteMethods::Get),
     route("/-/caches", RouteMethods::Get),
     route("/-/orgs", RouteMethods::Get),
     route("/-/orgs/new", RouteMethods::Get),
@@ -137,11 +137,11 @@ pub const CONSOLE_ROUTES: &[RouteSpec] = &[
     route("/-/org/{org}/projects/new", RouteMethods::Get),
     route("/-/org/{org}/registries/new", RouteMethods::Get),
     route("/-/org/{org}/caches/new", RouteMethods::Get),
-    route("/-/org/{org}/storage-bindings/new", RouteMethods::Get),
+    route("/-/org/{org}/bindings/new", RouteMethods::Get),
     route("/-/org/{org}/domains/new", RouteMethods::Get),
-    route("/-/org/{org}/network-boundaries/new", RouteMethods::Get),
-    route("/-/org/{org}/delivery-endpoints/new", RouteMethods::Get),
-    route("/-/org/{org}/storage-gateways/new", RouteMethods::Get),
+    route("/-/org/{org}/network-policies/new", RouteMethods::Get),
+    route("/-/org/{org}/endpoints/new", RouteMethods::Get),
+    route("/-/org/{org}/gateways/new", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}", RouteMethods::Get),
     route("/-/org/{org}/caches/{cache}/{page}", RouteMethods::Get),
     route("/-/org/{org}/invitations/accept", RouteMethods::GetAndPost),
@@ -185,9 +185,9 @@ fn is_management_shell_template(path: &str) -> bool {
         "/-/instance"
             | "/-/instance/{page}"
             | "/-/instance/domains/new"
-            | "/-/instance/network-boundaries/new"
-            | "/-/instance/delivery-endpoints/new"
-            | "/-/instance/storage-gateways/new"
+            | "/-/instance/network-policies/new"
+            | "/-/instance/endpoints/new"
+            | "/-/instance/gateways/new"
             | "/-/caches"
             | "/-/orgs"
             | "/-/orgs/new"
@@ -196,11 +196,11 @@ fn is_management_shell_template(path: &str) -> bool {
             | "/-/org/{org}/projects/new"
             | "/-/org/{org}/registries/new"
             | "/-/org/{org}/caches/new"
-            | "/-/org/{org}/storage-bindings/new"
+            | "/-/org/{org}/bindings/new"
             | "/-/org/{org}/domains/new"
-            | "/-/org/{org}/network-boundaries/new"
-            | "/-/org/{org}/delivery-endpoints/new"
-            | "/-/org/{org}/storage-gateways/new"
+            | "/-/org/{org}/network-policies/new"
+            | "/-/org/{org}/endpoints/new"
+            | "/-/org/{org}/gateways/new"
             | "/-/org/{org}/caches/{cache}"
             | "/-/org/{org}/caches/{cache}/{page}"
     )

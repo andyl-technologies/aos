@@ -204,7 +204,7 @@ references and can be rotated or validated without replacing the binding.
 
 Delivery resources also use reviewed plans. Creation commands generate an
 opaque stable identity and print it in the plan; pass `--stable-id` when an
-external controller needs to choose that identity. A network boundary seals a
+external controller needs to choose that identity. A network policy seals a
 complete initial revision at creation time, including its transport policy and
 the controller location that will verify it:
 
@@ -266,7 +266,7 @@ Routes are created disabled. Enabling a route queues its current configuration
 probe, and the route remains ineligible for traffic until that probe succeeds.
 Use `aos hub route explain` with
 `--access-class web`, `git`, or `nix_cache` to inspect the selected access
-policy, publication, and placement before enabling a route. Canonical route
+policy, publication, and placement before enabling a route. Route advertisement
 selection is explicit and independent for the `web`, `git`, and `nix_cache`
 audiences, and includes the typed surface so one route identity cannot be
 selected for the wrong registry or cache:

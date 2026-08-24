@@ -4,14 +4,14 @@
 //! over the `aos.hub.v1` read shapes ([`crate::db`] record types) and the
 //! callers' explicitly-passed identity, so the module is **transport- and
 //! task-local-free**: the signed-in email, the per-session CSRF token, and the
-//! masthead brand are all passed in (the brand via a process-wide [`set_brand`]
-//! seam, never a tokio task-local), and the module compiles to
+//! masthead brand are all passed in through the process-wide editable site
+//! chrome, never a tokio task-local, and the module compiles to
 //! `wasm32-unknown-unknown` (no `axum` server, no `tokio`, no `std::fs`).
 //!
 //! # Module map
 //!
 //! - The chrome — [`page_with_session`], [`StateLine`], [`SessionIndicator`],
-//!   [`Pager`], [`csrf_field`], [`brand`], [`ago`], and [`urlencode`] — is the
+//!   [`Pager`], [`csrf_field`], [`ago`], and [`urlencode`] — is the
 //!   shared layout for retained identity pages.
 //! - Login, account, invitation, and device-approval builders each return a
 //!   complete document.
@@ -27,20 +27,13 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::db::{ChannelSummary, WebauthnCredentialRecord};
 use crate::domain::Permission;
-use crate::web::render::{escape, table as render_table};
+use crate::web::render::{authenticated_navigation, escape, table as render_table};
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,
 /// keys, audit). Mirrors the browse tier's list size so both paginate alike.
 pub const LIST_PER_PAGE: usize = 50;
 
 // -- brand + app version chrome --------------------------------------------
-
-/// The operator-configurable masthead brand (company/instance name).
-///
-/// Set once at server startup via [`set_brand`]; defaults to empty. When
-/// empty the masthead shows only the page crumbs (e.g. "log in"); when set,
-/// the name leads the masthead and titles every page.
-static BRAND: OnceLock<String> = OnceLock::new();
 
 /// The footer application label, e.g. `"aos-hub 0.1.0"`.
 ///
@@ -49,28 +42,12 @@ static BRAND: OnceLock<String> = OnceLock::new();
 /// when the hub does not override it (the hub and core share a version).
 static APP_VERSION: OnceLock<String> = OnceLock::new();
 
-/// Set the masthead brand once, at startup.
+/// Editable, database-backed site chrome.
 ///
-/// A no-op if called more than once (the first value wins), so it is safe
-/// to call unconditionally from `serve`.
-pub fn set_brand(name: impl Into<String>) {
-    let _ = BRAND.set(name.into());
-}
-
-/// The configured brand, or `""` when unset.
-#[must_use]
-pub fn brand() -> &'static str {
-    BRAND.get().map(String::as_str).unwrap_or("")
-}
-
-/// The editable, database-backed site chrome overlaid on the deploy brand: the
-/// site title (overrides [`brand`] in the masthead), the global announcement
-/// banner, and the footer legal/contact links.
-///
-/// Unlike [`BRAND`] (a write-once deploy default), this is a mutable cell so an
-/// instance admin's edit takes effect immediately for the serving process. Each
-/// shell seeds it from `instance_config` at startup (native) or isolate init
-/// (Worker); a save updates both the system-of-record database and this cell.
+/// An instance admin's edit takes effect immediately for the serving process.
+/// Each shell seeds it from `instance_config` at startup (native) or isolate
+/// initialization (Worker); a save updates both the system-of-record database
+/// and this cell.
 #[derive(Default)]
 struct SiteChrome {
     title: Option<String>,
@@ -136,14 +113,10 @@ fn site_tagline() -> String {
     chrome.tagline.clone().unwrap_or_default()
 }
 
-/// The effective masthead brand: the editable site title if set, else the
-/// deploy [`brand`].
+/// Returns the effective masthead brand from editable instance settings.
 pub(crate) fn effective_brand() -> String {
     let chrome = SITE_CHROME.read().unwrap_or_else(|e| e.into_inner());
-    match &chrome.title {
-        Some(t) if !t.is_empty() => t.clone(),
-        _ => brand().to_string(),
-    }
+    chrome.title.clone().unwrap_or_default()
 }
 
 /// Returns the editable chrome values consumed by the browser application shell.
@@ -338,11 +311,10 @@ impl SessionIndicator {
         match &self.email {
             Some(email) => format!(
                 "<span class=\"session\">\
-                 <a href=\"/\">registries</a> · {caches}\
-                 <a href=\"/-/orgs\">organizations</a> · \
-                 <a href=\"/-/account\">account</a> · \
+                 {} · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
+                authenticated_navigation(),
                 escape(email),
             ),
             None => format!(
@@ -443,8 +415,7 @@ pub fn page_with_session(
         }
     }
 
-    // The brand is operator-configurable: the editable site title (when set)
-    // overrides the deploy brand, leading the masthead and titling every page.
+    // The brand is operator-configurable through instance settings.
     let brand = effective_brand();
     let mut brand_span = brand_span(&brand);
     // A configured tagline rides beside the brand as a dim subtitle.
@@ -1404,6 +1375,7 @@ mod tests {
         assert!(html.contains("class=\"token-list\""));
         assert!(html.contains("class=\"token-head\""));
         assert!(html.contains("class=\"token-permissions\""));
+        assert!(html.contains("<a href=\"/-/instance\">settings</a>"));
         assert!(html.contains(&format!("title=\"{id}\"")));
         assert!(html.contains(">0123456789ab…</code>"));
         assert!(!html.contains("<th>permissions</th>"));

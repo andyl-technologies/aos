@@ -21,9 +21,9 @@ const SELECTOR_DOMAIN: &[u8] = b"aos-hub-hash-range-v1\0";
 
 /// A canonical absolute path used by delivery-route matching.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalRoutePath(String);
+pub struct RouteAdvertisementPath(String);
 
-impl CanonicalRoutePath {
+impl RouteAdvertisementPath {
     /// Parses the path portion of a raw HTTP request target.
     ///
     /// The query is excluded before validation. A fragment is invalid in an
@@ -58,7 +58,7 @@ impl CanonicalRoutePath {
     /// equal the base and does not begin with it on a segment boundary.
     pub fn relative_to<'a>(
         &'a self,
-        base: &CanonicalRouteBasePath,
+        base: &RouteAdvertisementBasePath,
     ) -> Result<&'a str, RoutePathError> {
         if base.0 .0 == "/" {
             return Ok(self.0.strip_prefix('/').unwrap_or(&self.0));
@@ -125,7 +125,7 @@ impl CanonicalRoutePath {
     }
 }
 
-impl AsRef<str> for CanonicalRoutePath {
+impl AsRef<str> for RouteAdvertisementPath {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
@@ -133,13 +133,13 @@ impl AsRef<str> for CanonicalRoutePath {
 
 /// A canonical delivery-route base that cannot overlap Hub control paths.
 ///
-/// This type is intentionally distinct from [`CanonicalRoutePath`], so a
+/// This type is intentionally distinct from [`RouteAdvertisementPath`], so a
 /// validated request path cannot be reused as configuration without the
 /// additional reserved-namespace validation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CanonicalRouteBasePath(CanonicalRoutePath);
+pub struct RouteAdvertisementBasePath(RouteAdvertisementPath);
 
-impl CanonicalRouteBasePath {
+impl RouteAdvertisementBasePath {
     /// Parses a stored or operator-supplied route base path.
     ///
     /// # Errors
@@ -153,7 +153,7 @@ impl CanonicalRouteBasePath {
         if base_path.contains('#') {
             return Err(RoutePathError::Fragment);
         }
-        let path = CanonicalRoutePath::parse_path(base_path)?;
+        let path = RouteAdvertisementPath::parse_path(base_path)?;
         if is_reserved_control_path(&path) {
             return Err(RoutePathError::ReservedControlNamespace);
         }
@@ -167,7 +167,7 @@ impl CanonicalRouteBasePath {
     }
 }
 
-impl AsRef<str> for CanonicalRouteBasePath {
+impl AsRef<str> for RouteAdvertisementBasePath {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
@@ -180,7 +180,7 @@ pub enum RoutePathError {
     #[error("delivery path must be absolute")]
     NotAbsolute,
     /// A route base included a query.
-    #[error("delivery route base path cannot contain a query")]
+    #[error("route base path cannot contain a query")]
     QueryInBasePath,
     /// The request target included a fragment.
     #[error("HTTP request target cannot contain a fragment")]
@@ -207,7 +207,7 @@ pub enum RoutePathError {
     #[error("delivery path contains a dot segment")]
     DotSegment,
     /// A route base tried to claim a Hub control namespace.
-    #[error("delivery route base path overlaps a reserved Hub control namespace")]
+    #[error("route base path overlaps a reserved Hub control namespace")]
     ReservedControlNamespace,
     /// The request did not lie below the selected route base.
     #[error("request path is not below the selected route base")]
@@ -217,7 +217,7 @@ pub enum RoutePathError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteCandidate<T> {
     /// The route's canonical base path.
-    pub base_path: CanonicalRouteBasePath,
+    pub base_path: RouteAdvertisementBasePath,
     /// Caller-owned route identity or configuration.
     pub route: T,
 }
@@ -228,7 +228,7 @@ pub struct RouteMatch<'a, T> {
     /// The caller-owned matched route value.
     pub route: &'a T,
     /// The matched canonical base path.
-    pub base_path: &'a CanonicalRouteBasePath,
+    pub base_path: &'a RouteAdvertisementBasePath,
     /// The request path relative to the route base, without a leading slash.
     pub relative_path: &'a str,
 }
@@ -237,7 +237,7 @@ pub struct RouteMatch<'a, T> {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RouteMatchError {
     /// Two candidates claimed the same endpoint/base-path reservation.
-    #[error("duplicate delivery route base path '{base_path}'")]
+    #[error("duplicate route base path '{base_path}'")]
     DuplicateBasePath {
         /// Duplicated canonical path.
         base_path: String,
@@ -251,7 +251,7 @@ pub enum RouteMatchError {
 /// Returns [`RouteMatchError::DuplicateBasePath`] and fails closed when the
 /// candidate set violates the unique endpoint/base-path invariant.
 pub fn longest_prefix_match<'a, T>(
-    request_path: &'a CanonicalRoutePath,
+    request_path: &'a RouteAdvertisementPath,
     candidates: &'a [RouteCandidate<T>],
 ) -> Result<Option<RouteMatch<'a, T>>, RouteMatchError> {
     let mut seen_bases = HashSet::with_capacity(candidates.len());
@@ -289,7 +289,7 @@ pub fn longest_prefix_match<'a, T>(
 
 /// Reports whether a canonical path belongs to a reserved Hub namespace.
 #[must_use]
-pub fn is_reserved_control_path(path: &CanonicalRoutePath) -> bool {
+pub fn is_reserved_control_path(path: &RouteAdvertisementPath) -> bool {
     let mut segments = path.0.trim_start_matches('/').split('/');
     let first = segments.next().unwrap_or("");
     first == "_assets"
@@ -536,8 +536,8 @@ mod tests {
 
     #[test]
     fn path_parser_normalizes_unicode_and_ignores_query() {
-        let composed = CanonicalRoutePath::parse_raw_target("/caf%C3%A9/item?x=%2f").unwrap();
-        let decomposed = CanonicalRoutePath::parse_raw_target("/cafe\u{301}/item").unwrap();
+        let composed = RouteAdvertisementPath::parse_raw_target("/caf%C3%A9/item?x=%2f").unwrap();
+        let decomposed = RouteAdvertisementPath::parse_raw_target("/cafe\u{301}/item").unwrap();
         assert_eq!(composed, decomposed);
         assert_eq!(composed.as_str(), "/café/item");
     }
@@ -559,7 +559,7 @@ mod tests {
             "/a#fragment",
         ] {
             assert!(
-                CanonicalRoutePath::parse_raw_target(path).is_err(),
+                RouteAdvertisementPath::parse_raw_target(path).is_err(),
                 "{path}"
             );
         }
@@ -569,24 +569,24 @@ mod tests {
     fn longest_prefix_requires_a_segment_boundary() {
         let candidates = vec![
             RouteCandidate {
-                base_path: CanonicalRouteBasePath::parse("/").unwrap(),
+                base_path: RouteAdvertisementBasePath::parse("/").unwrap(),
                 route: "root",
             },
             RouteCandidate {
-                base_path: CanonicalRouteBasePath::parse("/cache").unwrap(),
+                base_path: RouteAdvertisementBasePath::parse("/cache").unwrap(),
                 route: "cache",
             },
             RouteCandidate {
-                base_path: CanonicalRouteBasePath::parse("/cache/acme").unwrap(),
+                base_path: RouteAdvertisementBasePath::parse("/cache/acme").unwrap(),
                 route: "acme",
             },
         ];
-        let path = CanonicalRoutePath::parse_raw_target("/cache/acme/nar/x").unwrap();
+        let path = RouteAdvertisementPath::parse_raw_target("/cache/acme/nar/x").unwrap();
         let selected = longest_prefix_match(&path, &candidates).unwrap().unwrap();
         assert_eq!(*selected.route, "acme");
         assert_eq!(selected.relative_path, "nar/x");
 
-        let sibling = CanonicalRoutePath::parse_raw_target("/cacheable").unwrap();
+        let sibling = RouteAdvertisementPath::parse_raw_target("/cacheable").unwrap();
         let selected = longest_prefix_match(&sibling, &candidates)
             .unwrap()
             .unwrap();
@@ -597,15 +597,15 @@ mod tests {
     fn duplicate_route_bases_fail_closed() {
         let candidates = vec![
             RouteCandidate {
-                base_path: CanonicalRouteBasePath::parse("/cache").unwrap(),
+                base_path: RouteAdvertisementBasePath::parse("/cache").unwrap(),
                 route: 1,
             },
             RouteCandidate {
-                base_path: CanonicalRouteBasePath::parse("/cache").unwrap(),
+                base_path: RouteAdvertisementBasePath::parse("/cache").unwrap(),
                 route: 2,
             },
         ];
-        let path = CanonicalRoutePath::parse_raw_target("/elsewhere").unwrap();
+        let path = RouteAdvertisementPath::parse_raw_target("/elsewhere").unwrap();
         assert_eq!(
             longest_prefix_match(&path, &candidates),
             Err(RouteMatchError::DuplicateBasePath {
@@ -623,11 +623,11 @@ mod tests {
             "/login",
             "/aos.hub.v1.RouteService/GetRoute",
         ] {
-            let path = CanonicalRoutePath::parse_raw_target(path).unwrap();
+            let path = RouteAdvertisementPath::parse_raw_target(path).unwrap();
             assert!(is_reserved_control_path(&path));
         }
         for path in ["/-suffix", "/asset", "/logins", "/aos.hub.v10/foo"] {
-            let path = CanonicalRoutePath::parse_raw_target(path).unwrap();
+            let path = RouteAdvertisementPath::parse_raw_target(path).unwrap();
             assert!(!is_reserved_control_path(&path));
         }
         for base in [
@@ -638,7 +638,7 @@ mod tests {
             "/login",
             "/logout",
         ] {
-            assert!(CanonicalRouteBasePath::parse(base).is_err(), "{base}");
+            assert!(RouteAdvertisementBasePath::parse(base).is_err(), "{base}");
         }
     }
 

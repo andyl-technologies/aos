@@ -199,7 +199,64 @@ th {
 }
 td.num { text-align: right; }
 
-/* Storage bindings — a compact stacked list, not a 4-column table: a long
+/* Hashes use one bounded identity control everywhere: a distinctive pill for
+ * scanning, the complete value in a custom tooltip, and an adjacent copy
+ * action. The button appears only after the enhancement bundle confirms that
+ * the Clipboard API is available. */
+.hash-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.hash-value {
+  display: inline-flex;
+  min-width: 0;
+  padding: 0.08rem 0.48rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
+  color: var(--ink);
+  cursor: help;
+  text-decoration: none;
+}
+.hash-value code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hash-value:hover,
+.hash-value:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.hash-tooltip {
+  display: none;
+  position: fixed;
+  z-index: 60;
+  max-width: calc(100vw - 1rem);
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 0 2px 0 var(--rule);
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.hash-tooltip.open { display: block; }
+.hash-copy {
+  display: none;
+  padding: 0.05rem 0.38rem;
+  border-color: var(--rule-strong);
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+.hash-controls-ready .hash-copy { display: inline-block; }
+
+/* Bindings — a compact stacked list, not a 4-column table: a long
  * object-store endpoint URL gets the full content width to wrap into rather
  * than squeezing the name/kind columns (which forced a name onto two lines and
  * hyphenated the delete button). Each binding is one block separated by the

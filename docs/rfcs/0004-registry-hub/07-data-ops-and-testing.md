@@ -6,9 +6,9 @@ hierarchy), `users`, `user_identities` (`(iss, sub)`-keyed),
 `tokens(id, hash, owner, scope, permissions, expires_at, revoked_at,
 last_used_at)`, `sessions`, `invitations`, `org_idp_configs`
 (encrypted client secrets), `org_domains` (TXT-verified),
-**`registries`** (identity, slug, visibility, `storage_binding_id`,
+**`registries`** (identity, slug, visibility, `binding_id`,
 prefix — facts that exist nowhere on the surface and do *not* survive a
-re-index), `storage_bindings`, `frontends`, `cache_stores`,
+re-index), `bindings`, `frontends`, `cache_stores`,
 `mirror_sources`, signing-key identities/generations/usages, `publish_jobs` (leases,
 staged releases, pipeline state), `config_changesets`,
 `config_revisions`, `audit_log`, `webhooks` (phase 4; event taxonomy

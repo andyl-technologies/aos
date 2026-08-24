@@ -243,7 +243,7 @@
             "code": "smoke_failed",
             "severity": "blocking",
             "resource": {
-              "kind": "delivery_route",
+              "kind": "route",
               "stable_id": "org/example/registry/main/route/git"
             },
             "state": "resolved",
@@ -1825,7 +1825,7 @@
         {
           "target": "plan",
           "operation": "replace",
-          "pointer": "/source/resource_nodes/24/expected_mapping_edge_count",
+          "pointer": "/source/resource_nodes/20/expected_mapping_edge_count",
           "value": 1
         }
       ],
