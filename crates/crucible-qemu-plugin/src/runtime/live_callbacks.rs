@@ -9,7 +9,7 @@
 use std::os::raw::{c_uint, c_void};
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
@@ -560,6 +560,7 @@ impl StableDirectedRingHandle {
 /// Registration-fixed live network state joined to the idle completion path.
 struct LiveNetworkCallbackState {
     tx: PluginNetworkTx,
+    restore_tx_sequence: u32,
     rx: PluginNetworkRx,
     rx_queue: QemuCanonicalNetworkRx,
     outbound: StableDirectedRingHandle,
@@ -595,6 +596,7 @@ impl LiveNetworkCallbackState {
         }
         Ok(Self {
             tx,
+            restore_tx_sequence: next_tx_sequence,
             rx: PluginNetworkRx::new(),
             rx_queue,
             outbound: StableDirectedRingHandle::new(outbound)?,
@@ -634,6 +636,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     fault_command_pump_active: AtomicBool,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
+    logical_restore_continuation_generation: AtomicU32,
     // Read-only callbacks use this release-published coordinate without
     // borrowing the mutex-owned QEMU token or buffered network payloads.
     pending_idle_advance_active: AtomicBool,
@@ -758,6 +761,7 @@ impl LiveVcpuTimeCallbackState {
             fault_command_pump_active: AtomicBool::new(false),
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
+            logical_restore_continuation_generation: AtomicU32::new(0),
             pending_idle_advance_active: AtomicBool::new(false),
             pending_idle_advance_raw_icount: AtomicU64::new(0),
             pending_idle_advance_target_icount: AtomicU64::new(0),

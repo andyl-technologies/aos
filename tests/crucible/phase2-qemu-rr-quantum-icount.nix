@@ -303,7 +303,7 @@ in
             nvcpu_result="${qemuNvcpuFingerprint}/result"
             require_line "$nvcpu_result" "PASS"
             require_line "$nvcpu_result" "rr_cursor=current-vcpu-position-and-quantum"
-            require_line "$nvcpu_result" "guest_fixture=phase0-s11-reusable-real-smp-guest"
+            require_line "$nvcpu_result" "guest_fixture=reset-vector-broadcast-init-sipi-sipi-busy-smp-bios"
             require_line "$nvcpu_result" "real_qemu_runs=two-bounded-sim-smp4-stop-at-traces"
             require_line "$nvcpu_result" "real_qemu_comparison=canonical-rust-stream"
             require_line "$nvcpu_result" "real_qemu_adversary=second-run-bounded-scheduler-preemption"

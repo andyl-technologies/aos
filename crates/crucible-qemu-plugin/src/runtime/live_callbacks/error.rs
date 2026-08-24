@@ -45,6 +45,16 @@ pub enum LiveVcpuTimeCallbackError {
         /// Logical offset added to QEMU's raw retired count.
         logical_icount_offset: u64,
     },
+    /// A process attempted more than one launch-continuation restore.
+    #[error(
+        "logical restore continuation generation {requested_generation} follows already-applied generation {applied_generation}"
+    )]
+    LogicalRestoreContinuationReused {
+        /// Previously applied shared-memory restore generation.
+        applied_generation: u32,
+        /// Newly requested shared-memory restore generation.
+        requested_generation: u32,
+    },
     /// The live white-box adapter failed preflight, registration, or dispatch.
     #[error("live white-box callback failed: {message}")]
     WhiteboxCallback {

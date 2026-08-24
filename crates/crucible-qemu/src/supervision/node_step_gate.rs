@@ -512,6 +512,18 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
+    /// Returns whether this launch enables the app-random white-box source.
+    #[must_use]
+    pub const fn app_random_configured(&self) -> bool {
+        self.app_random.is_some()
+    }
+
+    /// Returns the configured app-random continuation, if enabled.
+    #[must_use]
+    pub const fn app_random_configuration(&self) -> Option<&QemuLaunchAppRandomConfig> {
+        self.app_random.as_ref()
+    }
+
     /// Returns this configuration with observation-only basic-block coverage.
     #[must_use]
     pub const fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
@@ -878,10 +890,13 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
             &mut nodes,
         )
         .map_err(|error| fault_gate_invariant(format!("apply lifecycle boundary: {error}")))?;
-    let [decision] = runtime.node_lifecycle_decisions() else {
+    let lifecycle_work = runtime
+        .take_node_lifecycle_work()
+        .map_err(|error| fault_gate_invariant(format!("take lifecycle work: {error}")))?;
+    let [decision] = lifecycle_work.decisions() else {
         return Err(fault_gate_invariant(format!(
             "lifecycle boundary returned {} terminal decisions",
-            runtime.node_lifecycle_decisions().len()
+            lifecycle_work.decisions().len()
         )));
     };
     let decision = decision.clone();
@@ -930,7 +945,12 @@ pub fn run_qemu_live_node_lifecycle_fault_gate(
     let exit_code = nodes
         .await_intended_lifecycle_exit(&identity, expected_exit_code, action)
         .map_err(|error| fault_gate_invariant(format!("supervise lifecycle exit: {error}")))?;
-    runtime.acknowledge_node_lifecycle_decisions();
+    let lifecycle_release = runtime
+        .acknowledge_node_lifecycle_work(lifecycle_work)
+        .map_err(|_| fault_gate_invariant("acknowledge lifecycle work owner"))?;
+    runtime
+        .complete_node_lifecycle_release(lifecycle_release)
+        .map_err(|_| fault_gate_invariant("complete lifecycle release owner"))?;
 
     Ok(QemuLiveNodeLifecycleFaultReport {
         observed_icount,

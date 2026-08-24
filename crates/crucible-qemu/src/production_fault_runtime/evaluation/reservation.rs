@@ -45,6 +45,9 @@ impl ProductionFaultRuntime {
         reserved_event_records: u64,
         reserved_event_log_bytes: u64,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        if self.lifecycle_work_in_flight.is_some() || self.lifecycle_release_in_flight.is_some() {
+            return Err(ProductionFaultRuntimeError::PendingNodeLifecycleWork);
+        }
         let authored = self.resource_limits;
         authored.reserve("event_records", 0, reserved_event_records)?;
         authored.reserve("event_log_bytes", 0, reserved_event_log_bytes)?;
