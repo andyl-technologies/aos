@@ -400,6 +400,22 @@ pub(super) fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
 }
 
+/// Stable disposition of an attempt-scoped operational failure.
+///
+/// The scheduler carries this classification without interpreting daemon or
+/// QEMU error types so an outer execution supervisor can distinguish a
+/// transient availability failure, accepted cancellation, and a stable
+/// terminal failure without parsing diagnostic text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerOperationalFailureClass {
+    /// The same operation may succeed after transient availability recovers.
+    Retryable,
+    /// Attempt cancellation won at an operational boundary.
+    Canceled,
+    /// The attempt cannot safely continue or be retried unchanged.
+    Terminal,
+}
+
 /// An error produced by the scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchedulerError {
@@ -413,6 +429,13 @@ pub enum SchedulerError {
     /// A component attempted to bypass the scheduler boundary.
     BoundaryViolation {
         /// Deterministic diagnostic text.
+        message: String,
+    },
+    /// Attempt-scoped resource enforcement stopped scheduler progress.
+    OperationalBoundary {
+        /// Stable supervisor disposition, independent of diagnostic wording.
+        class: SchedulerOperationalFailureClass,
+        /// Deterministic operational diagnostic text.
         message: String,
     },
     /// Virtual-time conversion failed while computing a scheduler horizon.
@@ -440,6 +463,7 @@ impl fmt::Display for SchedulerError {
             }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::OperationalBoundary { message, .. } => f.write_str(message),
             Self::TimeConversion(error) => {
                 write!(f, "scheduler virtual-time conversion failed: {error}")
             }

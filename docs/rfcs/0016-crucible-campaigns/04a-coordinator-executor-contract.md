@@ -2137,7 +2137,11 @@ returning the outcome. The campaign launcher maps those hooks to the exact
 attempt-wide cancellation, host-enforcement, and execution-quanta guard; the
 packaged non-campaign launcher explicitly supplies no-op hooks rather than
 inheriting an optional accounting default. A modeled-quantum failure and a
-racing post-quantum enforcement failure are reported together.
+racing post-quantum enforcement failure are reported together. Operational
+admission and post-quantum failures carry a closed `retryable`, `canceled`, or
+`terminal` class through the lifecycle and scheduler boundaries; callers MUST
+NOT recover that class by parsing diagnostic text, and the post-quantum class
+takes precedence when both modeled and enforcement failures occur.
 The daemon's fresh campaign-lifecycle factory now rejects an exact-resume root,
 validates the reconstructed scenario identity and bounded VM-node count,
 installs the exact admitted resource and cancellation incarnation, and transfers

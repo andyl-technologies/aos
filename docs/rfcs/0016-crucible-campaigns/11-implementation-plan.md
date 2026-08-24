@@ -477,7 +477,9 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   The daemon launcher binds those calls to the attempt cancellation, host-limit,
   and exact quantum guard, while the packaged non-campaign launcher declares
   its no-op behavior explicitly. Concurrent modeled and post-boundary failures
-  remain jointly observable. The daemon now composes fresh campaign lifecycle
+  remain jointly observable, and an explicit retryable/canceled/terminal class
+  survives both lifecycle and scheduler boundaries without diagnostic-text
+  parsing. The daemon now composes fresh campaign lifecycle
   construction with that launcher: it rejects exact-resume roots, validates the
   scenario identity and VM-node bound before resource allocation, exact-checks
   the installed limits and cancellation incarnation, and quarantines the guard
