@@ -481,9 +481,11 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   construction with that launcher: it rejects exact-resume roots, validates the
   scenario identity and VM-node bound before resource allocation, exact-checks
   the installed limits and cancellation incarnation, and quarantines the guard
-  if lifecycle construction fails. Campaign-worker selection, modeled-result
-  projection, fresh exact-cache, baked/thin image provisioning, the modeled
-  attempt driver, and production worker selection remain open. Real-node exact-
+  if lifecycle construction fails. An exact-origin worker router now keeps
+  fresh execution and durable paused-root resume on disjoint runners without
+  collapsing their failure classifications. Concrete fresh-driver selection,
+  modeled-result projection, fresh exact-cache, baked/thin image provisioning,
+  the modeled attempt driver, and production worker composition remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
   seals and exact-binds configuration, node icount, and event-log continuation
   before paused VMState/host-I/O capture. The real-node executor now completes

@@ -3,7 +3,8 @@
 //! This module connects the campaign execution boundary to the existing QEMU
 //! realization coordinator. It deliberately does not emulate hot fork: the
 //! GPL-side fork protocol must land and pass its safety gates before a runner
-//! may report [`CrucibleMaterializationTier::HotFork`].
+//! may report [`CrucibleMaterializationTier::HotFork`]. The exact-origin router
+//! keeps fresh execution and durable paused-root resume on disjoint runners.
 
 use crucible::{Configuration, SingleSchedulerCheckpoint};
 use crucible_campaign::{AttemptResourceLimits, ExactCheckpointId};
@@ -206,6 +207,101 @@ pub struct QemuExactThinExecutionRunner<S, F> {
     store: S,
     sessions: F,
     policy: QemuExactSnapshotPolicy,
+}
+
+/// Exact-origin router for fresh and durable-resume QEMU execution paths.
+///
+/// The resume root in [`AttemptExecutionContext`] is an operational execution
+/// origin, not a materialization hint. This router therefore sends every
+/// context with a root exclusively to `resume` and every context without one
+/// exclusively to `fresh`; neither path may silently substitute for the other.
+pub struct QemuAttemptExecutionRouter<F, R> {
+    fresh: F,
+    resume: R,
+}
+
+impl<F, R> QemuAttemptExecutionRouter<F, R> {
+    /// Creates an exact-origin execution router.
+    #[must_use]
+    pub const fn new(fresh: F, resume: R) -> Self {
+        Self { fresh, resume }
+    }
+
+    /// Returns the runner used for executions without a durable resume root.
+    #[must_use]
+    pub const fn fresh(&self) -> &F {
+        &self.fresh
+    }
+
+    /// Returns mutable access to the fresh execution runner.
+    #[must_use]
+    pub const fn fresh_mut(&mut self) -> &mut F {
+        &mut self.fresh
+    }
+
+    /// Returns the runner used only for exact durable resume origins.
+    #[must_use]
+    pub const fn resume(&self) -> &R {
+        &self.resume
+    }
+
+    /// Returns mutable access to the durable-resume runner.
+    #[must_use]
+    pub const fn resume_mut(&mut self) -> &mut R {
+        &mut self.resume
+    }
+
+    /// Consumes the router into its disjoint execution paths.
+    #[must_use]
+    pub fn into_parts(self) -> (F, R) {
+        (self.fresh, self.resume)
+    }
+}
+
+/// Failure from one exact-origin branch of [`QemuAttemptExecutionRouter`].
+#[derive(Debug, thiserror::Error)]
+pub enum QemuAttemptExecutionRouterError<F, R> {
+    /// The fresh execution path failed.
+    #[error("fresh campaign QEMU execution failed")]
+    Fresh(F),
+    /// The exact durable-resume path failed.
+    #[error("resumed campaign QEMU execution failed")]
+    Resume(R),
+}
+
+impl<F, R> CrucibleExecutionRunner for QemuAttemptExecutionRouter<F, R>
+where
+    F: CrucibleExecutionRunner,
+    R: CrucibleExecutionRunner,
+{
+    type Error = QemuAttemptExecutionRouterError<F::Error, R::Error>;
+
+    fn execute(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        if context.resume_checkpoint().is_some() {
+            self.resume
+                .execute(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Resume))
+        } else {
+            self.fresh
+                .execute(input, context)
+                .map_err(|failure| map_routed_failure(failure, Self::Error::Fresh))
+        }
+    }
+}
+
+fn map_routed_failure<E, T>(
+    failure: AttemptWorkerFailure<E>,
+    wrap: impl FnOnce(E) -> T,
+) -> AttemptWorkerFailure<T> {
+    match failure {
+        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(wrap(error)),
+        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(wrap(error)),
+        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(wrap(error)),
+    }
 }
 
 impl<S, F> QemuExactThinExecutionRunner<S, F> {
@@ -565,6 +661,10 @@ mod tests {
         Checkpoint, CheckpointKind, ContentHash, OverrideDecision, RuntimeState, ScenarioDef,
         SchedulerLivenessScenario, SchedulerState, Shift, SimInstant, SingleScheduler, VirtualTime,
     };
+    use crucible_campaign::{
+        Attempt, AttemptStart, BranchPath, CampaignHash, CampaignLineage, ConfigurationArtifact,
+        ConfigurationId, ExecutionRetentionIntent, ScenarioArtifact, ScenarioDefId, StopCondition,
+    };
     use crucible_qemu::{
         QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
         QemuLoadvmRealizationAdmission, QemuVmReplayRequest,
@@ -576,6 +676,155 @@ mod tests {
         finishes: Arc<AtomicUsize>,
         cleanup_error: bool,
         resources: AttemptResourceLimits,
+    }
+
+    #[derive(Clone, Copy)]
+    enum RoutedFailureDisposition {
+        Retryable,
+        Canceled,
+        Terminal,
+    }
+
+    struct RoutedFailureRunner {
+        calls: Arc<AtomicUsize>,
+        expects_resume: bool,
+        disposition: RoutedFailureDisposition,
+        message: &'static str,
+    }
+
+    impl CrucibleExecutionRunner for RoutedFailureRunner {
+        type Error = &'static str;
+
+        fn execute(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(context.resume_checkpoint().is_some(), self.expects_resume);
+            Err(match self.disposition {
+                RoutedFailureDisposition::Retryable => {
+                    AttemptWorkerFailure::Retryable(self.message)
+                }
+                RoutedFailureDisposition::Canceled => AttemptWorkerFailure::Canceled(self.message),
+                RoutedFailureDisposition::Terminal => AttemptWorkerFailure::Terminal(self.message),
+            })
+        }
+    }
+
+    fn routed_input() -> CrucibleAttemptExecution {
+        let scenario = crucible::crash_restart_scenario()
+            .expect("built-in scenario")
+            .scenario;
+        let definition = scenario.scenario_def();
+        let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(definition.id().bytes));
+        let scenario_artifact =
+            ScenarioArtifact::new(scenario_id, 1, b"scenario".to_vec()).expect("scenario artifact");
+        let scenario_content = scenario_artifact.id().expect("scenario artifact id");
+        let configuration = Configuration::genesis(definition);
+        let configuration_id =
+            ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+        let configuration_artifact = ConfigurationArtifact::new(
+            scenario_id,
+            scenario_content,
+            configuration_id,
+            1,
+            b"configuration".to_vec(),
+        )
+        .expect("configuration artifact");
+        let configuration_content = configuration_artifact
+            .id()
+            .expect("configuration artifact id");
+        let lineage = CampaignLineage::new(
+            scenario_id,
+            scenario_content,
+            configuration_id,
+            configuration_content,
+            "crucible-test",
+            "qemu-test",
+            BTreeMap::from([(String::from("control"), 1)]),
+            1,
+            1,
+        )
+        .expect("campaign lineage");
+        let path = BranchPath::new(Vec::new()).expect("genesis branch path");
+        let attempt = Attempt::new(
+            AttemptStart::Discover {
+                configuration: configuration_content,
+            },
+            path.id().expect("branch path id"),
+            StopCondition::Terminal,
+        )
+        .expect("discovery attempt");
+
+        CrucibleAttemptExecution::from_test_parts(
+            lineage,
+            scenario,
+            attempt,
+            path,
+            CrucibleResolvedAttemptStart::Discover { configuration },
+        )
+    }
+
+    fn routed_context(checkpoint: Option<ExactCheckpointId>) -> AttemptExecutionContext {
+        AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 1, 0, 1).expect("attempt limits"),
+            ExecutionRetentionIntent::Discard,
+            ExecutionCancellation::default(),
+            crate::ExecutionCheckpointRequest::default(),
+        )
+        .with_resume_checkpoint(checkpoint)
+    }
+
+    #[test]
+    fn exact_origin_router_never_crosses_fresh_and_resume_paths() {
+        let fresh_calls = Arc::new(AtomicUsize::new(0));
+        let resume_calls = Arc::new(AtomicUsize::new(0));
+        let mut router = QemuAttemptExecutionRouter::new(
+            RoutedFailureRunner {
+                calls: Arc::clone(&fresh_calls),
+                expects_resume: false,
+                disposition: RoutedFailureDisposition::Retryable,
+                message: "fresh unavailable",
+            },
+            RoutedFailureRunner {
+                calls: Arc::clone(&resume_calls),
+                expects_resume: true,
+                disposition: RoutedFailureDisposition::Canceled,
+                message: "resume canceled",
+            },
+        );
+        let input = routed_input();
+
+        assert!(matches!(
+            router.execute(&input, &routed_context(None)),
+            Err(AttemptWorkerFailure::Retryable(
+                QemuAttemptExecutionRouterError::Fresh("fresh unavailable")
+            ))
+        ));
+        assert_eq!(fresh_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 0);
+
+        let checkpoint = exact_checkpoint_id(b"router-resume-origin");
+        assert!(matches!(
+            router.execute(&input, &routed_context(Some(checkpoint))),
+            Err(AttemptWorkerFailure::Canceled(
+                QemuAttemptExecutionRouterError::Resume("resume canceled")
+            ))
+        ));
+        assert_eq!(fresh_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
+
+        router.fresh_mut().disposition = RoutedFailureDisposition::Terminal;
+        router.fresh_mut().message = "fresh incompatible";
+        assert!(matches!(
+            router.execute(&input, &routed_context(None)),
+            Err(AttemptWorkerFailure::Terminal(
+                QemuAttemptExecutionRouterError::Fresh("fresh incompatible")
+            ))
+        ));
+        assert_eq!(fresh_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
     }
 
     impl QemuVmRealizationExecutor for FinishTrackingSession {

@@ -98,6 +98,23 @@ pub struct CrucibleAttemptExecution {
 }
 
 impl CrucibleAttemptExecution {
+    #[cfg(test)]
+    pub(crate) fn from_test_parts(
+        lineage: CampaignLineage,
+        scenario: ScenarioDefForm,
+        attempt: Attempt,
+        path: BranchPath,
+        start: CrucibleResolvedAttemptStart,
+    ) -> Self {
+        Self {
+            lineage,
+            scenario,
+            attempt,
+            path,
+            start,
+        }
+    }
+
     /// Returns the exact compatibility lineage admitted for this execution.
     #[must_use]
     pub const fn lineage(&self) -> &CampaignLineage {
