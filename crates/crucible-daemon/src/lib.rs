@@ -51,6 +51,8 @@
 //! durable operational checkpoint root;
 //! [`qemu_lifecycle_launcher`] streams lifecycle checkpoint artifacts into one
 //! exact guarded process generation;
+//! [`qemu_campaign_lifecycle`] installs that launcher beneath the exact admitted
+//! campaign-attempt resource and cancellation contract;
 //! [`qemu_resource_guard`] binds one indivisible host process/filesystem owner
 //! to signal-driven cancellation and exact quantum accounting;
 //! [`planner_loopback`] owns
@@ -92,6 +94,7 @@ pub mod executor_worker;
 pub mod paused_checkpoint_promotion;
 pub mod planner_loopback;
 pub mod planner_process;
+pub mod qemu_campaign_lifecycle;
 #[cfg(target_os = "linux")]
 pub mod qemu_exact_resume_executor;
 pub mod qemu_lifecycle_launcher;
@@ -192,7 +195,6 @@ pub use crucible_qemu_session::{
     QemuGuardedLiveRealizationExecutor, QemuLiveAttemptDriver, QemuLiveAttemptResult,
     QemuLiveAttemptSession, QemuLiveAttemptSessionError, QemuLiveAttemptSessionFactory,
 };
-pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 #[cfg(target_os = "linux")]
 pub use exact_checkpoint_restore::{
     ExactCheckpointRestoreError, ExactCheckpointResumeError, MaterializedAttemptCheckpoint,
@@ -285,8 +287,12 @@ pub use planner_process::{
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
 };
+pub use qemu_campaign_lifecycle::{
+    QemuAttemptProductionVmLifecycleError, QemuAttemptProductionVmLifecycleFactory,
+};
 #[cfg(target_os = "linux")]
 pub use qemu_exact_resume_executor::QemuExactResumeLiveRealizationExecutor;
+pub use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
