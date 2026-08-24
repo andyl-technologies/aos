@@ -288,8 +288,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             version: 1,
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
-            nodes: Vec::new(),
-            completed_exits: Vec::new(),
+            nodes: Vec::new().into(),
+            completed_exits: Vec::new().into(),
         },
         lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
             .unwrap_or_else(|error| panic!("test lifecycle state should initialize: {error}")),
@@ -299,8 +299,8 @@ fn production_loop_without_backends(source: &ScenarioDefForm) -> ProductionVmLif
             owner: linux_process_identity(std::process::id())
                 .unwrap_or_else(|error| panic!("test process identity should read: {error}"))
                 .unwrap_or_else(|| panic!("test process should have a Linux identity")),
-            processes: BTreeMap::new(),
-            staged_processes: BTreeMap::new(),
+            processes: process_owners::ProductionProcessOwners::new(),
+            staged_processes: process_owners::ProductionProcessOwners::new(),
             clean_shutdown: false,
             recovered_after_host_exit: false,
         },

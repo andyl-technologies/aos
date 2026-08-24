@@ -10,8 +10,9 @@ pub(super) use lifecycle::{
     decode_run_json_bounded, persist_run_state_atomic,
 };
 use lifecycle::{
-    PreparedLifecyclePrecommit, PreparedTerminalReplacement, lifecycle_resource_error,
-    map_journal_limit, try_lifecycle_crash_detector, try_lifecycle_string,
+    PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
+    lifecycle_resource_error, map_journal_limit, try_lifecycle_crash_detector,
+    try_lifecycle_string,
 };
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
@@ -637,29 +638,7 @@ impl ProductionVmLifecycleLoop {
             .iter()
             .filter(|decision| decision.expected_exit_code.is_some())
             .count();
-        let mut terminal = Vec::new();
-        terminal
-            .try_reserve_exact(terminal_count)
-            .map_err(|_| lifecycle_resource_error("nodes", 0, terminal_count, limits))?;
-        for decision in decisions
-            .iter()
-            .filter(|decision| decision.expected_exit_code.is_some())
-        {
-            terminal.push(QemuNodeLifecycleDecision {
-                node: NodeId {
-                    name: try_lifecycle_string(&decision.node.name, terminal.len(), limits)?,
-                },
-                action: decision.action,
-                requested_transition: decision.requested_transition,
-                effective_transition: decision.effective_transition,
-                cause: decision.cause,
-                expected_exit_code: decision.expected_exit_code,
-                observed_icount: decision.observed_icount,
-                pre_exit_hash: decision.pre_exit_hash,
-                event_evidence: decision.event_evidence,
-            });
-        }
-        if terminal.is_empty() {
+        if terminal_count == 0 {
             return Ok(Vec::new());
         }
         let lifecycle_precommit =
@@ -668,7 +647,59 @@ impl ProductionVmLifecycleLoop {
                     "terminal lifecycle decision has no precommit checkpoint owner",
                 ),
             })?;
-        for decision in &terminal {
+        let mut terminal = std::mem::take(&mut lifecycle_precommit.terminal_decisions);
+        for decision in decisions
+            .iter()
+            .filter(|decision| decision.expected_exit_code.is_some())
+        {
+            let process_owner_index = lifecycle_precommit
+                .process_owners
+                .iter()
+                .position(|owner| {
+                    owner.as_ref().is_some_and(|owner| {
+                        owner.action == decision.action
+                            && owner.decision_node.as_ref() == Some(&decision.node)
+                    })
+                })
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle action for `{}` lost its precommit process owner",
+                        decision.node.name
+                    ),
+                })?;
+            let mut process_owner = lifecycle_precommit.process_owners[process_owner_index]
+                .take()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle action for `{}` reused its precommit process owner",
+                        decision.node.name
+                    ),
+                })?;
+            let decision_node = process_owner.decision_node.take().ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle action for `{}` lost its precommit node owner",
+                        decision.node.name
+                    ),
+                }
+            })?;
+            terminal.push(PreparedLifecycleTerminal {
+                decision: QemuNodeLifecycleDecision {
+                    node: decision_node,
+                    action: decision.action,
+                    requested_transition: decision.requested_transition,
+                    effective_transition: decision.effective_transition,
+                    cause: decision.cause,
+                    expected_exit_code: decision.expected_exit_code,
+                    observed_icount: decision.observed_icount,
+                    pre_exit_hash: decision.pre_exit_hash,
+                    event_evidence: decision.event_evidence,
+                },
+                process_owner,
+            });
+        }
+        for terminal in &terminal {
+            let decision = &terminal.decision;
             if !matches!(
                 decision.effective_transition,
                 crucible::model::NodeLifecycleTransition::Crash
@@ -736,26 +767,18 @@ impl ProductionVmLifecycleLoop {
                 })?;
             }
         }
-        let mut terminal_nodes = Vec::new();
-        terminal_nodes
-            .try_reserve_exact(terminal.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, terminal.len(), limits))?;
-        for decision in &terminal {
-            terminal_nodes.push(NodeId {
-                name: try_lifecycle_string(&decision.node.name, terminal_nodes.len(), limits)?,
-            });
-        }
         self.inner
             .backend_mut()
             .prevalidate_terminal_lifecycle_snapshots(
-                &terminal_nodes,
+                terminal.iter().map(|item| &item.decision.node),
                 &lifecycle_precommit.checkpoint,
             )?;
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(terminal.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, terminal.len(), limits))?;
-        for decision in terminal {
+        for terminal in terminal {
+            let decision = terminal.decision;
             let service_state = match decision.effective_transition {
                 crucible::model::NodeLifecycleTransition::Crash => {
                     ProductionNodeServiceState::Running
@@ -925,6 +948,7 @@ impl ProductionVmLifecycleLoop {
                 replacement: None,
                 service_state,
                 crash_detector,
+                process_owner: Some(terminal.process_owner),
             });
         }
         for replacement in &mut prepared {
@@ -1858,7 +1882,8 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
-        if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&prepared) {
+        if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&mut prepared)
+        {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
                 decisions,
                 boot_requests,

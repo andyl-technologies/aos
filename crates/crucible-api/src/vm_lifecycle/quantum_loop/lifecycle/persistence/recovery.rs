@@ -193,6 +193,16 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             event_records,
         )
         .map_err(|error| format!("admit lifecycle record count before owned decode: {error}"))?;
+    let admitted_count = |role: &str, count: u64| {
+        usize::try_from(count)
+            .map_err(|_| format!("admitted {role} count {count} is not representable"))
+    };
+    let _decode_shape = process_owners::enter_durable_decode_shape(
+        admitted_count("current process", preflight.manifest.processes.0)?,
+        admitted_count("staged process", preflight.manifest.staged_processes.0)?,
+        admitted_count("lifecycle node", preflight.journal.nodes.0)?,
+        admitted_count("completed exit", preflight.journal.completed_exits.0)?,
+    );
     let state: ProductionRunState = serde_json::from_slice(&bytes)
         .map_err(|error| format!("decode {}: {error}", state_path.display()))?;
     let manifest = state.manifest;
@@ -221,7 +231,7 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
     if let Some(node) = manifest
         .staged_processes
         .keys()
-        .find(|node| !manifest.processes.contains_key(*node))
+        .find(|node| !manifest.processes.contains_key(node))
     {
         return Err(format!(
             "prior run manifest stages replacement for unknown current node `{node}`"
@@ -270,7 +280,7 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             limits.nodes
         ));
     }
-    for (node, identity) in &manifest.staged_processes {
+    for (node, identity) in manifest.staged_processes.iter() {
         let journal_identity = journal
             .nodes
             .iter()

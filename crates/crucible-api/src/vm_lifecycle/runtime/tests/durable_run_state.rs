@@ -21,10 +21,11 @@ fn recovery_manifest(
         version: 2,
         scenario: "3".repeat(64),
         owner: recovery_process(1, "/aos/controller"),
-        processes: BTreeMap::from([(String::from("node-a"), current)]),
+        processes: BTreeMap::from([(String::from("node-a"), current)]).into(),
         staged_processes: staged
             .map(|identity| BTreeMap::from([(String::from("node-a"), identity)]))
-            .unwrap_or_default(),
+            .unwrap_or_default()
+            .into(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     }
@@ -49,8 +50,9 @@ fn recovery_journal(
             action_sha256: "1".repeat(64),
             evidence_sha256: "2".repeat(64),
             expected_exit_code: Some(70),
-        }],
-        completed_exits: Vec::new(),
+        }]
+        .into(),
+        completed_exits: Vec::new().into(),
     }
 }
 
@@ -143,8 +145,9 @@ fn durable_run_state_rejects_an_unowned_journal_process_identity() {
             action_sha256: "1".repeat(64),
             evidence_sha256: "2".repeat(64),
             expected_exit_code: Some(70),
-        }],
-        completed_exits: Vec::new(),
+        }]
+        .into(),
+        completed_exits: Vec::new().into(),
     };
     let manifest = ProductionRunManifest {
         version: 2,
@@ -154,8 +157,8 @@ fn durable_run_state_rejects_an_unowned_journal_process_identity() {
             start_time_ticks: 1,
             executable: PathBuf::from("/aos/controller"),
         },
-        processes: BTreeMap::new(),
-        staged_processes: BTreeMap::new(),
+        processes: process_owners::ProductionProcessOwners::new(),
+        staged_processes: process_owners::ProductionProcessOwners::new(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     };
@@ -200,8 +203,9 @@ fn durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement() {
             action_sha256: "1".repeat(64),
             evidence_sha256: "2".repeat(64),
             expected_exit_code: Some(70),
-        }],
-        completed_exits: Vec::new(),
+        }]
+        .into(),
+        completed_exits: Vec::new().into(),
     };
     let manifest = ProductionRunManifest {
         version: 2,
@@ -211,8 +215,8 @@ fn durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement() {
             start_time_ticks: 1,
             executable: PathBuf::from("/aos/controller"),
         },
-        processes: BTreeMap::from([(String::from("node-a"), current)]),
-        staged_processes: BTreeMap::from([(String::from("node-a"), replacement)]),
+        processes: BTreeMap::from([(String::from("node-a"), current)]).into(),
+        staged_processes: BTreeMap::from([(String::from("node-a"), replacement)]).into(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     };
@@ -249,8 +253,8 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
             start_time_ticks: 1,
             executable: PathBuf::from("/aos/controller"),
         },
-        processes: BTreeMap::from([(String::from("node-a"), current.clone())]),
-        staged_processes: BTreeMap::from([(String::from("node-a"), replacement.clone())]),
+        processes: BTreeMap::from([(String::from("node-a"), current.clone())]).into(),
+        staged_processes: BTreeMap::from([(String::from("node-a"), replacement.clone())]).into(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     };
@@ -268,8 +272,9 @@ fn durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit() {
             action_sha256: "1".repeat(64),
             evidence_sha256: "2".repeat(64),
             expected_exit_code: Some(70),
-        }],
-        completed_exits: Vec::new(),
+        }]
+        .into(),
+        completed_exits: Vec::new().into(),
     };
     persist_run_state_atomic(
         &root.path().join(PRODUCTION_RUN_STATE_FILE),
@@ -393,8 +398,8 @@ fn durable_run_state_rejects_impossible_permanent_failure_ownership() {
         version: 2,
         scenario: "3".repeat(64),
         owner: recovery_process(1, "/aos/controller"),
-        processes: BTreeMap::new(),
-        staged_processes: BTreeMap::new(),
+        processes: process_owners::ProductionProcessOwners::new(),
+        staged_processes: process_owners::ProductionProcessOwners::new(),
         clean_shutdown: false,
         recovered_after_host_exit: false,
     };
@@ -476,8 +481,8 @@ fn durable_run_state_rejects_unjournaled_staged_process_owner() {
         version: 1,
         transaction: 0,
         phase: ProductionLifecycleJournalPhase::Idle,
-        nodes: Vec::new(),
-        completed_exits: Vec::new(),
+        nodes: Vec::new().into(),
+        completed_exits: Vec::new().into(),
     };
     let error = quantum_loop::validate_recovered_lifecycle_journal(
         &journal,
