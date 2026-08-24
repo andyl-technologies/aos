@@ -101,8 +101,10 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
     );
 
     let snapshot = node.capture_terminal_lifecycle_snapshot(&node_identity, checkpoint.clone())?;
+    let cloned = snapshot.clone();
 
     assert_eq!(snapshot.checkpoint(), &checkpoint);
+    assert!(std::ptr::eq(snapshot.checkpoint(), cloned.checkpoint()));
     assert_eq!(
         recorded(&log),
         vec![

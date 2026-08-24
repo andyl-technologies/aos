@@ -18,7 +18,8 @@ pub(super) struct PreparedTerminalReplacement {
 }
 
 pub(super) struct PreparedLifecyclePrecommit {
-    pub(super) checkpoints: Vec<(ContentHash, Checkpoint)>,
+    pub(super) checkpoint: Arc<Checkpoint>,
+    pub(super) actions: Vec<ContentHash>,
 }
 
 pub(super) fn lifecycle_resource_error(
@@ -237,13 +238,13 @@ impl ProductionVmLifecycleLoop {
                 expected_exit_code: None,
             });
         }
-        let checkpoint = self.terminal_lifecycle_checkpoint()?;
-        let mut checkpoints = Vec::new();
-        checkpoints
+        let checkpoint = Arc::new(self.terminal_lifecycle_checkpoint()?);
+        let mut actions = Vec::new();
+        actions
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         for intent in intents {
-            checkpoints.push((intent.action, checkpoint.clone()));
+            actions.push(intent.action);
         }
         self.lifecycle_journal.transaction = self
             .lifecycle_journal
@@ -256,7 +257,10 @@ impl ProductionVmLifecycleLoop {
         self.lifecycle_journal.nodes = nodes;
         self.reserve_lifecycle_journal_encoding(limits)?;
         self.persist_lifecycle_journal()?;
-        Ok(PreparedLifecyclePrecommit { checkpoints })
+        Ok(PreparedLifecyclePrecommit {
+            checkpoint,
+            actions,
+        })
     }
 
     pub(super) fn authenticate_terminal_lifecycle_intent(
