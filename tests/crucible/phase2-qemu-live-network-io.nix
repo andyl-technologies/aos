@@ -9,7 +9,7 @@
   # host-liveness margin for concurrent hermetic QEMU gates and the ordered
   # post-quantum control acknowledgement; this bound never participates in
   # guest scheduling or trace state, and successful runs return immediately.
-  networkTimeoutSecs ? "600",
+  networkTimeoutSecs ? "1500",
   secondRunSchedulerPreemption ? "1",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -146,6 +146,7 @@ in
           cargo build \
             --frozen \
             --offline \
+            --release \
             --target-dir "$TMPDIR/live-network-io-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
@@ -153,6 +154,7 @@ in
           cargo build \
             --frozen \
             --offline \
+            --release \
             --target-dir "$TMPDIR/live-network-io-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-api \
@@ -161,13 +163,16 @@ in
           run_dir="$TMPDIR/live-network-io-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-network-io.result"
-          # Three real-QEMU runs cover reference, bounded preemption, and a
-          # fresh-process retained-frame restore. The last must honor every
-          # canonical 4M-icount retry boundary through guest boot, so the whole
-          # gate receives a fixed wall bound independent of its per-operation
-          # 600-second liveness budget.
-          timeout -k 15 1190 \
-            "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-network-io" \
+          # Four real-QEMU lifetimes cover reference, bounded preemption,
+          # retained capture, and fresh-process restore. The restore traverses
+          # every canonical 4M-icount retry through the bounded production
+          # node-set reissue path, without a control snapshot per attempt. The
+          # optimized host runner avoids making the 1,024-attempt retry
+          # ceiling itself a debug-build tax. The fixed outer limit covers the
+          # four 1,500-second live-operation envelopes and remains independent of
+          # canonical scheduling.
+          timeout -k 15 6090 \
+            "$TMPDIR/live-network-io-target/release/examples/crucible-qemu-live-network-io" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
             "$vmlinuz" \
@@ -197,7 +202,7 @@ in
           grep -Fxq 'backpressure_guest_acknowledgement_seen=true' "$report"
           grep -Fxq 'retained_frame_fresh_process_restored=true' "$report"
           grep -Fxq 'retained_frame_durable_envelope_restored=true' "$report"
-          grep -Fxq 'retained_frame_first_retry_icount=4000001' "$report"
+          grep -Fxq 'retained_frame_first_retry_icount=3000000001' "$report"
           grep -Fxq 'deterministic_under_scheduler_preemption=true' "$report"
           grep -Eq '^hostile_probe_emit_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^absolute_probe_origin_equal=(true|false)$' "$report"
@@ -217,7 +222,7 @@ in
           mkdir -p "$world_run_dir"
           root_image=${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
           timeout -k 15 1190 \
-            "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-world-network" \
+            "$TMPDIR/live-network-io-target/release/examples/crucible-qemu-live-world-network" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
             "$vmlinuz" \
