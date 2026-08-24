@@ -1,0 +1,10 @@
+diff --git a/configure b/configure
+index 91ca2f5..f694c2c 100755
+--- a/configure
++++ b/configure
+@@ -6127 +6127 @@ if test "${enable_languages+set}" = set; then
+-  for lang_frag in ${srcdir}/gcc/*/config-lang.in .. ; do
++  for lang_frag in ${srcdir}/gcc/ada/config-lang.in ${srcdir}/gcc/brig/config-lang.in ${srcdir}/gcc/c/config-lang.in ${srcdir}/gcc/cp/config-lang.in ${srcdir}/gcc/fortran/config-lang.in ${srcdir}/gcc/go/config-lang.in ${srcdir}/gcc/jit/config-lang.in ${srcdir}/gcc/lto/config-lang.in ${srcdir}/gcc/objc/config-lang.in ${srcdir}/gcc/objcp/config-lang.in .. ; do
+@@ -6204 +6204 @@ if test "${enable_languages+set}" = set; then
+-  for lang_frag in ${srcdir}/gcc/*/config-lang.in .. ; do
++  for lang_frag in ${srcdir}/gcc/ada/config-lang.in ${srcdir}/gcc/brig/config-lang.in ${srcdir}/gcc/c/config-lang.in ${srcdir}/gcc/cp/config-lang.in ${srcdir}/gcc/fortran/config-lang.in ${srcdir}/gcc/go/config-lang.in ${srcdir}/gcc/jit/config-lang.in ${srcdir}/gcc/lto/config-lang.in ${srcdir}/gcc/objc/config-lang.in ${srcdir}/gcc/objcp/config-lang.in .. ; do
