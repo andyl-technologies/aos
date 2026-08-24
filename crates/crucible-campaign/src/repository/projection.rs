@@ -19,6 +19,7 @@ struct FiniteExpansionInputs {
 }
 
 struct BranchCreditedObservation {
+    observation: ObservationId,
     edge: crate::BranchEdgeId,
     coverage: crate::CoverageProjectionId,
 }
@@ -1655,11 +1656,28 @@ impl CampaignRepository {
         };
         let evidence = self.project_branch_edge_visit_evidence(&loaded, branch_point)?;
         let novelty = self.project_branch_novelty_events(&loaded, &evidence)?;
-        crate::BranchPuctProjection::new_with_novelty(
+        let finding_weights = [
+            crate::FindingKind::PropertyViolation,
+            crate::FindingKind::Divergence,
+            crate::FindingKind::Timeout,
+        ]
+        .into_iter()
+        .filter_map(|kind| {
+            policy
+                .guidance()
+                .get(kind.guidance_signal())
+                .map(|weight| (kind, weight.weight_micros()))
+        })
+        .collect::<BTreeMap<_, _>>();
+        let finding_events =
+            self.project_branch_finding_events(&loaded, &evidence, &finding_weights)?;
+        crate::BranchPuctProjection::new_with_evidence(
             loaded.snapshot.active_policy(),
             *puct,
             evidence.statistics,
             novelty,
+            finding_weights,
+            finding_events,
         )
         .map_err(Into::into)
     }
@@ -1746,6 +1764,7 @@ impl CampaignRepository {
                     .checked_add(1)
                     .ok_or_else(|| integrity("branch-edge-visit-count-overflow"))?;
                 observations.push(BranchCreditedObservation {
+                    observation: credit.observation(),
                     edge,
                     coverage: observation.coverage(),
                 });
@@ -1894,6 +1913,113 @@ impl CampaignRepository {
             *total = total
                 .checked_add(events)
                 .ok_or_else(|| integrity("branch-novelty-event-count-overflow"))?;
+        }
+        Ok(edge_events)
+    }
+
+    fn project_branch_finding_events(
+        &self,
+        loaded: &LoadedSnapshot,
+        evidence: &BranchEdgeVisitEvidence,
+        finding_weights: &BTreeMap<crate::FindingKind, u64>,
+    ) -> Result<
+        BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>,
+        CampaignRepositoryError,
+    > {
+        if evidence.observations.is_empty() || finding_weights.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut targets = BTreeMap::new();
+        for credited in &evidence.observations {
+            if targets
+                .insert(credited.observation, credited.edge)
+                .is_some()
+            {
+                return Err(integrity("branch-finding-credited-observation-duplicate"));
+            }
+        }
+
+        let finding_root = loaded.snapshot.roots().findings;
+        let root_entries = self.merkle.inspect_shallow(finding_root)?.entry_count();
+        if root_entries > crate::MAX_BRANCH_FINDING_ROOT_ENTRIES {
+            return Err(integrity("branch-finding-root-entry-count"));
+        }
+        let mut work_bytes = 0_usize;
+        let mut occurrence_visits = 0_u64;
+        let mut scanned_findings = 0_u64;
+        let mut edge_events =
+            BTreeMap::<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .merkle
+                .scan(finding_root, after, PROJECTION_SCAN_PAGE_ITEMS)?;
+            for (key, content) in page.entries() {
+                scanned_findings = scanned_findings
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("branch-finding-root-entry-count"))?;
+                let finding = self.decode_finding(*content)?;
+                work_bytes =
+                    charge_branch_finding_work(work_bytes, finding.canonical_bytes().len())?;
+                if *key != finding_signature_key(finding.signature().cluster_key()) {
+                    return Err(integrity("branch-finding-root-index-mismatch"));
+                }
+                let kind = finding.signature().kind();
+                if !finding_weights.contains_key(&kind) {
+                    continue;
+                }
+
+                let occurrence_count = u64::from(finding.occurrence_count());
+                occurrence_visits =
+                    charge_branch_finding_occurrence_visits(occurrence_visits, occurrence_count)?;
+                let mut scanned_occurrences = 0_u64;
+                let mut occurrence_after = None;
+                loop {
+                    let occurrences = self.merkle.scan(
+                        finding.occurrences(),
+                        occurrence_after,
+                        PROJECTION_SCAN_PAGE_ITEMS,
+                    )?;
+                    for (occurrence_key, occurrence_content) in occurrences.entries() {
+                        scanned_occurrences = scanned_occurrences
+                            .checked_add(1)
+                            .ok_or_else(|| integrity("branch-finding-occurrence-visit-limit"))?;
+                        if scanned_occurrences > occurrence_count {
+                            return Err(integrity("branch-finding-occurrence-scan-mismatch"));
+                        }
+                        let observation = ObservationId::from_content_id(*occurrence_content)?;
+                        if *occurrence_key != finding_occurrence_key(observation) {
+                            return Err(integrity("branch-finding-occurrence-index-mismatch"));
+                        }
+                        let Some(edge) = targets.get(&observation) else {
+                            continue;
+                        };
+                        let count = edge_events
+                            .entry(*edge)
+                            .or_default()
+                            .entry(kind)
+                            .or_default();
+                        *count = count
+                            .checked_add(1)
+                            .ok_or_else(|| integrity("branch-finding-event-count-overflow"))?;
+                    }
+                    let Some(next) = occurrences.next_after() else {
+                        break;
+                    };
+                    occurrence_after = Some(next);
+                }
+                if scanned_occurrences != occurrence_count {
+                    return Err(integrity("branch-finding-occurrence-scan-mismatch"));
+                }
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+        if scanned_findings != root_entries {
+            return Err(integrity("branch-finding-root-scan-mismatch"));
         }
         Ok(edge_events)
     }
@@ -2428,6 +2554,32 @@ pub(super) fn charge_branch_novelty_identity_visits(
         .ok_or_else(|| integrity("branch-novelty-identity-visit-limit"))?;
     if total > crate::MAX_BRANCH_NOVELTY_IDENTITY_VISITS {
         return Err(integrity("branch-novelty-identity-visit-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_finding_work(
+    prior: usize,
+    bytes: usize,
+) -> Result<usize, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(bytes)
+        .ok_or_else(|| integrity("branch-finding-projection-byte-limit"))?;
+    if total > crate::MAX_BRANCH_FINDING_PROJECTION_BYTES {
+        return Err(integrity("branch-finding-projection-byte-limit"));
+    }
+    Ok(total)
+}
+
+pub(super) fn charge_branch_finding_occurrence_visits(
+    prior: u64,
+    occurrences: u64,
+) -> Result<u64, CampaignRepositoryError> {
+    let total = prior
+        .checked_add(occurrences)
+        .ok_or_else(|| integrity("branch-finding-occurrence-visit-limit"))?;
+    if total > crate::MAX_BRANCH_FINDING_OCCURRENCE_VISITS {
+        return Err(integrity("branch-finding-occurrence-visit-limit"));
     }
     Ok(total)
 }

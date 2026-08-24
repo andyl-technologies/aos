@@ -699,11 +699,12 @@ count from the nested credit-set entry count. The same schema-v4 observation
 transition maintains a second nested set
 from each exact child configuration artifact to every authenticated cumulative
 path that reached it; direct non-genesis admission checks membership in that
-set. The exact-snapshot coverage-novelty fold described in RFC 03 is now
-implemented, while reward and finding statistics remain zero until their
-canonical folds land. The exact fixed-point PUCT arithmetic is already a pure
-conformance-tested primitive, but no planner version may consume it before the
-remaining owner projections and ranking integration land. Loading an
+set. The compact expansion cache retains neutral guidance fields. Separate
+exact-snapshot coverage-novelty and policy-weighted finding-reward folds
+described in RFC 03 are now implemented read-only. Objective reward remains
+neutral. The exact fixed-point PUCT arithmetic is already a pure conformance-
+tested primitive, but no planner version may consume it before the remaining
+owner projections and ranking integration land. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
 admission is rejected.
@@ -736,9 +737,10 @@ admission is rejected.
   `progressive_integer` within its exact bounds and feedback thresholds. Static
   continuation state MAY bind a nonempty observation root because its state is
   independent of feedback. Every completed-visit statistic and progressive
-  wakeup MUST equal the exact nested credit-set count. Reward and finding
-  statistics MUST remain neutral until their canonical owners are implemented;
-  coverage novelty MAY use only the bounded exact-snapshot owner in RFC 03.
+  wakeup MUST equal the exact nested credit-set count. The compact expansion
+  cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
+  projection MAY use only the bounded exact-snapshot coverage and weighted-
+  finding owners in RFC 03; objective reward remains neutral.
 
 ## 04.15 Atomic observation publication
 

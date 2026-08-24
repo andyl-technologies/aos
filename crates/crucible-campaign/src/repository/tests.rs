@@ -14,12 +14,13 @@ use crate::{
     ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId, ContinuationState, DebugSessionId,
     DiscreteAlternative, DiscreteDomain, ExecutionId, ExecutionRetentionIntent,
     ExplainCampaignAttemptRequest, ExplorerPolicy, FairnessPolicy, GetCampaignFindingObjectRequest,
-    GetCampaignFrontierObjectRequest, GuidanceEvidence, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerRequest,
-    PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission, PlanningBudget,
-    PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy,
-    PurePlannerEngine, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    GetCampaignFrontierObjectRequest, GuidanceEvidence, GuidanceWeight,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, MeasurementSeries, MetricValue, PlannerEngine,
+    PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal,
+    PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact, ProgressiveWideningPolicy,
+    PropertyEvidence, PuctPolicy, PurePlannerEngine, QueryCampaignFindingsRequest,
+    QueryCampaignFrontierRequest, RepositoryCampaignService, RetentionPolicy, ScenarioDefId,
+    StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;

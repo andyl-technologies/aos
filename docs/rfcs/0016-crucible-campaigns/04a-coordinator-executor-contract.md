@@ -1096,9 +1096,10 @@ Merkle authority to the engine. The first invocation requires the exact empty
 state, and local acceptance plus imported/restart validation rerun this built-in
 pure transition and compare its complete next state, usage claim, evidence, and
 disposition. Exact fixed-point PUCT term arithmetic is implemented as a pure
-bounded primitive. The owner-built globally unique coverage-novelty projection
-is also implemented read-only. Reward/finding projections and the planner
-version that uses those terms for ranking remain an implementation-plan gate.
+bounded primitive. The owner-built globally unique coverage-novelty and policy-
+weighted finding-reward projections are also implemented read-only. Objective
+reward and the planner version that uses those terms for ranking remain an
+implementation-plan gate.
 
 The initial coordinator retention profile is deliberately narrower than the
 version-1 wire format: an accepted request body is at most 32 MiB and its bundle

@@ -2,16 +2,16 @@
 //!
 //! This module owns the language-neutral integer arithmetic used by future
 //! adaptive planner engines. The repository supplies an owner-built completed-
-//! visit partition and coverage-novelty fold for each semantic edge, but this
-//! module deliberately does not select a continuation: reward, finding,
-//! nonuniform-prior projections, and a new planner version must land before
-//! these scores may change canonical ordering.
+//! visit partition, coverage-novelty fold, and weighted finding reward for each
+//! semantic edge, but this module deliberately does not select a continuation:
+//! objective reward, nonuniform-prior projections, and a new planner version
+//! must land before these scores may change canonical ordering.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use crate::{
-    BranchEdgeId, BranchPointId, CampaignCodecError, CampaignPolicyId, ProgressiveWideningPolicy,
-    PuctPolicy,
+    BranchEdgeId, BranchPointId, CampaignCodecError, CampaignPolicyId, FindingKind,
+    ProgressiveWideningPolicy, PuctPolicy,
 };
 
 /// One whole unit in the campaign fixed-point representation.
@@ -37,6 +37,15 @@ pub const MAX_BRANCH_NOVELTY_IDENTITY_VISITS: u64 = 1_000_000;
 
 /// Maximum branch-relevant unique identities retained during novelty projection.
 pub const MAX_BRANCH_NOVELTY_IDENTITIES: usize = 65_536;
+
+/// Maximum canonical finding bytes folded into one branch reward projection.
+pub const MAX_BRANCH_FINDING_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum finding-root entries scanned by one branch reward projection.
+pub const MAX_BRANCH_FINDING_ROOT_ENTRIES: u64 = 65_536;
+
+/// Maximum finding-occurrence entries scanned by one branch reward projection.
+pub const MAX_BRANCH_FINDING_OCCURRENCE_VISITS: u64 = 1_000_000;
 
 /// Owner-authenticated completed visits partitioned by one branch point's edges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,14 +116,15 @@ impl BranchEdgeVisitStatistics {
 ///
 /// This projection assigns a canonical uniform prior across completed edges,
 /// reserves fairness for the least-visited edge (breaking ties by
-/// [`BranchEdgeId`]), and incorporates owner-derived coverage novelty. Reward
-/// remains at its neutral value until its evidence owner is available.
+/// [`BranchEdgeId`]), incorporates owner-derived coverage novelty, and adds
+/// policy-weighted owner-verified finding occurrences to reward.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchPuctProjection {
     branch_point: BranchPointId,
     policy: CampaignPolicyId,
     parent_visits: u64,
     edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
+    edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
     edge_statistics: BTreeMap<BranchEdgeId, PuctEdgeStatistics>,
     edge_scores: BTreeMap<BranchEdgeId, PuctScore>,
 }
@@ -136,7 +146,14 @@ impl BranchPuctProjection {
         puct: PuctPolicy,
         visits: BranchEdgeVisitStatistics,
     ) -> Result<Self, CampaignCodecError> {
-        Self::new_with_novelty(policy, puct, visits, BTreeMap::new())
+        Self::new_with_evidence(
+            policy,
+            puct,
+            visits,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
     }
 
     /// Builds a policy-bound projection with exact positive novelty evidence.
@@ -144,11 +161,31 @@ impl BranchPuctProjection {
     /// The novelty map contains only completed edges with one or more
     /// owner-derived events. Counts remain available for explanation while the
     /// fixed-point scorer consumes the corresponding Boolean predicate.
+    #[cfg(test)]
     pub(crate) fn new_with_novelty(
         policy: CampaignPolicyId,
         puct: PuctPolicy,
         visits: BranchEdgeVisitStatistics,
         edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_evidence(
+            policy,
+            puct,
+            visits,
+            edge_novelty_events,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+    }
+
+    /// Builds a projection with exact coverage and weighted-finding evidence.
+    pub(crate) fn new_with_evidence(
+        policy: CampaignPolicyId,
+        puct: PuctPolicy,
+        visits: BranchEdgeVisitStatistics,
+        edge_novelty_events: BTreeMap<BranchEdgeId, u64>,
+        finding_weights: BTreeMap<FindingKind, u64>,
+        edge_finding_events: BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>>,
     ) -> Result<Self, CampaignCodecError> {
         if edge_novelty_events
             .iter()
@@ -158,6 +195,25 @@ impl BranchPuctProjection {
                 reason: "branch novelty events disagree with completed edges",
             });
         }
+        if finding_weights.values().any(|weight| *weight == 0)
+            || edge_finding_events.iter().any(|(edge, events)| {
+                !visits.edge_visits.contains_key(edge)
+                    || events.is_empty()
+                    || events
+                        .iter()
+                        .any(|(kind, count)| *count == 0 || !finding_weights.contains_key(kind))
+            })
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "branch finding events disagree with completed edges or policy",
+            });
+        }
+        let edge_rewards = edge_finding_events
+            .iter()
+            .map(|(edge, events)| {
+                finding_reward_sum(events, &finding_weights).map(|reward| (*edge, reward))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let branch_point = visits.branch_point;
         let parent_visits = visits.parent_visits;
         let edge_count = u64::try_from(visits.edge_visits.len()).map_err(|_| {
@@ -189,7 +245,7 @@ impl BranchPuctProjection {
             let statistics = PuctEdgeStatistics::new(
                 parent_visits,
                 edge_visits,
-                0,
+                edge_rewards.get(&edge).copied().unwrap_or(0),
                 prior_micros,
                 edge_novelty_events.contains_key(&edge),
                 fairness_edge == Some(edge),
@@ -213,6 +269,7 @@ impl BranchPuctProjection {
             policy,
             parent_visits,
             edge_novelty_events,
+            edge_finding_events,
             edge_statistics,
             edge_scores,
         })
@@ -242,6 +299,12 @@ impl BranchPuctProjection {
         &self.edge_novelty_events
     }
 
+    /// Returns weighted owner-verified finding occurrences by edge and class.
+    #[must_use]
+    pub const fn edge_finding_events(&self) -> &BTreeMap<BranchEdgeId, BTreeMap<FindingKind, u64>> {
+        &self.edge_finding_events
+    }
+
     /// Returns exact score inputs in semantic edge order.
     #[must_use]
     pub const fn edge_statistics(&self) -> &BTreeMap<BranchEdgeId, PuctEdgeStatistics> {
@@ -253,6 +316,21 @@ impl BranchPuctProjection {
     pub const fn edge_scores(&self) -> &BTreeMap<BranchEdgeId, PuctScore> {
         &self.edge_scores
     }
+}
+
+fn finding_reward_sum(
+    events: &BTreeMap<FindingKind, u64>,
+    weights: &BTreeMap<FindingKind, u64>,
+) -> Result<i64, CampaignCodecError> {
+    let total = events.iter().fold(0_u128, |total, (kind, count)| {
+        let weight = weights.get(kind).copied().unwrap_or(0);
+        total.saturating_add(u128::from(weight).saturating_mul(u128::from(*count)))
+    });
+    i64::try_from(total.min(u128::from(i64::MAX.unsigned_abs()))).map_err(|_| {
+        CampaignCodecError::LimitExceeded {
+            limit: "branch-finding-reward-sum",
+        }
+    })
 }
 
 /// Exact owner-derived progressive-widening admission decision.
@@ -857,6 +935,37 @@ mod tests {
             ),
             Err(CampaignCodecError::InvalidValue {
                 reason: "branch novelty events disagree with completed edges"
+            })
+        ));
+
+        let finding = BranchPuctProjection::new_with_evidence(
+            policy,
+            PuctPolicy::new(0, 0, 0),
+            visits(),
+            BTreeMap::new(),
+            BTreeMap::from([(FindingKind::Divergence, u64::MAX)]),
+            BTreeMap::from([(edge, BTreeMap::from([(FindingKind::Divergence, 2)]))]),
+        )
+        .expect("weighted finding projection");
+        assert_eq!(
+            finding.edge_finding_events(),
+            &BTreeMap::from([(edge, BTreeMap::from([(FindingKind::Divergence, 2)]),)])
+        );
+        assert_eq!(
+            finding.edge_statistics()[&edge].reward_sum_micros(),
+            i64::MAX
+        );
+        assert!(matches!(
+            BranchPuctProjection::new_with_evidence(
+                policy,
+                PuctPolicy::new(0, 0, 0),
+                visits(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::from([(edge, BTreeMap::from([(FindingKind::Divergence, 1)]),)]),
+            ),
+            Err(CampaignCodecError::InvalidValue {
+                reason: "branch finding events disagree with completed edges or policy"
             })
         ));
     }

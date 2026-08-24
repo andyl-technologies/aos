@@ -805,8 +805,10 @@ The repository owner recomputes static `ExpansionState` pages from their source
 snapshot even after modeled observations exist. Static readiness and exhaustion
 depend only on exact proposal/admission dispositions, while the page binds the
 source view's exact observation root. `completed_visits` is the authenticated
-entry count of that branch point's nested credit set. Reward, novelty, and
-finding statistics remain zero until their richer canonical folds land.
+entry count of that branch point's nested credit set. The compact
+`ExpansionState` cache keeps reward, novelty, and finding fields neutral; the
+separate exact-snapshot PUCT projection owner folds coverage novelty and
+policy-weighted finding occurrences without trusting cached values.
 History-dependent generated requests remain fail-closed until their feedback
 owners land.
 The repository owner accepts snapshot-bound `ContinueScan`, `NoWork`, and

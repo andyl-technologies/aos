@@ -1167,16 +1167,21 @@ impl CampaignRepository {
         self.read_finding_cached(id, &mut ChoiceValidationCache::default())
     }
 
-    pub(super) fn read_finding_cached(
-        &self,
-        id: ContentId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<Finding, CampaignRepositoryError> {
+    pub(super) fn decode_finding(&self, id: ContentId) -> Result<Finding, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Finding)?;
         let finding = Finding::from_canonical_bytes(envelope.body())?;
         if finding.id()?.content_id() != id {
             return Err(integrity("finding-envelope-shape"));
         }
+        Ok(finding)
+    }
+
+    pub(super) fn read_finding_cached(
+        &self,
+        id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        let finding = self.decode_finding(id)?;
         self.validate_finding_references_cached(&finding, choice_cache)?;
         Ok(finding)
     }
