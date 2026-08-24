@@ -82,10 +82,20 @@ pub(super) fn node_lifecycle_decision(
     }))
 }
 
-pub(super) fn node_boot_requests(
+pub(super) fn stage_node_boot_requests(
     actions: &[ResolvedBindingAction],
-) -> Result<BTreeSet<NodeId>, ProductionFaultRuntimeError> {
-    let mut nodes = BTreeSet::new();
+    current: &[NodeId],
+    resource_limits: FaultResourceLimits,
+) -> Result<Vec<NodeId>, ProductionFaultRuntimeError> {
+    let mut nodes = Vec::new();
+    nodes
+        .try_reserve_exact(current.len())
+        .map_err(|_| runtime_collection_reservation("nodes", 0, current.len(), resource_limits))?;
+    for node in current {
+        nodes.push(try_clone_ledger_node_id(node, || {
+            runtime_collection_reservation("nodes", nodes.len(), 1, resource_limits)
+        })?);
+    }
     for action in actions {
         let EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
             transition: NodeLifecycleTransition::Boot,
@@ -103,10 +113,30 @@ pub(super) fn node_boot_requests(
             }
             .into());
         };
-        nodes.insert(NodeId {
-            name: node.as_str().to_owned(),
+        if nodes
+            .iter()
+            .any(|candidate| candidate.name == node.as_str())
+        {
+            continue;
+        }
+        resource_limits.reserve(
+            "nodes",
+            u64::try_from(nodes.len()).map_err(|_| FaultResourceLimitError::Representation {
+                field: "nodes",
+                value: u64::MAX,
+            })?,
+            1,
+        )?;
+        nodes.try_reserve_exact(1).map_err(|_| {
+            runtime_collection_reservation("nodes", nodes.len(), 1, resource_limits)
+        })?;
+        nodes.push(NodeId {
+            name: try_clone_string(node.as_str(), || {
+                runtime_collection_reservation("nodes", nodes.len(), 1, resource_limits)
+            })?,
         });
     }
+    nodes.sort_unstable();
     Ok(nodes)
 }
 

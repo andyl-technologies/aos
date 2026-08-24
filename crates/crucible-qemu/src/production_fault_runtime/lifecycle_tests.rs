@@ -319,7 +319,7 @@ fn checkpoint_rejects_unacknowledged_node_boot_edge() {
         &nodes,
     )
     .unwrap_or_else(|error| panic!("empty runtime should initialize: {error}"));
-    runtime.pending_node_boot.insert(NodeId {
+    runtime.pending_node_boot.push(NodeId {
         name: String::from("node-a"),
     });
 

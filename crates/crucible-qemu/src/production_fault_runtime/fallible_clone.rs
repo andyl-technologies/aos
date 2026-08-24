@@ -62,7 +62,10 @@ pub(super) fn try_clone_fault_events<E>(
     Ok(events)
 }
 
-fn try_clone_string<E>(source: &str, allocation_error: impl FnOnce() -> E) -> Result<String, E> {
+pub(super) fn try_clone_string<E>(
+    source: &str,
+    allocation_error: impl FnOnce() -> E,
+) -> Result<String, E> {
     let mut value = String::new();
     value
         .try_reserve_exact(source.len())

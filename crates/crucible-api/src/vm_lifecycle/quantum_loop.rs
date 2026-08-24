@@ -1432,10 +1432,7 @@ impl ProductionVmLifecycleLoop {
         }
     }
 
-    fn activate_node_boot_requests(
-        &mut self,
-        requests: &std::collections::BTreeSet<NodeId>,
-    ) -> Result<(), SchedulerError> {
+    fn activate_node_boot_requests(&mut self, requests: &[NodeId]) -> Result<(), SchedulerError> {
         for node in requests {
             match self.node_service_states.get(node).copied() {
                 Some(ProductionNodeServiceState::PoweredOff) => {}
@@ -1870,7 +1867,7 @@ impl ProductionVmLifecycleLoop {
                     })?;
             (
                 runtime.node_lifecycle_decisions().to_vec(),
-                runtime.node_boot_requests().clone(),
+                runtime.node_boot_requests().to_vec(),
             )
         };
         let has_lifecycle = !decisions.is_empty();

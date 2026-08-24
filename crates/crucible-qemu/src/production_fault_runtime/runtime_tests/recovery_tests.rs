@@ -224,6 +224,7 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
             virtual_nanos: 1,
             retired_instructions: Some(1),
         },
+        0,
     );
 
     assert!(result.is_err());
