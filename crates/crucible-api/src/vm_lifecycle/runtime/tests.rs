@@ -46,6 +46,14 @@ impl ProductionVmNodeLease for RecordingNodeLease {
 }
 
 impl ProductionVmNodeLauncher for FailingFinishLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     fn launch(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
@@ -75,6 +83,14 @@ struct PreparationBoundaryLauncher {
 }
 
 impl ProductionVmNodeLauncher for RecordingFinishLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     fn launch(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
@@ -96,6 +112,14 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
 }
 
 impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        Ok(())
+    }
+
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,

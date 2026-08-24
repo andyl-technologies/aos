@@ -356,6 +356,14 @@ impl<G> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard + Send,
 {
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        self.owner.charge_execution_quantum()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        self.owner.check_operational_boundary()
+    }
+
     fn launch(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,

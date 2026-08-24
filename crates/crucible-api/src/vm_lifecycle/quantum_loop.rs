@@ -63,193 +63,223 @@ fn combine_exact_capture_result<T>(
     }
 }
 
+fn combine_attempt_quantum_boundary<T>(
+    operation: Result<T, SchedulerError>,
+    boundary: Result<(), LifecycleApiError>,
+) -> Result<T, SchedulerError> {
+    match (operation, boundary) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(boundary)) => Err(SchedulerError::BoundaryViolation {
+            message: format!("check production attempt after scheduler quantum: {boundary}"),
+        }),
+        (Err(error), Err(boundary)) => Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "production scheduler quantum failed ({error}); post-quantum attempt boundary also failed ({boundary})"
+            ),
+        }),
+    }
+}
+
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(
         &mut self,
         mut request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
-        self.reconcile_indeterminate_debug_ownership()?;
-        let mut pre_quantum_appends = Vec::new();
-        let fault_append = self.evaluate_signal_fault_boundary()?;
-        if !fault_append.entries.is_empty() {
-            pre_quantum_appends.push(fault_append);
-        }
-        pre_quantum_appends.extend(self.settle_trigger_graph()?);
-        let (pre_quantum_decisions, settled_configuration, network_appends) = self
-            .inner
-            .settle_pending_network_outputs_at_current_frontier()?
-            .into_parts();
-        pre_quantum_appends.extend(network_appends);
-        if let Some(configuration) = settled_configuration {
-            request.configuration = configuration;
-        }
-        if request.configuration != *self.inner.loop_impl().configuration() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "quantum request configuration is not the scheduler frontier",
-                ),
-            });
-        }
-        if self.terminal_verdict.is_some() {
-            let scheduler = self.inner.loop_impl();
-            let mut outcome = QuantumOutcome {
-                configuration: scheduler.configuration().clone(),
-                frontier: scheduler.frontier(),
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: Vec::new(),
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: scheduler.event_log_offset(),
-                scheduler_quiescence: Some(scheduler.quiescence()?),
-            };
-            prepend_event_log_appends(&mut outcome, pre_quantum_appends);
-            self.capture_debug_runtime_evidence()?;
-            return Ok(outcome);
-        }
-        if self.branch.as_ref().is_some_and(|branch| {
-            branch.base == request.configuration && !request.control.is_empty()
-        }) {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "branch-prefix admission cannot discard simultaneous control",
-                ),
-            });
-        }
-        if !request.control.is_empty() {
-            let mut node_times = BTreeMap::new();
-            for node in self.source.world().vm_nodes() {
-                if self.inner.backend().node_now(&node.id).is_err() {
-                    continue;
-                }
-                let at = self.inner.loop_impl().scheduler_time_for_node(&node.id)?;
-                node_times.insert(node.id.clone(), at);
+        self.node_launcher
+            .begin_execution_quantum()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("admit production attempt scheduler quantum: {error}"),
+            })?;
+        let operation = (|| {
+            self.reconcile_indeterminate_debug_ownership()?;
+            let mut pre_quantum_appends = Vec::new();
+            let fault_append = self.evaluate_signal_fault_boundary()?;
+            if !fault_append.entries.is_empty() {
+                pre_quantum_appends.push(fault_append);
             }
-            self.recorded_controls.push(ProductionVmRecordedControl {
-                configuration: request.configuration.clone(),
-                node_times,
-                control: request.control.clone(),
-            });
-        }
-        if let Some(branch) = self.branch.as_ref() {
-            let frontier = self.inner.loop_impl().frontier();
-            if frontier > branch.frontier {
+            pre_quantum_appends.extend(self.settle_trigger_graph()?);
+            let (pre_quantum_decisions, settled_configuration, network_appends) = self
+                .inner
+                .settle_pending_network_outputs_at_current_frontier()?
+                .into_parts();
+            pre_quantum_appends.extend(network_appends);
+            if let Some(configuration) = settled_configuration {
+                request.configuration = configuration;
+            }
+            if request.configuration != *self.inner.loop_impl().configuration() {
                 return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "production branch frontier {} was passed at {}",
-                        branch.frontier.ticks, frontier.ticks
+                    message: String::from(
+                        "quantum request configuration is not the scheduler frontier",
                     ),
                 });
             }
-            if frontier == branch.frontier && request.configuration != branch.base {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "production branch reached frontier {} with configuration {}, expected {}",
-                        frontier.ticks,
-                        request.configuration.id().to_hex(),
-                        branch.base.id().to_hex(),
-                    ),
-                });
-            }
-            if frontier == branch.frontier && request.configuration == branch.base {
-                if !request.control.is_empty() {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "branch-prefix admission cannot discard simultaneous control",
-                        ),
-                    });
-                }
-                let branch_decisions = branch.decisions.clone();
-                let (configuration, append) = self
-                    .inner
-                    .loop_impl_mut()
-                    .append_branch_prefix_overrides(branch_decisions.clone())?;
-                if let Some(seed) = branch.seed {
-                    self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
-                }
-                self.inner.loop_impl_mut().clear_branch_frontier_cap();
-                let frontier = self.inner.loop_impl().frontier();
-                let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
-                self.branch = None;
-                let mut decisions = pre_quantum_decisions;
-                decisions.extend(branch_decisions);
+            if self.terminal_verdict.is_some() {
+                let scheduler = self.inner.loop_impl();
                 let mut outcome = QuantumOutcome {
-                    configuration,
-                    frontier,
+                    configuration: scheduler.configuration().clone(),
+                    frontier: scheduler.frontier(),
                     advanced_node: None,
                     resolved_events: Vec::new(),
-                    decisions,
+                    decisions: Vec::new(),
                     discovered_choices: Vec::new(),
-                    event_log_entries: append.entries,
-                    event_log_segment_bytes: append.segment_bytes,
-                    event_log_segment_text: append.segment_text,
-                    event_log_segment_hash: append.segment_hash,
-                    event_log_offset: append.offset,
-                    scheduler_quiescence,
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: scheduler.event_log_offset(),
+                    scheduler_quiescence: Some(scheduler.quiescence()?),
                 };
                 prepend_event_log_appends(&mut outcome, pre_quantum_appends);
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
-            if request.configuration.schedule.len() > branch.base.schedule.len()
-                || (request.configuration.schedule.len() == branch.base.schedule.len()
-                    && request.configuration != branch.base)
-            {
+            if self.branch.as_ref().is_some_and(|branch| {
+                branch.base == request.configuration && !request.control.is_empty()
+            }) {
                 return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "branch-prefix replay bypassed base configuration {}",
-                        branch.base.id().to_hex()
+                    message: String::from(
+                        "branch-prefix admission cannot discard simultaneous control",
                     ),
                 });
             }
-        }
-        let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
-        let observations = Arc::clone(&self.storage_fault_observations);
-        let mut queued = observations
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production fault observation journal lock is poisoned"),
-            })?;
-        let storage_observations = queued.drain_ready(
+            if !request.control.is_empty() {
+                let mut node_times = BTreeMap::new();
+                for node in self.source.world().vm_nodes() {
+                    if self.inner.backend().node_now(&node.id).is_err() {
+                        continue;
+                    }
+                    let at = self.inner.loop_impl().scheduler_time_for_node(&node.id)?;
+                    node_times.insert(node.id.clone(), at);
+                }
+                self.recorded_controls.push(ProductionVmRecordedControl {
+                    configuration: request.configuration.clone(),
+                    node_times,
+                    control: request.control.clone(),
+                });
+            }
+            if let Some(branch) = self.branch.as_ref() {
+                let frontier = self.inner.loop_impl().frontier();
+                if frontier > branch.frontier {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "production branch frontier {} was passed at {}",
+                            branch.frontier.ticks, frontier.ticks
+                        ),
+                    });
+                }
+                if frontier == branch.frontier && request.configuration != branch.base {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "production branch reached frontier {} with configuration {}, expected {}",
+                            frontier.ticks,
+                            request.configuration.id().to_hex(),
+                            branch.base.id().to_hex(),
+                        ),
+                    });
+                }
+                if frontier == branch.frontier && request.configuration == branch.base {
+                    if !request.control.is_empty() {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "branch-prefix admission cannot discard simultaneous control",
+                            ),
+                        });
+                    }
+                    let branch_decisions = branch.decisions.clone();
+                    let (configuration, append) = self
+                        .inner
+                        .loop_impl_mut()
+                        .append_branch_prefix_overrides(branch_decisions.clone())?;
+                    if let Some(seed) = branch.seed {
+                        self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
+                    }
+                    self.inner.loop_impl_mut().clear_branch_frontier_cap();
+                    let frontier = self.inner.loop_impl().frontier();
+                    let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
+                    self.branch = None;
+                    let mut decisions = pre_quantum_decisions;
+                    decisions.extend(branch_decisions);
+                    let mut outcome = QuantumOutcome {
+                        configuration,
+                        frontier,
+                        advanced_node: None,
+                        resolved_events: Vec::new(),
+                        decisions,
+                        discovered_choices: Vec::new(),
+                        event_log_entries: append.entries,
+                        event_log_segment_bytes: append.segment_bytes,
+                        event_log_segment_text: append.segment_text,
+                        event_log_segment_hash: append.segment_hash,
+                        event_log_offset: append.offset,
+                        scheduler_quiescence,
+                    };
+                    prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                    self.capture_debug_runtime_evidence()?;
+                    return Ok(outcome);
+                }
+                if request.configuration.schedule.len() > branch.base.schedule.len()
+                    || (request.configuration.schedule.len() == branch.base.schedule.len()
+                        && request.configuration != branch.base)
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "branch-prefix replay bypassed base configuration {}",
+                            branch.base.id().to_hex()
+                        ),
+                    });
+                }
+            }
+            let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
+            let observations = Arc::clone(&self.storage_fault_observations);
+            let mut queued =
+                observations
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "production fault observation journal lock is poisoned",
+                        ),
+                    })?;
+            let storage_observations = queued.drain_ready(
+                self.inner
+                    .loop_impl()
+                    .condition_event_log_prefix()
+                    .point()
+                    .at()
+                    .ticks,
+            );
+            if !storage_observations.is_empty() {
+                let append = self
+                    .inner
+                    .loop_impl_mut()
+                    .append_fault_observations(storage_observations)?;
+                merge_event_log_append(&mut outcome, append);
+            }
+            drop(queued);
+            let pending_search_choices = self
+                .fault_runtime
+                .lock()
+                .map_err(|_| SchedulerError::BoundaryViolation {
+                    message: String::from("production fault runtime lock is poisoned"),
+                })?
+                .drain_search_choices();
             self.inner
-                .loop_impl()
-                .condition_event_log_prefix()
-                .point()
-                .at()
-                .ticks,
-        );
-        if !storage_observations.is_empty() {
-            let append = self
-                .inner
                 .loop_impl_mut()
-                .append_fault_observations(storage_observations)?;
-            merge_event_log_append(&mut outcome, append);
-        }
-        drop(queued);
-        let pending_search_choices = self
-            .fault_runtime
-            .lock()
-            .map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("production fault runtime lock is poisoned"),
-            })?
-            .drain_search_choices();
-        self.inner
-            .loop_impl_mut()
-            .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
-        if !pre_quantum_decisions.is_empty() {
-            let mut decisions = pre_quantum_decisions;
-            decisions.extend(std::mem::take(&mut outcome.decisions));
-            outcome.decisions = decisions;
-        }
-        prepend_event_log_appends(&mut outcome, pre_quantum_appends);
-        for append in self.settle_trigger_graph()? {
-            merge_event_log_append(&mut outcome, append);
-        }
-        self.capture_debug_runtime_evidence()?;
-        Ok(outcome)
+                .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
+            if !pre_quantum_decisions.is_empty() {
+                let mut decisions = pre_quantum_decisions;
+                decisions.extend(std::mem::take(&mut outcome.decisions));
+                outcome.decisions = decisions;
+            }
+            prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+            for append in self.settle_trigger_graph()? {
+                merge_event_log_append(&mut outcome, append);
+            }
+            self.capture_debug_runtime_evidence()?;
+            Ok(outcome)
+        })();
+        let boundary = self.node_launcher.check_operational_boundary();
+        combine_attempt_quantum_boundary(operation, boundary)
     }
 
     fn backend_step_ceiling(
@@ -2109,6 +2139,26 @@ mod tests {
 
         assert!(error.to_string().contains("publication failed"));
         assert!(error.to_string().contains("resume failed"));
+    }
+
+    #[test]
+    fn attempt_quantum_reports_modeled_and_post_boundary_failures_together() {
+        let operation: Result<(), SchedulerError> = Err(SchedulerError::BoundaryViolation {
+            message: String::from("modeled quantum failed"),
+        });
+        let boundary = Err(loop_factory_error("attempt cancellation failed closed"));
+
+        let error = match combine_attempt_quantum_boundary(operation, boundary) {
+            Ok(()) => panic!("both failures must reject the quantum"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("modeled quantum failed"));
+        assert!(
+            error
+                .to_string()
+                .contains("attempt cancellation failed closed")
+        );
     }
 
     fn debug_config(allow_requested_loopback_listen: bool) -> ProductionVmDebugConfig {

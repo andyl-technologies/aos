@@ -2130,7 +2130,15 @@ invokes only its guarded live-node entry point. A failure with no remaining
 child rolls back the pending generation fence so the exact lifecycle request
 can retry. A failed synchronous reap instead transfers the direct QEMU or
 image-tool child into the aggregate owner and makes that owner terminal and
-quarantined. Campaign-worker selection and an independently admitted debugger
+quarantined. The production lifecycle now requires every injected launch
+authority to admit and charge each scheduler quantum before any scheduler,
+host-fault, or guest state advances, and to recheck the same authority before
+returning the outcome. The campaign launcher maps those hooks to the exact
+attempt-wide cancellation, host-enforcement, and execution-quanta guard; the
+packaged non-campaign launcher explicitly supplies no-op hooks rather than
+inheriting an optional accounting default. A modeled-quantum failure and a
+racing post-quantum enforcement failure are reported together.
+Campaign-worker selection and an independently admitted debugger
 world remain open; no unsupported mode falls back to the packaged authority. A
 concrete exact-resume adapter obtains one prepared generation directory from the
 guard, streams and authenticates the durable exact root into its pinned VMState

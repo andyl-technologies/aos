@@ -334,6 +334,14 @@ mod tests {
     }
 
     impl ProductionVmNodeLauncher for RecordingRejectingLauncher {
+        fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
+        fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+            Ok(())
+        }
+
         fn launch(
             &mut self,
             request: ProductionVmNodeLaunchRequest<'_>,

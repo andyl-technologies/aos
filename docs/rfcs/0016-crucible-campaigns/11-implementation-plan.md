@@ -471,7 +471,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   writable artifacts under the same quota. All three modes launch only through
   guarded entry points. No-process failures roll back the pending generation
   fence for exact retry; an unreaped QEMU or helper child is retained before the
-  aggregate owner is quarantined. Campaign-worker selection, fresh exact-cache,
+  aggregate owner is quarantined. Every injected production lifecycle launcher
+  must now explicitly admit and charge a scheduler quantum before modeled state
+  can advance and recheck the retained authority before returning its outcome.
+  The daemon launcher binds those calls to the attempt cancellation, host-limit,
+  and exact quantum guard, while the packaged non-campaign launcher declares
+  its no-op behavior explicitly. Concurrent modeled and post-boundary failures
+  remain jointly observable. Campaign-worker selection, fresh exact-cache,
   baked/thin image provisioning, the modeled attempt driver, and production
   worker/factory selection remain open. Real-node exact-
   checkpoint capture is now an executor-owned, guard-retaining operation: it
