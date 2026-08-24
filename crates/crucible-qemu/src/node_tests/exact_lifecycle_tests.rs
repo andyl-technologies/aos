@@ -3,6 +3,30 @@
 use super::*;
 
 #[test]
+fn exact_snapshot_rejects_staged_fault_event_ownership() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node =
+        scripted_node_with_fault_events(Arc::clone(&log), [fault_event_with_sequence(1)])?;
+    let mut checkpoint = checkpoint("pending-fault-event");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    let error = node
+        .capture_exact_snapshot(&node_identity, checkpoint)
+        .expect_err("staged occurrence ownership must reject canonical capture");
+    assert!(error.to_string().contains("empty fault-event continuation"));
+    assert!(!recorded(&log).contains(&ChannelCall::QmpStop));
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, false, false)?;

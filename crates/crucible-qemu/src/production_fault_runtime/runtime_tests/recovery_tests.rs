@@ -270,6 +270,51 @@ fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
 }
 
 #[test]
+fn qemu_event_staging_uses_remaining_aggregate_ledger_capacity() {
+    let limits = FaultResourceLimits {
+        event_records: 2,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(Vec::new(), Vec::new(), limits)
+        .unwrap_or_else(|error| panic!("empty aggregate-limit plan should be valid: {error}"));
+    let nodes = QemuNodeSet::new();
+    let mut runtime = ProductionFaultRuntime::new(
+        plan,
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"aggregate-event-ledger"),
+        test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("aggregate-limit runtime should initialize: {error}"));
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let identity = action.id();
+    runtime
+        .qemu_issued_actions
+        .try_insert(identity, action)
+        .unwrap_or_else(|error| panic!("issued-action fixture should allocate: {error}"));
+    runtime
+        .qemu_action_commits
+        .try_insert(
+            identity,
+            CommittedQemuActionEvidence {
+                command_sequence: 1,
+                command_kind: crucible_shmem::FaultCommandKind::NodeLifecycle as u16,
+                before_hash: [1; 32],
+                after_hash: [2; 32],
+            },
+        )
+        .unwrap_or_else(|error| panic!("commit fixture should allocate: {error}"));
+
+    assert_eq!(
+        runtime
+            .event_staging_capacity(&[], None)
+            .unwrap_or_else(|error| panic!("aggregate capacity should be exact: {error}")),
+        0
+    );
+}
+
+#[test]
 fn pending_qemu_observation_identity_covers_kind_binding_and_target() {
     let original = pending_qemu_observation();
     let limits = FaultResourceLimits::default();

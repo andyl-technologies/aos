@@ -260,6 +260,12 @@ in
             supervision::host_io_runtime::tests::fault_result_publication_waits_for_the_full_control_pump
           run_exact_qemu_test \
             node::tests::fault_command::invalid_fault_event_sequence_is_terminal_across_retries
+          run_exact_qemu_test \
+            node::tests::exact_lifecycle::exact_snapshot_rejects_staged_fault_event_ownership
+          run_exact_qemu_test \
+            production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling
+          run_exact_qemu_test \
+            production_fault_runtime::runtime_tests::recovery_tests::qemu_event_staging_uses_remaining_aggregate_ledger_capacity
           run_exact_plugin_test \
             fault_command::tests::bridge_translates_capabilities_and_local_rejections_at_logical_time
           run_exact_qemu_test \

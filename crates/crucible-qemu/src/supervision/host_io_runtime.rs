@@ -22,7 +22,6 @@
 //! this runtime treats a non-advance await as an immediate host-liveness yield.
 
 use std::fs::File;
-use std::io::Write;
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::thread;
@@ -40,6 +39,7 @@ use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
 use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
+use crate::supervision::HostSupervisionDeadline;
 use crate::{
     QemuAdvanceCompletionFence, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
     QemuHostIoCheckpoint, QemuHostIoRuntime,
@@ -47,6 +47,7 @@ use crate::{
 use deadline::AdvanceWaitDeadline;
 
 mod boundary;
+mod control;
 mod deadline;
 use boundary::*;
 
@@ -84,6 +85,8 @@ pub struct QemuLiveHostIoRuntime {
     console: Option<QemuConsoleObservationReader>,
     /// Events physically consumed to release a fault-pump control fence.
     staged_fault_events: Vec<DequeuedFaultEvent>,
+    /// Plan-authored remaining aggregate capacity for staged events.
+    fault_event_staging_limit: usize,
 }
 
 /// The participant half of the runtime: a block servicer plus its diagnostic sink.
@@ -222,6 +225,7 @@ impl QemuLiveHostIoRuntime {
             accelerator: None,
             console: None,
             staged_fault_events: Vec::new(),
+            fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
         })
     }
 
@@ -278,94 +282,6 @@ impl QemuLiveHostIoRuntime {
     pub fn with_accelerator_servicer(mut self, servicer: QemuLiveAcceleratorServicer) -> Self {
         self.accelerator = Some(servicer);
         self
-    }
-
-    /// Attaches an output-only QEMU console reader and its boundary spool.
-    ///
-    /// The stream is drained during every in-flight advance poll so guest
-    /// console backpressure cannot prevent QEMU from reaching its scheduler
-    /// ceiling. Bytes remain in `spool` until the node emits them at that exact
-    /// completed boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLiveHostIoRuntimeError::DuplicateConsole`] when a console
-    /// is already attached.
-    pub(crate) fn with_console_observation(
-        mut self,
-        reader: QemuConsoleObservationReader,
-    ) -> Result<Self, QemuLiveHostIoRuntimeError> {
-        if self.console.is_some() {
-            return Err(QemuLiveHostIoRuntimeError::DuplicateConsole);
-        }
-        self.console = Some(reader);
-        Ok(self)
-    }
-
-    /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
-    fn write_wake_doorbell(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let mut wake = self.wake.as_ref();
-        wake.write_all(&1_u64.to_ne_bytes()).map_err(|error| {
-            QemuAsyncDriverRuntimeError::new("signal plugin wake", error.to_string())
-        })
-    }
-
-    /// Publishes a control request and rings QEMU's main-loop eventfd.
-    fn signal_wake(&self) -> Result<u32, QemuAsyncDriverRuntimeError> {
-        let request = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_control_boundary()
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
-                    "request plugin control boundary",
-                    source.to_string(),
-                )
-            })?;
-        self.write_wake_doorbell()?;
-        Ok(request)
-    }
-
-    /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
-    fn abort_checkpoint_pause_with_wake(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.region.header().clear_pause();
-        let futex_result = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)
-            .and_then(|slot| {
-                slot.wake_for_frame_delivery().map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
-                        "resume from checkpoint pause",
-                        source.to_string(),
-                    )
-                })
-            });
-        let doorbell_result = self.signal_wake();
-        match (futex_result, doorbell_result) {
-            (Ok(_), Ok(_)) => Ok(()),
-            (Err(futex), Ok(_)) => Err(futex),
-            (Ok(_), Err(doorbell)) => Err(doorbell),
-            (Err(futex), Err(doorbell)) => Err(QemuAsyncDriverRuntimeError::new(
-                "resume from checkpoint pause",
-                format!("futex wake failed: {futex}; doorbell wake failed: {doorbell}"),
-            )),
-        }
-    }
-
-    /// Releases a failed pause transaction while retaining both diagnostics.
-    fn fail_checkpoint_pause(
-        &mut self,
-        primary: QemuAsyncDriverRuntimeError,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        match self.abort_checkpoint_pause_with_wake() {
-            Ok(()) => Err(primary),
-            Err(cleanup) => Err(QemuAsyncDriverRuntimeError::new(
-                "rollback failed checkpoint pause",
-                format!("primary failure: {primary}; pause release failure: {cleanup}"),
-            )),
-        }
     }
 
     /// Polls the node slot for a quantum boundary within a bounded attempt count.
@@ -559,6 +475,7 @@ impl QemuLiveHostIoRuntime {
         // its own bounded policy interval. Neither interval enters canonical
         // state or changes the exact guest coordinate.
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed_state = None;
         let mut boundary_acknowledged = false;
         let initial_idle_wake_icount = if snapshot.status == STATUS_IDLE {
@@ -568,7 +485,12 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         for attempt in 0..attempts {
-            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
+            self.drain_fault_events_for_pump(
+                self.fault_event_staging_limit,
+                &deadline,
+                timeout,
+                "acknowledge completed-quantum clamp",
+            )?;
             self.service_console_output()?;
             let observed = self
                 .region
@@ -646,14 +568,6 @@ impl QemuLiveHostIoRuntime {
                 )
             ),
         ))
-    }
-
-    /// Drains all currently available console bytes into boundary staging.
-    fn service_console_output(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let Some(console) = &mut self.console else {
-            return Ok(());
-        };
-        console.drain_available()
     }
 
     /// Services the block-I/O ring at the guest's observed icount, if attached.
@@ -747,6 +661,22 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn set_fault_event_staging_limit(
+        &mut self,
+        maximum_event_records: usize,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let current = self.staged_fault_events.len();
+        if current > maximum_event_records {
+            return Err(QemuAsyncDriverRuntimeError::fault_event_storage(
+                current,
+                0,
+                maximum_event_records,
+            ));
+        }
+        self.fault_event_staging_limit = maximum_event_records;
+        Ok(())
+    }
+
     fn arm_advance_completion_fence(
         &mut self,
         fence: Option<QemuAdvanceCompletionFence>,
@@ -778,9 +708,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
         let request = self.signal_wake()?;
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
         for attempt in 0..attempts {
-            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
+            self.drain_fault_events_for_pump(
+                self.fault_event_staging_limit,
+                &deadline,
+                timeout,
+                "probe checkpoint device boundary",
+            )?;
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -832,9 +768,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
 
         let request = self.signal_wake()?;
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
         for attempt in 0..attempts {
-            self.drain_fault_events_for_pump(HARD_FAULT_EVENT_CAPACITY as usize)?;
+            self.drain_fault_events_for_pump(
+                self.fault_event_staging_limit,
+                &deadline,
+                timeout,
+                "publish current execution fingerprint",
+            )?;
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -1522,6 +1464,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
 
     fn staged_fault_events_pending(&self) -> bool {
         !self.staged_fault_events.is_empty()
+    }
+
+    fn staged_fault_event_count(&self) -> usize {
+        self.staged_fault_events.len()
     }
 }
 

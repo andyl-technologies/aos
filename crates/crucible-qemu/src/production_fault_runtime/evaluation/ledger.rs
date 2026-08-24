@@ -7,6 +7,81 @@ pub(in crate::production_fault_runtime) struct StagedQemuActionLedger {
     actions: Vec<(ContentHash, ResolvedBindingAction)>,
 }
 
+impl StagedQemuActionLedger {
+    fn retained_action_count(&self) -> usize {
+        self.actions
+            .iter()
+            .filter(|(_identity, action)| {
+                matches!(
+                    action.kind,
+                    BindingActionKind::UpsertPersistent | BindingActionKind::Apply
+                )
+            })
+            .count()
+    }
+
+    fn final_active_rule_count(&self, runtime: &ProductionFaultRuntime) -> usize {
+        let matches_rule = |left: &ResolvedBindingAction, right: &ResolvedBindingAction| {
+            left.binding == right.binding
+                && left.target == right.target
+                && left.phase == right.phase
+        };
+        let surviving_existing = runtime
+            .qemu_active_rule_ids
+            .iter()
+            .filter(|identity| {
+                runtime
+                    .qemu_issued_actions
+                    .get(identity)
+                    .is_some_and(|active| {
+                        !self
+                            .actions
+                            .iter()
+                            .any(|(_identity, action)| matches_rule(active, action))
+                    })
+            })
+            .count();
+        let surviving_staged = self
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(_index, (_identity, action))| {
+                action.kind == BindingActionKind::UpsertPersistent
+            })
+            .filter(|(index, (_identity, action))| {
+                !self.actions[index + 1..]
+                    .iter()
+                    .any(|(_identity, later)| matches_rule(action, later))
+            })
+            .count();
+        surviving_existing.saturating_add(surviving_staged)
+    }
+
+    pub(super) fn projected_ledger_record_count(
+        &self,
+        runtime: &ProductionFaultRuntime,
+    ) -> Result<u64, ProductionFaultRuntimeError> {
+        let retained = self.retained_action_count();
+        let records = runtime
+            .qemu_issued_actions
+            .len()
+            .checked_add(retained)
+            .and_then(|records| records.checked_add(runtime.qemu_action_commits.len()))
+            .and_then(|records| records.checked_add(retained))
+            .and_then(|records| records.checked_add(self.final_active_rule_count(runtime)))
+            .ok_or(FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?;
+        u64::try_from(records)
+            .map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })
+            .map_err(Into::into)
+    }
+}
+
 impl ProductionFaultRuntime {
     #[cfg(test)]
     pub(in crate::production_fault_runtime) fn update_qemu_action_ledger(

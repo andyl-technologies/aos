@@ -4,6 +4,23 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Sets the aggregate number of fault events this runtime may stage.
+    ///
+    /// Production runtimes apply the plan-authored remaining event-record
+    /// budget to every control callback. Runtimes without a live event ring may
+    /// ignore the limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when already-staged events exceed
+    /// the new ceiling.
+    fn set_fault_event_staging_limit(
+        &mut self,
+        _maximum_event_records: usize,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     /// Arms the publication fence for the next advance-completion wait.
     ///
     /// Live runtimes retain the supplied pre-wake generation until the plugin
@@ -380,5 +397,11 @@ pub trait QemuHostIoRuntime: Send {
     #[must_use]
     fn staged_fault_events_pending(&self) -> bool {
         false
+    }
+
+    /// Returns the number of scheduler-owned events staged by this runtime.
+    #[must_use]
+    fn staged_fault_event_count(&self) -> usize {
+        0
     }
 }

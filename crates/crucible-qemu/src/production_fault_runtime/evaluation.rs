@@ -4,8 +4,77 @@ use super::*;
 
 #[path = "evaluation/ledger.rs"]
 mod ledger;
+use ledger::StagedQemuActionLedger;
 
 impl ProductionFaultRuntime {
+    pub(super) fn event_staging_capacity(
+        &self,
+        additional_emitted_events: &[ReferencedSignalEvent],
+        staged_ledger: Option<&StagedQemuActionLedger>,
+    ) -> Result<usize, ProductionFaultRuntimeError> {
+        let (event_state_records, _bytes) = production_event_state_usage(
+            &self.emitted_events,
+            additional_emitted_events,
+            &self.pending_qemu_observations,
+            &[],
+            &self.pending_qemu_events,
+            self.resource_limits,
+        )?;
+        let ledger_records = if let Some(staged) = staged_ledger {
+            staged.projected_ledger_record_count(self)?
+        } else {
+            let records = self
+                .qemu_issued_actions
+                .len()
+                .checked_add(self.qemu_action_commits.len())
+                .and_then(|records| records.checked_add(self.qemu_active_rule_ids.len()))
+                .ok_or(FaultResourceLimitError::Representation {
+                    field: "event_records",
+                    value: u64::MAX,
+                })?;
+            u64::try_from(records).map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            })?
+        };
+        self.resource_limits
+            .reserve("event_records", event_state_records, ledger_records)?;
+        let current = event_state_records.checked_add(ledger_records).ok_or(
+            FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: u64::MAX,
+            },
+        )?;
+        let remaining = self
+            .resource_limits
+            .event_records
+            .checked_sub(current)
+            .ok_or(FaultResourceLimitError::Exceeded {
+                field: "event_records",
+                current,
+                requested: 0,
+                configured: self.resource_limits.event_records,
+                hard: FaultResourceLimits::compiled_maximum().event_records,
+            })?;
+        usize::try_from(remaining)
+            .map_err(|_| FaultResourceLimitError::Representation {
+                field: "event_records",
+                value: remaining,
+            })
+            .map_err(Into::into)
+    }
+
+    fn apply_event_staging_capacity(
+        &self,
+        nodes: &mut QemuNodeSet,
+        additional_emitted_events: &[ReferencedSignalEvent],
+        staged_ledger: Option<&StagedQemuActionLedger>,
+    ) -> Result<usize, ProductionFaultRuntimeError> {
+        let remaining = self.event_staging_capacity(additional_emitted_events, staged_ledger)?;
+        nodes.set_fault_event_staging_limit(remaining)?;
+        Ok(remaining)
+    }
+
     /// Evaluates one scheduler boundary against host devices and live QEMU.
     ///
     /// # Errors
@@ -18,6 +87,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.apply_event_staging_capacity(nodes, &[], None)?;
         let Some(runtime) = self.runtime.as_ref() else {
             self.drain_qemu_observations(nodes, coordinate)?;
             if self.pending_qemu_observations.is_empty() {
@@ -39,7 +109,17 @@ impl ProductionFaultRuntime {
             self.resource_limits,
         )?;
         let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
-        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
+        let maximum_event_records = self.apply_event_staging_capacity(
+            nodes,
+            &preview.emitted_events,
+            Some(&staged_qemu_ledger),
+        )?;
+        let mut sink = ProductionFaultActionSink::new_with_event_limit(
+            &mut self.host,
+            nodes,
+            self.resource_limits,
+            maximum_event_records,
+        );
         let runtime = self
             .runtime
             .as_mut()
@@ -84,6 +164,7 @@ impl ProductionFaultRuntime {
         self.pending_node_boot
             .extend(node_boot_requests(&evaluation.actions)?);
         self.retain_search_choices(coordinate, &evaluation.search_choices);
+        self.apply_event_staging_capacity(nodes, &[], None)?;
         Ok(evaluation)
     }
 
@@ -260,6 +341,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
+        self.apply_event_staging_capacity(nodes, &[], None)?;
         let Some(runtime) = self.runtime.as_ref() else {
             return Ok(BindingEvaluation::default());
         };
@@ -273,7 +355,17 @@ impl ProductionFaultRuntime {
             self.resource_limits,
         )?;
         let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
-        let mut sink = ProductionFaultActionSink::new(&mut self.host, nodes, self.resource_limits);
+        let maximum_event_records = self.apply_event_staging_capacity(
+            nodes,
+            &preview.emitted_events,
+            Some(&staged_qemu_ledger),
+        )?;
+        let mut sink = ProductionFaultActionSink::new_with_event_limit(
+            &mut self.host,
+            nodes,
+            self.resource_limits,
+            maximum_event_records,
+        );
         let runtime = self
             .runtime
             .as_mut()
@@ -301,6 +393,7 @@ impl ProductionFaultRuntime {
         self.emitted_events
             .extend(evaluation.emitted_events.iter().cloned());
         self.retain_search_choices(opportunity.coordinate(), &evaluation.search_choices);
+        self.apply_event_staging_capacity(nodes, &[], None)?;
         Ok(evaluation)
     }
 

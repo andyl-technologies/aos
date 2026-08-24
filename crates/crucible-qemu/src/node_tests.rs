@@ -553,6 +553,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
     fn staged_fault_events_pending(&self) -> bool {
         !self.staged_fault_events.is_empty()
     }
+
+    fn staged_fault_event_count(&self) -> usize {
+        self.staged_fault_events.len()
+    }
 }
 
 #[test]

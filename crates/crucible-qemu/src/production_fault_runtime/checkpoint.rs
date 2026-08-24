@@ -30,12 +30,21 @@ impl ProductionFaultRuntime {
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
+        let remaining_event_records = self.event_staging_capacity(&[], None)?;
+        nodes.set_fault_event_staging_limit(remaining_event_records)?;
         let runtime = self
             .runtime
             .as_ref()
             .map(|runtime| runtime.checkpoint().clone());
         let host = self.host.state().clone();
         let qemu_fingerprints = qemu_fingerprint_map(nodes, self.resource_limits)?;
+        // Fingerprint publication is itself a tokenized plugin control pump.
+        // It may make an asynchronous occurrence visible after the entry check;
+        // canonical capture must reject that continuation rather than omit the
+        // host-runtime staging buffer from the durable envelope.
+        if nodes.has_pending_fault_events()? {
+            return Err(ProductionFaultRuntimeError::PendingQemuFaultEvents);
+        }
         let qemu_fault_sequences = qemu_sequence_map(
             nodes.fault_command_sequence_entries(),
             nodes.len(),

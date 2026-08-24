@@ -1267,6 +1267,21 @@ impl QemuNode {
         )
     }
 
+    pub(crate) fn set_fault_event_staging_limit(
+        &mut self,
+        maximum_event_records: usize,
+    ) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .set_fault_event_staging_limit(maximum_event_records)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })
+    }
+
+    pub(crate) fn staged_fault_event_count(&self) -> usize {
+        self.host_io_runtime.staged_fault_event_count()
+    }
+
     pub(crate) fn apply_fault_preparation_at_current_boundary(
         &mut self,
         header: FaultCommandHeaderV1,

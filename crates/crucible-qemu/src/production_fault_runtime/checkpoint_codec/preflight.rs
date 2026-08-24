@@ -17,27 +17,33 @@ pub(super) fn preflight_checkpoint_payload(
 ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
     let mut cursor = CborCursor::new(payload);
     let fields = cursor.map_len()?;
+    let mut event_records = 0_u64;
     for _ in 0..fields {
         let field = cursor.text()?;
         match field {
             b"qemu_fingerprints" | b"qemu_fault_sequences" | b"qemu_fault_event_sequences" => {
-                cursor.admit_map("nodes", limits.nodes, hard_limits().nodes)?;
+                let _ = cursor.admit_map("nodes", limits.nodes, hard_limits().nodes)?;
             }
             b"qemu_issued_actions" | b"qemu_action_commits" => {
-                cursor.admit_map(
+                let records = cursor.admit_map(
                     "event_records",
                     limits.event_records,
                     hard_limits().event_records,
                 )?;
+                admit_aggregate_event_records(&mut event_records, records, limits)?;
             }
             b"qemu_active_rule_ids" | b"emitted_events" | b"pending_qemu_observations" => {
-                cursor.admit_array(
+                let records = cursor.admit_array(
                     "event_records",
                     limits.event_records,
                     hard_limits().event_records,
                 )?;
+                admit_aggregate_event_records(&mut event_records, records, limits)?;
             }
-            b"pending_qemu_events" => cursor.admit_pending_qemu_events(limits)?,
+            b"pending_qemu_events" => {
+                let records = cursor.admit_pending_qemu_events(limits)?;
+                admit_aggregate_event_records(&mut event_records, records, limits)?;
+            }
             _ => cursor.skip_value(0)?,
         }
     }
@@ -98,14 +104,14 @@ impl<'a> CborCursor<'a> {
         field: &'static str,
         configured: u64,
         hard: u64,
-    ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    ) -> Result<u64, ProductionFaultRuntimeCheckpointCodecError> {
         let length = self.map_len()?;
         admit_collection(field, length, configured, hard)?;
         for _ in 0..length {
             self.skip_value(0)?;
             self.skip_value(0)?;
         }
-        Ok(())
+        Ok(length)
     }
 
     fn admit_array(
@@ -113,19 +119,19 @@ impl<'a> CborCursor<'a> {
         field: &'static str,
         configured: u64,
         hard: u64,
-    ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    ) -> Result<u64, ProductionFaultRuntimeCheckpointCodecError> {
         let length = self.array_len()?;
         admit_collection(field, length, configured, hard)?;
         for _ in 0..length {
             self.skip_value(0)?;
         }
-        Ok(())
+        Ok(length)
     }
 
     fn admit_pending_qemu_events(
         &mut self,
         limits: FaultResourceLimits,
-    ) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    ) -> Result<u64, ProductionFaultRuntimeCheckpointCodecError> {
         let nodes = self.map_len()?;
         admit_collection("nodes", nodes, limits.nodes, hard_limits().nodes)?;
 
@@ -156,7 +162,7 @@ impl<'a> CborCursor<'a> {
                 self.skip_value(0)?;
             }
         }
-        Ok(())
+        Ok(events)
     }
 
     fn skip_value(
@@ -244,6 +250,33 @@ impl<'a> CborCursor<'a> {
     }
 }
 
+fn admit_aggregate_event_records(
+    current: &mut u64,
+    requested: u64,
+    limits: FaultResourceLimits,
+) -> Result<(), ProductionFaultRuntimeCheckpointCodecError> {
+    let next = current.checked_add(requested).ok_or_else(|| {
+        resource_limit(
+            "event_records",
+            *current,
+            requested,
+            limits.event_records,
+            hard_limits().event_records,
+        )
+    })?;
+    if next > limits.event_records {
+        return Err(resource_limit(
+            "event_records",
+            *current,
+            requested,
+            limits.event_records,
+            hard_limits().event_records,
+        ));
+    }
+    *current = next;
+    Ok(())
+}
+
 fn admit_collection(
     field: &'static str,
     requested: u64,
@@ -323,6 +356,35 @@ mod tests {
                 "event_records",
                 0,
                 2,
+                1,
+                hard_limits().event_records,
+            ))
+        );
+    }
+
+    #[derive(Serialize)]
+    struct AggregateLedgersOnly {
+        qemu_issued_actions: BTreeMap<u8, u8>,
+        qemu_action_commits: BTreeMap<u8, u8>,
+    }
+
+    #[test]
+    fn preflight_applies_event_records_as_one_aggregate_ceiling() {
+        let payload = canonical_payload(&AggregateLedgersOnly {
+            qemu_issued_actions: BTreeMap::from([(1, 1)]),
+            qemu_action_commits: BTreeMap::from([(1, 1)]),
+        });
+        let limits = FaultResourceLimits {
+            event_records: 1,
+            ..FaultResourceLimits::default()
+        };
+
+        assert_eq!(
+            preflight_checkpoint_payload(&payload, limits),
+            Err(resource_limit(
+                "event_records",
+                1,
+                1,
                 1,
                 hard_limits().event_records,
             ))

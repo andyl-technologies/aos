@@ -23,6 +23,8 @@ use crate::QemuProcessIdentity;
 use crate::QemuVmSnapshot;
 use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
+#[path = "node_set/fault_events.rs"]
+mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
 
@@ -531,20 +533,6 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Reports whether any node has an event awaiting runtime admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when any event transport is invalid.
-    pub fn has_pending_fault_events(&mut self) -> Result<bool, BackendError> {
-        for node in self.nodes.values_mut() {
-            if node.fault_event_pending().map_err(BackendError::from)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Applies one admitted QEMU fault command at `node`'s current boundary.
     ///
     /// # Errors
@@ -570,9 +558,7 @@ impl QemuNodeSet {
         result_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.nodes
-            .get_mut(node)
-            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+        self.node_mut_for_fault_command(node)?
             .apply_fault_command_at_current_boundary_with_limits(
                 header,
                 payload,
@@ -589,9 +575,7 @@ impl QemuNodeSet {
         maximum_payload_bytes: usize,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuNodeError> {
-        self.nodes
-            .get_mut(node)
-            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))?
+        self.node_mut_for_fault_command(node)?
             .apply_fault_preparation_at_current_boundary(
                 header,
                 payload,
@@ -736,6 +720,21 @@ impl QemuNodeSet {
             .ok_or_else(|| BackendError::Rejected {
                 message: format!("QEMU backend set has no node `{}`", node.name),
             })
+    }
+
+    fn node_mut_for_fault_command(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<&mut QemuNode, QemuNodeError> {
+        if self.permanently_closed.contains(node) {
+            return Err(QemuNodeError::fault_command(format!(
+                "QEMU node `{}` is permanently failed",
+                node.name
+            )));
+        }
+        self.nodes
+            .get_mut(node)
+            .ok_or_else(|| QemuNodeError::fault_command(format!("node {node:?} is absent")))
     }
 }
 

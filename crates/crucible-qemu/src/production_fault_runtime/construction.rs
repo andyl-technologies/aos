@@ -188,12 +188,13 @@ impl ProductionFaultRuntime {
         let manifests = production_manifests(nodes, host_manifests)?;
         let plan_id = plan.id();
         let resource_limits = plan.resource_limits();
-        validate_production_event_state(
+        validate_production_record_state(
             &checkpoint.emitted_events,
-            &[],
             &checkpoint.pending_qemu_observations,
-            &[],
             &checkpoint.pending_qemu_events,
+            &checkpoint.qemu_issued_actions,
+            &checkpoint.qemu_action_commits,
+            &checkpoint.qemu_active_rule_ids,
             resource_limits,
         )?;
         validate_pending_qemu_event_sequences(

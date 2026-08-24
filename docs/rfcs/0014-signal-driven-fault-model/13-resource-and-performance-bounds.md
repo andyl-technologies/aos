@@ -185,6 +185,12 @@ Logs and checkpoints are chunked content-addressed artifacts. Reaching a byte or
 record bound is a typed terminal result; retaining fewer records is allowed only
 under an authored observability policy that still preserves every transition,
 decision, effect, and referenced full-value artifact required for explanation.
+`event_records` is one aggregate ceiling across referenced events, pending
+observations, raw QEMU occurrences, issued-action and commit ledgers, and active
+rule identities. The host derives the remaining capacity before a plugin
+control pump or fault transaction and applies that exact remainder to every
+live node. It never gives each collection or node an independent copy of the
+authored allowance.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its

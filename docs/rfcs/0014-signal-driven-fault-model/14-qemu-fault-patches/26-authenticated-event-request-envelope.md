@@ -50,6 +50,13 @@ Event admission still reserves bounded queue capacity before mutation, and an
 allocation or validation failure enters the existing authenticated terminal
 path instead of dropping evidence.
 
+The plugin acknowledges a tokenized control pump only after both its result and
+occurrence queues drain. The host may consume occurrence records to release
+that fence, but those records remain scheduler-owned staged state and use the
+plan's remaining aggregate `event_records` allowance. Exact checkpoint capture
+rejects staged or ring-owned occurrences both before quiescence and after the
+quiescing control pump; no such ownership is omitted from a durable snapshot.
+
 ## Exact accelerator completion identity
 
 An `accelerator.result_transform` payload adds two required typed fields: the
