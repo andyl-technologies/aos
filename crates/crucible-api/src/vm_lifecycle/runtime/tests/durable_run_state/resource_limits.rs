@@ -3,6 +3,116 @@
 use super::*;
 
 #[test]
+fn durable_run_state_rejects_old_outer_version_before_owned_decode() {
+    let root =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
+    let manifest = recovery_manifest(recovery_process(7, "/aos/qemu-current"), None);
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 0,
+        phase: ProductionLifecycleJournalPhase::Idle,
+        nodes: Vec::new().into(),
+        completed_exits: Vec::new().into(),
+    };
+    let path = root.path().join(PRODUCTION_RUN_STATE_FILE);
+    persist_run_state_atomic(
+        &path,
+        &manifest,
+        &journal,
+        FaultResourceLimits::default(),
+        0,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("current run state should persist: {error}"));
+    let current = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("current run state should read: {error}"));
+    let old = current.replacen("\"version\": 2", "\"version\": 1", 1);
+    fs::write(&path, old)
+        .unwrap_or_else(|error| panic!("old-version fixture should write: {error}"));
+
+    let error = quantum_loop::decode_prior_run_state(
+        root.path(),
+        &manifest.scenario,
+        FaultResourceLimits::default(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("old outer version should fail before owned decode"));
+    assert!(error.contains("incompatible version 1"));
+}
+
+#[test]
+fn durable_run_state_rejects_impossible_completed_exit_history() {
+    let manifest = recovery_manifest(recovery_process(7, "/aos/qemu-current"), None);
+    let valid_exit = ProductionLifecycleCompletedExit {
+        transaction: 1,
+        node: String::from("node-a"),
+        process: recovery_process(6, "/aos/qemu-prior"),
+        generation: 1,
+        transition: String::from("Crash"),
+        action_sha256: "1".repeat(64),
+        evidence_sha256: "2".repeat(64),
+        expected_exit_code: 70,
+        observed_exit_code: 70,
+    };
+    let journal = ProductionLifecycleJournal {
+        version: 1,
+        transaction: 2,
+        phase: ProductionLifecycleJournalPhase::Committed,
+        nodes: Vec::new().into(),
+        completed_exits: vec![valid_exit.clone()].into(),
+    };
+    quantum_loop::validate_recovered_lifecycle_journal(
+        &journal,
+        &manifest,
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("canonical completed exit should recover: {error}"));
+
+    for invalid in [
+        ProductionLifecycleCompletedExit {
+            transition: String::from("Boot"),
+            expected_exit_code: 70,
+            ..valid_exit.clone()
+        },
+        ProductionLifecycleCompletedExit {
+            transaction: 0,
+            ..valid_exit.clone()
+        },
+        ProductionLifecycleCompletedExit {
+            transaction: 3,
+            ..valid_exit.clone()
+        },
+        ProductionLifecycleCompletedExit {
+            expected_exit_code: 71,
+            observed_exit_code: 71,
+            ..valid_exit.clone()
+        },
+    ] {
+        let mut invalid_journal = journal.clone();
+        invalid_journal.completed_exits = vec![invalid].into();
+        assert!(
+            quantum_loop::validate_recovered_lifecycle_journal(
+                &invalid_journal,
+                &manifest,
+                FaultResourceLimits::default(),
+            )
+            .is_err()
+        );
+    }
+
+    let mut duplicated = journal;
+    duplicated.completed_exits = vec![valid_exit.clone(), valid_exit].into();
+    assert!(
+        quantum_loop::validate_recovered_lifecycle_journal(
+            &duplicated,
+            &manifest,
+            FaultResourceLimits::default(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn durable_run_state_rejects_oversized_json_before_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
@@ -35,7 +145,7 @@ fn durable_run_state_persists_one_aggregate_envelope() {
     assert!(!run.path().join("lifecycle-journal.json").exists());
     let state: ProductionRunState = decode_run_json(&run.path().join(PRODUCTION_RUN_STATE_FILE))
         .unwrap_or_else(|error| panic!("aggregate run state should decode: {error}"));
-    assert_eq!(state.version, 1);
+    assert_eq!(state.version, 2);
     assert_eq!(state.runtime_event_records, 0);
     assert_eq!(state.runtime_event_log_bytes, 0);
 }
@@ -45,7 +155,7 @@ fn durable_run_state_preflights_aggregate_bytes_before_owned_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let state = ProductionRunState {
-        version: 1,
+        version: 2,
         runtime_event_records: 0,
         runtime_event_log_bytes: 8,
         manifest: ProductionRunManifest {
@@ -85,7 +195,7 @@ fn durable_run_state_preflights_process_count_before_owned_map_decode() {
     let root =
         tempfile::tempdir().unwrap_or_else(|error| panic!("run-state root should build: {error}"));
     let bytes = br#"{
-      "version": 1,
+      "version": 2,
       "runtime_event_records": 0,
       "runtime_event_log_bytes": 0,
       "manifest": {

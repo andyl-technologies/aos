@@ -12,6 +12,8 @@ mod opportunities;
 #[path = "evaluation/publication.rs"]
 mod publication;
 use publication::StagedEvaluationPublication;
+#[path = "evaluation/reservation.rs"]
+mod reservation;
 
 impl ProductionFaultRuntime {
     pub(super) fn event_staging_capacity(
@@ -112,13 +114,7 @@ impl ProductionFaultRuntime {
         Ok(remaining)
     }
 
-    /// Evaluates one scheduler boundary against host devices and live QEMU.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultExecutionError`] when evaluation, preparation, live
-    /// application, evidence validation, or checkpointing fails.
-    pub fn evaluate_boundary(
+    pub(super) fn evaluate_boundary_with_effective_limits(
         &mut self,
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,

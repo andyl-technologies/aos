@@ -8,129 +8,12 @@
 mod boundary;
 mod evidence;
 mod lifecycle;
+#[path = "network_faults/ordered_map_entries.rs"]
+pub(super) mod ordered_map_entries;
+#[path = "network_faults/ordered_nested_map_entries.rs"]
+mod ordered_nested_map_entries;
 mod route;
 use evidence::*;
-
-/// Canonical sequence encoding for checkpoint maps whose keys are not JSON strings.
-pub(super) mod ordered_map_entries {
-    use std::collections::BTreeMap;
-
-    use serde::{Deserialize, Serialize};
-
-    /// Serializes entries in their strict `BTreeMap` key order.
-    ///
-    /// # Errors
-    ///
-    /// Returns the serializer's error when an entry cannot be encoded.
-    pub(super) fn serialize<S, K, V>(
-        value: &BTreeMap<K, V>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-        K: Serialize,
-        V: Serialize,
-    {
-        value.iter().collect::<Vec<_>>().serialize(serializer)
-    }
-
-    /// Decodes entries while rejecting duplicates and noncanonical order.
-    ///
-    /// # Errors
-    ///
-    /// Returns a deserialization error for malformed, duplicate, or unordered entries.
-    pub(super) fn deserialize<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-        K: Deserialize<'de> + Ord,
-        V: Deserialize<'de>,
-    {
-        let entries = Vec::<(K, V)>::deserialize(deserializer)?;
-        let mut result = BTreeMap::new();
-        for (key, value) in entries {
-            if result
-                .last_key_value()
-                .is_some_and(|(prior, _value)| prior >= &key)
-            {
-                return Err(serde::de::Error::custom(
-                    "checkpoint map entries are not in strict canonical order",
-                ));
-            }
-            result.insert(key, value);
-        }
-        Ok(result)
-    }
-}
-
-mod ordered_nested_map_entries {
-    use std::collections::BTreeMap;
-
-    use serde::{Deserialize, Serialize};
-
-    /// Serializes both map levels as canonical ordered entry sequences.
-    ///
-    /// # Errors
-    ///
-    /// Returns the serializer's error when an entry cannot be encoded.
-    pub(super) fn serialize<S, K, K2, V>(
-        value: &BTreeMap<K, BTreeMap<K2, V>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-        K: Serialize,
-        K2: Serialize,
-        V: Serialize,
-    {
-        value
-            .iter()
-            .map(|(key, entries)| (key, entries.iter().collect::<Vec<_>>()))
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-
-    /// Decodes both map levels while rejecting duplicates and noncanonical order.
-    ///
-    /// # Errors
-    ///
-    /// Returns a deserialization error for malformed, duplicate, or unordered entries.
-    pub(super) fn deserialize<'de, D, K, K2, V>(
-        deserializer: D,
-    ) -> Result<BTreeMap<K, BTreeMap<K2, V>>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-        K: Deserialize<'de> + Ord,
-        K2: Deserialize<'de> + Ord,
-        V: Deserialize<'de>,
-    {
-        let entries = Vec::<(K, Vec<(K2, V)>)>::deserialize(deserializer)?;
-        let mut result = BTreeMap::new();
-        for (key, nested_entries) in entries {
-            if result
-                .last_key_value()
-                .is_some_and(|(prior, _value)| prior >= &key)
-            {
-                return Err(serde::de::Error::custom(
-                    "checkpoint outer map entries are not in strict canonical order",
-                ));
-            }
-            let mut nested = BTreeMap::new();
-            for (nested_key, value) in nested_entries {
-                if nested
-                    .last_key_value()
-                    .is_some_and(|(prior, _value)| prior >= &nested_key)
-                {
-                    return Err(serde::de::Error::custom(
-                        "checkpoint nested map entries are not in strict canonical order",
-                    ));
-                }
-                nested.insert(nested_key, value);
-            }
-            result.insert(key, nested);
-        }
-        Ok(result)
-    }
-}
 
 use route::{availability_allows, earliest_wakeup, network_effect_application_error};
 
@@ -1682,12 +1565,30 @@ impl ProductionFaultNetworkInterceptor {
     ///
     /// Returns [`SchedulerError`] when the per-coordinate sequence overflows or
     /// the production runtime rejects evaluation.
+    #[cfg(test)]
     pub(super) fn evaluate_boundary(
         &mut self,
         coordinate: FaultCoordinate,
         scheduler: &mut SingleScheduler,
         backend: &mut ProductionNodeSet,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.evaluate_boundary_with_event_reservation(
+            coordinate,
+            scheduler,
+            backend,
+            pending_outputs,
+            (0, 0),
+        )
+    }
+
+    pub(super) fn evaluate_boundary_with_event_reservation(
+        &mut self,
+        coordinate: FaultCoordinate,
+        scheduler: &mut SingleScheduler,
+        backend: &mut ProductionNodeSet,
+        pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+        reserved_event_usage: (u64, u64),
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let mut cursor = self
             .cursor
@@ -1707,16 +1608,21 @@ impl ProductionFaultNetworkInterceptor {
                 message: String::from("production fault runtime lock is poisoned"),
             })?;
         let host_before = runtime.host_state().clone();
-        let mut evaluation =
-            match runtime.evaluate_boundary(coordinate, sequence.same_coordinate, backend) {
-                Ok(evaluation) => evaluation,
-                Err(error) => {
-                    *cursor = cursor_before;
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!("signal fault boundary failed closed: {error}"),
-                    });
-                }
-            };
+        let mut evaluation = match runtime.evaluate_boundary_with_event_reservation(
+            coordinate,
+            sequence.same_coordinate,
+            backend,
+            reserved_event_usage.0,
+            reserved_event_usage.1,
+        ) {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                *cursor = cursor_before;
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("signal fault boundary failed closed: {error}"),
+                });
+            }
+        };
         let staged = (|| {
             let impulses = runtime.drain_host_impulses();
             staged_scheduler
