@@ -304,7 +304,7 @@ The organization group order is:
 11. Audit
 12. Danger
 
-Networking contains domains, network boundaries, delivery endpoints, storage
+Networking contains domains, network policies, endpoints, storage
 gateways, and routes. Registry and cache pages reuse the same Overview,
 Delivery, Placements, Integrations, Security, Operations, Activity, and Danger
 grammar. Registry content owns packages, releases, channels, images,
@@ -315,7 +315,7 @@ Pages have one primary mutation domain. Topological context appears as links
 and backlinks instead of duplicated editors. In particular:
 
 - a placement edits storage intent, not delivery;
-- a delivery route edits one simultaneous client path, not storage identity;
+- a route edits one simultaneous client path, not storage identity;
 - a registry cache stack edits signed consumer configuration;
 - a retention subscription edits GC roots; and
 - a population target edits desired byte presence.
@@ -364,7 +364,7 @@ The cutover is complete only when:
 - every durable mutation passes plan/apply, stale-version, expired-plan,
   confirmation, permission, idempotency, and audit tests;
 - registry and cache scenarios cover standalone caches, shared caches, ordered
-  cache stacks, multiple placements, and simultaneous delivery routes;
+  cache stacks, multiple placements, and simultaneous routes;
 - publication and image fixtures cover multipart uploads, exact bytes,
   checksums, range requests, and public/private access;
 - repository guards find no removed management handler or POST route;

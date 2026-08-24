@@ -35,12 +35,12 @@ A registry's Git layout and its Nix-compatible paths are one logical registry
 surface. A binary cache is a separate Nix namespace even when a registry uses
 it as its preferred substituter.
 
-## Storage bindings
+## Bindings
 
-A storage binding describes how the Hub reaches an origin:
+A binding describes how the Hub reaches an origin:
 
 ```text
-StorageBinding
+Binding
   id
   org_id or instance scope
   kind = local_fs | s3 | r2 | deployment_r2
@@ -54,16 +54,16 @@ StorageBinding
   current_write_revision
   health
 
-StorageBindingWriteRevision
-  storage_binding_id
+BindingWriteRevision
+  binding_id
   revision
   write credential version reference
   write and conditional-write capability declaration
   immutable revision fingerprint
   capability fingerprint
 
-StorageBindingWriteObservation
-  storage_binding_id
+BindingWriteObservation
+  binding_id
   revision
   state = unknown | validating | valid | invalid
   validated_at
@@ -106,7 +106,7 @@ A placement maps one surface into one binding prefix:
 Placement
   id
   surface
-  storage_binding_id
+  binding_id
   prefix
   kind = complete | shard | archive
   desired_state = active | draining | offline
@@ -118,7 +118,7 @@ Placement
 PlacementWriteCapability
   placement_id
   placement_write_spec_version
-  storage_binding_id
+  binding_id
   binding_write_revision
 
 PlacementObservation
@@ -356,7 +356,7 @@ For registries, the same split tracks Git objects, packs, releases, channels,
 and mutable pointer generations. The existing surface remains readable from a
 single placement while presence indexing is introduced.
 
-## Domains, delivery endpoints, and routes
+## Domains, endpoints, and routes
 
 A domain owns DNS-name lifecycle independently of any endpoint or route:
 
@@ -378,22 +378,22 @@ DNS name creates a replacement domain and then replacement endpoints; DNS and
 certificate-provider posture remains revisioned lifecycle configuration.
 
 ```text
-DeliveryEndpoint
+Endpoint
   id
   owner scope
   scheme = https | http
   host = domain id | canonical IPv4 bytes | canonical IPv6 bytes
   effective port
-  immutable network boundary id
+  immutable network policy id
   desired/observed endpoint generation
 
-DeliveryEndpointRevision
+EndpointRevision
   endpoint id + immutable generation
-  network boundary revision
+  network policy revision
   ingress kind = hub | external | layer7
   desired listener, TLS, and probe posture
 
-NetworkBoundary
+NetworkPolicy
   stable scoped realm identity and kind
   immutable desired protection/trusted-ingress revision
   per-revision verification and staged/active/retiring lifecycle
@@ -412,17 +412,17 @@ DNS name. Origin/realm identity is immutable. Ingress and listener changes
 create a new endpoint generation, while an origin or realm change creates a
 replacement endpoint and an impact-planned route/gateway move.
 
-A delivery route maps a path on that endpoint to a surface:
+A route maps a path on that endpoint to a surface:
 
 ```text
-DeliveryRoute
+Route
   id
   endpoint id + immutable generation
   base_path
   surface
   mode
   access_policy
-  storage_gateway_id and gateway_generation (direct only)
+  gateway_id and gateway_generation (direct only)
   placement_id or placement_policy_revision_id
   capabilities = git | nix_cache | web
   canonical
@@ -435,7 +435,7 @@ one complete placement plus one gateway on that placement's binding and pins
 the gateway's observed generation and the gateway-derived client path. It
 cannot select a policy. Hub proxy and
 redirect routes select one placement or one immutable policy revision and
-cannot reference a storage gateway. Composite foreign keys make the route,
+cannot reference a gateway. Composite foreign keys make the route,
 target, gateway, and any canonical-route row belong to the same surface and
 scope.
 
@@ -474,22 +474,22 @@ A surface may have any number of routes. Exactly one route may be canonical
 for each protocol audience when setup snippets require a single URL. Other
 routes remain simultaneously usable.
 
-## Storage gateways
+## Gateways
 
-A storage gateway is a reusable direct mapping over a binding:
+A gateway is a reusable direct mapping over a binding:
 
 ```text
-StorageGateway
+Gateway
   id
   org_id or instance scope
   enabled
   desired/observed generation and reconciliation state
 
-StorageGatewayRevision
+GatewayRevision
   gateway id + immutable generation
   endpoint id + immutable generation
   client base path
-  storage_binding_id
+  binding_id
   origin prefix
   access policy
   content digest
@@ -498,7 +498,7 @@ StorageGatewayRevision
 A complete placement on that binding is eligible for a user-owned direct route
 whose base path is exactly
 `join_segments(gateway.client_base_path, placement.prefix)`. The route is
-explicitly created, represented, and validated as a delivery route and pins its
+explicitly created, represented, and validated as a route and pins its
 exact source gateway revision; gateway reconciliation never creates or mutates
 it. Revisions remain immutable while routes reference
 them, so an external gateway cannot change path or access behavior underneath a
@@ -536,8 +536,8 @@ This replaces the current combination of a binding-targeted frontend and a
 resource-level `advertise_storage_frontend` toggle. Operators see the concrete
 derived URL, eligibility, access posture, and route health on the surface.
 
-Instance and organization topology defaults may nominate a storage binding,
-delivery endpoint, and gateway for creation workflows. Organization values
+Instance and organization topology defaults may nominate a binding,
+endpoint, and gateway for creation workflows. Organization values
 override instance values. Defaults never retarget an existing placement or
 route; that always requires its own impact plan and apply. Defaults affect only
 proposal construction: creating a registry or cache never creates a placement,

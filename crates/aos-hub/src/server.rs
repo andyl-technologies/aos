@@ -1,4 +1,4 @@
-//! Native Hub control-plane and typed delivery router.
+//! Native Hub control-plane and typed router.
 //!
 //! The router combines the shared Connect-JSON API and Web console with native
 //! health, metrics, authentication, and storage adapters. Registry and cache
@@ -138,7 +138,7 @@ impl AppState {
 }
 
 /// A [`RepairAuthorizer`](crate::validation::RepairAuthorizer) for managed
-/// cache delivery routes.
+/// cache routes.
 ///
 /// Every simultaneously ready route resolves to the same immutable cache id.
 /// The authorizer mints an internal short-lived cache-write JWT; arbitrary or
@@ -205,7 +205,7 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
     }
 }
 
-/// Builds the native Hub control-plane and typed delivery router.
+/// Builds the native Hub control-plane and typed router.
 ///
 /// Connect-JSON methods and the shared console own the control URL space.
 /// Public registry and cache bytes are admitted only by the outer typed
@@ -270,6 +270,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     }
     if let Some(verifier) = &state.identity_domain_verifier {
         rpc_service = rpc_service.with_identity_domain_verifier(Arc::clone(verifier));
+    }
+    if let Some(keyring) = &state.route_reservation_keyring {
+        rpc_service = rpc_service.with_route_reservation_keyring(Arc::clone(keyring));
     }
     let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
@@ -345,9 +348,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
             ip_state,
             inject_client_ip,
         ));
-    // Typed domain/IP endpoints select the most-specific delivery route before
+    // Typed domain/IP endpoints select the most-specific route before
     // any internal handler matches. Outermost so it runs first on the way in.
-    aos_hub_core::connect::with_delivery_route_dispatch(
+    aos_hub_core::connect::with_route_dispatch(
         app,
         dispatch_service,
         state.delivery_attestation_verifier.clone(),

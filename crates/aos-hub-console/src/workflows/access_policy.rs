@@ -1,8 +1,8 @@
 //! Shared delivery-access policy editor and validation.
 //!
-//! Storage gateways and Hub delivery routes use the same public, external
+//! Gateways and Hub routes use the same public, external
 //! provider, and private-network policy vocabulary. Hub-auth is intentionally
-//! omitted here because direct storage gateways cannot enforce it.
+//! omitted here because direct gateways cannot enforce it.
 
 use leptos::prelude::*;
 
@@ -163,7 +163,18 @@ impl AccessPolicySignals {
 pub(super) fn AccessPolicyFields(
     signals: AccessPolicySignals,
     #[prop(default = false)] allow_hub_auth: bool,
+    #[prop(default = Vec::new())] boundaries: Vec<aos_proto_types::NetworkPolicy>,
 ) -> impl IntoView {
+    let selected_boundaries = boundaries.clone();
+    let on_boundary_change = Callback::new(move |value: String| {
+        signals.boundary_id.set(value.clone());
+        let revision = selected_boundaries
+            .iter()
+            .find(|boundary| boundary.stable_id == value)
+            .map(|boundary| boundary.default_revision)
+            .unwrap_or_default();
+        signals.boundary_revision.set(revision.to_string());
+    });
     view! {
         <label>
             <span>"Access policy"</span>
@@ -186,10 +197,10 @@ pub(super) fn AccessPolicyFields(
                 <label class="full-field"><span>"Client mechanisms (one kind=secret-ref per line)"</span><textarea required prop:value=move || signals.mechanisms.get() on:input=move |event| signals.mechanisms.set(event_target_value(&event))></textarea></label>
                 <label class="full-field"><span>"Client classes (one per line)"</span><textarea prop:value=move || signals.client_classes.get() on:input=move |event| signals.client_classes.set(event_target_value(&event))></textarea></label>
             }.into_any(),
-            "private-network" => view! {
-                <label><span>"Boundary stable ID"</span><input required prop:value=move || signals.boundary_id.get() on:input=move |event| signals.boundary_id.set(event_target_value(&event))/></label>
-                <label><span>"Boundary revision"</span><input required type="number" min="1" prop:value=move || signals.boundary_revision.get() on:input=move |event| signals.boundary_revision.set(event_target_value(&event))/></label>
-            }.into_any(),
+            "private-network" => { let on_boundary_change = on_boundary_change.clone(); view! {
+                <label><span>"Network policy"</span><select required prop:value=move || signals.boundary_id.get() on:change=move |event| on_boundary_change.run(event_target_value(&event))>{boundaries.iter().map(|boundary| view! { <option value=boundary.stable_id.clone()>{format!("{} · {}", boundary.name, boundary.kind)}</option> }).collect_view()}{(!signals.boundary_id.get_untracked().is_empty() && !boundaries.iter().any(|boundary| boundary.stable_id == signals.boundary_id.get_untracked())).then(|| view! { <option value=signals.boundary_id.get_untracked()>{"Currently pinned boundary"}</option> })}</select>{boundaries.is_empty().then(|| view! { <small>"No selectable network policies are available in this scope."</small> })}</label>
+                <label><span>"Boundary revision"</span><select required prop:value=move || signals.boundary_revision.get()><option value=signals.boundary_revision.get_untracked()>{format!("Pinned revision {}", signals.boundary_revision.get_untracked())}</option>{boundaries.iter().filter(|boundary| boundary.stable_id == signals.boundary_id.get_untracked()).map(|boundary| view! { <option value=boundary.default_revision.to_string()>{format!("Current revision {}", boundary.default_revision)}</option> }).collect_view()}</select></label>
+            }.into_any() },
             _ => ().into_any(),
         }}
     }

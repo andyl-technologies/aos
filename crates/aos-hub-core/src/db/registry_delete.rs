@@ -127,7 +127,7 @@ impl Database {
                 // locks, so a creator either commits before cancellation or
                 // observes the deleted target and rolls back.
                 Statement::new(
-                    "UPDATE delivery_routes SET updated_at = updated_at
+                    "UPDATE routes SET updated_at = updated_at
                      WHERE registry_id = ?1",
                     vals![registry_id],
                 )
@@ -190,9 +190,9 @@ impl Database {
                        authorization_scope_key = ?1
                        OR (primary_target_kind = 'registry'
                          AND primary_target_stable_id = ?2)
-                       OR (primary_target_kind = 'delivery_route'
+                       OR (primary_target_kind = 'route'
                          AND primary_target_stable_id IN (
-                           SELECT id FROM delivery_routes WHERE registry_id = ?4))
+                           SELECT id FROM routes WHERE registry_id = ?4))
                        OR EXISTS (SELECT 1 FROM operation_secondary_targets target
                          WHERE target.operation_id = topology_operations.operation_id
                            AND target.authorization_scope_key = ?1))",
@@ -202,41 +202,41 @@ impl Database {
                 // Route and delivery evidence must disappear before the
                 // configuration and manifest identities that they pin.
                 Statement::new(
-                    "DELETE FROM network_boundary_serving_pins
+                    "DELETE FROM network_policy_serving_pins
                      WHERE target_kind = 'route' AND target_stable_id IN (
-                       SELECT id FROM delivery_routes WHERE registry_id = ?1)",
+                       SELECT id FROM routes WHERE registry_id = ?1)",
                     vals![registry_id],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM delivery_endpoint_scope_grant_pins
+                    "DELETE FROM endpoint_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id IN (
-                       SELECT id FROM delivery_routes WHERE registry_id = ?1)",
+                       SELECT id FROM routes WHERE registry_id = ?1)",
                     vals![registry_id],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM storage_gateway_scope_grant_pins
+                    "DELETE FROM gateway_scope_grant_pins
                      WHERE target_kind = 'route' AND target_stable_id IN (
-                       SELECT id FROM delivery_routes WHERE registry_id = ?1)",
+                       SELECT id FROM routes WHERE registry_id = ?1)",
                     vals![registry_id],
                 )
                 .unchecked(),
-                delete("direct_delivery_route_evidence", registry_id),
+                delete("direct_route_evidence", registry_id),
                 Statement::new(
-                    "DELETE FROM delivery_route_access_observations
-                     WHERE delivery_route_id IN (
-                       SELECT id FROM delivery_routes WHERE registry_id = ?1)",
+                    "DELETE FROM route_access_observations
+                     WHERE route_id IN (
+                       SELECT id FROM routes WHERE registry_id = ?1)",
                     vals![registry_id],
                 )
                 .unchecked(),
-                delete("delivery_route_observations", registry_id),
-                delete("canonical_routes", registry_id),
+                delete("route_observations", registry_id),
+                delete("route_advertisements", registry_id),
                 delete("registry_cache_stack_entries", registry_id),
                 delete("consumer_cache_publication_intents", registry_id),
-                delete("delivery_route_heads", registry_id),
-                delete("delivery_route_configurations", registry_id),
-                delete("delivery_routes", registry_id),
+                delete("route_heads", registry_id),
+                delete("route_configurations", registry_id),
+                delete("routes", registry_id),
                 delete("placement_delivery_manifest_heads", registry_id),
                 delete("placement_delivery_manifests", registry_id),
                 // Policy tables use restrictive composite keys. Retire their

@@ -94,7 +94,7 @@ pub(crate) async fn dispatch_converted_request(
     console_deps: ConsoleDeps,
     request: http::Request<Body>,
 ) -> ConvertedDispatch {
-    let request = match aos_hub_core::connect::rewrite_for_delivery_route(svc, request).await {
+    let request = match aos_hub_core::connect::rewrite_for_route(svc, request).await {
         Ok(request) => request,
         Err(response) => return ConvertedDispatch::Response(response),
     };

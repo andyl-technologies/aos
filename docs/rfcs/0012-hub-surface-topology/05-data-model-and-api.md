@@ -12,7 +12,7 @@ Connect-JSON service/message and CLI mapping is in
 ## Binding-write capability and placement records
 
 ```sql
-storage_bindings(
+bindings(
   id,
   org_id NULL,
   owner_scope_key,       -- instance | org:<stable-id>
@@ -32,12 +32,12 @@ storage_bindings(
   updated_at,
   UNIQUE(id, owner_scope_key),
   UNIQUE(org_id, name),
-  CHECK valid_storage_binding_kind_shape,
+  CHECK valid_binding_kind_shape,
   CHECK(kind = 'local_fs' OR endpoint_scheme = 'https')
 )
 
-storage_binding_credential_revisions(
-  storage_binding_id,
+binding_credential_revisions(
+  binding_id,
   purpose,               -- read | write | delete | list | presign
   generation,
   secret_version_ref,
@@ -47,28 +47,28 @@ storage_binding_credential_revisions(
   credential_fingerprint,
   created_by,
   created_at,
-  PRIMARY KEY(storage_binding_id, purpose, generation),
-  UNIQUE(storage_binding_id, purpose, secret_version_ref),
+  PRIMARY KEY(binding_id, purpose, generation),
+  UNIQUE(binding_id, purpose, secret_version_ref),
   CHECK(generation > 0),
-  FOREIGN KEY(storage_binding_id) REFERENCES storage_bindings(id)
+  FOREIGN KEY(binding_id) REFERENCES bindings(id)
     ON DELETE CASCADE ON UPDATE RESTRICT
 )
 
-storage_binding_credential_heads(
-  storage_binding_id,
+binding_credential_heads(
+  binding_id,
   purpose,
   current_generation,
   resource_version,
   updated_at,
-  PRIMARY KEY(storage_binding_id, purpose),
-  FOREIGN KEY(storage_binding_id, purpose, current_generation)
-    REFERENCES storage_binding_credential_revisions(
-      storage_binding_id, purpose, generation)
+  PRIMARY KEY(binding_id, purpose),
+  FOREIGN KEY(binding_id, purpose, current_generation)
+    REFERENCES binding_credential_revisions(
+      binding_id, purpose, generation)
       ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
-storage_binding_consumer_scopes(
-  storage_binding_id,
+binding_consumer_scopes(
+  binding_id,
   consumer_scope_key,
   grant_generation,
   grant_kind,            -- owner | instance_default | explicit
@@ -78,17 +78,17 @@ storage_binding_consumer_scopes(
   revoked_by NULL,
   revoked_at NULL,
   resource_version,
-  PRIMARY KEY(storage_binding_id, consumer_scope_key),
-  UNIQUE(storage_binding_id, consumer_scope_key, grant_generation, state),
+  PRIMARY KEY(binding_id, consumer_scope_key),
+  UNIQUE(binding_id, consumer_scope_key, grant_generation, state),
   CHECK(grant_generation > 0),
   CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
      OR (state = 'revoked' AND revoked_by IS NOT NULL
          AND revoked_at IS NOT NULL)),
-  FOREIGN KEY(storage_binding_id) REFERENCES storage_bindings(id)
+  FOREIGN KEY(binding_id) REFERENCES bindings(id)
 )
 
-storage_binding_write_revisions(
-  storage_binding_id,
+binding_write_revisions(
+  binding_id,
   revision,
   write_credential_purpose,  -- always write
   write_credential_generation,
@@ -98,42 +98,42 @@ storage_binding_write_revisions(
   revision_fingerprint,
   capability_fingerprint,
   created_at,
-  PRIMARY KEY(storage_binding_id, revision),
-  UNIQUE(storage_binding_id, revision_fingerprint),
+  PRIMARY KEY(binding_id, revision),
+  UNIQUE(binding_id, revision_fingerprint),
   CHECK(write_credential_purpose = 'write'),
-  FOREIGN KEY(storage_binding_id, write_credential_purpose,
+  FOREIGN KEY(binding_id, write_credential_purpose,
               write_credential_generation)
-    REFERENCES storage_binding_credential_revisions(
-      storage_binding_id, purpose, generation)
+    REFERENCES binding_credential_revisions(
+      binding_id, purpose, generation)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY (storage_binding_id)
-    REFERENCES storage_bindings(id)
+  FOREIGN KEY (binding_id)
+    REFERENCES bindings(id)
       ON DELETE CASCADE ON UPDATE RESTRICT
 )
 
-storage_binding_write_state(
-  storage_binding_id PRIMARY KEY,
+binding_write_state(
+  binding_id PRIMARY KEY,
   current_write_revision NULL,
   resource_version,
   updated_at,
-  FOREIGN KEY (storage_binding_id)
-    REFERENCES storage_bindings(id)
+  FOREIGN KEY (binding_id)
+    REFERENCES bindings(id)
       ON DELETE CASCADE ON UPDATE RESTRICT,
-  FOREIGN KEY (storage_binding_id, current_write_revision)
-    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  FOREIGN KEY (binding_id, current_write_revision)
+    REFERENCES binding_write_revisions(binding_id, revision)
       ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
-storage_binding_write_observations(
-  storage_binding_id,
+binding_write_observations(
+  binding_id,
   revision,
   state,                -- unknown | validating | valid | invalid
   validated_at NULL,
   error NULL,
   observation_version,
-  PRIMARY KEY(storage_binding_id, revision),
-  FOREIGN KEY (storage_binding_id, revision)
-    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  PRIMARY KEY(binding_id, revision),
+  FOREIGN KEY (binding_id, revision)
+    REFERENCES binding_write_revisions(binding_id, revision)
       ON DELETE CASCADE ON UPDATE RESTRICT
 )
 
@@ -143,7 +143,7 @@ surface_placements(
   cache_id NULL,
   consumer_scope_key,
   name,
-  storage_binding_id,
+  binding_id,
   prefix,
   kind,                 -- complete | shard | archive
   desired_state,        -- active | draining | offline
@@ -169,35 +169,35 @@ surface_placements(
   UNIQUE(id, cache_id, kind),
   UNIQUE(id, registry_id, kind, hash_range_start, hash_range_end),
   UNIQUE(id, cache_id, kind, hash_range_start, hash_range_end),
-  UNIQUE(id, storage_binding_id),
-  UNIQUE(id, storage_binding_id, prefix),
+  UNIQUE(id, binding_id),
+  UNIQUE(id, binding_id, prefix),
   UNIQUE(id, registry_id, write_spec_version),
   UNIQUE(id, cache_id, write_spec_version),
-  UNIQUE(id, storage_binding_id, write_spec_version),
-  UNIQUE(storage_binding_id, prefix),
+  UNIQUE(id, binding_id, write_spec_version),
+  UNIQUE(binding_id, prefix),
   FOREIGN KEY(registry_id, consumer_scope_key)
     REFERENCES registries(id, scope_key),
   FOREIGN KEY(cache_id, consumer_scope_key)
     REFERENCES binary_caches(id, scope_key),
-  FOREIGN KEY(storage_binding_id, consumer_scope_key)
-    REFERENCES storage_binding_consumer_scopes(
-      storage_binding_id, consumer_scope_key)
+  FOREIGN KEY(binding_id, consumer_scope_key)
+    REFERENCES binding_consumer_scopes(
+      binding_id, consumer_scope_key)
 )
 
 surface_placement_write_capabilities(
   placement_id,
   placement_write_spec_version,
-  storage_binding_id,
+  binding_id,
   binding_write_revision,
   created_at,
   PRIMARY KEY(placement_id, placement_write_spec_version,
               binding_write_revision),
-  FOREIGN KEY (placement_id, storage_binding_id,
+  FOREIGN KEY (placement_id, binding_id,
                placement_write_spec_version)
-    REFERENCES surface_placements(id, storage_binding_id, write_spec_version)
+    REFERENCES surface_placements(id, binding_id, write_spec_version)
       ON DELETE CASCADE ON UPDATE RESTRICT,
-  FOREIGN KEY (storage_binding_id, binding_write_revision)
-    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+  FOREIGN KEY (binding_id, binding_write_revision)
+    REFERENCES binding_write_revisions(binding_id, revision)
       ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
@@ -350,9 +350,9 @@ placement_policy_revisions(
   FOREIGN KEY(cache_id, consumer_scope_key)
     REFERENCES binary_caches(id, scope_key),
   FOREIGN KEY(local_boundary_id, local_boundary_revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision),
+    REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(local_boundary_id, consumer_scope_key)
-    REFERENCES network_boundary_consumer_scopes(
+    REFERENCES network_policy_consumer_scopes(
       boundary_id, consumer_scope_key)
 )
 
@@ -469,7 +469,7 @@ placement_equivalences(
 )
 ```
 
-`valid_storage_binding_kind_shape` is a closed union. `local_fs` requires one
+`valid_binding_kind_shape` is a closed union. `local_fs` requires one
 canonical absolute `local_root_path` and requires every object-store field and
 credential head to be absent. `s3` and `r2` require bucket, canonical prefix
 (empty means the bucket root), typed HTTPS endpoint origin, effective port,
@@ -526,8 +526,8 @@ operator provenance and a validated backend identity fingerprint. Placements
 must belong to the same surface and resolve the same object keys/content; the
 create path never infers equivalence from similar endpoint/bucket strings.
 
-Existing `registry.storage_binding_id/prefix` and
-`cache.storage_binding_id/prefix` migrate into one complete placement and
+Existing `registry.binding_id/prefix` and
+`cache.binding_id/prefix` migrate into one complete placement and
 observation each. A surface receives a ready single-writer authority only when
 preflight proves that its legacy destination was intended to be writable, the
 exact credential/capability revision validates, and there is one unambiguous
@@ -539,7 +539,7 @@ starts; production code never dual-reads both representations.
 
 ### Binding write revisions and rotation
 
-`storage_binding_write_revisions` are immutable declarations. Credential
+`binding_write_revisions` are immutable declarations. Credential
 rotation, revocation replacement, or a write/conditional-write capability
 change creates a new revision and observation; only a validated revision may
 become `current_write_revision`. The current pointer is a default for new plans,
@@ -711,11 +711,11 @@ WHERE id = ?5
     JOIN surface_placement_write_capabilities AS pc
       ON pc.placement_id = p.id
      AND pc.placement_write_spec_version = p.write_spec_version
-    JOIN storage_binding_write_revisions AS br
-      ON br.storage_binding_id = pc.storage_binding_id
+    JOIN binding_write_revisions AS br
+      ON br.binding_id = pc.binding_id
      AND br.revision = pc.binding_write_revision
-    JOIN storage_binding_write_observations AS bo
-      ON bo.storage_binding_id = br.storage_binding_id
+    JOIN binding_write_observations AS bo
+      ON bo.binding_id = br.binding_id
      AND bo.revision = br.revision
     WHERE p.id = ?1
       AND p.write_spec_version = ?2
@@ -778,11 +778,11 @@ payload eligibility, conditional-write support, fencing, and conflict behavior
 before widening the mode constraint. It never reintroduces per-placement write
 booleans or write order.
 
-## Domains, delivery endpoints, and routes
+## Domains, endpoints, and routes
 
 `registries` and `binary_caches` each expose a non-null canonical `scope_key`
 (`instance` or `org:<stable-id>`) and `UNIQUE(id, scope_key)`. DNS domains,
-typed delivery endpoints, and gateways retain their owner scope, while endpoint
+typed endpoints, and gateways retain their owner scope, while endpoint
 and gateway grant rows enumerate consumer scopes allowed to create routes.
 Instance-owned Hub infrastructure may grant named organizations. An
 `instance_default` grant is eagerly materialized as one exact consumer-scope
@@ -830,7 +830,7 @@ domains(
   UNIQUE(id, owner_scope_key)
 )
 
-network_boundaries(
+network_policies(
   id,
   org_id NULL,
   owner_scope_key,
@@ -851,7 +851,7 @@ network_boundaries(
   UNIQUE(id, owner_scope_key)
 )
 
-network_boundary_revisions(
+network_policy_revisions(
   boundary_id,
   revision,
   protected_transport_required,
@@ -865,10 +865,10 @@ network_boundary_revisions(
   PRIMARY KEY(boundary_id, revision),
   UNIQUE(boundary_id, revision, protected_transport_required,
          trusted_ingress_kind),
-  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id)
+  FOREIGN KEY(boundary_id) REFERENCES network_policies(id)
 )
 
-network_boundary_observations(
+network_policy_observations(
   boundary_id,
   revision,
   state,                 -- unknown | declared | probing | verified | degraded |
@@ -879,10 +879,10 @@ network_boundary_observations(
   error NULL,
   PRIMARY KEY(boundary_id, revision),
   FOREIGN KEY(boundary_id, revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision)
+    REFERENCES network_policy_revisions(boundary_id, revision)
 )
 
-network_boundary_revision_lifecycle(
+network_policy_revision_lifecycle(
   boundary_id,
   revision,
   state,                 -- staged | active | retiring | retired
@@ -894,10 +894,10 @@ network_boundary_revision_lifecycle(
   PRIMARY KEY(boundary_id, revision),
   UNIQUE(boundary_id, revision, state),
   FOREIGN KEY(boundary_id, revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision)
+    REFERENCES network_policy_revisions(boundary_id, revision)
 )
 
-network_boundary_defaults(
+network_policy_defaults(
   boundary_id PRIMARY KEY,
   revision,
   state,                 -- active
@@ -905,13 +905,13 @@ network_boundary_defaults(
   updated_at,
   UNIQUE(boundary_id, revision, state),
   CHECK(state = 'active'),
-  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id),
+  FOREIGN KEY(boundary_id) REFERENCES network_policies(id),
   FOREIGN KEY(boundary_id, revision, state)
-    REFERENCES network_boundary_revision_lifecycle(
+    REFERENCES network_policy_revision_lifecycle(
       boundary_id, revision, state)
 )
 
-network_boundary_serving_pins(
+network_policy_serving_pins(
   pin_id PRIMARY KEY,
   boundary_id,
   revision,
@@ -934,13 +934,13 @@ network_boundary_serving_pins(
   CHECK valid_boundary_serving_pin_shape,
   CHECK(grant_state = 'active'),
   FOREIGN KEY(boundary_id, revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision),
+    REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(boundary_id, consumer_scope_key, grant_generation, grant_state)
-    REFERENCES network_boundary_consumer_scopes(
+    REFERENCES network_policy_consumer_scopes(
       boundary_id, consumer_scope_key, grant_generation, state)
 )
 
-network_boundary_consumer_scopes(
+network_policy_consumer_scopes(
   boundary_id,
   consumer_scope_key,
   grant_generation,
@@ -957,10 +957,10 @@ network_boundary_consumer_scopes(
   CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
      OR (state = 'revoked' AND revoked_by IS NOT NULL
          AND revoked_at IS NOT NULL)),
-  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id)
+  FOREIGN KEY(boundary_id) REFERENCES network_policies(id)
 )
 
-delivery_endpoints(
+endpoints(
   id,
   org_id NULL,
   owner_scope_key,
@@ -969,7 +969,7 @@ delivery_endpoints(
   ipv4_bytes NULL,
   ipv6_bytes NULL,
   effective_port,
-  network_boundary_id,
+  network_policy_id,
   cleartext_acknowledged_at NULL,
   desired_generation NULL,
   endpoint_identity_digest UNIQUE,
@@ -980,20 +980,20 @@ delivery_endpoints(
   CHECK canonical_ip_lengths_and_no_mapped_v6,
   CHECK valid_scheme_port_and_cleartext_posture,
   UNIQUE(id, owner_scope_key),
-  UNIQUE(id, network_boundary_id),
+  UNIQUE(id, network_policy_id),
   FOREIGN KEY(domain_id, owner_scope_key)
     REFERENCES domains(id, owner_scope_key),
-  FOREIGN KEY(network_boundary_id, owner_scope_key)
-    REFERENCES network_boundary_consumer_scopes(
+  FOREIGN KEY(network_policy_id, owner_scope_key)
+    REFERENCES network_policy_consumer_scopes(
       boundary_id, consumer_scope_key),
   FOREIGN KEY(id, desired_generation)
-    REFERENCES delivery_endpoint_revisions(endpoint_id, generation)
+    REFERENCES endpoint_revisions(endpoint_id, generation)
 )
 
-delivery_endpoint_revisions(
+endpoint_revisions(
   endpoint_id,
   generation,
-  network_boundary_id,
+  network_policy_id,
   boundary_revision,
   ingress_kind,          -- hub | external | layer7
   listener_configuration,
@@ -1004,14 +1004,14 @@ delivery_endpoint_revisions(
   created_at,
   PRIMARY KEY(endpoint_id, generation),
   UNIQUE(endpoint_id, generation, ingress_kind),
-  UNIQUE(endpoint_id, generation, network_boundary_id, boundary_revision),
-  FOREIGN KEY(endpoint_id, network_boundary_id)
-    REFERENCES delivery_endpoints(id, network_boundary_id),
-  FOREIGN KEY(network_boundary_id, boundary_revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision)
+  UNIQUE(endpoint_id, generation, network_policy_id, boundary_revision),
+  FOREIGN KEY(endpoint_id, network_policy_id)
+    REFERENCES endpoints(id, network_policy_id),
+  FOREIGN KEY(network_policy_id, boundary_revision)
+    REFERENCES network_policy_revisions(boundary_id, revision)
 )
 
-delivery_endpoint_observations(
+endpoint_observations(
   endpoint_id PRIMARY KEY,
   observed_generation NULL,
   boundary_id,
@@ -1026,14 +1026,14 @@ delivery_endpoint_observations(
          AND state = 'unknown')
      OR (observed_generation IS NOT NULL AND boundary_revision IS NOT NULL)),
   FOREIGN KEY(endpoint_id, boundary_id)
-    REFERENCES delivery_endpoints(id, network_boundary_id),
+    REFERENCES endpoints(id, network_policy_id),
   FOREIGN KEY(endpoint_id, observed_generation, boundary_id,
               boundary_revision)
-    REFERENCES delivery_endpoint_revisions(
-      endpoint_id, generation, network_boundary_id, boundary_revision)
+    REFERENCES endpoint_revisions(
+      endpoint_id, generation, network_policy_id, boundary_revision)
 )
 
-delivery_endpoint_route_scopes(
+endpoint_route_scopes(
   endpoint_id,
   endpoint_generation,
   consumer_scope_key,
@@ -1053,10 +1053,10 @@ delivery_endpoint_route_scopes(
      OR (state = 'revoked' AND revoked_by IS NOT NULL
          AND revoked_at IS NOT NULL)),
   FOREIGN KEY(endpoint_id, endpoint_generation)
-    REFERENCES delivery_endpoint_revisions(endpoint_id, generation)
+    REFERENCES endpoint_revisions(endpoint_id, generation)
 )
 
-delivery_routes(
+routes(
   id,
   url_reservation_id,
   configuration_generation NULL,
@@ -1066,9 +1066,9 @@ delivery_routes(
   endpoint_generation,
   endpoint_ingress_kind,
   consumer_scope_key,
-  storage_gateway_id NULL,
+  gateway_id NULL,
   gateway_generation NULL,
-  target_storage_binding_id NULL,
+  target_binding_id NULL,
   gateway_client_base_path NULL,
   target_placement_prefix NULL,
   base_path,
@@ -1106,9 +1106,9 @@ delivery_routes(
           AND target_placement_kind = 'complete'
           AND placement_policy_revision_id IS NULL
           AND placement_policy_revision_state IS NULL
-          AND storage_gateway_id IS NOT NULL
+          AND gateway_id IS NOT NULL
           AND gateway_generation IS NOT NULL
-          AND target_storage_binding_id IS NOT NULL
+          AND target_binding_id IS NOT NULL
           AND gateway_client_base_path IS NOT NULL
           AND target_placement_prefix IS NOT NULL
           AND base_path = join_segments(gateway_client_base_path,
@@ -1123,9 +1123,9 @@ delivery_routes(
                 AND placement_policy_revision_state IS NULL)
             OR (placement_policy_revision_id IS NOT NULL
                 AND placement_policy_revision_state = 'published'))
-          AND storage_gateway_id IS NULL
+          AND gateway_id IS NULL
           AND gateway_generation IS NULL
-          AND target_storage_binding_id IS NULL
+          AND target_binding_id IS NULL
           AND gateway_client_base_path IS NULL
           AND target_placement_prefix IS NULL)),
   UNIQUE(endpoint_id, base_path),
@@ -1137,19 +1137,19 @@ delivery_routes(
   UNIQUE(id, configuration_generation, configuration_digest,
          access_policy_digest),
   UNIQUE(id, registry_id, endpoint_id, endpoint_generation, placement_id,
-         storage_gateway_id, gateway_generation),
+         gateway_id, gateway_generation),
   UNIQUE(id, cache_id, endpoint_id, endpoint_generation, placement_id,
-         storage_gateway_id, gateway_generation),
+         gateway_id, gateway_generation),
   FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key)
-    REFERENCES delivery_endpoint_route_scopes(
+    REFERENCES endpoint_route_scopes(
       endpoint_id, endpoint_generation, consumer_scope_key),
   FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
-    REFERENCES delivery_endpoint_revisions(
+    REFERENCES endpoint_revisions(
       endpoint_id, generation, ingress_kind),
   FOREIGN KEY(access_boundary_id, access_boundary_revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision),
+    REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(access_boundary_id, consumer_scope_key)
-    REFERENCES network_boundary_consumer_scopes(
+    REFERENCES network_policy_consumer_scopes(
       boundary_id, consumer_scope_key),
   FOREIGN KEY(registry_id, consumer_scope_key)
     REFERENCES registries(id, scope_key),
@@ -1157,13 +1157,13 @@ delivery_routes(
     REFERENCES binary_caches(id, scope_key),
   FOREIGN KEY(id, registry_id, configuration_generation,
               configuration_digest)
-    REFERENCES delivery_route_configurations(
-      delivery_route_id, registry_id, configuration_generation,
+    REFERENCES route_configurations(
+      route_id, registry_id, configuration_generation,
       configuration_digest),
   FOREIGN KEY(id, cache_id, configuration_generation,
               configuration_digest)
-    REFERENCES delivery_route_configurations(
-      delivery_route_id, cache_id, configuration_generation,
+    REFERENCES route_configurations(
+      route_id, cache_id, configuration_generation,
       configuration_digest),
   FOREIGN KEY(placement_id, registry_id)
     REFERENCES surface_placements(id, registry_id),
@@ -1177,25 +1177,25 @@ delivery_routes(
   FOREIGN KEY(placement_policy_revision_id, cache_id,
               placement_policy_revision_state)
     REFERENCES placement_policy_revisions(id, cache_id, state),
-  FOREIGN KEY(placement_id, target_storage_binding_id)
-    REFERENCES surface_placements(id, storage_binding_id),
-  FOREIGN KEY(placement_id, target_storage_binding_id,
+  FOREIGN KEY(placement_id, target_binding_id)
+    REFERENCES surface_placements(id, binding_id),
+  FOREIGN KEY(placement_id, target_binding_id,
               target_placement_prefix)
-    REFERENCES surface_placements(id, storage_binding_id, prefix),
-  FOREIGN KEY(storage_gateway_id, gateway_generation, endpoint_id,
-              endpoint_generation, target_storage_binding_id,
+    REFERENCES surface_placements(id, binding_id, prefix),
+  FOREIGN KEY(gateway_id, gateway_generation, endpoint_id,
+              endpoint_generation, target_binding_id,
               gateway_client_base_path, access_policy_digest)
-    REFERENCES storage_gateway_revisions(
+    REFERENCES gateway_revisions(
       gateway_id, generation, endpoint_id, endpoint_generation,
-      storage_binding_id, client_base_path, access_policy_digest),
-  FOREIGN KEY(storage_gateway_id, gateway_generation, consumer_scope_key)
-    REFERENCES storage_gateway_revision_route_scopes(
+      binding_id, client_base_path, access_policy_digest),
+  FOREIGN KEY(gateway_id, gateway_generation, consumer_scope_key)
+    REFERENCES gateway_revision_route_scopes(
       gateway_id, generation, consumer_scope_key),
   FOREIGN KEY(url_reservation_id)
-    REFERENCES delivery_route_url_reservations(id)
+    REFERENCES route_url_reservations(id)
 )
 
-delivery_route_url_reservations(
+route_url_reservations(
   id PRIMARY KEY,
   digest_scheme,         -- hmac_sha256_v1
   reservation_key_version,
@@ -1207,8 +1207,8 @@ delivery_route_url_reservations(
   -- or FK to live topology rows.
 )
 
-delivery_route_configurations(
-  delivery_route_id,
+route_configurations(
+  route_id,
   registry_id NULL,
   cache_id NULL,
   configuration_generation,
@@ -1217,33 +1217,33 @@ delivery_route_configurations(
   canonical_configuration_json,
   created_by,
   created_at,
-  PRIMARY KEY(delivery_route_id, configuration_generation),
-  UNIQUE(delivery_route_id, registry_id, configuration_generation,
+  PRIMARY KEY(route_id, configuration_generation),
+  UNIQUE(route_id, registry_id, configuration_generation,
          configuration_digest),
-  UNIQUE(delivery_route_id, cache_id, configuration_generation,
+  UNIQUE(route_id, cache_id, configuration_generation,
          configuration_digest),
   CHECK exactly_one(registry_id, cache_id),
-  FOREIGN KEY(delivery_route_id, registry_id)
-    REFERENCES delivery_routes(id, registry_id)
+  FOREIGN KEY(route_id, registry_id)
+    REFERENCES routes(id, registry_id)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY(delivery_route_id, cache_id)
-    REFERENCES delivery_routes(id, cache_id)
+  FOREIGN KEY(route_id, cache_id)
+    REFERENCES routes(id, cache_id)
       ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
-canonical_routes(
+route_advertisements(
   id,
   registry_id NULL,
   cache_id NULL,
   audience,              -- git | nix_cache | web
-  delivery_route_id,
+  route_id,
   CHECK exactly_one(registry_id, cache_id),
   UNIQUE(registry_id, audience),
   UNIQUE(cache_id, audience),
-  FOREIGN KEY(delivery_route_id, registry_id)
-    REFERENCES delivery_routes(id, registry_id),
-  FOREIGN KEY(delivery_route_id, cache_id)
-    REFERENCES delivery_routes(id, cache_id)
+  FOREIGN KEY(route_id, registry_id)
+    REFERENCES routes(id, registry_id),
+  FOREIGN KEY(route_id, cache_id)
+    REFERENCES routes(id, cache_id)
 )
 
 cache_inventory_generations(
@@ -1340,8 +1340,8 @@ placement_delivery_manifest_heads(
       manifest_id, placement_id, cache_id)
 )
 
-delivery_route_observations(
-  delivery_route_id PRIMARY KEY,
+route_observations(
+  route_id PRIMARY KEY,
   registry_id NULL,
   cache_id NULL,
   configuration_generation,
@@ -1351,51 +1351,51 @@ delivery_route_observations(
   observed_at,
   error NULL,
   CHECK exactly_one(registry_id, cache_id),
-  UNIQUE(delivery_route_id, registry_id),
-  UNIQUE(delivery_route_id, cache_id),
-  FOREIGN KEY(delivery_route_id, registry_id, configuration_generation,
+  UNIQUE(route_id, registry_id),
+  UNIQUE(route_id, cache_id),
+  FOREIGN KEY(route_id, registry_id, configuration_generation,
               configuration_digest)
-    REFERENCES delivery_routes(
+    REFERENCES routes(
       id, registry_id, configuration_generation, configuration_digest)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY(delivery_route_id, cache_id, configuration_generation,
+  FOREIGN KEY(route_id, cache_id, configuration_generation,
               configuration_digest)
-    REFERENCES delivery_routes(
+    REFERENCES routes(
       id, cache_id, configuration_generation, configuration_digest)
       ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
-direct_delivery_route_evidence(
-  delivery_route_id PRIMARY KEY,
+direct_route_evidence(
+  route_id PRIMARY KEY,
   registry_id NULL,
   cache_id NULL,
   endpoint_id,
   endpoint_generation,
   placement_id,
-  storage_gateway_id,
+  gateway_id,
   gateway_generation,
   publication_manifest_id,
   observed_at,
   CHECK exactly_one(registry_id, cache_id),
-  FOREIGN KEY(delivery_route_id, registry_id)
-    REFERENCES delivery_route_observations(delivery_route_id, registry_id)
+  FOREIGN KEY(route_id, registry_id)
+    REFERENCES route_observations(route_id, registry_id)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY(delivery_route_id, cache_id)
-    REFERENCES delivery_route_observations(delivery_route_id, cache_id)
+  FOREIGN KEY(route_id, cache_id)
+    REFERENCES route_observations(route_id, cache_id)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY(delivery_route_id, registry_id, endpoint_id,
+  FOREIGN KEY(route_id, registry_id, endpoint_id,
               endpoint_generation, placement_id,
-              storage_gateway_id, gateway_generation)
-    REFERENCES delivery_routes(
+              gateway_id, gateway_generation)
+    REFERENCES routes(
       id, registry_id, endpoint_id, endpoint_generation, placement_id,
-      storage_gateway_id, gateway_generation)
+      gateway_id, gateway_generation)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
-  FOREIGN KEY(delivery_route_id, cache_id, endpoint_id,
+  FOREIGN KEY(route_id, cache_id, endpoint_id,
               endpoint_generation, placement_id,
-              storage_gateway_id, gateway_generation)
-    REFERENCES delivery_routes(
+              gateway_id, gateway_generation)
+    REFERENCES routes(
       id, cache_id, endpoint_id, endpoint_generation, placement_id,
-      storage_gateway_id, gateway_generation)
+      gateway_id, gateway_generation)
       ON DELETE RESTRICT ON UPDATE RESTRICT,
   FOREIGN KEY(publication_manifest_id, placement_id, registry_id)
     REFERENCES placement_delivery_manifests(
@@ -1405,17 +1405,17 @@ direct_delivery_route_evidence(
       manifest_id, placement_id, cache_id)
 )
 
-delivery_route_access_observations(
-  delivery_route_id PRIMARY KEY,
+route_access_observations(
+  route_id PRIMARY KEY,
   configuration_generation,
   configuration_digest,
   access_policy_digest,
   state,                 -- unknown | probing | verified | degraded | failed
   observed_at,
   error NULL,
-  FOREIGN KEY(delivery_route_id, configuration_generation,
+  FOREIGN KEY(route_id, configuration_generation,
               configuration_digest, access_policy_digest)
-    REFERENCES delivery_routes(
+    REFERENCES routes(
       id, configuration_generation, configuration_digest,
       access_policy_digest)
       ON DELETE RESTRICT ON UPDATE RESTRICT
@@ -1448,7 +1448,7 @@ across SQLite, PostgreSQL, MySQL, and Durable Object SQLite while preserving a
 single CAS-managed pointer for future plans.
 Changing protection requirements, trusted-ingress verification material, or
 probe posture creates an immutable `staged` boundary revision; it does not move
-the `network_boundary_defaults` pointer or invalidate older
+the `network_policy_defaults` pointer or invalidate older
 pinned revisions. Activation's explicit default choice may CAS the pointer for
 future plans. That plan seals the boundary resource version plus the exact
 previous default revision and default-row resource version (or sealed absence);
@@ -1463,7 +1463,7 @@ failed, inactive, or mismatched per-revision observations fail
 closed for credential-bearing HTTP, trusted local `AccessClass`, and private
 redirect eligibility. A public anonymous HTTP endpoint still requires the
 durable cleartext acknowledgement. Endpoint creation additionally requires an
-exact `network_boundary_consumer_scopes` grant for its owner scope.
+exact `network_policy_consumer_scopes` grant for its owner scope.
 Credential-bearing cleartext scheme `http` always requires
 `protected_transport_observed = true` on the exact verified revision;
 `protected_transport_required = false` never waives that runtime predicate.
@@ -1500,7 +1500,7 @@ verified concurrently.
 Immutable endpoint, gateway, policy, and route history may reference a
 `staged`, `active`, `retiring`, or later `retired` revision and is retained for
 audit; those foreign keys are not live-consumer counts. The authoritative live
-set is `network_boundary_serving_pins`. Enabling or advertising a listener,
+set is `network_policy_serving_pins`. Enabling or advertising a listener,
 attaching/enabling a route, activating a gateway mapping, or selecting a
 topology/canonical default inserts the exact typed pin in the same native
 transaction or Durable Object atomic batch as the serving transition. Pin acquisition
@@ -1570,9 +1570,9 @@ exactly `{}`, `mtls` requires only `ca_secret_ref` and `client_sans`, and
 `verification_key_secret_ref`. Missing or unknown fields are rejected.
 
 Endpoint origin identity -- scheme, typed host, effective port, and network
-boundary -- is immutable. `StageDeliveryEndpointGeneration` appends a new
+boundary -- is immutable. `StageEndpointGeneration` appends a new
 immutable, non-selected generation and may change only ingress, listener/TLS,
-probe posture, and the pinned boundary revision. `ActivateDeliveryEndpointGeneration`
+probe posture, and the pinned boundary revision. `ActivateEndpointGeneration`
 selects one exact staged generation only after its boundary is active and its
 source-generation consumers have moved. An origin or realm change creates a replacement
 endpoint followed by planned route and gateway-revision moves. Routes, grants,
@@ -1587,7 +1587,7 @@ Access policy is a closed canonical value, never arbitrary provider JSON:
 - `external_provider` pins provider kind, stable provider resource id, observed
   provider revision, client mechanisms, and redacted verification secret refs;
   and
-- `private_network` pins an exact `NetworkBoundaryRevisionRef`.
+- `private_network` pins an exact `NetworkPolicyRevisionRef`.
 
 The canonical encoding produces `access_policy_digest`; kind-specific columns
 and checks make impossible variants unrepresentable, while JSON contains only
@@ -1612,7 +1612,7 @@ and the same planned route/gateway movement.
 `endpoint_identity_digest` is SHA-256 over
 `"aos-hub-delivery-endpoint-v1\0" || scheme_tag:u8 || host_kind:u8 ||
 host_length:u32be || typed_host_bytes || effective_port:u16be ||
-network_boundary_identity_fingerprint:32`. It commits to the boundary's stable
+network_policy_identity_fingerprint:32`. It commits to the boundary's stable
 typed identity fingerprint, never its replaceable database row id or moving
 revision. Ingress is revisioned configuration, not part of request identity.
 HTTPS revision TLS configuration is the exact closed projection of `provider`,
@@ -1670,7 +1670,7 @@ Both native and Worker route code consume the same typed resolution and fixed
 failure contract.
 
 The route's endpoint identity and normalized `base_path` are immutable. Together
-they select an immutable `delivery_route_url_reservations` row containing only
+they select an immutable `route_url_reservations` row containing only
 a keyed digest for its permanent path reservation. A change to endpoint
 identity or normalized/derived base path creates a new, initially non-canonical
 replacement route and a new reservation; it never updates the old identity in
@@ -1687,7 +1687,7 @@ The reservation input is
 `"aos-hub-route-reservation-v1\0" || endpoint_identity_digest:32 ||
 length:u32be || normalized_base_path_utf8 || length:u32be ||
 canonical_rendered_url_utf8`. The endpoint identity digest already commits to
-the NetworkBoundary identity, so identical private origins in distinct realms
+the NetworkPolicy identity, so identical private origins in distinct realms
 do not collide while reuse in one realm does. `reservation_digest` is
 HMAC-SHA-256 under a versioned instance reservation key. Creation checks the candidate against every
 retained key version and inserts under the current version with a uniqueness
@@ -1709,7 +1709,7 @@ host, path, or URL plaintext and has no FK to deletable topology.
 surface, mode, exact target/policy/gateway tuple, access-policy digest,
 capabilities, and enabled posture. For an update whose rendered URL remains
 identical, `UpdateRoute` atomically deletes its old probe/access/direct-evidence
-rows, inserts the complete immutable `delivery_route_configurations` snapshot,
+rows, inserts the complete immutable `route_configurations` snapshot,
 increments `configuration_generation`, and writes the new digest under the
 route resource-version plan; old observations then cannot satisfy the composite
 FK. Initial creation portably inserts a disabled route with a null current
@@ -1717,7 +1717,7 @@ configuration pointer, inserts its generation-one child snapshot, advances the
 route pointer, and asserts the complete invariant in one native transaction or
 Durable Object batch. No intermediate row may commit; no backend needs deferred FKs.
 The new configuration begins `unknown` and cannot be healthy or canonically
-advertised until reprobed. Canonical route selection may retain the route id,
+advertised until reprobed. Route advertisement selection may retain the route id,
 but setup snippets and runtime advertisement require a healthy observation for
 its exact current generation/digest.
 
@@ -1768,11 +1768,11 @@ not healthy. Hub route observations may omit the direct-only tuple and report
 aggregate probe state; request-time presence/publication checks remain the
 serving authority.
 
-Binding-wide direct mappings become `storage_gateways`; explicit user-owned
+Binding-wide direct mappings become `gateways`; explicit user-owned
 direct route rows make their use visible and queryable.
 
 ```sql
-storage_gateways(
+gateways(
   id PRIMARY KEY,
   org_id NULL,             -- NULL means instance scope
   owner_scope_key,         -- instance | org:<stable-id>
@@ -1786,12 +1786,12 @@ storage_gateways(
   UNIQUE(id, owner_scope_key),
   CHECK(observed_generation IS NULL OR desired_generation IS NOT NULL),
   FOREIGN KEY(id, desired_generation)
-    REFERENCES storage_gateway_revisions(gateway_id, generation),
+    REFERENCES gateway_revisions(gateway_id, generation),
   FOREIGN KEY(id, observed_generation)
-    REFERENCES storage_gateway_revisions(gateway_id, generation)
+    REFERENCES gateway_revisions(gateway_id, generation)
 )
 
-storage_gateway_path_reservations(
+gateway_path_reservations(
   reservation_id PRIMARY KEY,
   gateway_id,
   endpoint_id,
@@ -1800,17 +1800,17 @@ storage_gateway_path_reservations(
   created_at,
   UNIQUE(endpoint_id, client_base_path),
   UNIQUE(reservation_id, gateway_id, endpoint_id, client_base_path),
-  FOREIGN KEY(gateway_id) REFERENCES storage_gateways(id),
-  FOREIGN KEY(endpoint_id) REFERENCES delivery_endpoints(id)
+  FOREIGN KEY(gateway_id) REFERENCES gateways(id),
+  FOREIGN KEY(endpoint_id) REFERENCES endpoints(id)
 )
 
-storage_gateway_revisions(
+gateway_revisions(
   gateway_id,
   generation,
   org_id NULL,
   owner_scope_key,
   path_reservation_id,
-  storage_binding_id,
+  binding_id,
   endpoint_id,
   endpoint_generation,
   endpoint_ingress_kind,   -- external | layer7
@@ -1831,30 +1831,30 @@ storage_gateway_revisions(
   CHECK(endpoint_ingress_kind IN ('external', 'layer7')),
   CHECK valid_direct_access_policy_shape,
   UNIQUE(gateway_id, generation, endpoint_id, endpoint_generation,
-         storage_binding_id, client_base_path, access_policy_digest),
+         binding_id, client_base_path, access_policy_digest),
   UNIQUE(gateway_id, generation, owner_scope_key),
   FOREIGN KEY(gateway_id, owner_scope_key)
-    REFERENCES storage_gateways(id, owner_scope_key),
-  FOREIGN KEY(storage_binding_id, owner_scope_key)
-    REFERENCES storage_binding_consumer_scopes(
-      storage_binding_id, consumer_scope_key),
+    REFERENCES gateways(id, owner_scope_key),
+  FOREIGN KEY(binding_id, owner_scope_key)
+    REFERENCES binding_consumer_scopes(
+      binding_id, consumer_scope_key),
   FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
-    REFERENCES delivery_endpoint_revisions(
+    REFERENCES endpoint_revisions(
       endpoint_id, generation, ingress_kind),
   FOREIGN KEY(endpoint_id, endpoint_generation, owner_scope_key)
-    REFERENCES delivery_endpoint_route_scopes(
+    REFERENCES endpoint_route_scopes(
       endpoint_id, endpoint_generation, consumer_scope_key),
   FOREIGN KEY(access_boundary_id, access_boundary_revision)
-    REFERENCES network_boundary_revisions(boundary_id, revision),
+    REFERENCES network_policy_revisions(boundary_id, revision),
   FOREIGN KEY(access_boundary_id, owner_scope_key)
-    REFERENCES network_boundary_consumer_scopes(
+    REFERENCES network_policy_consumer_scopes(
       boundary_id, consumer_scope_key),
   FOREIGN KEY(path_reservation_id, gateway_id, endpoint_id, client_base_path)
-    REFERENCES storage_gateway_path_reservations(
+    REFERENCES gateway_path_reservations(
       reservation_id, gateway_id, endpoint_id, client_base_path)
 )
 
-storage_gateway_revision_route_scopes(
+gateway_revision_route_scopes(
   gateway_id,
   generation,
   consumer_scope_key,
@@ -1873,12 +1873,12 @@ storage_gateway_revision_route_scopes(
      OR (state = 'revoked' AND revoked_by IS NOT NULL
          AND revoked_at IS NOT NULL)),
   FOREIGN KEY(gateway_id, generation)
-    REFERENCES storage_gateway_revisions(gateway_id, generation)
+    REFERENCES gateway_revisions(gateway_id, generation)
 )
 
-storage_binding_scope_grant_pins(
+binding_scope_grant_pins(
   pin_id PRIMARY KEY,
-  storage_binding_id,
+  binding_id,
   consumer_scope_key,
   grant_generation,
   grant_state,           -- active
@@ -1887,18 +1887,18 @@ storage_binding_scope_grant_pins(
   target_generation_key,
   target_configuration_digest,
   resource_version,
-  UNIQUE(storage_binding_id, consumer_scope_key, target_kind,
+  UNIQUE(binding_id, consumer_scope_key, target_kind,
          target_stable_id, target_generation_key,
          target_configuration_digest),
   CHECK(grant_state = 'active'),
   CHECK valid_scope_grant_pin_shape,
-  FOREIGN KEY(storage_binding_id, consumer_scope_key, grant_generation,
+  FOREIGN KEY(binding_id, consumer_scope_key, grant_generation,
               grant_state)
-    REFERENCES storage_binding_consumer_scopes(
-      storage_binding_id, consumer_scope_key, grant_generation, state)
+    REFERENCES binding_consumer_scopes(
+      binding_id, consumer_scope_key, grant_generation, state)
 )
 
-delivery_endpoint_scope_grant_pins(
+endpoint_scope_grant_pins(
   pin_id PRIMARY KEY,
   endpoint_id,
   endpoint_generation,
@@ -1917,12 +1917,12 @@ delivery_endpoint_scope_grant_pins(
   CHECK valid_scope_grant_pin_shape,
   FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key,
               grant_generation, grant_state)
-    REFERENCES delivery_endpoint_route_scopes(
+    REFERENCES endpoint_route_scopes(
       endpoint_id, endpoint_generation, consumer_scope_key,
       grant_generation, state)
 )
 
-storage_gateway_scope_grant_pins(
+gateway_scope_grant_pins(
   pin_id PRIMARY KEY,
   gateway_id,
   generation,
@@ -1941,14 +1941,14 @@ storage_gateway_scope_grant_pins(
   CHECK valid_scope_grant_pin_shape,
   FOREIGN KEY(gateway_id, generation, consumer_scope_key, grant_generation,
               grant_state)
-    REFERENCES storage_gateway_revision_route_scopes(
+    REFERENCES gateway_revision_route_scopes(
       gateway_id, generation, consumer_scope_key, grant_generation, state)
 )
 
 consumer_scope_grant_events(
   event_id PRIMARY KEY,
-  resource_kind,         -- storage_binding | network_boundary |
-                         -- delivery_endpoint | storage_gateway
+  resource_kind,         -- binding | network_policy |
+                         -- endpoint | gateway
   resource_stable_id,
   resource_generation_key,
   consumer_scope_key,
@@ -1967,27 +1967,27 @@ topology_defaults(
   scope_kind,             -- instance | organization
   org_id NULL,
   scope_key UNIQUE,       -- instance | org:<stable-id>
-  storage_binding_id NULL,
+  binding_id NULL,
   domain_id NULL,
-  delivery_endpoint_id NULL,
-  delivery_endpoint_generation NULL,
-  storage_gateway_id NULL,
-  storage_gateway_generation NULL,
+  endpoint_id NULL,
+  endpoint_generation NULL,
+  gateway_id NULL,
+  gateway_generation NULL,
   created_at,
   updated_at,
   CHECK valid_scope(scope_kind, org_id, scope_key),
-  CHECK paired(delivery_endpoint_id, delivery_endpoint_generation),
-  CHECK paired(storage_gateway_id, storage_gateway_generation),
-  FOREIGN KEY(storage_binding_id, scope_key)
-    REFERENCES storage_binding_consumer_scopes(
-      storage_binding_id, consumer_scope_key),
+  CHECK paired(endpoint_id, endpoint_generation),
+  CHECK paired(gateway_id, gateway_generation),
+  FOREIGN KEY(binding_id, scope_key)
+    REFERENCES binding_consumer_scopes(
+      binding_id, consumer_scope_key),
   FOREIGN KEY(domain_id, scope_key)
     REFERENCES domains(id, owner_scope_key),
-  FOREIGN KEY(delivery_endpoint_id, delivery_endpoint_generation, scope_key)
-    REFERENCES delivery_endpoint_route_scopes(
+  FOREIGN KEY(endpoint_id, endpoint_generation, scope_key)
+    REFERENCES endpoint_route_scopes(
       endpoint_id, endpoint_generation, consumer_scope_key),
-  FOREIGN KEY(storage_gateway_id, storage_gateway_generation, scope_key)
-    REFERENCES storage_gateway_revision_route_scopes(
+  FOREIGN KEY(gateway_id, gateway_generation, scope_key)
+    REFERENCES gateway_revision_route_scopes(
       gateway_id, generation, consumer_scope_key)
 )
 ```
@@ -2003,7 +2003,7 @@ binding can enter topology. Grant revocation enumerates and removes defaults,
 gateways, and placements first; absence of an active grant generation and its
 required live pin is structural denial.
 
-`delivery_routes.storage_gateway_id` and `gateway_generation` pin immutable
+`routes.gateway_id` and `gateway_generation` pin immutable
 user-selected provenance. Gateway reconciliation creates/configures or probes a
 new immutable gateway revision and advances only its observed state. It never
 mutates routes. Moving an existing route or creating routes from gateway preview
@@ -2035,17 +2035,17 @@ backend rather than rejected only by service code.
 
 The current `frontends` table migrates as follows:
 
-- registry/cache target -> delivery route;
-- binding target -> storage gateway plus an explicit reviewed direct route for
+- registry/cache target -> route;
+- binding target -> gateway plus an explicit reviewed direct route for
   each still-supported old frontend URL; no route is synthesized merely because
   a placement is eligible;
-- scheme/DNS/IP/port -> typed delivery endpoint, and `base_path` -> route;
+- scheme/DNS/IP/port -> typed endpoint, and `base_path` -> route;
 - `mode` -> delivery mode;
 - `serves_*` -> route capabilities;
 - `advertised` -> either canonical-route selection or no migrated meaning;
 - `consumer_priority` -> explicit route/policy order after correcting its
   current direction ambiguity; and
-- `is_primary` -> canonical route for the applicable audience.
+- `is_primary` -> route advertisement for the applicable audience.
 
 The resource-level `advertise_storage_frontend` fields are removed after
 explicit-route review. There is no generic inheritance toggle in the new model.
@@ -2160,7 +2160,7 @@ cache_object_references(
 The narinfo and NAR are distinct `surface_objects`. Multiple cache objects may
 reference one NAR surface object, so NAR ownership and deletion refcounts are
 placement-scoped. The final schema does not use an embedded authoritative
-`refs` JSON value, cache-level storage binding/prefix, or a binding/prefix NAR
+`refs` JSON value, cache-level binding/prefix, or a binding/prefix NAR
 refcount to decide deletion.
 
 `referenced_cache_object_id` is populated when the referenced object is
@@ -2843,23 +2843,23 @@ registry_cache_stack_entries(
   committed_url,
   resolved_priority,
   cache_id NULL,
-  delivery_route_id NULL,
+  route_id NULL,
   route_configuration_generation NULL,
   route_configuration_digest NULL,
   indexed_commit,
   PRIMARY KEY(registry_id, stack_path),
-  CHECK ((cache_id IS NULL AND delivery_route_id IS NULL
+  CHECK ((cache_id IS NULL AND route_id IS NULL
           AND route_configuration_generation IS NULL
           AND route_configuration_digest IS NULL)
-      OR (cache_id IS NOT NULL AND delivery_route_id IS NOT NULL
+      OR (cache_id IS NOT NULL AND route_id IS NOT NULL
           AND route_configuration_generation IS NOT NULL
           AND route_configuration_digest IS NOT NULL)),
   FOREIGN KEY(registry_id) REFERENCES registries(id),
   FOREIGN KEY(cache_id) REFERENCES binary_caches(id),
-  FOREIGN KEY(delivery_route_id, cache_id, route_configuration_generation,
+  FOREIGN KEY(route_id, cache_id, route_configuration_generation,
               route_configuration_digest)
-    REFERENCES delivery_route_configurations(
-      delivery_route_id, cache_id, configuration_generation,
+    REFERENCES route_configurations(
+      route_id, cache_id, configuration_generation,
       configuration_digest)
 )
 ```
@@ -2930,7 +2930,7 @@ names are normative in `09-interface-contracts.md`.
 - `ListPlacementEquivalences`, `ConfirmPlacementEquivalence`,
   `DeletePlacementEquivalence`
 
-Creating or moving a placement never silently changes a delivery route or
+Creating or moving a placement never silently changes a route or
 signed consumer stack. An impact endpoint reports affected routes and
 integrations before apply. Creation accepts placement kind and desired read
 state, never primary role or write enablement. Promotion is the only ordinary
@@ -2939,28 +2939,28 @@ and generation guarded. Cancellation is a reviewed, generation-guarded
 reconciliation back to the still-observed writer; it never clears a pending
 row without proving the candidate is fenced and the observed writer is ready.
 
-### Domains, network boundaries, endpoints, gateways, and routes
+### Domains, network policies, endpoints, gateways, and routes
 
 - `CreateDomain`, `VerifyDomain`, `ConfigureDomainDns`,
   `ConfigureDomainCertificate`,
   `DeleteDomain`
-- `CreateNetworkBoundary`, `ReviseNetworkBoundary`; controller-only
-  `CompleteNetworkBoundaryRevisionProbe`, `ReportNetworkBoundaryRevision`,
-  `ActivateNetworkBoundaryRevision`, `RetireNetworkBoundaryRevision`,
-  `GrantNetworkBoundaryScope`, `RevokeNetworkBoundaryScope`,
-  `DeleteNetworkBoundary`
-- `CreateDeliveryEndpoint`, `StageDeliveryEndpointGeneration`,
-  `ActivateDeliveryEndpointGeneration`,
-  `GrantDeliveryEndpointScope`, `RevokeDeliveryEndpointScope`,
-  controller-only `CompleteDeliveryEndpointProbe`, `ReportDeliveryEndpoint`,
-  `DeleteDeliveryEndpoint`
+- `CreateNetworkPolicy`, `ReviseNetworkPolicy`; controller-only
+  `CompleteNetworkPolicyRevisionProbe`, `ReportNetworkPolicyRevision`,
+  `ActivateNetworkPolicyRevision`, `RetireNetworkPolicyRevision`,
+  `GrantNetworkPolicyScope`, `RevokeNetworkPolicyScope`,
+  `DeleteNetworkPolicy`
+- `CreateEndpoint`, `StageEndpointGeneration`,
+  `ActivateEndpointGeneration`,
+  `GrantEndpointScope`, `RevokeEndpointScope`,
+  controller-only `CompleteEndpointProbe`, `ReportEndpoint`,
+  `DeleteEndpoint`
 - `CreateRoute`, `UpdateRoute`, `ReplaceRoute`, `EnableRoute`, `DisableRoute`,
   `DeleteRoute`
-- `SetCanonicalRoute`, `ExplainRoute`; controller-only `CompleteRouteProbe`
-- `CreateStorageGateway`, `UpdateStorageGateway`, `PreviewGatewayRoutes`,
-  `GrantStorageGatewayScope`, `RevokeStorageGatewayScope`,
-  controller-only `ReportStorageGateway`, `EnableStorageGateway`, `DisableStorageGateway`,
-  `DeleteStorageGateway`
+- `SetRouteAdvertisement`, `ExplainRoute`; controller-only `CompleteRouteProbe`
+- `CreateGateway`, `UpdateGateway`, `PreviewGatewayRoutes`,
+  `GrantGatewayScope`, `RevokeGatewayScope`,
+  controller-only `ReportGateway`, `EnableGateway`, `DisableGateway`,
+  `DeleteGateway`
 
 `ExplainRoute` returns the normalized endpoint/realm and grant, selected access
 decision, publication-head/manifest evidence, placement candidates, origin
@@ -2972,14 +2972,14 @@ the immutable identity fingerprint and never accepts a caller-supplied digest.
 Boundary revision inputs use secret references for mTLS and signed-assertion
 verification material and return only redacted references.
 
-### Storage bindings and topology defaults
+### Bindings and topology defaults
 
-- `CreateStorageBinding`, `DeleteStorageBinding`
-- `SetStorageBindingCredential`, `RotateStorageBindingCredential`,
-  `PlanValidateStorageBindingCredential` / `ValidateStorageBindingCredential`
-- `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
-  controller-only `ReportStorageBindingWriteRevision`
-- `GrantStorageBindingScope`, `RevokeStorageBindingScope`
+- `CreateBinding`, `DeleteBinding`
+- `SetBindingCredential`, `RotateBindingCredential`,
+  `PlanValidateBindingCredential` / `ValidateBindingCredential`
+- `ListBindingWriteRevisions`, `GetBindingWriteRevision`,
+  controller-only `ReportBindingWriteRevision`
+- `GrantBindingScope`, `RevokeBindingScope`
 - `GetInstanceTopologyDefaults`, `SetInstanceTopologyDefaults`
 - `GetOrganizationTopologyDefaults`, `SetOrganizationTopologyDefaults`
 
@@ -2989,7 +2989,7 @@ and explicit old-revision retirement. Default changes have their own impact
 plan and affect only future workflows unless the operator separately plans
 changes to existing resources.
 
-A storage binding's provider identity (provider kind, filesystem root, object
+A binding's provider identity (provider kind, filesystem root, object
 bucket and prefix, endpoint, region, and access mode) is immutable. Changing
 any identity field requires creating a replacement binding, migrating exact
 placement pins, and deleting the unreferenced predecessor through plan/apply.
@@ -3032,7 +3032,7 @@ Mutations that cross records use a plan/apply shape:
 4. enqueue replication/probe/index work after the control-plane transaction.
 
 Examples include surface visibility changes, endpoint/access-policy changes,
-placement drains, write-authority promotion, canonical route changes, and
+placement drains, write-authority promotion, route advertisement changes, and
 destructive GC. GC apply has the same portable requirement as promotion:
 logical tombstoning and operation creation are one version-guarded control-plane
 transition, not an interactive transaction unavailable to the Worker runtime.
@@ -3041,14 +3041,14 @@ above; GC never changes write authority.
 
 ## Complete cutover
 
-- Every still-supported public URL is imported as an ordinary delivery route,
+- Every still-supported public URL is imported as an ordinary route,
   not a compatibility alias.
 - Every committed registry `[caches]` URL is checked before cutover. If its URL
   will change, the signed change is merged before switching traffic.
 - The schema migration creates exact storage-binding consumer grants,
-  placements, DNS domains, the public and imported private network boundaries
+  placements, DNS domains, the public and imported private network policies
   with immutable revisions/per-revision observations/lifecycle and exact
-  grants, typed delivery endpoints with exact-generation grants, gateways with
+  grants, typed endpoints with exact-generation grants, gateways with
   exact-generation grants, routes, manifests and observations, proven
   binding-write revisions, applicable write authorities,
   integrations, release snapshots, root reasons, object mappings, GC state,

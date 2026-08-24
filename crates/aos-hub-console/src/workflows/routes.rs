@@ -17,19 +17,19 @@ use super::access_policy::{
     access_policy_name, canonical_path, AccessPolicyFields, AccessPolicySignals,
 };
 use super::cache_integrations::CacheIntegrationWorkflow;
+use super::gateways::{endpoint_option_label, gateway_option_label};
 use super::organization_scope::surface_authorization_scope;
-use super::storage_gateways::{endpoint_option_label, gateway_option_label};
 
 /// Renders route workflows and delegates unrelated pages onward.
 #[component]
-pub(super) fn DeliveryRouteWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
+pub(super) fn RouteWorkflow(route: ConsoleRoute, client: ApiClient) -> impl IntoView {
     match (&route.scope, route.page.key) {
         (ConsoleScope::Registry { path }, "delivery") => view! {
-            <DeliveryRoutes client=client surface=registry_surface(path)/>
+            <Routes client=client surface=registry_surface(path)/>
         }
         .into_any(),
         (ConsoleScope::Cache { path }, "delivery") => view! {
-            <DeliveryRoutes client=client surface=cache_surface(path)/>
+            <Routes client=client surface=cache_surface(path)/>
         }
         .into_any(),
         _ => view! { <CacheIntegrationWorkflow route=route client=client/> }.into_any(),
@@ -37,7 +37,7 @@ pub(super) fn DeliveryRouteWorkflow(route: ConsoleRoute, client: ApiClient) -> i
 }
 
 #[component]
-fn DeliveryRoutes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
+fn Routes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> impl IntoView {
     let read_client = client.clone();
     let read_surface = surface.clone();
     let routes = LocalResource::new(move || {
@@ -59,6 +59,13 @@ fn DeliveryRoutes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> im
     });
     let view_client = client.clone();
     let view_surface = surface.clone();
+    let choices_client = client.clone();
+    let choices_surface = surface.clone();
+    let choices = LocalResource::new(move || {
+        let client = choices_client.clone();
+        let surface = choices_surface.clone();
+        async move { load_route_create_choices(&client, &surface).await }
+    });
     let topology_client = client.clone();
     let topology_surface = surface.clone();
     let topology = LocalResource::new(move || {
@@ -81,7 +88,7 @@ fn DeliveryRoutes(client: ApiClient, surface: aos_proto_types::SurfaceRef) -> im
     let create_surface = surface;
 
     view! {
-        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Delivery routes"</h2><HelpTooltip term="Delivery routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading delivery routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match routes.await.as_ref() { Ok(routes) if routes.is_empty() => view! { <p class="muted">"No delivery routes for this surface."</p> }.into_any(), Ok(routes) => view! { <div class="binding-list">{routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route/> }).collect_view()}</div> }.into_any(), Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading canonical routes…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <CanonicalRoutes client=client surface=surface canonical=response.canonical_routes.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
+        <div class="workflow-stack"><section class="panel resource-panel"><div class="section-heading"><div><p class="section-kicker">"Simultaneous delivery paths"</p><div class="section-title"><h2>"Routes"</h2><HelpTooltip term="Routes" summary="Multiple Hub-proxied, redirected, CDN-fronted, and direct routes can serve the same logical surface concurrently."/></div></div></div><Suspense fallback=move || view! { <p class="loading-row">"Loading routes…"</p> }>{move || { let client = view_client.clone(); let surface = view_surface.clone(); Suspend::new(async move { match (routes.await.as_ref(), choices.await.as_ref()) { (Ok(routes), Ok(_)) if routes.is_empty() => view! { <p class="muted">"No routes for this surface."</p> }.into_any(), (Ok(routes), Ok(choices)) => view! { <div class="binding-list">{routes.iter().cloned().map(|route| view! { <RouteCard client=client.clone() surface=surface.clone() route=route choices=choices.clone()/> }).collect_view()}</div> }.into_any(), (Err(failure), _) => view! { <InlineError detail=failure.to_string()/> }.into_any(), (_, Err(detail)) => view! { <InlineError detail=detail.clone()/> }.into_any() } }) }}</Suspense></section><Suspense fallback=move || view! { <section class="panel"><p class="loading-row">"Loading route advertisements…"</p></section> }>{move || { let client = canonical_client.clone(); let surface = canonical_surface.clone(); Suspend::new(async move { match topology.await.as_ref() { Ok(response) => view! { <RouteAdvertisements client=client surface=surface canonical=response.route_advertisements.clone() routes=response.routes.clone()/> }.into_any(), Err(failure) => view! { <section class="panel"><InlineError detail=failure.to_string()/></section> }.into_any() } }) }}</Suspense><RouteCreate client=create_client surface=create_surface/></div>
     }
 }
 
@@ -103,10 +110,11 @@ struct RouteSignals {
 
 #[derive(Clone, Debug)]
 struct RouteCreateChoices {
-    endpoints: Vec<aos_proto_types::DeliveryEndpoint>,
+    endpoints: Vec<aos_proto_types::Endpoint>,
     placements: Vec<aos_proto_types::Placement>,
     policies: Vec<aos_proto_types::PlacementPolicy>,
-    gateways: Vec<aos_proto_types::StorageGateway>,
+    gateways: Vec<aos_proto_types::Gateway>,
+    boundaries: Vec<aos_proto_types::NetworkPolicy>,
 }
 
 impl RouteSignals {
@@ -127,8 +135,8 @@ impl RouteSignals {
         }
     }
 
-    fn from_spec(spec: &aos_proto_types::DeliveryRouteSpec) -> Self {
-        use aos_proto_types::delivery_route_target::Target;
+    fn from_spec(spec: &aos_proto_types::RouteSpec) -> Self {
+        use aos_proto_types::route_target::Target;
         let mut signals = Self::empty();
         signals.endpoint_id.set(spec.endpoint_id.clone());
         signals
@@ -170,12 +178,47 @@ impl RouteSignals {
 }
 
 #[component]
-fn RouteFields(signals: RouteSignals, immutable_identity: bool) -> impl IntoView {
+fn RouteFields(
+    signals: RouteSignals,
+    immutable_identity: bool,
+    choices: RouteCreateChoices,
+) -> impl IntoView {
+    let endpoints = choices.endpoints.clone();
+    let selected_endpoints = choices.endpoints;
+    let placements = choices.placements.clone();
+    let policies = choices.policies.clone();
+    let selected_placements = choices.placements;
+    let selected_policies = choices.policies;
+    let gateways = choices.gateways;
+    let boundaries = choices.boundaries;
+    let on_endpoint_change = move |event| {
+        let value = event_target_value(&event);
+        signals.endpoint_id.set(value.clone());
+        let generation = selected_endpoints
+            .iter()
+            .find(|endpoint| endpoint.stable_id == value)
+            .map(|endpoint| endpoint.desired_generation)
+            .unwrap_or_default();
+        signals.endpoint_generation.set(generation.to_string());
+    };
+    let on_target_kind_change = Callback::new(move |value: String| {
+        signals.target_kind.set(value.clone());
+        let target = if value == "policy" {
+            selected_policies
+                .first()
+                .map(|policy| format!("{}@{}", policy.name, policy.current_revision))
+        } else {
+            selected_placements
+                .first()
+                .map(|placement| placement.name.clone())
+        };
+        signals.target_ref.set(target.unwrap_or_default());
+    });
     view! {
-        {(!immutable_identity).then(|| view! { <label><span>"Endpoint stable ID"</span><input required prop:value=move || signals.endpoint_id.get() on:input=move |event| signals.endpoint_id.set(event_target_value(&event))/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label> })}
-        <label><span>"Endpoint generation"</span><input required type="number" min="1" prop:value=move || signals.endpoint_generation.get() on:input=move |event| signals.endpoint_generation.set(event_target_value(&event))/></label>
+        {if immutable_identity { view! { <label><span>"Endpoint"</span><select disabled aria-disabled="true" prop:value=move || signals.endpoint_id.get()>{endpoints.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoints.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label> }.into_any() }}
+        <label><span>"Endpoint generation"</span><select required prop:value=move || signals.endpoint_generation.get() on:change=move |event| signals.endpoint_generation.set(event_target_value(&event))>{endpoints.iter().filter(|endpoint| endpoint.stable_id == signals.endpoint_id.get_untracked()).map(|endpoint| view! { <option value=endpoint.desired_generation.to_string()>{format!("Current generation {}", endpoint.desired_generation)}</option> }).collect_view()}<option value=signals.endpoint_generation.get_untracked()>{format!("Pinned generation {}", signals.endpoint_generation.get_untracked())}</option></select></label>
         <label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>
-        {move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><input required prop:value=move || signals.target_ref.get() on:input=move |event| signals.target_ref.set(event_target_value(&event))/></label><label><span>"Gateway generation (stable-id@revision)"</span><input required prop:value=move || signals.gateway_ref.get() on:input=move |event| signals.gateway_ref.set(event_target_value(&event))/></label> }.into_any() } else { view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| signals.target_kind.set(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label><label><span>"Target reference"</span><input required prop:value=move || signals.target_ref.get() on:input=move |event| signals.target_ref.set(event_target_value(&event))/></label><AccessPolicyFields signals=signals.access allow_hub_auth=true/> }.into_any() }}
+        {move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{placements.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label><label><span>"Gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateways.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select></label> }.into_any() } else { let boundaries = boundaries.clone(); let on_target_kind_change = on_target_kind_change.clone(); let policies = policies.clone(); let placements = placements.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policies = policies.clone(); let placements = placements.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policies.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{placements.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true boundaries=boundaries/> }.into_any() }}
         <label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label>
     }
 }
@@ -222,26 +265,39 @@ async fn load_route_create_choices(
     let (owner_scope_key, organization) = surface_authorization_scope(client, surface).await?;
     let endpoint_scope = owner_scope_key.clone();
     let endpoints = client
-        .collect_pages::<_, aos_proto_types::ListDeliveryEndpointsResponse, _, _, _>(
-            aos_proto_types::DELIVERY_SERVICE_LIST_DELIVERY_ENDPOINTS_PATH,
+        .collect_pages::<_, aos_proto_types::ListEndpointsResponse, _, _, _>(
+            aos_proto_types::DELIVERY_SERVICE_LIST_ENDPOINTS_PATH,
             move |page_token| aos_proto_types::ListTopologyResourcesRequest {
                 owner_scope_key: endpoint_scope.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.delivery_endpoints, response.next_page_token),
+            |response| (response.endpoints, response.next_page_token),
+        )
+        .await
+        .map_err(|failure| failure.to_string())?;
+    let boundary_scope = owner_scope_key.clone();
+    let boundaries = client
+        .collect_pages::<_, aos_proto_types::ListNetworkPoliciesResponse, _, _, _>(
+            aos_proto_types::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
+            move |page_token| aos_proto_types::ListTopologyResourcesRequest {
+                owner_scope_key: boundary_scope.clone(),
+                page_size: 100,
+                page_token,
+            },
+            |response| (response.network_policies, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())?;
     let bindings = client
-        .collect_pages::<_, aos_proto_types::ListStorageBindingsResponse, _, _, _>(
-            aos_proto_types::STORAGE_BINDING_SERVICE_LIST_STORAGE_BINDINGS_PATH,
-            move |page_token| aos_proto_types::ListStorageBindingsRequest {
+        .collect_pages::<_, aos_proto_types::ListBindingsResponse, _, _, _>(
+            aos_proto_types::BINDING_SERVICE_LIST_BINDINGS_PATH,
+            move |page_token| aos_proto_types::ListBindingsRequest {
                 owner_scope_key: owner_scope_key.clone(),
                 page_size: 100,
                 page_token,
             },
-            |response| (response.storage_bindings, response.next_page_token),
+            |response| (response.bindings, response.next_page_token),
         )
         .await
         .map_err(|failure| failure.to_string())?;
@@ -251,28 +307,28 @@ async fn load_route_create_choices(
         let Some(spec) = binding.spec else {
             continue;
         };
-        let storage_binding = match organization.as_ref() {
-            Some(org_slug) => aos_proto_types::StorageBindingRef {
-                target: Some(aos_proto_types::storage_binding_ref::Target::Organization(
-                    aos_proto_types::OrganizationStorageBindingRef {
+        let binding = match organization.as_ref() {
+            Some(org_slug) => aos_proto_types::BindingRef {
+                target: Some(aos_proto_types::binding_ref::Target::Organization(
+                    aos_proto_types::OrganizationBindingRef {
                         org_slug: org_slug.clone(),
                         name: spec.name,
                     },
                 )),
             },
-            None => aos_proto_types::StorageBindingRef {
-                target: Some(aos_proto_types::storage_binding_ref::Target::InstanceDefault(true)),
+            None => aos_proto_types::BindingRef {
+                target: Some(aos_proto_types::binding_ref::Target::InstanceDefault(true)),
             },
         };
         let mut binding_gateways = client
-            .collect_pages::<_, aos_proto_types::ListStorageGatewaysResponse, _, _, _>(
-                aos_proto_types::DELIVERY_SERVICE_LIST_STORAGE_GATEWAYS_PATH,
-                move |page_token| aos_proto_types::ListStorageGatewaysRequest {
-                    storage_binding: Some(storage_binding.clone()),
+            .collect_pages::<_, aos_proto_types::ListGatewaysResponse, _, _, _>(
+                aos_proto_types::DELIVERY_SERVICE_LIST_GATEWAYS_PATH,
+                move |page_token| aos_proto_types::ListGatewaysRequest {
+                    binding: Some(binding.clone()),
                     page_size: 100,
                     page_token,
                 },
-                |response| (response.storage_gateways, response.next_page_token),
+                |response| (response.gateways, response.next_page_token),
             )
             .await
             .map_err(|failure| failure.to_string())?;
@@ -287,6 +343,7 @@ async fn load_route_create_choices(
         placements: topology.placements,
         policies: topology.placement_policies,
         gateways,
+        boundaries,
     })
 }
 
@@ -325,6 +382,7 @@ fn RouteCreateForm(
     let selected_policies = choices.policies;
     let gateway_choices = choices.gateways.clone();
     let selected_gateways = choices.gateways;
+    let boundaries = choices.boundaries;
     let on_endpoint_change = move |event| {
         let value = event_target_value(&event);
         signals.endpoint_id.set(value.clone());
@@ -393,26 +451,28 @@ fn RouteCreateForm(
         error,
         busy,
     );
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create delivery route"</h2><p>"Choose named topology resources; exact stable IDs and generations are pinned automatically."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Stable route ID"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Delivery endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No delivery endpoints are available in this surface's owner scope."</small> })}</label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || signals.endpoint_generation.get()/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label><label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>{move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{direct_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.storage_binding_name)}</option> }).collect_view()}</select></label><label><span>"Storage gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateway_choices.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select>{gateway_choices.is_empty().then(|| view! { <small>"No storage gateways are available. Create one from Hub settings or the owning organization first."</small> })}</label> }.into_any() } else { let on_target_kind_change = on_target_kind_change.clone(); let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policy_choices.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{hub_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.storage_binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true/> }.into_any() }}<label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || signals.endpoint_id.get().is_empty() || signals.target_ref.get().is_empty()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Guided setup"</p><h2>"Create route"</h2><p>"Choose named topology resources; exact stable IDs and generations are pinned automatically."</p></div></div><form class="editor-form" on:submit=on_plan><label><span>"Route name"</span><input prop:value=move || stable_id.get() on:input=move |event| stable_id.set(event_target_value(&event))/></label><label><span>"Endpoint"</span><select required prop:value=move || signals.endpoint_id.get() on:change=on_endpoint_change>{endpoint_choices.iter().map(|endpoint| view! { <option value=endpoint.stable_id.clone()>{endpoint_option_label(endpoint)}</option> }).collect_view()}</select>{endpoint_choices.is_empty().then(|| view! { <small>"No endpoints are available in this surface's owner scope."</small> })}</label><label><span>"Endpoint generation"</span><input readonly aria-readonly="true" prop:value=move || signals.endpoint_generation.get()/></label><label><span>"Base path"</span><input required prop:value=move || signals.base_path.get() on:input=move |event| signals.base_path.set(event_target_value(&event))/></label><label><span>"Delivery mode"</span><select prop:value=move || signals.mode.get() on:change=move |event| signals.mode.set(event_target_value(&event))><option value="hub-proxy">"Hub proxy"</option><option value="hub-redirect">"Hub redirect"</option><option value="direct">"Direct gateway"</option></select></label>{move || if signals.mode.get() == "direct" { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{direct_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label><label><span>"Gateway"</span><select required prop:value=move || signals.gateway_ref.get() on:change=move |event| signals.gateway_ref.set(event_target_value(&event))>{gateway_choices.iter().map(|gateway| view! { <option value=format!("{}@{}", gateway.stable_id, gateway.desired_generation)>{gateway_option_label(gateway)}</option> }).collect_view()}</select>{gateway_choices.is_empty().then(|| view! { <small>"No gateways are available. Create one from Settings or the owning organization first."</small> })}</label> }.into_any() } else { let on_target_kind_change = on_target_kind_change.clone(); let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); let boundaries = boundaries.clone(); view! { <label><span>"Target kind"</span><select prop:value=move || signals.target_kind.get() on:change=move |event| on_target_kind_change.run(event_target_value(&event))><option value="placement">"Placement"</option><option value="policy">"Placement policy revision"</option></select></label>{move || { let policy_choices = policy_choices.clone(); let hub_placement_choices = hub_placement_choices.clone(); if signals.target_kind.get() == "policy" { view! { <label><span>"Placement policy"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{policy_choices.iter().map(|policy| view! { <option value=format!("{}@{}", policy.name, policy.current_revision)>{format!("{} · revision {}", policy.name, policy.current_revision)}</option> }).collect_view()}</select></label> }.into_any() } else { view! { <label><span>"Placement"</span><select required prop:value=move || signals.target_ref.get() on:change=move |event| signals.target_ref.set(event_target_value(&event))>{hub_placement_choices.iter().map(|placement| view! { <option value=placement.name.clone()>{format!("{} · {}", placement.name, placement.binding_name)}</option> }).collect_view()}</select></label> }.into_any() }}}<AccessPolicyFields signals=signals.access allow_hub_auth=true boundaries=boundaries/> }.into_any() }}<label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_git.get() on:change=move |event| signals.serves_git.set(event_target_checked(&event))/><span>"Serve Git"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_cache.get() on:change=move |event| signals.serves_cache.set(event_target_checked(&event))/><span>"Serve Nix cache"</span></label><label class="checkbox-field"><input type="checkbox" prop:checked=move || signals.serves_web.get() on:change=move |event| signals.serves_web.set(event_target_checked(&event))/><span>"Serve Web"</span></label><div class="form-actions"><button class="button" type="submit" disabled=move || busy.get() || signals.endpoint_id.get().is_empty() || signals.target_ref.get().is_empty()>"Review route"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 #[component]
 fn RouteCard(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
-    route: aos_proto_types::DeliveryRoute,
+    route: aos_proto_types::Route,
+    choices: RouteCreateChoices,
 ) -> impl IntoView {
     let spec = route.spec.clone().unwrap_or_default();
     let observation = route.observation.clone().unwrap_or_default();
     let mode = route_mode(&spec);
-    view! { <details class="binding-card"><summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Endpoint"</span><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></div><div><span>"Target"</span><code>{target_name(&spec)}</code></div><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>{(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}<div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div><RouteExplain client=client.clone() route=route.clone()/><RouteReplace client=client surface=surface route=route/></div></details> }
+    view! { <details class="binding-card"><summary><div><span class="resource-kind">{mode}</span><h3>{route.canonical_rendered_url.clone()}</h3><code>{route.stable_id.clone()}</code></div><StatusBadge state=observation.state.clone() positive=observation.state == "healthy"/></summary><div class="binding-details"><div class="resource-identity"><div><span>"Endpoint"</span><code>{format!("{}@{}", spec.endpoint_id, spec.endpoint_generation)}</code></div><div><span>"Target"</span><code>{target_name(&spec)}</code></div><div><span>"Access"</span><strong>{access_policy_name(spec.access_policy.as_ref())}</strong></div><div><span>"Configuration generation"</span><strong>{route.configuration_generation}</strong></div><div><span>"Observed generation"</span><strong>{observation.configuration_generation}</strong></div><div><span>"Version"</span><code>{route.resource_version.clone()}</code></div></div>{(!observation.error.is_empty()).then(|| view! { <InlineError detail=observation.error/> })}<div class="subworkflow-grid"><RouteUpdate client=client.clone() surface=surface.clone() route=route.clone() choices=choices.clone()/><RouteLifecycle client=client.clone() route=route.clone()/></div><RouteExplain client=client.clone() route=route.clone()/><RouteReplace client=client surface=surface route=route choices=choices/></div></details> }
 }
 
 #[component]
 fn RouteUpdate(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
-    route: aos_proto_types::DeliveryRoute,
+    route: aos_proto_types::Route,
+    choices: RouteCreateChoices,
 ) -> impl IntoView {
     let signals = RouteSignals::from_spec(&route.spec.clone().unwrap_or_default());
     let pending = RwSignal::new(None::<PendingPlan>);
@@ -460,11 +520,11 @@ fn RouteUpdate(
         error,
         busy,
     );
-    view! { <section class="subworkflow"><h4>"Update route generation"</h4><form class="stacked-form" on:submit=on_plan><RouteFields signals=signals immutable_identity=true/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="subworkflow"><h4>"Update route generation"</h4><form class="stacked-form" on:submit=on_plan><RouteFields signals=signals immutable_identity=true choices=choices/><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review update"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 #[component]
-fn RouteLifecycle(client: ApiClient, route: aos_proto_types::DeliveryRoute) -> impl IntoView {
+fn RouteLifecycle(client: ApiClient, route: aos_proto_types::Route) -> impl IntoView {
     let enabled = route.spec.as_ref().is_some_and(|value| value.enabled);
     let action = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
@@ -527,7 +587,7 @@ fn RouteLifecycle(client: ApiClient, route: aos_proto_types::DeliveryRoute) -> i
 }
 
 #[component]
-fn RouteExplain(client: ApiClient, route: aos_proto_types::DeliveryRoute) -> impl IntoView {
+fn RouteExplain(client: ApiClient, route: aos_proto_types::Route) -> impl IntoView {
     let path = RwSignal::new("/".to_string());
     let access_class = RwSignal::new("web".to_string());
     let result = RwSignal::new(None::<aos_proto_types::ExplainRouteResponse>);
@@ -565,7 +625,8 @@ fn RouteExplain(client: ApiClient, route: aos_proto_types::DeliveryRoute) -> imp
 fn RouteReplace(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
-    route: aos_proto_types::DeliveryRoute,
+    route: aos_proto_types::Route,
+    choices: RouteCreateChoices,
 ) -> impl IntoView {
     let successor_id = RwSignal::new(String::new());
     let signals = RouteSignals::from_spec(&route.spec.clone().unwrap_or_default());
@@ -610,15 +671,15 @@ fn RouteReplace(
         error,
         busy,
     );
-    view! { <section class="subworkflow danger-subworkflow"><h4>"Replace route identity"</h4><p>"Endpoint or URL-path identity changes create a distinct disabled successor; they never mutate the live route in place."</p><form class="editor-form" on:submit=on_plan><label><span>"Successor stable ID"</span><input prop:value=move || successor_id.get() on:input=move |event| successor_id.set(event_target_value(&event))/></label><RouteFields signals=signals immutable_identity=false/><button class="danger-button" type="submit" disabled=move || busy.get()>"Review replacement"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="subworkflow danger-subworkflow"><h4>"Replace route identity"</h4><p>"Endpoint or URL-path identity changes create a distinct disabled successor; they never mutate the live route in place."</p><form class="editor-form" on:submit=on_plan><label><span>"Successor name"</span><input prop:value=move || successor_id.get() on:input=move |event| successor_id.set(event_target_value(&event))/></label><RouteFields signals=signals immutable_identity=false choices=choices/><button class="danger-button" type="submit" disabled=move || busy.get()>"Review replacement"</button></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 #[component]
-fn CanonicalRoutes(
+fn RouteAdvertisements(
     client: ApiClient,
     surface: aos_proto_types::SurfaceRef,
-    canonical: Vec<aos_proto_types::CanonicalRoute>,
-    routes: Vec<aos_proto_types::DeliveryRoute>,
+    canonical: Vec<aos_proto_types::RouteAdvertisement>,
+    routes: Vec<aos_proto_types::Route>,
 ) -> impl IntoView {
     // Keep the initial signal aligned with the first server-rendered option.
     // Otherwise hydration displays Git while submissions retain Web until the
@@ -644,7 +705,7 @@ fn CanonicalRoutes(
             .map(|value| value.resource_version.clone())
             .unwrap_or_default();
         let idempotency_key = idempotency_key("canonical-route-set");
-        let request = aos_proto_types::PlanCanonicalRouteRequest {
+        let request = aos_proto_types::PlanRouteAdvertisementRequest {
             surface: Some(surface.clone()),
             audience: selected_audience,
             route_id: route_id.get_untracked(),
@@ -653,7 +714,7 @@ fn CanonicalRoutes(
         };
         plan(
             plan_client.clone(),
-            aos_proto_types::ROUTE_SERVICE_PLAN_SET_CANONICAL_ROUTE_PATH,
+            aos_proto_types::ROUTE_SERVICE_PLAN_SET_ROUTE_ADVERTISEMENT_PATH,
             request,
             idempotency_key,
             pending,
@@ -669,9 +730,9 @@ fn CanonicalRoutes(
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::CanonicalRouteResponse>(
-                    aos_proto_types::ROUTE_SERVICE_SET_CANONICAL_ROUTE_PATH,
-                    &reviewed.canonical_route_apply(),
+                .call::<_, aos_proto_types::RouteAdvertisementResponse>(
+                    aos_proto_types::ROUTE_SERVICE_SET_ROUTE_ADVERTISEMENT_PATH,
+                    &reviewed.route_advertisement_apply(),
                 )
                 .await
             {
@@ -681,14 +742,14 @@ fn CanonicalRoutes(
             busy.set(false);
         });
     });
-    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Canonical routes"</h2><HelpTooltip term="Canonical routes" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div><form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| audience.set(event_target_value(&event))><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
+    view! { <section class="panel editor-panel"><div class="section-heading"><div><p class="section-kicker">"Audience defaults"</p><div class="section-title"><h2>"Route advertisements"</h2><HelpTooltip term="Route advertisements" summary="Each audience resolves to one enabled route while alternate routes remain simultaneously available."/></div></div></div><div class="compact-list">{canonical.into_iter().map(|value| view! { <div class="compact-list-row"><div><strong>{value.audience}</strong><code>{value.route_id}</code></div></div> }).collect_view()}</div><form class="editor-form" on:submit=on_plan><label><span>"Audience"</span><select prop:value=move || audience.get() on:change=move |event| audience.set(event_target_value(&event))><option value="git">"Git"</option><option value="nix_cache">"Nix cache"</option><option value="web">"Web"</option></select></label><label><span>"Enabled route"</span><select prop:value=move || route_id.get() on:change=move |event| route_id.set(event_target_value(&event))>{routes.iter().filter(|route| route.spec.as_ref().is_some_and(|spec| spec.enabled)).map(|route| view! { <option value=route.stable_id.clone()>{route.canonical_rendered_url.clone()}</option> }).collect_view()}</select></label><div class="form-actions"><button class="secondary-button" type="submit" disabled=move || busy.get()>"Review canonical selection"</button></div></form><PlanReview pending=pending error=error busy=busy on_apply=on_apply/></section> }
 }
 
 fn build_spec(
     surface: aos_proto_types::SurfaceRef,
     signals: RouteSignals,
-) -> Result<aos_proto_types::DeliveryRouteSpec, String> {
-    use aos_proto_types::delivery_route_target::Target;
+) -> Result<aos_proto_types::RouteSpec, String> {
+    use aos_proto_types::route_target::Target;
     let endpoint_generation = positive_generation(
         &signals.endpoint_generation.get_untracked(),
         "Endpoint generation",
@@ -741,12 +802,12 @@ fn build_spec(
             Some(signals.access.build_for_route()?),
         )
     };
-    Ok(aos_proto_types::DeliveryRouteSpec {
+    Ok(aos_proto_types::RouteSpec {
         surface: Some(surface),
         endpoint_id,
         endpoint_generation,
         base_path,
-        target: Some(aos_proto_types::DeliveryRouteTarget {
+        target: Some(aos_proto_types::RouteTarget {
             target: Some(target),
         }),
         access_policy,
@@ -755,8 +816,8 @@ fn build_spec(
     })
 }
 
-fn route_mode(spec: &aos_proto_types::DeliveryRouteSpec) -> &'static str {
-    use aos_proto_types::delivery_route_target::Target;
+fn route_mode(spec: &aos_proto_types::RouteSpec) -> &'static str {
+    use aos_proto_types::route_target::Target;
     match spec.target.as_ref().and_then(|value| value.target.as_ref()) {
         Some(Target::DirectGatewayPlacement(_)) => "direct",
         Some(Target::HubPlacement(value)) => hub_mode(value.delivery_kind),
@@ -773,8 +834,8 @@ fn hub_mode(kind: i32) -> &'static str {
         aos_proto_types::HubDeliveryKind::Unspecified => "unknown",
     }
 }
-fn target_name(spec: &aos_proto_types::DeliveryRouteSpec) -> String {
-    use aos_proto_types::delivery_route_target::Target;
+fn target_name(spec: &aos_proto_types::RouteSpec) -> String {
+    use aos_proto_types::route_target::Target;
     match spec.target.as_ref().and_then(|value| value.target.as_ref()) {
         Some(Target::HubPlacement(value)) => value.placement_name.clone(),
         Some(Target::HubPolicyRevision(value)) => {
@@ -866,7 +927,7 @@ fn apply_route(
         busy.set(true);
         spawn_local(async move {
             match client
-                .call::<_, aos_proto_types::DeliveryRouteResponse>(path, &reviewed.route_apply())
+                .call::<_, aos_proto_types::RouteResponse>(path, &reviewed.route_apply())
                 .await
             {
                 Ok(_) => reload(),

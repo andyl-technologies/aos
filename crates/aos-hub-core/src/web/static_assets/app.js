@@ -602,6 +602,75 @@
     });
   }
 
+  // --- Compact hash controls -------------------------------------------
+  // Hash controls can be created after this bundle runs by the Leptos shell,
+  // so hover/focus/copy behavior is delegated from `document` instead of
+  // initialized from a one-time element query.
+  function initHashControls() {
+    var open = null;
+
+    function close() {
+      if (!open) return;
+      open.classList.remove("open");
+      open = null;
+    }
+
+    function place(control) {
+      var tooltip = control.querySelector(".hash-tooltip");
+      if (!tooltip) return;
+      if (open && open !== tooltip) close();
+      open = tooltip;
+      tooltip.classList.add("open");
+
+      var rect = control.getBoundingClientRect();
+      var pad = 8;
+      var left = rect.left;
+      if (left + tooltip.offsetWidth > window.innerWidth - pad) {
+        left = window.innerWidth - pad - tooltip.offsetWidth;
+      }
+      left = Math.max(pad, left);
+      var top = rect.bottom + 6;
+      if (top + tooltip.offsetHeight > window.innerHeight - pad) {
+        top = Math.max(pad, rect.top - tooltip.offsetHeight - 6);
+      }
+      tooltip.style.left = Math.round(left) + "px";
+      tooltip.style.top = Math.round(top) + "px";
+    }
+
+    document.addEventListener("pointerover", function (event) {
+      var control = event.target.closest && event.target.closest(".hash-value");
+      if (control) place(control);
+    });
+    document.addEventListener("pointerout", function (event) {
+      var control = event.target.closest && event.target.closest(".hash-value");
+      if (control && !control.contains(event.relatedTarget)) close();
+    });
+    document.addEventListener("focusin", function (event) {
+      var control = event.target.closest && event.target.closest(".hash-value");
+      if (control) place(control);
+    });
+    document.addEventListener("focusout", function (event) {
+      var control = event.target.closest && event.target.closest(".hash-value");
+      if (control && !control.contains(event.relatedTarget)) close();
+    });
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+
+    if (!navigator.clipboard) return;
+    document.documentElement.classList.add("hash-controls-ready");
+    document.addEventListener("click", function (event) {
+      var button = event.target.closest && event.target.closest("[data-copy-value]");
+      if (!button) return;
+      navigator.clipboard.writeText(button.getAttribute("data-copy-value")).then(function () {
+        var previous = button.textContent;
+        button.textContent = "copied";
+        setTimeout(function () {
+          button.textContent = previous;
+        }, 1200);
+      });
+    });
+  }
+
   document.querySelectorAll("form[data-live]").forEach(initLiveSearch);
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
   document.querySelectorAll("[data-copy-target]").forEach(initCopyButton);
@@ -609,4 +678,5 @@
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
   document.querySelectorAll("form[data-config-form]").forEach(initCacheRows);
   initHelp();
+  initHashControls();
 })();

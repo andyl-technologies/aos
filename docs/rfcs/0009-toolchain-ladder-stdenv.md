@@ -146,6 +146,14 @@ because that makes the build run help2man against not-yet-installed source
 scripts. Assert the installed executables that downstream tiers consume so an
 optional documentation target cannot conceal an incomplete tool package.
 
+Give an early bootstrap package's configure probes the exact AOS shell through
+`CONFIG_SHELL`, and invoke configure with that shell. Do this even when the
+same shell's `bin` directory is on `PATH`: XZ 5.2.5's POSIX-shell probe accepts
+only absolute candidates and otherwise falls through to sandbox aliases such
+as `/bin/sh`. Verify both the installed native tool and the generated script's
+exact store-path shebang before publishing the package. The sandbox alias is a
+builder transport guarantee, not package dependency authority.
+
 These belong to `stdenv/phases.nix` next to `unpackPhase`/`fixupPhase`,
 where every consumer already looks.
 

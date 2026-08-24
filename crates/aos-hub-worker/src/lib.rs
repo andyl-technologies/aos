@@ -6,7 +6,7 @@
 //! indexer ("Architecture and runtime targets"). The native hub is a sync
 //! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
 //! **separate Worker crate** implementing the RFC's phase-1 Cloudflare
-//! deployment: **read the index + serve typed delivery routes**. It deliberately reuses
+//! deployment: **read the index + serve typed routes**. It deliberately reuses
 //! the pure, shared crates rather than porting the native hub:
 //!
 //! - [`aos_registry_surface`] — the wasm-clean reader (objects, tags, refs,
@@ -33,7 +33,7 @@
 //!   /aos.hub.v1.{Service}/{Method}`) — the write/publish path,
 //!   authentication (tokens/sessions/SSO/device-flow), private-registry access
 //!   control, and IAM/config/webhook/publish RPCs;
-//! - exact domain/IP endpoints and delivery routes, resolved before delegating
+//! - exact domain/IP endpoints and routes, resolved before delegating
 //!   to the shared streaming
 //!   [`registry_serve`](aos_hub_core::service::RpcService::registry_serve) and
 //!   [`cache_serve`](aos_hub_core::service::RpcService::cache_serve) paths over
@@ -394,7 +394,7 @@ mod entry {
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!(
-                    "provisioning instance-default storage binding: {error:#}"
+                    "provisioning instance-default binding: {error:#}"
                 ))
             })?;
 
@@ -409,7 +409,7 @@ mod entry {
         // The canonical URL is also the exact trusted control-plane authority.
         // It must be deployment configuration: deriving it from the incoming
         // request origin would let an arbitrary `Host` gain access to the API,
-        // console, or delivery routes.
+        // console, or routes.
         let external_url = env
             .var(HUB_EXTERNAL_URL)
             .map_err(|_| {
@@ -540,9 +540,9 @@ mod entry {
         )
         .map_err(|error| worker::Error::RustError(format!("domain probes: {error:#}")))?;
         let mut route_adapters =
-            aos_hub_core::topology_probe::ControllerOwnedDeliveryRouteObservationProvider::new()
+            aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new()
                 .with_external(Arc::new(
-                    aos_hub_core::topology_probe::CloudflareDeliveryRouteControlPlane::new(
+                    aos_hub_core::topology_probe::CloudflareRouteControlPlane::new(
                         Arc::new(WorkerCloudflareControlPlaneClient::new(
                             Arc::clone(&egress),
                             cloudflare_api_token,
@@ -561,7 +561,7 @@ mod entry {
             env.var(HUB_ROUTE_PUBLICATION_PUBLIC_KEY).ok(),
         ) {
             (Some(manifest), Some(public_key)) => {
-                let direct = aos_hub_core::topology_probe::SignedManifestDeliveryRouteObservationProvider::from_signed_json(
+                let direct = aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                     &manifest.to_string(),
                     &public_key.to_string(),
                     aos_hub_core::clock::now_unix_secs(),
@@ -1401,9 +1401,9 @@ mod entry {
             }
         };
         let mut route_adapters =
-            aos_hub_core::topology_probe::ControllerOwnedDeliveryRouteObservationProvider::new()
+            aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new()
                 .with_external(Arc::new(
-                    aos_hub_core::topology_probe::CloudflareDeliveryRouteControlPlane::new(
+                    aos_hub_core::topology_probe::CloudflareRouteControlPlane::new(
                         Arc::new(WorkerCloudflareControlPlaneClient::new(
                             Arc::clone(&egress),
                             match env.secret(HUB_CLOUDFLARE_API_TOKEN) {
@@ -1424,7 +1424,7 @@ mod entry {
             env.var(HUB_ROUTE_PUBLICATION_PUBLIC_KEY).ok(),
         ) {
             (Some(manifest), Some(public_key)) => {
-                let direct = match aos_hub_core::topology_probe::SignedManifestDeliveryRouteObservationProvider::from_signed_json(
+                let direct = match aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                     &manifest.to_string(),
                     &public_key.to_string(),
                     aos_hub_core::clock::now_unix_secs(),
@@ -1691,10 +1691,10 @@ mod entry {
                     "failure/registry",
                 ),
             ] {
-                crate::e2e_surface::configure_hub_delivery_route(&db, surface, placement_id, slug)
+                crate::e2e_surface::configure_hub_route(&db, surface, placement_id, slug)
                     .await
                     .map_err(|error| {
-                        worker::Error::RustError(format!("fixture delivery route: {error:#}"))
+                        worker::Error::RustError(format!("fixture route: {error:#}"))
                     })?;
             }
             let image_fixture = crate::e2e_surface::decode_producer_surface_fixture(

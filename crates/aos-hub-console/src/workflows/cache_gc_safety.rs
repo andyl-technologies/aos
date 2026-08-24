@@ -8,7 +8,7 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{InlineError, ReviewedPlanCard, StatusBadge};
+use crate::components::{HashValue, InlineError, ReviewedPlanCard, StatusBadge};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 
@@ -89,7 +89,7 @@ pub(super) fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView 
     view! {
         <article class="revision-card">
             <div class="compact-list-row">
-                <div><strong>{plan.plan_id}</strong><code>{plan.candidate_manifest_hash}</code></div>
+                <div><strong>{plan.plan_id}</strong><HashValue value=plan.candidate_manifest_hash/></div>
                 <StatusBadge state=format!("epoch {}", plan.gc_epoch) positive=plan.coverage_failures.is_empty()/>
             </div>
             <div class="resource-identity">
@@ -103,7 +103,7 @@ pub(super) fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView 
             <div class="compact-list">
                 {plan.candidates.into_iter().map(|candidate| view! {
                     <div class="compact-list-row">
-                        <code>{candidate.store_hash}</code>
+                        <HashValue value=candidate.store_hash/>
                         <span>{format!("{} logical bytes", candidate.logical_bytes)}</span>
                         {(!candidate.blocking_reasons.is_empty()).then(|| view! {
                             <span>{format!("blocked: {}", candidate.blocking_reasons.join(", "))}</span>
@@ -115,7 +115,7 @@ pub(super) fn GcPlanDetail(plan: aos_proto_types::CacheGcPlan) -> impl IntoView 
             <div class="compact-list">
                 {plan.placement_actions.into_iter().map(|action| view! {
                     <div class="compact-list-row">
-                        <code>{action.placement_id}</code><span>{action.action}</span><code>{action.store_hash}</code>
+                        <code>{action.placement_id}</code><span>{action.action}</span><HashValue value=action.store_hash/>
                     </div>
                 }).collect_view()}
             </div>

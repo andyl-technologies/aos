@@ -6,11 +6,11 @@
   implementation checklist at the bottom for the per-item state and the small
   remaining polish. Its binding-frontend inheritance target is superseded by
   [RFC-0012](../0012-hub-surface-topology/README.md), which models explicit
-  placements, storage gateways, and materialized delivery routes. This file
+  placements, gateways, and materialized routes. This file
   remains the historical record for shipped behavior until that migration.
 - **Builds on:** [`01-architecture.md`](01-architecture.md) (a control plane
   over a *static data plane*), [`03-api-storage-frontends.md`](03-api-storage-frontends.md)
-  (`StorageBinding`, shared buckets, direct/proxied frontends), and
+  (`Binding`, shared buckets, direct/proxied frontends), and
   [`11-caches.md`](11-caches.md) (managed caches share the same storage +
   frontend machinery as registries).
 
@@ -40,7 +40,7 @@ Worker duration on every byte, doubles the hop, and forgoes R2's CDN. The
 architecture already names the right shape — *control plane over a static data
 plane* — and the data model already has the pieces to realize it:
 
-- `storage_bindings.access` is `public` or `private`, and a `public` binding
+- `bindings.access` is `public` or `private`, and a `public` binding
   carries a `public_base_url` described (v23) as "the origin a **Direct**
   frontend rewrites to." A `direct` frontend "CNAMEs straight to the origin and
   never reaches the hub" — i.e. bytes served straight from the bucket/CDN.
@@ -49,14 +49,14 @@ plane* — and the data model already has the pieces to realize it:
 
 What is missing is the **binding** between those two halves:
 
-1. **`frontends` cannot attach to a storage binding.** Its target is
+1. **`frontends` cannot attach to a binding.** Its target is
    `registry_id` (v16) or `cache_id` (v24), enforced by
    `CHECK ((registry_id IS NULL) <> (cache_id IS NULL))`. A domain that serves a
    *bucket* — and that every registry/cache stored in that bucket should inherit
    — has nowhere to live. Today an operator would hand-create a near-identical
    `direct` frontend per registry, each pointing at the same bucket domain.
 2. **The instance default storage is not a real row.** A registry/cache with
-   `storage_binding_id IS NULL` uses "the deployment's default storage," which
+   `binding_id IS NULL` uses "the deployment's default storage," which
    is passed through the `SurfaceProvider` port and rendered as a *synthetic*
    row in the UI (`binding.rs`). It therefore cannot carry a `public_base_url`
    or a frontend, and cannot be edited through the same form as custom bindings.
@@ -65,7 +65,7 @@ What is missing is the **binding** between those two halves:
 
 ## The model
 
-A **storage binding owns its frontends.** A frontend on a public binding says:
+A **binding owns its frontends.** A frontend on a public binding says:
 *"this bucket is reachable at `domain[/base_path]`; the object at key `K` is at
 `domain/base_path/K`."* Every registry and cache stored in that binding
 **inherits** that frontend, with its own object paths derived from its `prefix`
@@ -73,7 +73,7 @@ A **storage binding owns its frontends.** A frontend on a public binding says:
 advertise** the inherited frontend, in its own config — so a registry opts its
 bucket-domain substituter URL in or out without ever creating a frontend row.
 
-The instance default storage becomes a **real, editable `storage_bindings`
+The instance default storage becomes a **real, editable `bindings`
 row** so it carries a `public_base_url`/frontend and is edited through the exact
 same form as a custom binding.
 
@@ -98,27 +98,27 @@ private origins presigned (`302`) or streamed as today.
 ## Schema deltas
 
 **A. Frontends become polymorphic over their target.** Add a nullable
-`storage_binding_id` and widen the one-of constraint to three:
+`binding_id` and widen the one-of constraint to three:
 
 ```sql
-ALTER TABLE frontends ADD COLUMN storage_binding_id INTEGER
-    REFERENCES storage_bindings(id) ON DELETE CASCADE;
+ALTER TABLE frontends ADD COLUMN binding_id INTEGER
+    REFERENCES bindings(id) ON DELETE CASCADE;
 -- replaces the 2-way CHECK with: exactly one of the three targets is set
 -- CHECK ( (registry_id IS NOT NULL) + (cache_id IS NOT NULL)
---         + (storage_binding_id IS NOT NULL) = 1 )
+--         + (binding_id IS NOT NULL) = 1 )
 ```
 
 (SQLite cannot alter a `CHECK` in place; the table is rebuilt exactly as the
 v24 cache-frontend migration did.) `FrontendRecord` gains
-`storage_binding_id: Option<i64>`; `list_frontends` grows a
+`binding_id: Option<i64>`; `list_frontends` grows a
 `list_storage_frontends(binding_id)` sibling and `frontends_by_domain` is
 unchanged (it already keys on `domain`/`base_path`).
 
 **B. The default storage becomes a real singleton row.** A migration seeds one
-instance-scoped `storage_bindings` row (e.g. `org_id IS NULL` + an
+instance-scoped `bindings` row (e.g. `org_id IS NULL` + an
 `is_instance_default` flag, `kind` = the deployment's `r2`/`local_fs`, `access`
 defaulting to `private` until an operator sets `public` + `public_base_url`).
-`storage_binding_id IS NULL` on registries/caches continues to mean "default,"
+`binding_id IS NULL` on registries/caches continues to mean "default,"
 resolving to that row. The synthetic-row rendering in `binding.rs` is replaced
 by reading the real row, so the default is editable through the normal form.
 
@@ -212,7 +212,7 @@ proxied/private path is unchanged.
 
 ## Implementation checklist
 
-- [x] Migration v29: `frontends.storage_binding_id` + 3-way one-of CHECK (table
+- [x] Migration v29: `frontends.binding_id` + 3-way one-of CHECK (table
       rebuild); `FrontendRecord` field; `create_storage_frontend`
       (Direct-over-private gate); `list_storage_frontends`; shared SELECT/row map.
 - [x] Effective-frontend resolver (cache path): `RpcService::cache_consumer_url`
@@ -220,9 +220,9 @@ proxied/private path is unchanged.
       precedence + the public-binding gate; `advertise_cache_change` repointed at
       the derived URL. Pure helpers unit-tested.
 - [x] Migration v30: the instance default storage is a real, editable
-      `storage_bindings` row (`org_id` nullable + `is_instance_default`, seeded
+      `bindings` row (`org_id` nullable + `is_instance_default`, seeded
       singleton); `instance_default_binding()` + `set_binding_public()`.
-      Surface-root resolution is intentionally unchanged — `storage_binding_id IS
+      Surface-root resolution is intentionally unchanged — `binding_id IS
       NULL` still resolves via the runtime port; the row only anchors the
       default's frontends + public settings, which the resolver inherits.
 - [x] Resolver inherits the **instance-default** binding for binding-less caches
@@ -230,10 +230,10 @@ proxied/private path is unchanged.
 - [x] WebUI: the instance default storage page (`/-/instance/storage`) edits the
       default binding's public access (`set-public`) and frontends
       (`add-frontend`/`delete-frontend`) via the shared
-      `storage_binding_serving_section` — the same form custom bindings will use.
-- [x] WebUI: org **custom** storage bindings share the same interface — a
+      `binding_serving_section` — the same form custom bindings will use.
+- [x] WebUI: org **custom** bindings share the same interface — a
       per-binding page (`GET`/`POST /-/org/{org}/bindings/{id}`) edits public
-      access + frontends via the same `storage_binding_serving_section`, gated by
+      access + frontends via the same `binding_serving_section`, gated by
       `StorageManage` and scoped to the owning org; the org storage tab links
       each binding to it.
 - [x] Registry-side resolver: `registry_consumer_url` (a shared

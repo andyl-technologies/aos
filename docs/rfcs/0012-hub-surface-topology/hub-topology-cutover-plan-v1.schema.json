@@ -128,7 +128,7 @@
     "topology": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mapping_coverage", "mapping_edges", "instances", "organizations", "projects", "surfaces", "bindings", "binding_capability_observations", "credential_generations", "binding_write_revisions", "binding_grants", "storage_defaults", "placements", "write_authorities", "delivery_endpoints", "domains", "network_boundaries", "gateways", "routes", "route_configurations", "placement_policies", "equivalence_sets", "registry_publications", "publication_bindings", "population_targets", "retention_subscriptions", "inventories", "placement_manifests"],
+      "required": ["mapping_coverage", "mapping_edges", "instances", "organizations", "projects", "surfaces", "bindings", "binding_capability_observations", "credential_generations", "binding_write_revisions", "binding_grants", "storage_defaults", "placements", "write_authorities", "endpoints", "domains", "network_policies", "gateways", "routes", "route_configurations", "placement_policies", "equivalence_sets", "registry_publications", "publication_bindings", "population_targets", "retention_subscriptions", "inventories", "placement_manifests"],
       "properties": {
         "mapping_coverage": { "$ref": "#/$defs/setCoverage" },
         "mapping_edges": {
@@ -155,8 +155,8 @@
           "items": { "$ref": "#/$defs/placement" }
         },
         "write_authorities": { "type": "array", "items": { "$ref": "#/$defs/writeAuthority" }, "uniqueItems": true },
-        "delivery_endpoints": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
-        "network_boundaries": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "endpoints": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
+        "network_policies": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
         "gateways": { "type": "array", "items": { "$ref": "#/$defs/generationResource" }, "uniqueItems": true },
         "routes": {
           "type": "array",
@@ -375,7 +375,7 @@
       }
     },
     "resourceKind": {
-      "enum": ["instance", "organization", "project", "registry", "registry_publication", "binary_cache", "surface", "storage_binding", "binding_capability_observation", "storage_binding_credential", "binding_write_revision", "binding_grant", "storage_default", "placement", "placement_manifest", "write_authority", "delivery_endpoint", "domain", "network_boundary", "storage_gateway", "delivery_route", "route_configuration", "placement_policy", "equivalence_set", "publication_binding", "population_target", "retention_subscription", "inventory_generation"]
+      "enum": ["instance", "organization", "project", "registry", "registry_publication", "binary_cache", "surface", "binding", "binding_capability_observation", "binding_credential", "binding_write_revision", "binding_grant", "storage_default", "placement", "placement_manifest", "write_authority", "endpoint", "domain", "network_policy", "gateway", "route", "route_configuration", "placement_policy", "equivalence_set", "publication_binding", "population_target", "retention_subscription", "inventory_generation"]
     },
     "resourceRef": {
       "type": "object",

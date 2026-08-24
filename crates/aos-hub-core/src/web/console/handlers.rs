@@ -310,7 +310,7 @@ async fn route_permissions(
         .collect())
 }
 
-/// Serves the authenticated browser-application shell for a canonical route.
+/// Serves the authenticated browser-application shell for a route advertisement.
 pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(session) => session,
@@ -1055,7 +1055,8 @@ pub(crate) async fn login_submit(
     // Render with the configured brand so the email reads "Sign in to <brand>"
     // rather than the generic fallback; the transport differs per shell but the
     // copy is shared (see `crate::email`).
-    let content = crate::email::magic_link_email(console::brand(), &link);
+    let brand = crate::web::console_render::effective_brand();
+    let content = crate::email::magic_link_email(&brand, &link);
     if let Err(err) = deps.mailer.send_email(&email, &content).await {
         tracing::warn!(error = %format!("{err:#}"), "magic link delivery failed");
     }
@@ -1729,9 +1730,11 @@ pub(crate) async fn passkeys_begin(
         Ok(rp) => rp,
         Err(err) => return internal(err),
     };
-    let rp_name = match console::brand() {
-        "" => "Registry Hub",
-        brand => brand,
+    let brand = crate::web::console_render::effective_brand();
+    let rp_name = if brand.is_empty() {
+        "Registry Hub"
+    } else {
+        &brand
     };
     match crate::auth::webauthn::begin_registration(
         &deps.db,

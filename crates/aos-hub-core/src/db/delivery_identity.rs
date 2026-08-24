@@ -1,7 +1,7 @@
 //! Domain, network-boundary, and delivery-endpoint persistence.
 //!
 //! These resources separate immutable identity from mutable controller state.
-//! Domains have immutable hostnames, network boundaries have immutable typed
+//! Domains have immutable hostnames, network policies have immutable typed
 //! identities plus append-only protection revisions, and endpoints have an
 //! immutable origin plus append-only listener generations. All mutable heads,
 //! observations, and lifecycle transitions use resource-version compare and
@@ -19,7 +19,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::backend::Statement;
-use crate::delivery_endpoint::{DeliveryEndpointOrigin, DeliveryHost};
+use crate::endpoint::{DeliveryHost, EndpointOrigin};
 use crate::value::Row;
 
 use super::{unix_now, Database};
@@ -68,11 +68,11 @@ const BOUNDARY_REVISION_COLUMNS: &str = "r.boundary_id, r.revision,
 
 const ENDPOINT_COLUMNS: &str = "e.id, e.org_id, e.owner_scope_key, e.scheme,
     e.domain_id, d.stable_id, e.ipv4_bytes, e.ipv6_bytes, e.effective_port,
-    e.network_boundary_id, e.cleartext_acknowledged_at, e.desired_generation,
+    e.network_policy_id, e.cleartext_acknowledged_at, e.desired_generation,
     e.endpoint_identity_digest, e.resource_version, e.created_at, e.updated_at";
 
 const ENDPOINT_REVISION_COLUMNS: &str = "r.endpoint_id, r.generation,
-    r.network_boundary_id, r.boundary_revision, r.ingress_kind,
+    r.network_policy_id, r.boundary_revision, r.ingress_kind,
     r.listener_configuration, r.tls_configuration, r.probe_configuration,
     r.content_digest, r.created_by, r.created_at";
 
@@ -226,7 +226,7 @@ impl DeliveryCertificateConfigurationSpec {
 /// An immutable, closed network-realm identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NetworkBoundaryIdentitySpec {
+pub enum NetworkPolicyIdentitySpec {
     /// The deployment-owned public network singleton.
     Public,
     /// A provider-qualified VPN identity.
@@ -272,7 +272,7 @@ pub enum NetworkBoundaryIdentitySpec {
     },
 }
 
-impl NetworkBoundaryIdentitySpec {
+impl NetworkPolicyIdentitySpec {
     /// Returns the canonical RFC-0012 kind.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -382,7 +382,7 @@ impl NetworkBoundaryIdentitySpec {
 
 /// A stable typed network-realm identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetworkBoundaryRecord {
+pub struct NetworkPolicyRecord {
     /// Stable public id.
     pub id: String,
     /// Owning organization database id, or `None` for instance scope.
@@ -411,7 +411,7 @@ pub struct NetworkBoundaryRecord {
 
 /// Desired immutable protection configuration for a boundary revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NetworkBoundaryRevisionSpec {
+pub struct NetworkPolicyRevisionSpec {
     /// Whether protected transport is mandatory.
     pub protected_transport_required: bool,
     /// `none`, `mtls`, or `signed_assertion`.
@@ -426,13 +426,13 @@ pub struct NetworkBoundaryRevisionSpec {
 
 /// One immutable boundary revision with independent observation and lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetworkBoundaryRevisionRecord {
+pub struct NetworkPolicyRevisionRecord {
     /// Stable boundary id.
     pub boundary_id: String,
     /// Monotonic boundary-local revision.
     pub revision: i64,
     /// Immutable desired configuration.
-    pub spec: NetworkBoundaryRevisionSpec,
+    pub spec: NetworkPolicyRevisionSpec,
     /// Immutable content digest.
     pub content_digest: String,
     /// Actor that created the revision.
@@ -465,7 +465,7 @@ pub struct NetworkBoundaryRevisionRecord {
 
 /// Plan-sealed state required to change a boundary's default revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetworkBoundaryDefaultCas {
+pub struct NetworkPolicyDefaultCas {
     /// Boundary resource version observed by the plan.
     pub boundary_resource_version: i64,
     /// Previous default revision observed by the plan, if one existed.
@@ -476,7 +476,7 @@ pub struct NetworkBoundaryDefaultCas {
 
 /// A typed endpoint host supplied to endpoint creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeliveryEndpointHostInput {
+pub enum EndpointHostInput {
     /// Stable delivery-domain id.
     Domain(String),
     /// Canonical four-byte IPv4 address.
@@ -487,7 +487,7 @@ pub enum DeliveryEndpointHostInput {
 
 /// Typed endpoint identity and desired generation pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryEndpointRecord {
+pub struct EndpointRecord {
     /// Stable public id.
     pub id: String,
     /// Owning organization database id, or `None` for instance scope.
@@ -507,7 +507,7 @@ pub struct DeliveryEndpointRecord {
     /// Effective port, including scheme defaults.
     pub effective_port: i64,
     /// Stable boundary identity.
-    pub network_boundary_id: String,
+    pub network_policy_id: String,
     /// Durable cleartext acknowledgement time.
     pub cleartext_acknowledged_at: Option<i64>,
     /// Desired immutable generation.
@@ -524,7 +524,7 @@ pub struct DeliveryEndpointRecord {
 
 /// Desired immutable listener configuration for an endpoint generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeliveryEndpointRevisionSpec {
+pub struct EndpointRevisionSpec {
     /// Exact boundary revision.
     pub boundary_revision: i64,
     /// `hub`, `external`, or `layer7`.
@@ -551,17 +551,17 @@ pub struct EndpointProbeSigningIdentity {
 
 /// One immutable endpoint generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryEndpointRevisionRecord {
+pub struct EndpointRevisionRecord {
     /// Stable endpoint id.
     pub endpoint_id: String,
     /// Monotonic endpoint-local generation.
     pub generation: i64,
     /// Stable boundary id.
-    pub network_boundary_id: String,
+    pub network_policy_id: String,
     /// Exact boundary revision.
     pub boundary_revision: i64,
     /// Immutable desired configuration.
-    pub spec: DeliveryEndpointRevisionSpec,
+    pub spec: EndpointRevisionSpec,
     /// Immutable content digest.
     pub content_digest: String,
     /// Actor that created the generation.
@@ -572,7 +572,7 @@ pub struct DeliveryEndpointRevisionRecord {
 
 /// One sealed grant copied from the previous endpoint generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryEndpointGrantCarryForward {
+pub struct EndpointGrantCarryForward {
     /// Exact non-owner consumer scope to copy.
     pub consumer_scope_key: String,
     /// Grant generation observed on the previous endpoint generation.
@@ -583,8 +583,8 @@ pub struct DeliveryEndpointGrantCarryForward {
 
 /// One exact dependent resource pinned to an endpoint generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeliveryEndpointImpactRecord {
-    /// Closed dependent kind: `delivery_route`, `storage_gateway`, or `topology_default`.
+pub struct EndpointImpactRecord {
+    /// Closed dependent kind: `route`, `gateway`, or `topology_default`.
     pub resource_kind: String,
     /// Stable dependent identity or scope key.
     pub stable_id: String,
@@ -596,7 +596,7 @@ pub struct DeliveryEndpointImpactRecord {
 
 /// The latest endpoint-controller observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryEndpointObservationRecord {
+pub struct EndpointObservationRecord {
     /// Stable endpoint id.
     pub endpoint_id: String,
     /// Exact observed generation, or `None` while unknown.
@@ -619,7 +619,7 @@ pub struct DeliveryEndpointObservationRecord {
 
 /// One live pin preventing a boundary revision from retiring.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NetworkBoundaryServingPinRecord {
+pub struct NetworkPolicyServingPinRecord {
     /// Stable pin id.
     pub pin_id: String,
     /// Boundary id.
@@ -648,9 +648,9 @@ pub struct NetworkBoundaryServingPinRecord {
 
 /// One exact, plan-sealed action for a live boundary serving pin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NetworkBoundaryPinResolutionSeal {
+pub struct NetworkPolicyPinResolutionSeal {
     /// Full immutable source-pin identity observed while planning.
-    pub source: NetworkBoundaryServingPinRecord,
+    pub source: NetworkPolicyServingPinRecord,
     /// `move_endpoint`, `replace_route`, or `release`.
     pub action_kind: String,
     /// Exact optimistic-concurrency version of the source target.
@@ -718,7 +718,7 @@ pub struct TopologyPinResolutionJobRecord {
 
 /// Exact old-revision lifecycle state fenced by coordinated activation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NetworkBoundaryCoordinationRevisionSeal {
+pub struct NetworkPolicyCoordinationRevisionSeal {
     /// Old boundary revision containing live consumers.
     pub revision: i64,
     /// Lifecycle state observed by the plan.
@@ -805,7 +805,7 @@ fn normalize_hostname(hostname: &str) -> Result<String> {
     if hostname.contains(':') {
         bail!("delivery domain hostname must not include an explicit port");
     }
-    let origin = DeliveryEndpointOrigin::parse(&format!("https://{hostname}"))
+    let origin = EndpointOrigin::parse(&format!("https://{hostname}"))
         .context("normalizing delivery domain hostname")?;
     match origin.host() {
         DeliveryHost::Dns(name) => Ok(name.clone()),
@@ -841,8 +841,8 @@ fn row_to_domain(row: &Row) -> Result<DeliveryDomainRecord> {
     })
 }
 
-fn row_to_boundary(row: &Row) -> Result<NetworkBoundaryRecord> {
-    Ok(NetworkBoundaryRecord {
+fn row_to_boundary(row: &Row) -> Result<NetworkPolicyRecord> {
+    Ok(NetworkPolicyRecord {
         id: row.get(0)?,
         org_id: row.get(1)?,
         owner_scope_key: row.get(2)?,
@@ -858,11 +858,11 @@ fn row_to_boundary(row: &Row) -> Result<NetworkBoundaryRecord> {
     })
 }
 
-fn row_to_boundary_revision(row: &Row) -> Result<NetworkBoundaryRevisionRecord> {
-    Ok(NetworkBoundaryRevisionRecord {
+fn row_to_boundary_revision(row: &Row) -> Result<NetworkPolicyRevisionRecord> {
+    Ok(NetworkPolicyRevisionRecord {
         boundary_id: row.get(0)?,
         revision: row.get(1)?,
-        spec: NetworkBoundaryRevisionSpec {
+        spec: NetworkPolicyRevisionSpec {
             protected_transport_required: row.get(2)?,
             trusted_ingress_kind: row.get(3)?,
             trusted_ingress_configuration: row.get(4)?,
@@ -886,8 +886,8 @@ fn row_to_boundary_revision(row: &Row) -> Result<NetworkBoundaryRevisionRecord> 
     })
 }
 
-fn row_to_endpoint(row: &Row) -> Result<DeliveryEndpointRecord> {
-    Ok(DeliveryEndpointRecord {
+fn row_to_endpoint(row: &Row) -> Result<EndpointRecord> {
+    Ok(EndpointRecord {
         id: row.get(0)?,
         org_id: row.get(1)?,
         owner_scope_key: row.get(2)?,
@@ -897,7 +897,7 @@ fn row_to_endpoint(row: &Row) -> Result<DeliveryEndpointRecord> {
         ipv4_bytes: row.get(6)?,
         ipv6_bytes: row.get(7)?,
         effective_port: row.get(8)?,
-        network_boundary_id: row.get(9)?,
+        network_policy_id: row.get(9)?,
         cleartext_acknowledged_at: row.get(10)?,
         desired_generation: row.get(11)?,
         endpoint_identity_digest: row.get(12)?,
@@ -907,14 +907,14 @@ fn row_to_endpoint(row: &Row) -> Result<DeliveryEndpointRecord> {
     })
 }
 
-fn row_to_endpoint_revision(row: &Row) -> Result<DeliveryEndpointRevisionRecord> {
+fn row_to_endpoint_revision(row: &Row) -> Result<EndpointRevisionRecord> {
     let ingress_kind = row.get(4)?;
-    Ok(DeliveryEndpointRevisionRecord {
+    Ok(EndpointRevisionRecord {
         endpoint_id: row.get(0)?,
         generation: row.get(1)?,
-        network_boundary_id: row.get(2)?,
+        network_policy_id: row.get(2)?,
         boundary_revision: row.get(3)?,
-        spec: DeliveryEndpointRevisionSpec {
+        spec: EndpointRevisionSpec {
             boundary_revision: row.get(3)?,
             ingress_kind,
             listener_configuration: row.get(5)?,
@@ -977,7 +977,7 @@ struct EndpointTlsConfiguration {
     require_client_certificate: bool,
 }
 
-fn validate_boundary_revision_spec(spec: &NetworkBoundaryRevisionSpec) -> Result<()> {
+fn validate_boundary_revision_spec(spec: &NetworkPolicyRevisionSpec) -> Result<()> {
     if !matches!(
         spec.trusted_ingress_kind.as_str(),
         "none" | "mtls" | "signed_assertion"
@@ -1104,9 +1104,9 @@ fn parse_cidrs(values: &[String]) -> Result<Vec<CanonicalCidr>> {
     Ok(canonical)
 }
 
-fn network_boundary_revision_digest(
+fn network_policy_revision_digest(
     boundary_fingerprint: &[u8; 32],
-    spec: &NetworkBoundaryRevisionSpec,
+    spec: &NetworkPolicyRevisionSpec,
 ) -> Result<String> {
     validate_boundary_revision_spec(spec)?;
     let cidrs = match &spec.source_allowlist_cidrs {
@@ -1138,7 +1138,7 @@ fn network_boundary_revision_digest(
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub(crate) fn validate_endpoint_revision_spec(spec: &DeliveryEndpointRevisionSpec) -> Result<()> {
+pub(crate) fn validate_endpoint_revision_spec(spec: &EndpointRevisionSpec) -> Result<()> {
     if spec.boundary_revision <= 0 {
         bail!("endpoint boundary revision must be positive");
     }
@@ -1196,8 +1196,8 @@ impl Database {
             .backend
             .query(
                 "SELECT endpoint.id, revision.generation, revision.probe_configuration
-               FROM delivery_endpoints endpoint
-               JOIN delivery_endpoint_revisions revision
+               FROM endpoints endpoint
+               JOIN endpoint_revisions revision
                  ON revision.endpoint_id = endpoint.id
                 AND revision.generation = endpoint.desired_generation
               WHERE endpoint.domain_id = ?1 AND endpoint.scheme = 'https'
@@ -1256,7 +1256,7 @@ impl Database {
                  (operation_id, target_generation, attempt, nonce, endpoint_id,
                   endpoint_generation, issued_at, expires_at)
                  SELECT ?1, ?2, ?3, ?4, revision.endpoint_id, revision.generation, ?7, ?8
-                   FROM delivery_endpoint_revisions revision
+                   FROM endpoint_revisions revision
                   WHERE revision.endpoint_id = ?5 AND revision.generation = ?6
                  ON CONFLICT(operation_id, target_generation, attempt) DO NOTHING",
                 &vals![
@@ -1360,10 +1360,10 @@ impl Database {
     ) -> Result<i64> {
         self.backend
             .query_opt(
-                "SELECT l.consumer_version FROM network_boundary_revision_lifecycle l
-                 JOIN network_boundary_observations o
+                "SELECT l.consumer_version FROM network_policy_revision_lifecycle l
+                 JOIN network_policy_observations o
                    ON o.boundary_id = l.boundary_id AND o.revision = l.revision
-                 JOIN network_boundary_revisions r
+                 JOIN network_policy_revisions r
                    ON r.boundary_id = l.boundary_id AND r.revision = l.revision
                  WHERE l.boundary_id = ?1 AND l.revision = ?2
                    AND l.state = 'active' AND o.state = 'verified'
@@ -1383,7 +1383,7 @@ impl Database {
     ) -> Result<i64> {
         self.backend
             .query_opt(
-                "SELECT consumer_version FROM network_boundary_revision_lifecycle
+                "SELECT consumer_version FROM network_policy_revision_lifecycle
                  WHERE boundary_id = ?1 AND revision = ?2
                    AND state IN ('active', 'retiring')",
                 &vals![boundary_id, revision],
@@ -1773,7 +1773,7 @@ impl Database {
             bail!("domain is stale");
         }
         let endpoint = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("domain probe endpoint does not exist")?;
         if endpoint.domain_id != Some(current.id)
@@ -1782,10 +1782,10 @@ impl Database {
             bail!("domain probe endpoint is no longer the desired terminator");
         }
         let endpoint_revision = self
-            .delivery_endpoint_revision(endpoint_id, endpoint_generation)
+            .endpoint_revision(endpoint_id, endpoint_generation)
             .await?
             .context("domain probe endpoint generation does not exist")?;
-        let endpoint_observation = self.delivery_endpoint_observation(endpoint_id).await?;
+        let endpoint_observation = self.endpoint_observation(endpoint_id).await?;
         let promote_endpoint = !endpoint_observation.as_ref().is_some_and(|observation| {
             observation.observed_generation == Some(endpoint_generation)
                 && observation.boundary_revision == Some(endpoint_revision.boundary_revision)
@@ -1798,8 +1798,8 @@ impl Database {
                 .query(
                     "SELECT r.id, h.configuration_generation, h.configuration_digest,
                             h.access_policy_digest
-                       FROM delivery_routes r
-                       JOIN delivery_route_heads h ON h.delivery_route_id = r.id
+                       FROM routes r
+                       JOIN route_heads h ON h.route_id = r.id
                       WHERE r.endpoint_id = ?1 AND r.endpoint_generation = ?2
                         AND r.enabled = 1
                       ORDER BY r.id",
@@ -1844,8 +1844,8 @@ impl Database {
         if promote_endpoint {
             let endpoint_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
             let endpoint_event_payload = serde_json::to_string(&serde_json::json!({
-                "type": "topology.delivery_endpoint.reconciled",
-                "resource_kind": "delivery_endpoint",
+                "type": "topology.endpoint.reconciled",
+                "resource_kind": "endpoint",
                 "resource_stable_id": endpoint_id,
                 "resource_generation": endpoint_generation,
                 "resource_version": endpoint_version_after,
@@ -1853,12 +1853,12 @@ impl Database {
             }))?;
             statements.extend([
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_generation_observations
+                    "INSERT INTO endpoint_generation_observations
                      (endpoint_id, observed_generation, boundary_id, boundary_revision,
                       state, listener_observed, tls_observed, observed_at, error)
-                     SELECT e.id, ?2, e.network_boundary_id, ?3, 'healthy', 1, 1, ?4, NULL
-                     FROM delivery_endpoints e
-                     JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                     SELECT e.id, ?2, e.network_policy_id, ?3, 'healthy', 1, 1, ?4, NULL
+                     FROM endpoints e
+                     JOIN endpoint_revisions r ON r.endpoint_id = e.id
                        AND r.generation = ?2 AND r.boundary_revision = ?3
                      WHERE e.id = ?1 AND e.resource_version = ?5
                        AND e.domain_id = ?6 AND e.desired_generation = ?2
@@ -1869,9 +1869,9 @@ impl Database {
                        listener_observed = excluded.listener_observed,
                        tls_observed = excluded.tls_observed,
                        observed_at = CASE
-                         WHEN delivery_endpoint_generation_observations.observed_at
+                         WHEN endpoint_generation_observations.observed_at
                            >= excluded.observed_at
-                         THEN delivery_endpoint_generation_observations.observed_at + 1
+                         THEN endpoint_generation_observations.observed_at + 1
                          ELSE excluded.observed_at END,
                        error = NULL",
                     vals![
@@ -1885,14 +1885,14 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoint_observations
+                    "UPDATE endpoint_observations
                      SET observed_generation = ?2, boundary_revision = ?3,
                          state = 'healthy', listener_observed = 1, tls_observed = 1,
                          observed_at = CASE WHEN observed_at >= ?4
                            THEN observed_at + 1 ELSE ?4 END, error = NULL
                      WHERE endpoint_id = ?1 AND EXISTS (
-                       SELECT 1 FROM delivery_endpoints e
-                       JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                       SELECT 1 FROM endpoints e
+                       JOIN endpoint_revisions r ON r.endpoint_id = e.id
                          AND r.generation = ?2 AND r.boundary_revision = ?3
                        WHERE e.id = ?1 AND e.resource_version = ?5
                          AND e.domain_id = ?6 AND e.desired_generation = ?2)",
@@ -1907,7 +1907,7 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoints
+                    "UPDATE endpoints
                      SET resource_version = resource_version + 1, updated_at = ?3
                      WHERE id = ?1 AND resource_version = ?2
                        AND domain_id = ?4 AND desired_generation = ?5",
@@ -1922,9 +1922,9 @@ impl Database {
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &endpoint_event_id,
-                    event_name: "topology.delivery_endpoint.reconciled",
+                    event_name: "topology.endpoint.reconciled",
                     owner_scope_key: &endpoint.owner_scope_key,
-                    resource_kind: "delivery_endpoint",
+                    resource_kind: "endpoint",
                     resource_stable_id: endpoint_id,
                     resource_generation_key: endpoint_generation,
                     actor_kind: "system",
@@ -1959,13 +1959,13 @@ impl Database {
                       primary_target_stable_id, primary_target_generation_key,
                       primary_target_configuration_digest, state, progress_total,
                       detail_json, created_at)
-                     SELECT ?1, 'delivery_route_probe', e.owner_scope_key,
-                       'route.manage', 'delivery_route', r.id,
+                     SELECT ?1, 'route_probe', e.owner_scope_key,
+                       'route.manage', 'route', r.id,
                        h.configuration_generation, h.configuration_digest,
                        'pending', 1, ?2, ?3
-                     FROM delivery_routes r
-                     JOIN delivery_route_heads h ON h.delivery_route_id = r.id
-                     JOIN delivery_endpoints e ON e.id = r.endpoint_id
+                     FROM routes r
+                     JOIN route_heads h ON h.route_id = r.id
+                     JOIN endpoints e ON e.id = r.endpoint_id
                      WHERE r.id = ?4 AND r.enabled = 1
                        AND r.endpoint_id = ?5 AND r.endpoint_generation = ?6
                        AND h.configuration_generation = ?7
@@ -1989,7 +1989,7 @@ impl Database {
         }
         statements.extend([
             Statement::new(
-                "UPDATE delivery_endpoints SET updated_at = updated_at
+                "UPDATE endpoints SET updated_at = updated_at
                  WHERE id = ?1 AND resource_version = ?2
                    AND domain_id = ?3 AND desired_generation = ?4",
                 vals![
@@ -2090,17 +2090,17 @@ impl Database {
     ///
     /// Returns an error for invalid typed identity/revision fields, duplicate
     /// identity, an invalid owner, or a database failure.
-    pub async fn create_network_boundary(
+    pub async fn create_network_policy(
         &self,
         id: &str,
         owner_scope_key: &str,
         org_id: Option<i64>,
         name: &str,
-        identity: &NetworkBoundaryIdentitySpec,
-        revision: &NetworkBoundaryRevisionSpec,
+        identity: &NetworkPolicyIdentitySpec,
+        revision: &NetworkPolicyRevisionSpec,
         actor: &str,
         request_id: &str,
-    ) -> Result<NetworkBoundaryRecord> {
+    ) -> Result<NetworkPolicyRecord> {
         validate_stable_id(id, "boundary id")?;
         self.validate_owner_scope_binding(owner_scope_key, org_id)
             .await?;
@@ -2109,25 +2109,25 @@ impl Database {
         if id == "instance:public" {
             bail!("the public boundary singleton is deployment-owned");
         }
-        if matches!(identity, NetworkBoundaryIdentitySpec::Public) {
+        if matches!(identity, NetworkPolicyIdentitySpec::Public) {
             bail!("the public boundary singleton is deployment-owned");
         }
         let identity_json = canonical_json(identity)?;
         let fingerprint = identity.fingerprint(owner_scope_key)?;
         let fingerprint_hex = hex::encode(fingerprint);
-        let revision_digest = network_boundary_revision_digest(&fingerprint, revision)?;
+        let revision_digest = network_policy_revision_digest(&fingerprint, revision)?;
         let now = unix_now();
         let grant_event_id = format!("grant-event:{}", Uuid::new_v4().simple());
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO network_boundaries (id, org_id, owner_scope_key, name, kind,
+                    "INSERT INTO network_policies (id, org_id, owner_scope_key, name, kind,
                      identity_spec_json, identity_fingerprint, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
                     vals![id, org_id, owner_scope_key, name, identity.kind(), identity_json, fingerprint_hex, now],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_revisions (boundary_id, revision,
+                    "INSERT INTO network_policy_revisions (boundary_id, revision,
                      protected_transport_required, trusted_ingress_kind,
                      trusted_ingress_configuration, source_allowlist_cidrs,
                      probe_location_configuration, content_digest, created_by, created_at)
@@ -2137,20 +2137,20 @@ impl Database {
                         revision.probe_location_configuration, revision_digest, actor, now],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_revision_lifecycle
+                    "INSERT INTO network_policy_revision_lifecycle
                      (boundary_id, revision, state, activation_mode, consumer_version, resource_version)
                      VALUES (?1, 1, 'staged', 'overlap', 0, 1)",
                     vals![id],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_observations
+                    "INSERT INTO network_policy_observations
                      (boundary_id, revision, state, protected_transport_observed,
                       trusted_ingress_observed, observed_at)
                      VALUES (?1, 1, 'unknown', 0, 'none', ?2)",
                     vals![id, now],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_consumer_scopes
+                    "INSERT INTO network_policy_consumer_scopes
                      (boundary_id, consumer_scope_key, grant_generation, grant_kind, state,
                       granted_by, granted_at, resource_version)
                      VALUES (?1, ?2, 1, 'owner', 'active', ?3, ?4, 1)",
@@ -2162,9 +2162,9 @@ impl Database {
                       resource_generation_key, consumer_scope_key, grant_generation,
                       transition, previous_state, resulting_state, actor_id,
                       occurred_at, request_id)
-                     SELECT ?1, 'network_boundary', ?2, 0, ?3, 1, 'granted',
+                     SELECT ?1, 'network_policy', ?2, 0, ?3, 1, 'granted',
                        NULL, 'active', ?4, ?5, ?6 WHERE EXISTS (
-                         SELECT 1 FROM network_boundary_consumer_scopes
+                         SELECT 1 FROM network_policy_consumer_scopes
                          WHERE boundary_id = ?2 AND consumer_scope_key = ?3
                            AND grant_generation = 1 AND state = 'active')",
                     vals![
@@ -2178,7 +2178,7 @@ impl Database {
                 ).expecting(1),
             ])
             .await?;
-        self.network_boundary(id)
+        self.network_policy(id)
             .await?
             .context("created boundary disappeared")
     }
@@ -2188,12 +2188,12 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn network_boundary(&self, id: &str) -> Result<Option<NetworkBoundaryRecord>> {
+    pub async fn network_policy(&self, id: &str) -> Result<Option<NetworkPolicyRecord>> {
         self.backend
             .query_opt(
                 &format!(
-                    "SELECT {BOUNDARY_COLUMNS} FROM network_boundaries b
-                     LEFT JOIN network_boundary_defaults nd ON nd.boundary_id = b.id
+                    "SELECT {BOUNDARY_COLUMNS} FROM network_policies b
+                     LEFT JOIN network_policy_defaults nd ON nd.boundary_id = b.id
                      WHERE b.id = ?1"
                 ),
                 &vals![id],
@@ -2212,21 +2212,21 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn network_boundary_default_cas(
+    pub async fn network_policy_default_cas(
         &self,
         id: &str,
-    ) -> Result<Option<NetworkBoundaryDefaultCas>> {
+    ) -> Result<Option<NetworkPolicyDefaultCas>> {
         self.backend
             .query_opt(
                 "SELECT b.resource_version, d.revision, d.resource_version
-                   FROM network_boundaries b
-                   LEFT JOIN network_boundary_defaults d ON d.boundary_id = b.id
+                   FROM network_policies b
+                   LEFT JOIN network_policy_defaults d ON d.boundary_id = b.id
                   WHERE b.id = ?1",
                 &vals![id],
             )
             .await?
             .map(|row| {
-                Ok(NetworkBoundaryDefaultCas {
+                Ok(NetworkPolicyDefaultCas {
                     boundary_resource_version: row.get(0)?,
                     previous_revision: row.get(1)?,
                     previous_resource_version: row.get(2)?,
@@ -2240,20 +2240,20 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for invalid scope or database failure.
-    pub async fn list_network_boundaries_page(
+    pub async fn list_network_policies_page(
         &self,
         owner_scope_key: &str,
         page_size: u32,
         after_id: Option<&str>,
-    ) -> Result<DeliveryIdentityPage<NetworkBoundaryRecord>> {
+    ) -> Result<DeliveryIdentityPage<NetworkPolicyRecord>> {
         validate_scope(owner_scope_key)?;
         let limit = normalize_page_size(page_size);
         let rows = self
             .backend
             .query(
                 &format!(
-                    "SELECT {BOUNDARY_COLUMNS} FROM network_boundaries b
-                     LEFT JOIN network_boundary_defaults nd ON nd.boundary_id = b.id
+                    "SELECT {BOUNDARY_COLUMNS} FROM network_policies b
+                     LEFT JOIN network_policy_defaults nd ON nd.boundary_id = b.id
                      WHERE b.owner_scope_key = ?1 AND b.id > ?2
                      ORDER BY b.id LIMIT ?3"
                 ),
@@ -2279,28 +2279,28 @@ impl Database {
     ///
     /// Returns an error for invalid content, a stale/missing boundary, or a
     /// database failure.
-    pub async fn revise_network_boundary(
+    pub async fn revise_network_policy(
         &self,
         boundary_id: &str,
-        spec: &NetworkBoundaryRevisionSpec,
+        spec: &NetworkPolicyRevisionSpec,
         actor: &str,
         expected_boundary_version: i64,
-    ) -> Result<NetworkBoundaryRevisionRecord> {
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if boundary_id == "instance:public" {
             bail!("the public boundary singleton cannot be revised");
         }
         validate_boundary_revision_spec(spec)?;
         let boundary = self
-            .network_boundary(boundary_id)
+            .network_policy(boundary_id)
             .await?
-            .context("network boundary does not exist")?;
+            .context("network policy does not exist")?;
         if boundary.resource_version != expected_boundary_version {
-            bail!("network boundary is stale");
+            bail!("network policy is stale");
         }
         let next: i64 = self
             .backend
             .query_opt(
-                "SELECT COALESCE(MAX(revision), 0) + 1 FROM network_boundary_revisions
+                "SELECT COALESCE(MAX(revision), 0) + 1 FROM network_policy_revisions
                  WHERE boundary_id = ?1",
                 &vals![boundary_id],
             )
@@ -2311,52 +2311,52 @@ impl Database {
             .context("decoding boundary identity fingerprint")?
             .try_into()
             .map_err(|_| anyhow::anyhow!("boundary identity fingerprint must contain 32 bytes"))?;
-        let digest = network_boundary_revision_digest(&fingerprint, spec)?;
+        let digest = network_policy_revision_digest(&fingerprint, spec)?;
         let now = unix_now();
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO network_boundary_revisions (boundary_id, revision,
+                    "INSERT INTO network_policy_revisions (boundary_id, revision,
                      protected_transport_required, trusted_ingress_kind,
                      trusted_ingress_configuration, source_allowlist_cidrs,
                      probe_location_configuration, content_digest, created_by, created_at)
                      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
-                     FROM network_boundaries WHERE id = ?1 AND resource_version = ?11",
+                     FROM network_policies WHERE id = ?1 AND resource_version = ?11",
                     vals![boundary_id, next, spec.protected_transport_required,
                         spec.trusted_ingress_kind, spec.trusted_ingress_configuration,
                         spec.source_allowlist_cidrs, spec.probe_location_configuration,
                         digest, actor, now, expected_boundary_version],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_revision_lifecycle
+                    "INSERT INTO network_policy_revision_lifecycle
                      (boundary_id, revision, state, activation_mode, consumer_version, resource_version)
                      SELECT ?1, ?2, 'staged', 'overlap', 0, 1 WHERE EXISTS (
-                       SELECT 1 FROM network_boundary_revisions WHERE boundary_id = ?1 AND revision = ?2)",
+                       SELECT 1 FROM network_policy_revisions WHERE boundary_id = ?1 AND revision = ?2)",
                     vals![boundary_id, next],
                 ).expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_observations
+                    "INSERT INTO network_policy_observations
                      (boundary_id, revision, state, protected_transport_observed,
                       trusted_ingress_observed, observed_at)
                      SELECT ?1, ?2, 'unknown', 0, 'none', ?3 WHERE EXISTS (
-                       SELECT 1 FROM network_boundary_revisions WHERE boundary_id = ?1 AND revision = ?2)",
+                       SELECT 1 FROM network_policy_revisions WHERE boundary_id = ?1 AND revision = ?2)",
                     vals![boundary_id, next, now],
                 ).expecting(1),
                 Statement::new(
-                    "UPDATE network_boundaries SET resource_version = resource_version + 1,
+                    "UPDATE network_policies SET resource_version = resource_version + 1,
                      updated_at = ?3 WHERE id = ?1 AND resource_version = ?2",
                     vals![boundary_id, expected_boundary_version, now],
                 ).expecting(1),
             ])
             .await?;
         let updated = self
-            .network_boundary(boundary_id)
+            .network_policy(boundary_id)
             .await?
-            .context("network boundary disappeared")?;
+            .context("network policy disappeared")?;
         if updated.resource_version != expected_boundary_version + 1 {
-            bail!("network boundary is stale");
+            bail!("network policy is stale");
         }
-        self.network_boundary_revision(boundary_id, next)
+        self.network_policy_revision(boundary_id, next)
             .await?
             .context("created boundary revision disappeared")
     }
@@ -2366,19 +2366,19 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn network_boundary_revision(
+    pub async fn network_policy_revision(
         &self,
         boundary_id: &str,
         revision: i64,
-    ) -> Result<Option<NetworkBoundaryRevisionRecord>> {
+    ) -> Result<Option<NetworkPolicyRevisionRecord>> {
         self.backend
             .query_opt(
                 &format!(
                     "SELECT {BOUNDARY_REVISION_COLUMNS}
-                     FROM network_boundary_revisions r
-                     JOIN network_boundary_observations o
+                     FROM network_policy_revisions r
+                     JOIN network_policy_observations o
                        ON o.boundary_id = r.boundary_id AND o.revision = r.revision
-                     JOIN network_boundary_revision_lifecycle l
+                     JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = r.boundary_id AND l.revision = r.revision
                      WHERE r.boundary_id = ?1 AND r.revision = ?2"
                 ),
@@ -2390,23 +2390,23 @@ impl Database {
             .transpose()
     }
 
-    /// Returns the highest immutable revision of a network boundary.
+    /// Returns the highest immutable revision of a network policy.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn latest_network_boundary_revision(
+    pub async fn latest_network_policy_revision(
         &self,
         boundary_id: &str,
-    ) -> Result<Option<NetworkBoundaryRevisionRecord>> {
+    ) -> Result<Option<NetworkPolicyRevisionRecord>> {
         self.backend
             .query_opt(
                 &format!(
                     "SELECT {BOUNDARY_REVISION_COLUMNS}
-                       FROM network_boundary_revisions r
-                       JOIN network_boundary_observations o
+                       FROM network_policy_revisions r
+                       JOIN network_policy_observations o
                          ON o.boundary_id = r.boundary_id AND o.revision = r.revision
-                       JOIN network_boundary_revision_lifecycle l
+                       JOIN network_policy_revision_lifecycle l
                          ON l.boundary_id = r.boundary_id AND l.revision = r.revision
                       WHERE r.boundary_id = ?1 ORDER BY r.revision DESC LIMIT 1"
                 ),
@@ -2423,22 +2423,22 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_network_boundary_revisions_page(
+    pub async fn list_network_policy_revisions_page(
         &self,
         boundary_id: &str,
         page_size: u32,
         after_revision: i64,
-    ) -> Result<DeliveryIdentityPage<NetworkBoundaryRevisionRecord>> {
+    ) -> Result<DeliveryIdentityPage<NetworkPolicyRevisionRecord>> {
         let limit = normalize_page_size(page_size);
         let rows = self
             .backend
             .query(
                 &format!(
                     "SELECT {BOUNDARY_REVISION_COLUMNS}
-                     FROM network_boundary_revisions r
-                     JOIN network_boundary_observations o
+                     FROM network_policy_revisions r
+                     JOIN network_policy_observations o
                        ON o.boundary_id = r.boundary_id AND o.revision = r.revision
-                     JOIN network_boundary_revision_lifecycle l
+                     JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = r.boundary_id AND l.revision = r.revision
                      WHERE r.boundary_id = ?1 AND r.revision > ?2
                      ORDER BY r.revision LIMIT ?3"
@@ -2468,7 +2468,7 @@ impl Database {
     ///
     /// Returns an error for invalid observation shape, a stale/missing
     /// lifecycle row, or a database failure.
-    pub async fn reconcile_network_boundary_revision(
+    pub async fn reconcile_network_policy_revision(
         &self,
         boundary_id: &str,
         revision: i64,
@@ -2477,7 +2477,7 @@ impl Database {
         trusted_ingress_observed: &str,
         error: Option<&str>,
         expected_version: i64,
-    ) -> Result<NetworkBoundaryRevisionRecord> {
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if !matches!(
             state,
             "unknown" | "declared" | "probing" | "verified" | "degraded" | "failed"
@@ -2494,7 +2494,7 @@ impl Database {
             bail!("invalid observed trusted-ingress kind");
         }
         let current = self
-            .network_boundary_revision(boundary_id, revision)
+            .network_policy_revision(boundary_id, revision)
             .await?
             .context("boundary revision does not exist")?;
         if current.resource_version != expected_version {
@@ -2510,11 +2510,11 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "UPDATE network_boundary_observations SET state = ?3,
+                    "UPDATE network_policy_observations SET state = ?3,
                      protected_transport_observed = ?4, trusted_ingress_observed = ?5,
                      observed_at = CASE WHEN observed_at >= ?6 THEN observed_at + 1 ELSE ?6 END,
                      error = ?7 WHERE boundary_id = ?1 AND revision = ?2
-                       AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                       AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?8)",
                     vals![
                         boundary_id,
@@ -2529,7 +2529,7 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?3",
                     vals![boundary_id, revision, expected_version],
@@ -2538,7 +2538,7 @@ impl Database {
             ])
             .await?;
         let observed = self
-            .network_boundary_revision(boundary_id, revision)
+            .network_policy_revision(boundary_id, revision)
             .await?
             .context("boundary revision does not exist")?;
         if observed.resource_version != expected_version + 1 || observed.observation_state != state
@@ -2558,21 +2558,21 @@ impl Database {
     ///
     /// Returns an error for invalid activation mode, unverified/stale state,
     /// an invalid or changed default-pointer seal, or a database failure.
-    pub async fn activate_network_boundary_revision(
+    pub async fn activate_network_policy_revision(
         &self,
         boundary_id: &str,
         revision: i64,
         activation_mode: &str,
-        default_cas: Option<&NetworkBoundaryDefaultCas>,
+        default_cas: Option<&NetworkPolicyDefaultCas>,
         expected_version: i64,
         actor_kind: &str,
         actor_id: Option<i64>,
         actor_label: &str,
         coordination_operation_id: Option<&str>,
-        coordination_impacts: &[NetworkBoundaryServingPinRecord],
-        coordination_revisions: &[NetworkBoundaryCoordinationRevisionSeal],
-        coordination_resolutions: &[NetworkBoundaryPinResolutionSeal],
-    ) -> Result<NetworkBoundaryRevisionRecord> {
+        coordination_impacts: &[NetworkPolicyServingPinRecord],
+        coordination_revisions: &[NetworkPolicyCoordinationRevisionSeal],
+        coordination_resolutions: &[NetworkPolicyPinResolutionSeal],
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if boundary_id == "instance:public" {
             bail!("the public boundary singleton cannot be activated");
         }
@@ -2596,13 +2596,13 @@ impl Database {
             bail!("coordinated activation requires exactly one resolution per live pin");
         }
         let current = self
-            .network_boundary_revision(boundary_id, revision)
+            .network_policy_revision(boundary_id, revision)
             .await?
             .context("boundary revision does not exist")?;
         let boundary = self
-            .network_boundary(boundary_id)
+            .network_policy(boundary_id)
             .await?
-            .context("network boundary does not exist")?;
+            .context("network policy does not exist")?;
         if current.resource_version != expected_version || current.lifecycle_state != "staged" {
             bail!("boundary revision is stale or not staged");
         }
@@ -2627,19 +2627,19 @@ impl Database {
             "active"
         };
         let mut statements = vec![Statement::new(
-            "UPDATE network_boundary_revision_lifecycle SET state = ?3,
+            "UPDATE network_policy_revision_lifecycle SET state = ?3,
                  activation_mode = ?4,
                  activated_at = CASE WHEN ?3 = 'active' THEN ?5 ELSE NULL END,
                  resource_version = resource_version + 1
                  WHERE boundary_id = ?1 AND revision = ?2 AND state = 'staged'
                    AND resource_version = ?6 AND EXISTS (
-                     SELECT 1 FROM network_boundary_observations o
-                     JOIN network_boundary_revisions r
+                     SELECT 1 FROM network_policy_observations o
+                     JOIN network_policy_revisions r
                        ON r.boundary_id = o.boundary_id AND r.revision = o.revision
                      WHERE o.boundary_id = ?1 AND o.revision = ?2 AND o.state = 'verified'
                        AND o.protected_transport_observed = r.protected_transport_required
                        AND o.trusted_ingress_observed = r.trusted_ingress_kind)
-                   AND (?7 = 0 OR EXISTS (SELECT 1 FROM network_boundaries
+                   AND (?7 = 0 OR EXISTS (SELECT 1 FROM network_policies
                      WHERE id = ?1 AND resource_version = ?8))",
             vals![
                 boundary_id,
@@ -2726,12 +2726,12 @@ impl Database {
                       primary_target_stable_id, primary_target_generation_key,
                       primary_target_configuration_digest, state, progress_total,
                       detail_json, created_at)
-                     SELECT ?1, 'network_boundary_coordinated_activation',
-                       boundary.owner_scope_key, 'network_boundary.manage',
-                       'network_boundary', revision.boundary_id, revision.revision,
+                     SELECT ?1, 'network_policy_coordinated_activation',
+                       boundary.owner_scope_key, 'network_policy.manage',
+                       'network_policy', revision.boundary_id, revision.revision,
                        revision.content_digest, 'pending', ?2, ?3, ?4
-                     FROM network_boundaries boundary
-                     JOIN network_boundary_revisions revision
+                     FROM network_policies boundary
+                     JOIN network_policy_revisions revision
                        ON revision.boundary_id = boundary.id
                      WHERE boundary.id = ?5 AND revision.revision = ?6
                        AND revision.content_digest = ?7",
@@ -2753,23 +2753,23 @@ impl Database {
                 let (target_kind, control_permission, identity_from, revision_guard) =
                     match impact.target_kind.as_str() {
                         "endpoint" => (
-                            "delivery_endpoint",
-                            "delivery_endpoint.manage",
-                            "delivery_endpoints identity
+                            "endpoint",
+                            "endpoint.manage",
+                            "endpoints identity
                               ON identity.id = pin.target_stable_id",
-                            "EXISTS (SELECT 1 FROM delivery_endpoint_revisions revision
+                            "EXISTS (SELECT 1 FROM endpoint_revisions revision
                               WHERE revision.endpoint_id = pin.target_stable_id
                                 AND revision.generation = pin.target_generation_key
                                 AND revision.content_digest = pin.target_configuration_digest)",
                         ),
                         "route" => (
-                            "delivery_route",
+                            "route",
                             "route.manage",
-                            "delivery_routes route ON route.id = pin.target_stable_id
-                             JOIN delivery_endpoints identity
+                            "routes route ON route.id = pin.target_stable_id
+                             JOIN endpoints identity
                               ON identity.id = route.endpoint_id",
-                            "EXISTS (SELECT 1 FROM delivery_route_heads head
-                              WHERE head.delivery_route_id = pin.target_stable_id
+                            "EXISTS (SELECT 1 FROM route_heads head
+                              WHERE head.route_id = pin.target_stable_id
                                 AND head.configuration_generation = pin.target_generation_key
                                 AND head.configuration_digest = pin.target_configuration_digest)",
                         ),
@@ -2782,7 +2782,7 @@ impl Database {
                         Statement::new(
                             "UPDATE topology_operations SET resource_version = resource_version
                              WHERE operation_id = ?1 AND EXISTS (
-                               SELECT 1 FROM network_boundary_serving_pins pin
+                               SELECT 1 FROM network_policy_serving_pins pin
                                WHERE pin.pin_id = ?2 AND pin.boundary_id = ?3
                                  AND pin.revision = ?4 AND pin.consumer_scope_key = ?5
                                  AND pin.grant_generation = ?6 AND pin.target_kind = ?7
@@ -2816,7 +2816,7 @@ impl Database {
                              SELECT ?1, 'source', ?2, pin.target_stable_id,
                                identity.owner_scope_key, ?3, pin.target_generation_key,
                                pin.target_configuration_digest
-                             FROM network_boundary_serving_pins pin
+                             FROM network_policy_serving_pins pin
                              JOIN {identity_from}
                              WHERE pin.pin_id = ?4 AND pin.boundary_id = ?5
                                AND pin.revision = ?6 AND pin.consumer_scope_key = ?7
@@ -2846,15 +2846,15 @@ impl Database {
                 }
                 let source_guard = match impact.target_kind.as_str() {
                     "endpoint" => {
-                        "EXISTS (SELECT 1 FROM delivery_endpoints source
+                        "EXISTS (SELECT 1 FROM endpoints source
                        WHERE source.id = pin.target_stable_id
                          AND source.desired_generation = pin.target_generation_key
                          AND source.resource_version = ?13)"
                     }
                     "route" => {
-                        "EXISTS (SELECT 1 FROM delivery_routes source
-                       JOIN delivery_route_heads source_head
-                         ON source_head.delivery_route_id = source.id
+                        "EXISTS (SELECT 1 FROM routes source
+                       JOIN route_heads source_head
+                         ON source_head.route_id = source.id
                        WHERE source.id = pin.target_stable_id
                          AND source.resource_version = ?13
                          AND source_head.configuration_generation = pin.target_generation_key
@@ -2879,7 +2879,7 @@ impl Database {
                                pin.consumer_scope_key, pin.grant_generation, pin.usage_kind,
                                pin.target_kind, pin.target_stable_id, pin.target_generation_key,
                                pin.target_configuration_digest, ?13, ?14, ?15, ?16, ?17, ?18
-                             FROM network_boundary_serving_pins pin
+                             FROM network_policy_serving_pins pin
                              WHERE pin.pin_id = ?3 AND pin.boundary_id = ?4
                                AND pin.revision = ?5 AND pin.consumer_scope_key = ?6
                                AND pin.grant_generation = ?7 AND pin.usage_kind = ?8
@@ -2926,29 +2926,29 @@ impl Database {
                         .replacement_target_configuration_digest
                         .as_deref(),
                 ) {
-                    let (target_kind, permission, scope_join, target_guard) =
-                        match replacement_kind {
-                            "delivery_endpoint" => (
-                                "delivery_endpoint",
-                                "delivery_endpoint.manage",
-                                "delivery_endpoints identity",
-                                "EXISTS (SELECT 1 FROM delivery_endpoint_revisions r
+                    let (target_kind, permission, scope_join, target_guard) = match replacement_kind
+                    {
+                        "endpoint" => (
+                            "endpoint",
+                            "endpoint.manage",
+                            "endpoints identity",
+                            "EXISTS (SELECT 1 FROM endpoint_revisions r
                                   WHERE r.endpoint_id = ?3 AND r.generation = ?4
                                     AND r.content_digest = ?5)
                                   AND identity.id = ?3",
-                            ),
-                            "delivery_route" => (
-                                "delivery_route",
-                                "route.manage",
-                                "delivery_routes route ON route.id = ?3
-                                 JOIN delivery_endpoints identity ON identity.id = route.endpoint_id",
-                                "EXISTS (SELECT 1 FROM delivery_route_heads h
-                                  WHERE h.delivery_route_id = ?3
+                        ),
+                        "route" => (
+                            "route",
+                            "route.manage",
+                            "routes route ON route.id = ?3
+                                 JOIN endpoints identity ON identity.id = route.endpoint_id",
+                            "EXISTS (SELECT 1 FROM route_heads h
+                                  WHERE h.route_id = ?3
                                     AND h.configuration_generation = ?4
                                     AND h.configuration_digest = ?5)",
-                            ),
-                            _ => bail!("unsupported replacement target kind"),
-                        };
+                        ),
+                        _ => bail!("unsupported replacement target kind"),
+                    };
                     if operation_targets.insert((target_kind, replacement_id)) {
                         statements.push(
                             Statement::new(
@@ -2978,7 +2978,7 @@ impl Database {
         } else if let Some(default_cas) = default_cas {
             statements.push(
                 Statement::new(
-                    "UPDATE network_boundaries
+                    "UPDATE network_policies
                      SET resource_version = resource_version + 1, updated_at = ?2
                      WHERE id = ?1 AND resource_version = ?3",
                     vals![boundary_id, now, default_cas.boundary_resource_version],
@@ -2991,12 +2991,12 @@ impl Database {
             ) {
                 (Some(previous_revision), Some(previous_resource_version)) => statements.push(
                     Statement::new(
-                        "UPDATE network_boundary_defaults
+                        "UPDATE network_policy_defaults
                          SET revision = ?2, state = 'active',
                              resource_version = resource_version + 1, updated_at = ?3
                          WHERE boundary_id = ?1 AND revision = ?4 AND state = 'active'
                            AND resource_version = ?6
-                           AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                           AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                              WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active'
                                AND resource_version = ?5)",
                         vals![
@@ -3012,13 +3012,13 @@ impl Database {
                 ),
                 (None, None) => statements.push(
                     Statement::new(
-                        "INSERT INTO network_boundary_defaults
+                        "INSERT INTO network_policy_defaults
                          (boundary_id, revision, state, resource_version, updated_at)
                          SELECT ?1, ?2, 'active', 1, ?3 WHERE EXISTS (
-                           SELECT 1 FROM network_boundary_revision_lifecycle
+                           SELECT 1 FROM network_policy_revision_lifecycle
                            WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active'
                              AND resource_version = ?4)
-                           AND NOT EXISTS (SELECT 1 FROM network_boundary_defaults
+                           AND NOT EXISTS (SELECT 1 FROM network_policy_defaults
                              WHERE boundary_id = ?1)",
                         vals![boundary_id, revision, now, expected_version + 1],
                     )
@@ -3029,13 +3029,13 @@ impl Database {
         }
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let event_name = if activation_mode == "coordinated" {
-            "topology.network_boundary.activation_started"
+            "topology.network_policy.activation_started"
         } else {
-            "topology.network_boundary.activated"
+            "topology.network_policy.activated"
         };
         let event_payload = serde_json::to_string(&serde_json::json!({
             "type": event_name,
-            "resource_kind": "network_boundary",
+            "resource_kind": "network_policy",
             "resource_stable_id": boundary_id,
             "resource_generation": revision,
             "resource_version": expected_version + 1,
@@ -3048,7 +3048,7 @@ impl Database {
                 event_id: &event_id,
                 event_name,
                 owner_scope_key: &boundary.owner_scope_key,
-                resource_kind: "network_boundary",
+                resource_kind: "network_policy",
                 resource_stable_id: boundary_id,
                 resource_generation_key: revision,
                 actor_kind,
@@ -3060,7 +3060,7 @@ impl Database {
         ));
         self.backend.checked_batch(&statements).await?;
         let record = self
-            .network_boundary_revision(boundary_id, revision)
+            .network_policy_revision(boundary_id, revision)
             .await?
             .context("boundary revision does not exist")?;
         if record.lifecycle_state != target_state || record.resource_version != expected_version + 1
@@ -3173,11 +3173,11 @@ impl Database {
             bail!("endpoint move must preserve stable endpoint identity");
         }
         let target = self
-            .delivery_endpoint_revision(replacement_id, replacement_generation)
+            .endpoint_revision(replacement_id, replacement_generation)
             .await?
             .context("replacement endpoint generation does not exist")?;
         let endpoint_owner_scope = self
-            .delivery_endpoint(replacement_id)
+            .endpoint(replacement_id)
             .await?
             .context("endpoint disappeared before activation")?
             .owner_scope_key;
@@ -3186,8 +3186,8 @@ impl Database {
         let now = unix_now();
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_endpoint.generation_activated",
-            "resource_kind": "delivery_endpoint",
+            "type": "topology.endpoint.generation_activated",
+            "resource_kind": "endpoint",
             "resource_stable_id": replacement_id,
             "resource_generation": replacement_generation,
             "resource_version": replacement_version + 1,
@@ -3195,7 +3195,7 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM delivery_endpoint_scope_grant_pins
+                    "DELETE FROM endpoint_scope_grant_pins
                      WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                        AND consumer_scope_key = ?3 AND target_kind = 'listener'
                        AND target_stable_id = ?1 AND target_generation_key = ?2
@@ -3215,7 +3215,7 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "DELETE FROM network_boundary_serving_pins
+                    "DELETE FROM network_policy_serving_pins
                      WHERE pin_id = ?1 AND boundary_id = ?2 AND revision = ?3
                        AND consumer_scope_key = ?4 AND grant_generation = ?5
                        AND usage_kind = ?6 AND target_kind = 'endpoint'
@@ -3235,12 +3235,12 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoints
+                    "UPDATE endpoints
                      SET desired_generation = ?2, resource_version = resource_version + 1,
                          updated_at = ?3
                      WHERE id = ?1 AND desired_generation = ?4 AND resource_version = ?5
                        AND ?5 = ?6
-                       AND EXISTS (SELECT 1 FROM delivery_endpoint_revisions revision
+                       AND EXISTS (SELECT 1 FROM endpoint_revisions revision
                          WHERE revision.endpoint_id = ?1 AND revision.generation = ?2
                            AND revision.content_digest = ?7)",
                     vals![
@@ -3255,7 +3255,7 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoint_observations
+                    "UPDATE endpoint_observations
                      SET observed_generation = NULL, boundary_revision = NULL,
                          state = 'unknown', listener_observed = 0, tls_observed = 0,
                          observed_at = ?2, error = NULL
@@ -3264,14 +3264,14 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_scope_grant_pins
+                    "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest)
                      SELECT ?1, grant.endpoint_id, grant.endpoint_generation,
                        grant.consumer_scope_key, grant.grant_generation, grant.state,
                        'listener', grant.endpoint_id, grant.endpoint_generation, ?5
-                     FROM delivery_endpoint_route_scopes grant
+                     FROM endpoint_route_scopes grant
                      WHERE grant.endpoint_id = ?2 AND grant.endpoint_generation = ?3
                        AND grant.consumer_scope_key = ?4 AND grant.state = 'active'",
                     vals![
@@ -3284,23 +3284,23 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
                       grant_generation, grant_state, usage_kind, target_kind,
                       target_stable_id, target_generation_key,
                       target_configuration_digest, acquired_by, acquired_at)
-                     SELECT ?1, revision.network_boundary_id, revision.boundary_revision,
+                     SELECT ?1, revision.network_policy_id, revision.boundary_revision,
                        grant.consumer_scope_key, boundary_grant.grant_generation,
                        boundary_grant.state, 'endpoint_listener', 'endpoint',
                        revision.endpoint_id, revision.generation, revision.content_digest,
                        'system:boundary-coordination', ?6
-                     FROM delivery_endpoint_revisions revision
-                     JOIN delivery_endpoint_route_scopes grant
+                     FROM endpoint_revisions revision
+                     JOIN endpoint_route_scopes grant
                        ON grant.endpoint_id = revision.endpoint_id
                       AND grant.endpoint_generation = revision.generation
                       AND grant.consumer_scope_key = ?4 AND grant.state = 'active'
-                     JOIN network_boundary_consumer_scopes boundary_grant
-                       ON boundary_grant.boundary_id = revision.network_boundary_id
+                     JOIN network_policy_consumer_scopes boundary_grant
+                       ON boundary_grant.boundary_id = revision.network_policy_id
                       AND boundary_grant.consumer_scope_key = ?4
                       AND boundary_grant.state = 'active'
                      WHERE revision.endpoint_id = ?2 AND revision.generation = ?3
@@ -3316,14 +3316,14 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET consumer_version = consumer_version + 1
                      WHERE (boundary_id = ?1 AND revision = ?2)
                         OR (boundary_id = ?3 AND revision = ?4)",
                     vals![
                         job.source_boundary_id,
                         job.source_boundary_revision,
-                        target.network_boundary_id,
+                        target.network_policy_id,
                         target.boundary_revision
                     ],
                 )
@@ -3336,9 +3336,9 @@ impl Database {
                 ),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_endpoint.generation_activated",
+                    event_name: "topology.endpoint.generation_activated",
                     owner_scope_key: &endpoint_owner_scope,
-                    resource_kind: "delivery_endpoint",
+                    resource_kind: "endpoint",
                     resource_stable_id: replacement_id,
                     resource_generation_key: replacement_generation,
                     actor_kind,
@@ -3361,7 +3361,7 @@ impl Database {
     ///
     /// Returns an error for stale source/target state, dependent source uses,
     /// an ineligible boundary lifecycle, or database failure.
-    pub async fn activate_staged_delivery_endpoint_generation(
+    pub async fn activate_staged_endpoint_generation(
         &self,
         endpoint_id: &str,
         generation: i64,
@@ -3370,9 +3370,9 @@ impl Database {
         actor_kind: &str,
         actor_id: Option<i64>,
         actor_label: &str,
-    ) -> Result<DeliveryEndpointRecord> {
+    ) -> Result<EndpointRecord> {
         let endpoint = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("endpoint does not exist")?;
         if endpoint.resource_version != expected_version {
@@ -3385,15 +3385,15 @@ impl Database {
             bail!("endpoint generation is already selected");
         }
         let source = self
-            .delivery_endpoint_revision(endpoint_id, previous)
+            .endpoint_revision(endpoint_id, previous)
             .await?
             .context("selected endpoint generation is missing")?;
         let target = self
-            .delivery_endpoint_revision(endpoint_id, generation)
+            .endpoint_revision(endpoint_id, generation)
             .await?
             .context("staged endpoint generation is missing")?;
         let lifecycle = self
-            .network_boundary_revision(&target.network_boundary_id, target.boundary_revision)
+            .network_policy_revision(&target.network_policy_id, target.boundary_revision)
             .await?
             .context("target boundary revision is missing")?;
         if lifecycle.observation_state != "verified"
@@ -3403,7 +3403,7 @@ impl Database {
             bail!("target boundary revision is not eligible for endpoint activation");
         }
         let impacts = self
-            .delivery_endpoint_generation_impacts(endpoint_id, previous)
+            .endpoint_generation_impacts(endpoint_id, previous)
             .await?;
         if !impacts.is_empty() {
             bail!("move dependent routes, gateways, and defaults before selecting the generation");
@@ -3415,7 +3415,7 @@ impl Database {
                         grant_generation, usage_kind, target_kind, target_stable_id,
                         target_generation_key, target_configuration_digest,
                         acquired_by, acquired_at
-                   FROM network_boundary_serving_pins
+                   FROM network_policy_serving_pins
                   WHERE target_kind = 'endpoint' AND target_stable_id = ?1
                     AND target_generation_key = ?2
                     AND target_configuration_digest = ?3
@@ -3438,7 +3438,7 @@ impl Database {
             source_target_generation_key: pin.get(8)?,
             source_target_configuration_digest: pin.get(9)?,
             source_target_resource_version: expected_version,
-            replacement_target_kind: Some("delivery_endpoint".to_string()),
+            replacement_target_kind: Some("endpoint".to_string()),
             replacement_target_stable_id: Some(endpoint_id.to_string()),
             replacement_target_generation_key: Some(generation),
             replacement_target_configuration_digest: Some(target.content_digest),
@@ -3450,7 +3450,7 @@ impl Database {
         };
         self.execute_endpoint_pin_move(&job, actor_kind, actor_id, actor_label)
             .await?;
-        self.delivery_endpoint(endpoint_id)
+        self.endpoint(endpoint_id)
             .await?
             .context("activated endpoint disappeared")
     }
@@ -3468,8 +3468,8 @@ impl Database {
         let now = unix_now();
         let postcondition = match (job.source_target_kind.as_str(), job.action_kind.as_str()) {
             ("endpoint", "move_endpoint") => {
-                "EXISTS (SELECT 1 FROM delivery_endpoints target
-                 JOIN delivery_endpoint_revisions revision
+                "EXISTS (SELECT 1 FROM endpoints target
+                 JOIN endpoint_revisions revision
                    ON revision.endpoint_id = target.id
                   AND revision.generation = target.desired_generation
                  WHERE target.id = replacement_target_stable_id
@@ -3478,15 +3478,15 @@ impl Database {
                    AND revision.content_digest = replacement_target_configuration_digest)"
             }
             ("endpoint", "release") => {
-                "NOT EXISTS (SELECT 1 FROM delivery_endpoints
+                "NOT EXISTS (SELECT 1 FROM endpoints
                  WHERE id = source_target_stable_id)"
             }
             ("route", "replace_route") => {
-                "EXISTS (SELECT 1 FROM delivery_routes source
+                "EXISTS (SELECT 1 FROM routes source
                  WHERE source.id = source_target_stable_id AND source.enabled = 0
                    AND source.resource_version = source_target_resource_version + 1)
-               AND EXISTS (SELECT 1 FROM delivery_routes replacement
-                 JOIN delivery_route_heads head ON head.delivery_route_id = replacement.id
+               AND EXISTS (SELECT 1 FROM routes replacement
+                 JOIN route_heads head ON head.route_id = replacement.id
                  WHERE replacement.id = replacement_target_stable_id
                    AND replacement.enabled = 1
                    AND replacement.resource_version = replacement_target_resource_version
@@ -3494,7 +3494,7 @@ impl Database {
                    AND head.configuration_digest = replacement_target_configuration_digest)"
             }
             ("route", "release") => {
-                "EXISTS (SELECT 1 FROM delivery_routes source
+                "EXISTS (SELECT 1 FROM routes source
                  WHERE source.id = source_target_stable_id AND source.enabled = 0
                    AND source.resource_version = source_target_resource_version + 1)"
             }
@@ -3508,7 +3508,7 @@ impl Database {
                          resource_version = resource_version + 1
                      WHERE operation_id = ?1 AND pin_id = ?2 AND resource_version = ?3
                        AND state = 'running'
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins pin
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins pin
                          WHERE pin.pin_id = topology_pin_resolution_jobs.pin_id)
                        AND {postcondition}"
                 ),
@@ -3558,35 +3558,35 @@ impl Database {
     /// Returns an error for stale operation/default/lifecycle seals, incomplete
     /// child jobs, late pins, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn finalize_network_boundary_coordination(
+    pub async fn finalize_network_policy_coordination(
         &self,
         operation_id: &str,
         expected_operation_version: i64,
         boundary_id: &str,
         target_revision: i64,
         target_content_digest: &str,
-        old_revisions: &[NetworkBoundaryCoordinationRevisionSeal],
-        default_cas: Option<&NetworkBoundaryDefaultCas>,
+        old_revisions: &[NetworkPolicyCoordinationRevisionSeal],
+        default_cas: Option<&NetworkPolicyDefaultCas>,
         actor_kind: &str,
         actor_id: Option<i64>,
         actor_label: &str,
     ) -> Result<()> {
         let boundary = self
-            .network_boundary(boundary_id)
+            .network_policy(boundary_id)
             .await?
             .context("coordinated boundary no longer exists")?;
         let now = unix_now();
         let mut statements = vec![Statement::new(
-            "UPDATE network_boundary_revision_lifecycle
+            "UPDATE network_policy_revision_lifecycle
              SET state = 'active', activated_at = ?4,
                  resource_version = resource_version + 1
              WHERE boundary_id = ?1 AND revision = ?2 AND state = 'activating'
-               AND EXISTS (SELECT 1 FROM network_boundary_revisions revision
+               AND EXISTS (SELECT 1 FROM network_policy_revisions revision
                  WHERE revision.boundary_id = ?1 AND revision.revision = ?2
                    AND revision.content_digest = ?3)
                AND EXISTS (SELECT 1 FROM topology_operations operation
                  WHERE operation.operation_id = ?5
-                   AND operation.operation_kind = 'network_boundary_coordinated_activation'
+                   AND operation.operation_kind = 'network_policy_coordinated_activation'
                    AND operation.state = 'running' AND operation.resource_version = ?6)
                AND NOT EXISTS (SELECT 1 FROM topology_pin_resolution_jobs job
                  WHERE job.operation_id = ?5 AND job.state <> 'succeeded')",
@@ -3603,7 +3603,7 @@ impl Database {
         if let Some(default_cas) = default_cas {
             statements.push(
                 Statement::new(
-                    "UPDATE network_boundaries
+                    "UPDATE network_policies
                      SET resource_version = resource_version + 1, updated_at = ?2
                      WHERE id = ?1 AND resource_version = ?3",
                     vals![boundary_id, now, default_cas.boundary_resource_version],
@@ -3616,12 +3616,12 @@ impl Database {
             ) {
                 (Some(previous_revision), Some(previous_version)) => statements.push(
                     Statement::new(
-                        "UPDATE network_boundary_defaults
+                        "UPDATE network_policy_defaults
                          SET revision = ?2, resource_version = resource_version + 1,
                              updated_at = ?3
                          WHERE boundary_id = ?1 AND revision = ?4 AND state = 'active'
                            AND resource_version = ?5
-                           AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                           AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                              WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active')",
                         vals![
                             boundary_id,
@@ -3635,12 +3635,12 @@ impl Database {
                 ),
                 (None, None) => statements.push(
                     Statement::new(
-                        "INSERT INTO network_boundary_defaults
+                        "INSERT INTO network_policy_defaults
                          (boundary_id, revision, state, resource_version, updated_at)
                          SELECT ?1, ?2, 'active', 1, ?3
-                         WHERE NOT EXISTS (SELECT 1 FROM network_boundary_defaults
+                         WHERE NOT EXISTS (SELECT 1 FROM network_policy_defaults
                            WHERE boundary_id = ?1)
-                           AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                           AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                              WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active')",
                         vals![boundary_id, target_revision, now],
                     )
@@ -3656,16 +3656,16 @@ impl Database {
             }
             let statement = match old.lifecycle_state.as_str() {
                 "active" => Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET state = 'retiring', consumer_version = consumer_version + 1,
                          resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active'
                        AND resource_version = ?3
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_defaults
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_defaults
                          WHERE boundary_id = ?1 AND revision = ?2)
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                          WHERE boundary_id = ?1 AND revision = ?2)
-                       AND EXISTS (SELECT 1 FROM network_boundary_revisions
+                       AND EXISTS (SELECT 1 FROM network_policy_revisions
                          WHERE boundary_id = ?1 AND revision = ?2
                            AND content_digest = ?4)",
                     vals![
@@ -3676,13 +3676,13 @@ impl Database {
                     ],
                 ),
                 "retiring" => Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET resource_version = resource_version
                      WHERE boundary_id = ?1 AND revision = ?2 AND state = 'retiring'
                        AND resource_version = ?3
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                          WHERE boundary_id = ?1 AND revision = ?2)
-                       AND EXISTS (SELECT 1 FROM network_boundary_revisions
+                       AND EXISTS (SELECT 1 FROM network_policy_revisions
                          WHERE boundary_id = ?1 AND revision = ?2
                            AND content_digest = ?4)",
                     vals![
@@ -3698,8 +3698,8 @@ impl Database {
         }
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.network_boundary.activated",
-            "resource_kind": "network_boundary",
+            "type": "topology.network_policy.activated",
+            "resource_kind": "network_policy",
             "resource_stable_id": boundary_id,
             "resource_generation": target_revision,
             "activation_mode": "coordinated",
@@ -3708,9 +3708,9 @@ impl Database {
         statements.push(Database::topology_event_statement(
             &crate::db::NewTopologyEvent {
                 event_id: &event_id,
-                event_name: "topology.network_boundary.activated",
+                event_name: "topology.network_policy.activated",
                 owner_scope_key: &boundary.owner_scope_key,
-                resource_kind: "network_boundary",
+                resource_kind: "network_policy",
                 resource_stable_id: boundary_id,
                 resource_generation_key: target_revision,
                 actor_kind,
@@ -3745,7 +3745,7 @@ impl Database {
     ///
     /// Returns an error for a stale lifecycle, live pins, the public singleton,
     /// or a database failure.
-    pub async fn retire_network_boundary_revision(
+    pub async fn retire_network_policy_revision(
         &self,
         boundary_id: &str,
         revision: i64,
@@ -3754,28 +3754,28 @@ impl Database {
         actor_kind: &str,
         actor_id: Option<i64>,
         actor_label: &str,
-    ) -> Result<NetworkBoundaryRevisionRecord> {
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if boundary_id == "instance:public" {
             bail!("the public boundary revision cannot retire");
         }
         let current = self
-            .network_boundary_revision(boundary_id, revision)
+            .network_policy_revision(boundary_id, revision)
             .await?
             .context("boundary revision does not exist")?;
         let boundary = self
-            .network_boundary(boundary_id)
+            .network_policy(boundary_id)
             .await?
-            .context("network boundary does not exist")?;
+            .context("network policy does not exist")?;
         let now = unix_now();
         let (resulting_state, sql, params) = match current.lifecycle_state.as_str() {
             "active" => (
                 "retiring",
-                "UPDATE network_boundary_revision_lifecycle
+                "UPDATE network_policy_revision_lifecycle
                      SET state = 'retiring', consumer_version = consumer_version + 1,
                          resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active'
                        AND resource_version = ?3 AND consumer_version = ?4
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_defaults
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_defaults
                          WHERE boundary_id = ?1 AND revision = ?2)",
                 vals![
                     boundary_id,
@@ -3786,12 +3786,12 @@ impl Database {
             ),
             "retiring" => (
                 "retired",
-                "UPDATE network_boundary_revision_lifecycle
+                "UPDATE network_policy_revision_lifecycle
                      SET state = 'retired', retired_at = ?5,
                          resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND state = 'retiring'
                        AND resource_version = ?3 AND consumer_version = ?4
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                          WHERE boundary_id = ?1 AND revision = ?2)",
                 vals![
                     boundary_id,
@@ -3805,13 +3805,13 @@ impl Database {
         };
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let event_name = if resulting_state == "retired" {
-            "topology.network_boundary.retired"
+            "topology.network_policy.retired"
         } else {
-            "topology.network_boundary.retirement_started"
+            "topology.network_policy.retirement_started"
         };
         let event_payload = serde_json::to_string(&serde_json::json!({
             "type": event_name,
-            "resource_kind": "network_boundary",
+            "resource_kind": "network_policy",
             "resource_stable_id": boundary_id,
             "resource_generation": revision,
             "resource_version": expected_version + 1,
@@ -3824,7 +3824,7 @@ impl Database {
                     event_id: &event_id,
                     event_name,
                     owner_scope_key: &boundary.owner_scope_key,
-                    resource_kind: "network_boundary",
+                    resource_kind: "network_policy",
                     resource_stable_id: boundary_id,
                     resource_generation_key: revision,
                     actor_kind,
@@ -3835,7 +3835,7 @@ impl Database {
                 }),
             ])
             .await?;
-        self.network_boundary_revision(boundary_id, revision)
+        self.network_policy_revision(boundary_id, revision)
             .await?
             .context("retired boundary revision disappeared")
     }
@@ -3845,24 +3845,24 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn network_boundary_serving_pins(
+    pub async fn network_policy_serving_pins(
         &self,
         boundary_id: &str,
         revision: i64,
-    ) -> Result<Vec<NetworkBoundaryServingPinRecord>> {
+    ) -> Result<Vec<NetworkPolicyServingPinRecord>> {
         self.backend
             .query(
                 "SELECT pin_id, boundary_id, revision, consumer_scope_key,
                  grant_generation, usage_kind, target_kind, target_stable_id,
                  target_generation_key, target_configuration_digest,
-                 acquired_by, acquired_at FROM network_boundary_serving_pins
+                 acquired_by, acquired_at FROM network_policy_serving_pins
                  WHERE boundary_id = ?1 AND revision = ?2 ORDER BY pin_id",
                 &vals![boundary_id, revision],
             )
             .await?
             .iter()
             .map(|row| {
-                Ok(NetworkBoundaryServingPinRecord {
+                Ok(NetworkPolicyServingPinRecord {
                     pin_id: row.get(0)?,
                     boundary_id: row.get(1)?,
                     revision: row.get(2)?,
@@ -3885,17 +3885,17 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn network_boundary_coordination_impacts(
+    pub async fn network_policy_coordination_impacts(
         &self,
         boundary_id: &str,
         target_revision: i64,
-    ) -> Result<Vec<NetworkBoundaryServingPinRecord>> {
+    ) -> Result<Vec<NetworkPolicyServingPinRecord>> {
         self.backend
             .query(
                 "SELECT pin_id, boundary_id, revision, consumer_scope_key,
                  grant_generation, usage_kind, target_kind, target_stable_id,
                  target_generation_key, target_configuration_digest,
-                 acquired_by, acquired_at FROM network_boundary_serving_pins
+                 acquired_by, acquired_at FROM network_policy_serving_pins
                  WHERE boundary_id = ?1 AND revision <> ?2
                  ORDER BY target_kind, target_stable_id, target_generation_key, pin_id",
                 &vals![boundary_id, target_revision],
@@ -3903,7 +3903,7 @@ impl Database {
             .await?
             .iter()
             .map(|row| {
-                Ok(NetworkBoundaryServingPinRecord {
+                Ok(NetworkPolicyServingPinRecord {
                     pin_id: row.get(0)?,
                     boundary_id: row.get(1)?,
                     revision: row.get(2)?,
@@ -3927,30 +3927,30 @@ impl Database {
     ///
     /// Returns an error for the public singleton, a stale/referenced boundary,
     /// or a database failure.
-    pub async fn delete_network_boundary(&self, id: &str, expected_version: i64) -> Result<()> {
+    pub async fn delete_network_policy(&self, id: &str, expected_version: i64) -> Result<()> {
         if id == "instance:public" {
             bail!("the public boundary singleton cannot be deleted");
         }
         let changed = self
             .backend
             .execute(
-                "DELETE FROM network_boundaries WHERE id = ?1 AND resource_version = ?2
-                   AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                "DELETE FROM network_policies WHERE id = ?1 AND resource_version = ?2
+                   AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                      WHERE boundary_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM delivery_endpoints
-                     WHERE network_boundary_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM endpoints
+                     WHERE network_policy_id = ?1)
                    AND NOT EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running') AND (
-                       (o.primary_target_kind = 'network_boundary'
+                       (o.primary_target_kind = 'network_policy'
                          AND o.primary_target_stable_id = ?1)
                        OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                          WHERE t.operation_id = o.operation_id
-                           AND t.target_kind = 'network_boundary' AND t.stable_id = ?1)))",
+                           AND t.target_kind = 'network_policy' AND t.stable_id = ?1)))",
                 &vals![id, expected_version],
             )
             .await?;
         if changed != 1 {
-            bail!("network boundary is missing, stale, or still referenced");
+            bail!("network policy is missing, stale, or still referenced");
         }
         Ok(())
     }
@@ -3962,20 +3962,20 @@ impl Database {
     /// Returns an error for invalid identity/revision fields, a missing exact
     /// active boundary/grant, duplicate identity, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_delivery_endpoint(
+    pub async fn create_endpoint(
         &self,
         id: &str,
         owner_scope_key: &str,
         org_id: Option<i64>,
         scheme: &str,
-        host: &DeliveryEndpointHostInput,
+        host: &EndpointHostInput,
         effective_port: u16,
-        network_boundary_id: &str,
-        revision: &DeliveryEndpointRevisionSpec,
+        network_policy_id: &str,
+        revision: &EndpointRevisionSpec,
         cleartext_acknowledged_at: Option<i64>,
         actor: &str,
         request_id: &str,
-    ) -> Result<DeliveryEndpointRecord> {
+    ) -> Result<EndpointRecord> {
         validate_stable_id(id, "endpoint id")?;
         self.validate_owner_scope_binding(owner_scope_key, org_id)
             .await?;
@@ -3992,7 +3992,7 @@ impl Database {
             bail!("endpoint TLS configuration does not match its immutable scheme");
         }
         let (domain_id, ipv4, ipv6, rendered_host) = match host {
-            DeliveryEndpointHostInput::Domain(stable_id) => {
+            EndpointHostInput::Domain(stable_id) => {
                 let domain = self
                     .delivery_domain(stable_id)
                     .await?
@@ -4002,13 +4002,13 @@ impl Database {
                 }
                 (Some(domain.id), None, None, domain.hostname)
             }
-            DeliveryEndpointHostInput::Ipv4(address) => (
+            EndpointHostInput::Ipv4(address) => (
                 None,
                 Some(address.to_vec()),
                 None,
                 Ipv4Addr::from(*address).to_string(),
             ),
-            DeliveryEndpointHostInput::Ipv6(address) => {
+            EndpointHostInput::Ipv6(address) => {
                 let address = Ipv6Addr::from(*address);
                 if address.to_ipv4_mapped().is_some() {
                     bail!("endpoint rejects IPv4-mapped IPv6 aliases");
@@ -4022,9 +4022,9 @@ impl Database {
             }
         };
         let origin =
-            DeliveryEndpointOrigin::parse(&format!("{scheme}://{rendered_host}:{effective_port}"))?;
+            EndpointOrigin::parse(&format!("{scheme}://{rendered_host}:{effective_port}"))?;
         let boundary = self
-            .network_boundary(network_boundary_id)
+            .network_policy(network_policy_id)
             .await?
             .context("endpoint boundary does not exist")?;
         let fingerprint: [u8; 32] = hex::decode(&boundary.identity_fingerprint)
@@ -4035,7 +4035,7 @@ impl Database {
         let content_digest = sha256_hex(canonical_json(revision)?);
         let boundary_consumer_version = self
             .verified_active_boundary_consumer_version(
-                network_boundary_id,
+                network_policy_id,
                 revision.boundary_revision,
             )
             .await?;
@@ -4044,8 +4044,8 @@ impl Database {
         let endpoint_pin_id = format!("endpoint-pin:{}", Uuid::new_v4().simple());
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_endpoint.created",
-            "resource_kind": "delivery_endpoint",
+            "type": "topology.endpoint.created",
+            "resource_kind": "endpoint",
             "resource_stable_id": id,
             "resource_generation": 1,
             "resource_version": 1,
@@ -4054,144 +4054,175 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO delivery_endpoints (id, org_id, owner_scope_key, scheme,
-                     domain_id, ipv4_bytes, ipv6_bytes, effective_port, network_boundary_id,
+                    "INSERT INTO endpoints (id, org_id, owner_scope_key, scheme,
+                     domain_id, ipv4_bytes, ipv6_bytes, effective_port, network_policy_id,
                      cleartext_acknowledged_at, endpoint_identity_digest, created_at, updated_at)
                      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12
-                     WHERE EXISTS (SELECT 1 FROM network_boundary_consumer_scopes
+                     WHERE EXISTS (SELECT 1 FROM network_policy_consumer_scopes
                        WHERE boundary_id = ?9 AND consumer_scope_key = ?3 AND state = 'active')
-                       AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                       AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?9 AND revision = ?13 AND state = 'active'
                            AND consumer_version = ?14)
-                       AND EXISTS (SELECT 1 FROM network_boundary_observations o
-                         JOIN network_boundary_revisions r
+                       AND EXISTS (SELECT 1 FROM network_policy_observations o
+                         JOIN network_policy_revisions r
                            ON r.boundary_id = o.boundary_id AND r.revision = o.revision
                          WHERE o.boundary_id = ?9 AND o.revision = ?13
                            AND o.state = 'verified'
                            AND o.protected_transport_observed = r.protected_transport_required
                            AND o.trusted_ingress_observed = r.trusted_ingress_kind)",
-                    vals![id, org_id, owner_scope_key, scheme, domain_id, ipv4, ipv6,
-                        i64::from(effective_port), network_boundary_id,
-                        cleartext_acknowledged_at, identity_digest, now,
-                        revision.boundary_revision, boundary_consumer_version],
-                ).expecting(1),
+                    vals![
+                        id,
+                        org_id,
+                        owner_scope_key,
+                        scheme,
+                        domain_id,
+                        ipv4,
+                        ipv6,
+                        i64::from(effective_port),
+                        network_policy_id,
+                        cleartext_acknowledged_at,
+                        identity_digest,
+                        now,
+                        revision.boundary_revision,
+                        boundary_consumer_version
+                    ],
+                )
+                .expecting(1),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_revisions (endpoint_id, generation,
-                     network_boundary_id, boundary_revision, ingress_kind,
+                    "INSERT INTO endpoint_revisions (endpoint_id, generation,
+                     network_policy_id, boundary_revision, ingress_kind,
                      listener_configuration, tls_configuration, probe_configuration,
                      content_digest, created_by, created_at)
                      SELECT ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
-                     WHERE EXISTS (SELECT 1 FROM delivery_endpoints WHERE id = ?1)
-                       AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                     WHERE EXISTS (SELECT 1 FROM endpoints WHERE id = ?1)
+                       AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?2 AND revision = ?3 AND state = 'active'
                            AND consumer_version = ?11)",
-                    vals![id, network_boundary_id, revision.boundary_revision,
-                        revision.ingress_kind, revision.listener_configuration,
-                        revision.tls_configuration, revision.probe_configuration,
-                        content_digest, actor, now, boundary_consumer_version],
-                ).expecting(1),
+                    vals![
+                        id,
+                        network_policy_id,
+                        revision.boundary_revision,
+                        revision.ingress_kind,
+                        revision.listener_configuration,
+                        revision.tls_configuration,
+                        revision.probe_configuration,
+                        content_digest,
+                        actor,
+                        now,
+                        boundary_consumer_version
+                    ],
+                )
+                .expecting(1),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_route_scopes
+                    "INSERT INTO endpoint_route_scopes
                      (endpoint_id, endpoint_generation, consumer_scope_key, grant_generation,
                       grant_kind, state, granted_by, granted_at, resource_version)
                      SELECT ?1, 1, ?2, 1, 'owner', 'active', ?3, ?4, 1
-                     WHERE EXISTS (SELECT 1 FROM delivery_endpoint_revisions
+                     WHERE EXISTS (SELECT 1 FROM endpoint_revisions
                        WHERE endpoint_id = ?1 AND generation = 1)",
                     vals![id, owner_scope_key, actor, now],
-                ).expecting(1),
+                )
+                .expecting(1),
                 Statement::new(
                     "INSERT INTO consumer_scope_grant_events
                      (event_id, resource_kind, resource_stable_id,
                       resource_generation_key, consumer_scope_key, grant_generation,
                       transition, previous_state, resulting_state, actor_id,
                       occurred_at, request_id)
-                     SELECT ?1, 'delivery_endpoint', ?2, 1, ?3, 1, 'granted',
+                     SELECT ?1, 'endpoint', ?2, 1, ?3, 1, 'granted',
                        NULL, 'active', ?4, ?5, ?6 WHERE EXISTS (
-                         SELECT 1 FROM delivery_endpoint_route_scopes
+                         SELECT 1 FROM endpoint_route_scopes
                          WHERE endpoint_id = ?2 AND endpoint_generation = 1
                            AND consumer_scope_key = ?3 AND grant_generation = 1
                            AND state = 'active')",
-                    vals![
-                        grant_event_id,
-                        id,
-                        owner_scope_key,
-                        actor,
-                        now,
-                        request_id
-                    ],
-                ).expecting(1),
+                    vals![grant_event_id, id, owner_scope_key, actor, now, request_id],
+                )
+                .expecting(1),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_observations (endpoint_id, boundary_id,
+                    "INSERT INTO endpoint_observations (endpoint_id, boundary_id,
                      state, listener_observed, tls_observed, observed_at)
                      SELECT ?1, ?2, 'unknown', 0, 0, ?3 WHERE EXISTS (
-                       SELECT 1 FROM delivery_endpoint_revisions WHERE endpoint_id = ?1 AND generation = 1)",
-                    vals![id, network_boundary_id, now],
-                ).expecting(1),
+                       SELECT 1 FROM endpoint_revisions WHERE endpoint_id = ?1 AND generation = 1)",
+                    vals![id, network_policy_id, now],
+                )
+                .expecting(1),
                 Statement::new(
-                    "INSERT INTO network_boundary_serving_pins
+                    "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key, grant_generation,
                       grant_state, usage_kind, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest, acquired_by,
                       acquired_at, resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active',
                        'endpoint_listener', 'endpoint', ?5, 1, ?6, ?7, ?8, 1
-                     FROM network_boundary_consumer_scopes
+                     FROM network_policy_consumer_scopes
                      WHERE boundary_id = ?2 AND consumer_scope_key = ?4 AND state = 'active'
-                       AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                       AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?2 AND revision = ?3 AND state = 'active'
                            AND consumer_version = ?9)
-                       AND EXISTS (SELECT 1 FROM delivery_endpoint_revisions
+                       AND EXISTS (SELECT 1 FROM endpoint_revisions
                          WHERE endpoint_id = ?5 AND generation = 1)",
-                    vals![boundary_pin_id, network_boundary_id, revision.boundary_revision,
-                        owner_scope_key, id, content_digest, actor, now,
-                        boundary_consumer_version],
-                ).expecting(1),
+                    vals![
+                        boundary_pin_id,
+                        network_policy_id,
+                        revision.boundary_revision,
+                        owner_scope_key,
+                        id,
+                        content_digest,
+                        actor,
+                        now,
+                        boundary_consumer_version
+                    ],
+                )
+                .expecting(1),
                 Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET consumer_version = consumer_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND state = 'active'
                        AND consumer_version = ?3 AND EXISTS (
-                         SELECT 1 FROM network_boundary_serving_pins
+                         SELECT 1 FROM network_policy_serving_pins
                          WHERE pin_id = ?4 AND boundary_id = ?1 AND revision = ?2)",
                     vals![
-                        network_boundary_id,
+                        network_policy_id,
                         revision.boundary_revision,
                         boundary_consumer_version,
                         boundary_pin_id
                     ],
-                ).expecting(1),
+                )
+                .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoints SET desired_generation = 1
-                     WHERE id = ?1 AND EXISTS (SELECT 1 FROM delivery_endpoint_revisions
+                    "UPDATE endpoints SET desired_generation = 1
+                     WHERE id = ?1 AND EXISTS (SELECT 1 FROM endpoint_revisions
                        WHERE endpoint_id = ?1 AND generation = 1)
-                       AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                       AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?2 AND revision = ?3
                            AND consumer_version = ?4)",
                     vals![
                         id,
-                        network_boundary_id,
+                        network_policy_id,
                         revision.boundary_revision,
                         boundary_consumer_version + 1
                     ],
-                ).expecting(1),
+                )
+                .expecting(1),
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_scope_grant_pins
+                    "INSERT INTO endpoint_scope_grant_pins
                      (pin_id, endpoint_id, endpoint_generation, consumer_scope_key,
                       grant_generation, grant_state, target_kind, target_stable_id,
                       target_generation_key, target_configuration_digest, resource_version)
                      SELECT ?1, ?2, 1, ?3, grant_generation, 'active',
-                       'listener', ?2, 1, ?4, 1 FROM delivery_endpoint_route_scopes
+                       'listener', ?2, 1, ?4, 1 FROM endpoint_route_scopes
                      WHERE endpoint_id = ?2 AND endpoint_generation = 1
                        AND consumer_scope_key = ?3 AND state = 'active'
-                       AND EXISTS (SELECT 1 FROM delivery_endpoints
+                       AND EXISTS (SELECT 1 FROM endpoints
                          WHERE id = ?2 AND desired_generation = 1)",
                     vals![endpoint_pin_id, id, owner_scope_key, content_digest],
-                ).expecting(1),
+                )
+                .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_endpoint.created",
+                    event_name: "topology.endpoint.created",
                     owner_scope_key,
-                    resource_kind: "delivery_endpoint",
+                    resource_kind: "endpoint",
                     resource_stable_id: id,
                     resource_generation_key: 1,
                     actor_kind: "key",
@@ -4203,7 +4234,7 @@ impl Database {
             ])
             .await?;
         let endpoint = self
-            .delivery_endpoint(id)
+            .endpoint(id)
             .await?
             .context("endpoint creation lost its boundary/grant CAS")?;
         if endpoint.desired_generation != Some(1) {
@@ -4217,11 +4248,11 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_endpoint(&self, id: &str) -> Result<Option<DeliveryEndpointRecord>> {
+    pub async fn endpoint(&self, id: &str) -> Result<Option<EndpointRecord>> {
         self.backend
             .query_opt(
                 &format!(
-                    "SELECT {ENDPOINT_COLUMNS} FROM delivery_endpoints e
+                    "SELECT {ENDPOINT_COLUMNS} FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id WHERE e.id = ?1"
                 ),
                 &vals![id],
@@ -4237,19 +4268,19 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for invalid scope or database failure.
-    pub async fn list_delivery_endpoints_page(
+    pub async fn list_endpoints_page(
         &self,
         owner_scope_key: &str,
         page_size: u32,
         after_id: Option<&str>,
-    ) -> Result<DeliveryIdentityPage<DeliveryEndpointRecord>> {
+    ) -> Result<DeliveryIdentityPage<EndpointRecord>> {
         validate_scope(owner_scope_key)?;
         let limit = normalize_page_size(page_size);
         let rows = self
             .backend
             .query(
                 &format!(
-                    "SELECT {ENDPOINT_COLUMNS} FROM delivery_endpoints e
+                    "SELECT {ENDPOINT_COLUMNS} FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id
                      WHERE e.owner_scope_key = ?1 AND e.id > ?2 ORDER BY e.id LIMIT ?3"
                 ),
@@ -4274,15 +4305,15 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_endpoint_revision(
+    pub async fn endpoint_revision(
         &self,
         endpoint_id: &str,
         generation: i64,
-    ) -> Result<Option<DeliveryEndpointRevisionRecord>> {
+    ) -> Result<Option<EndpointRevisionRecord>> {
         self.backend
             .query_opt(
                 &format!(
-                    "SELECT {ENDPOINT_REVISION_COLUMNS} FROM delivery_endpoint_revisions r
+                    "SELECT {ENDPOINT_REVISION_COLUMNS} FROM endpoint_revisions r
                      WHERE r.endpoint_id = ?1 AND r.generation = ?2"
                 ),
                 &vals![endpoint_id, generation],
@@ -4298,14 +4329,14 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_endpoint_revisions(
+    pub async fn endpoint_revisions(
         &self,
         endpoint_id: &str,
-    ) -> Result<Vec<DeliveryEndpointRevisionRecord>> {
+    ) -> Result<Vec<EndpointRevisionRecord>> {
         self.backend
             .query(
                 &format!(
-                    "SELECT {ENDPOINT_REVISION_COLUMNS} FROM delivery_endpoint_revisions r
+                    "SELECT {ENDPOINT_REVISION_COLUMNS} FROM endpoint_revisions r
                      WHERE r.endpoint_id = ?1 ORDER BY r.generation"
                 ),
                 &vals![endpoint_id],
@@ -4322,33 +4353,33 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure or malformed persisted data.
-    pub async fn delivery_endpoint_generation_impacts(
+    pub async fn endpoint_generation_impacts(
         &self,
         endpoint_id: &str,
         generation: i64,
-    ) -> Result<Vec<DeliveryEndpointImpactRecord>> {
+    ) -> Result<Vec<EndpointImpactRecord>> {
         self.backend
             .query(
-                "SELECT 'delivery_route', id, endpoint_generation, resource_version
-                   FROM delivery_routes
+                "SELECT 'route', id, endpoint_generation, resource_version
+                   FROM routes
                   WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                  UNION ALL
-                 SELECT 'storage_gateway', g.id, r.generation, g.resource_version
-                   FROM storage_gateway_revisions r
-                   JOIN storage_gateways g ON g.id = r.gateway_id
+                 SELECT 'gateway', g.id, r.generation, g.resource_version
+                   FROM gateway_revisions r
+                   JOIN gateways g ON g.id = r.gateway_id
                   WHERE r.endpoint_id = ?1 AND r.endpoint_generation = ?2
                  UNION ALL
-                 SELECT 'topology_default', scope_key, delivery_endpoint_generation,
+                 SELECT 'topology_default', scope_key, endpoint_generation,
                         resource_version
                    FROM topology_defaults
-                  WHERE delivery_endpoint_id = ?1 AND delivery_endpoint_generation = ?2
+                  WHERE endpoint_id = ?1 AND endpoint_generation = ?2
                  ORDER BY 1, 2, 3",
                 &vals![endpoint_id, generation],
             )
             .await?
             .iter()
             .map(|row| {
-                Ok(DeliveryEndpointImpactRecord {
+                Ok(EndpointImpactRecord {
                     resource_kind: row.get(0)?,
                     stable_id: row.get(1)?,
                     generation: row.get(2)?,
@@ -4369,19 +4400,19 @@ impl Database {
     /// Returns an error for stale endpoint/grant seals, an unverified boundary
     /// revision, invalid content, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn stage_delivery_endpoint_generation(
+    pub async fn stage_endpoint_generation(
         &self,
         endpoint_id: &str,
-        spec: &DeliveryEndpointRevisionSpec,
-        owner_grant: &DeliveryEndpointGrantCarryForward,
-        carry_forward_grants: &[DeliveryEndpointGrantCarryForward],
+        spec: &EndpointRevisionSpec,
+        owner_grant: &EndpointGrantCarryForward,
+        carry_forward_grants: &[EndpointGrantCarryForward],
         actor: &str,
         request_id: &str,
         expected_version: i64,
-    ) -> Result<DeliveryEndpointRevisionRecord> {
+    ) -> Result<EndpointRevisionRecord> {
         validate_endpoint_revision_spec(spec)?;
         let endpoint = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("endpoint does not exist")?;
         if endpoint.resource_version != expected_version
@@ -4419,7 +4450,7 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT COALESCE(MAX(generation), 0) + 1
-                 FROM delivery_endpoint_revisions WHERE endpoint_id = ?1",
+                 FROM endpoint_revisions WHERE endpoint_id = ?1",
                 &vals![endpoint_id],
             )
             .await?
@@ -4430,23 +4461,23 @@ impl Database {
         let expected_grants = i64::try_from(carried.len() + 1)?;
         let mut statements = vec![
             Statement::new(
-                "INSERT INTO delivery_endpoint_revisions
-                 (endpoint_id, generation, network_boundary_id, boundary_revision,
+                "INSERT INTO endpoint_revisions
+                 (endpoint_id, generation, network_policy_id, boundary_revision,
                   ingress_kind, listener_configuration, tls_configuration,
                   probe_configuration, content_digest, created_by, created_at)
-                 SELECT endpoint.id, ?2, endpoint.network_boundary_id, ?3, ?4, ?5,
+                 SELECT endpoint.id, ?2, endpoint.network_policy_id, ?3, ?4, ?5,
                    ?6, ?7, ?8, ?9, ?10
-                 FROM delivery_endpoints endpoint
+                 FROM endpoints endpoint
                  WHERE endpoint.id = ?1 AND endpoint.resource_version = ?11
                    AND endpoint.desired_generation = ?12
-                   AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle lifecycle
-                     JOIN network_boundary_observations observation
+                   AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle lifecycle
+                     JOIN network_policy_observations observation
                        ON observation.boundary_id = lifecycle.boundary_id
                       AND observation.revision = lifecycle.revision
-                     JOIN network_boundary_revisions revision
+                     JOIN network_policy_revisions revision
                        ON revision.boundary_id = lifecycle.boundary_id
                       AND revision.revision = lifecycle.revision
-                     WHERE lifecycle.boundary_id = endpoint.network_boundary_id
+                     WHERE lifecycle.boundary_id = endpoint.network_policy_id
                        AND lifecycle.revision = ?3
                        AND lifecycle.state IN('staged', 'activating', 'active')
                        AND observation.state = 'verified'
@@ -4471,12 +4502,12 @@ impl Database {
             )
             .expecting(1),
             Statement::new(
-                "INSERT INTO delivery_endpoint_route_scopes
+                "INSERT INTO endpoint_route_scopes
                  (endpoint_id, endpoint_generation, consumer_scope_key,
                   grant_generation, grant_kind, state, granted_by, granted_at,
                   resource_version)
                  SELECT ?1, ?2, consumer_scope_key, 1, 'owner', 'active', ?4, ?5, 1
-                 FROM delivery_endpoint_route_scopes
+                 FROM endpoint_route_scopes
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?3
                    AND consumer_scope_key = ?6 AND grant_kind = 'owner'
                    AND state = 'active' AND grant_generation = ?7
@@ -4497,12 +4528,12 @@ impl Database {
         for (scope, (generation, version)) in carried {
             statements.push(
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_route_scopes
+                    "INSERT INTO endpoint_route_scopes
                      (endpoint_id, endpoint_generation, consumer_scope_key,
                       grant_generation, grant_kind, state, granted_by, granted_at,
                       resource_version)
                      SELECT ?1, ?2, consumer_scope_key, 1, grant_kind, 'active', ?4, ?5, 1
-                     FROM delivery_endpoint_route_scopes
+                     FROM endpoint_route_scopes
                      WHERE endpoint_id = ?1 AND endpoint_generation = ?3
                        AND consumer_scope_key = ?6 AND state = 'active'
                        AND grant_generation = ?7 AND resource_version = ?8",
@@ -4522,10 +4553,10 @@ impl Database {
         }
         statements.push(
             Statement::new(
-                "UPDATE delivery_endpoints
+                "UPDATE endpoints
                  SET resource_version = resource_version + 1, updated_at = ?3
                  WHERE id = ?1 AND resource_version = ?2
-                   AND (SELECT COUNT(*) FROM delivery_endpoint_route_scopes
+                   AND (SELECT COUNT(*) FROM endpoint_route_scopes
                      WHERE endpoint_id = ?1 AND endpoint_generation = ?4) = ?5",
                 vals![endpoint_id, expected_version, now, next, expected_grants],
             )
@@ -4533,8 +4564,8 @@ impl Database {
         );
         let event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_endpoint.generation_staged",
-            "resource_kind": "delivery_endpoint",
+            "type": "topology.endpoint.generation_staged",
+            "resource_kind": "endpoint",
             "resource_stable_id": endpoint_id,
             "resource_generation": next,
             "resource_version": expected_version + 1,
@@ -4543,9 +4574,9 @@ impl Database {
         statements.push(Database::topology_event_statement(
             &crate::db::NewTopologyEvent {
                 event_id: &event_id,
-                event_name: "topology.delivery_endpoint.generation_staged",
+                event_name: "topology.endpoint.generation_staged",
                 owner_scope_key: &endpoint.owner_scope_key,
-                resource_kind: "delivery_endpoint",
+                resource_kind: "endpoint",
                 resource_stable_id: endpoint_id,
                 resource_generation_key: next,
                 actor_kind: "key",
@@ -4556,7 +4587,7 @@ impl Database {
             },
         ));
         self.backend.checked_batch(&statements).await?;
-        self.delivery_endpoint_revision(endpoint_id, next)
+        self.endpoint_revision(endpoint_id, next)
             .await?
             .context("staged endpoint generation disappeared")
     }
@@ -4566,21 +4597,21 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_endpoint_observation(
+    pub async fn endpoint_observation(
         &self,
         endpoint_id: &str,
-    ) -> Result<Option<DeliveryEndpointObservationRecord>> {
+    ) -> Result<Option<EndpointObservationRecord>> {
         self.backend
             .query_opt(
                 "SELECT endpoint_id, observed_generation, boundary_id, boundary_revision,
              state, listener_observed, tls_observed, observed_at, error
-             FROM delivery_endpoint_observations WHERE endpoint_id = ?1",
+             FROM endpoint_observations WHERE endpoint_id = ?1",
                 &vals![endpoint_id],
             )
             .await?
             .as_ref()
             .map(|row| {
-                Ok(DeliveryEndpointObservationRecord {
+                Ok(EndpointObservationRecord {
                     endpoint_id: row.get(0)?,
                     observed_generation: row.get(1)?,
                     boundary_id: row.get(2)?,
@@ -4600,23 +4631,23 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn delivery_endpoint_generation_observation(
+    pub async fn endpoint_generation_observation(
         &self,
         endpoint_id: &str,
         generation: i64,
-    ) -> Result<Option<DeliveryEndpointObservationRecord>> {
+    ) -> Result<Option<EndpointObservationRecord>> {
         self.backend
             .query_opt(
                 "SELECT endpoint_id, observed_generation, boundary_id, boundary_revision,
                  state, listener_observed, tls_observed, observed_at, error
-                 FROM delivery_endpoint_generation_observations
+                 FROM endpoint_generation_observations
                  WHERE endpoint_id = ?1 AND observed_generation = ?2",
                 &vals![endpoint_id, generation],
             )
             .await?
             .as_ref()
             .map(|row| {
-                Ok(DeliveryEndpointObservationRecord {
+                Ok(EndpointObservationRecord {
                     endpoint_id: row.get(0)?,
                     observed_generation: Some(row.get(1)?),
                     boundary_id: row.get(2)?,
@@ -4638,7 +4669,7 @@ impl Database {
     /// Returns an error for invalid observation shape, a stale/mismatched
     /// generation, or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub async fn reconcile_delivery_endpoint(
+    pub async fn reconcile_endpoint(
         &self,
         endpoint_id: &str,
         observed_generation: i64,
@@ -4648,7 +4679,7 @@ impl Database {
         tls_observed: bool,
         error: Option<&str>,
         expected_version: i64,
-    ) -> Result<DeliveryEndpointObservationRecord> {
+    ) -> Result<EndpointObservationRecord> {
         if !matches!(
             state,
             "declared" | "probing" | "healthy" | "degraded" | "failed"
@@ -4659,7 +4690,7 @@ impl Database {
             bail!("failed observations require an error and non-failures reject one");
         }
         let current = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("endpoint does not exist")?;
         if current.resource_version != expected_version {
@@ -4668,8 +4699,8 @@ impl Database {
         let now = unix_now();
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_endpoint.reconciled",
-            "resource_kind": "delivery_endpoint",
+            "type": "topology.endpoint.reconciled",
+            "resource_kind": "endpoint",
             "resource_stable_id": endpoint_id,
             "resource_generation": observed_generation,
             "resource_version": expected_version + 1,
@@ -4678,12 +4709,12 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO delivery_endpoint_generation_observations
+                    "INSERT INTO endpoint_generation_observations
                      (endpoint_id, observed_generation, boundary_id, boundary_revision,
                       state, listener_observed, tls_observed, observed_at, error)
-                     SELECT e.id, ?2, e.network_boundary_id, ?3, ?4, ?5, ?6, ?7, ?8
-                     FROM delivery_endpoints e
-                     JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                     SELECT e.id, ?2, e.network_policy_id, ?3, ?4, ?5, ?6, ?7, ?8
+                     FROM endpoints e
+                     JOIN endpoint_revisions r ON r.endpoint_id = e.id
                        AND r.generation = ?2 AND r.boundary_revision = ?3
                      WHERE e.id = ?1 AND e.resource_version = ?9
                      ON CONFLICT(endpoint_id, observed_generation) DO UPDATE SET
@@ -4693,9 +4724,9 @@ impl Database {
                        listener_observed = excluded.listener_observed,
                        tls_observed = excluded.tls_observed,
                        observed_at = CASE
-                         WHEN delivery_endpoint_generation_observations.observed_at
+                         WHEN endpoint_generation_observations.observed_at
                            >= excluded.observed_at
-                         THEN delivery_endpoint_generation_observations.observed_at + 1
+                         THEN endpoint_generation_observations.observed_at + 1
                          ELSE excluded.observed_at END,
                        error = excluded.error",
                     vals![
@@ -4712,13 +4743,13 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoint_observations SET observed_generation = ?2,
+                    "UPDATE endpoint_observations SET observed_generation = ?2,
                  boundary_revision = ?3, state = ?4, listener_observed = ?5,
                  tls_observed = ?6,
                  observed_at = CASE WHEN observed_at >= ?7 THEN observed_at + 1 ELSE ?7 END,
                  error = ?8 WHERE endpoint_id = ?1
-                   AND EXISTS (SELECT 1 FROM delivery_endpoints e
-                     JOIN delivery_endpoint_revisions r ON r.endpoint_id = e.id
+                   AND EXISTS (SELECT 1 FROM endpoints e
+                     JOIN endpoint_revisions r ON r.endpoint_id = e.id
                        AND r.generation = ?2 AND r.boundary_revision = ?3
                      WHERE e.id = ?1 AND e.resource_version = ?9)",
                     vals![
@@ -4735,18 +4766,18 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE delivery_endpoints SET resource_version = resource_version + 1,
+                    "UPDATE endpoints SET resource_version = resource_version + 1,
                  updated_at = ?3 WHERE id = ?1 AND resource_version = ?2
-                   AND EXISTS (SELECT 1 FROM delivery_endpoint_observations
+                   AND EXISTS (SELECT 1 FROM endpoint_observations
                      WHERE endpoint_id = ?1 AND observed_generation IS NOT NULL)",
                     vals![endpoint_id, expected_version, now],
                 )
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_endpoint.reconciled",
+                    event_name: "topology.endpoint.reconciled",
                     owner_scope_key: &current.owner_scope_key,
-                    resource_kind: "delivery_endpoint",
+                    resource_kind: "endpoint",
                     resource_stable_id: endpoint_id,
                     resource_generation_key: observed_generation,
                     actor_kind: "system",
@@ -4758,13 +4789,13 @@ impl Database {
             ])
             .await?;
         let endpoint = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("endpoint does not exist")?;
         if endpoint.resource_version != expected_version + 1 {
             bail!("endpoint is stale or observation generation mismatched");
         }
-        self.delivery_endpoint_observation(endpoint_id)
+        self.endpoint_observation(endpoint_id)
             .await?
             .context("endpoint observation disappeared")
     }
@@ -4777,7 +4808,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for a stale/referenced endpoint or database failure.
-    pub async fn delete_delivery_endpoint(
+    pub async fn delete_endpoint(
         &self,
         endpoint_id: &str,
         expected_version: i64,
@@ -4786,7 +4817,7 @@ impl Database {
         actor_label: &str,
     ) -> Result<()> {
         let endpoint = self
-            .delivery_endpoint(endpoint_id)
+            .endpoint(endpoint_id)
             .await?
             .context("endpoint does not exist")?;
         if endpoint.resource_version != expected_version {
@@ -4796,20 +4827,20 @@ impl Database {
             .desired_generation
             .context("endpoint has no desired generation")?;
         let revision = self
-            .delivery_endpoint_revision(endpoint_id, generation)
+            .endpoint_revision(endpoint_id, generation)
             .await?
             .context("desired endpoint generation does not exist")?;
         let consumer_version = self
             .releasable_boundary_consumer_version(
-                &endpoint.network_boundary_id,
+                &endpoint.network_policy_id,
                 revision.boundary_revision,
             )
             .await?;
         let now = unix_now();
         let topology_event_id = format!("topology-event:{}", Uuid::new_v4().simple());
         let topology_event_payload = serde_json::to_string(&serde_json::json!({
-            "type": "topology.delivery_endpoint.deleted",
-            "resource_kind": "delivery_endpoint",
+            "type": "topology.endpoint.deleted",
+            "resource_kind": "endpoint",
             "resource_stable_id": endpoint_id,
             "resource_generation": generation,
             "resource_version": expected_version,
@@ -4817,14 +4848,14 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM delivery_endpoint_scope_grant_pins
+                    "DELETE FROM endpoint_scope_grant_pins
                  WHERE endpoint_id = ?1 AND endpoint_generation = ?3
                    AND target_kind = 'listener' AND target_stable_id = ?1
                    AND target_generation_key = ?3
                    AND target_configuration_digest = ?4
-                   AND EXISTS (SELECT 1 FROM delivery_endpoints
+                   AND EXISTS (SELECT 1 FROM endpoints
                      WHERE id = ?1 AND resource_version = ?2)
-                   AND NOT EXISTS (SELECT 1 FROM delivery_endpoint_scope_grant_pins
+                   AND NOT EXISTS (SELECT 1 FROM endpoint_scope_grant_pins
                      WHERE endpoint_id = ?1 AND target_kind <> 'listener')",
                     vals![
                         endpoint_id,
@@ -4835,21 +4866,21 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "DELETE FROM network_boundary_serving_pins
+                    "DELETE FROM network_policy_serving_pins
                  WHERE boundary_id = ?3 AND revision = ?4
                    AND usage_kind = 'endpoint_listener' AND target_kind = 'endpoint'
                    AND target_stable_id = ?1 AND target_generation_key = ?5
                    AND target_configuration_digest = ?6
-                   AND EXISTS (SELECT 1 FROM delivery_endpoints
+                   AND EXISTS (SELECT 1 FROM endpoints
                      WHERE id = ?1 AND resource_version = ?2)
-                   AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                   AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                      WHERE boundary_id = ?3 AND revision = ?4 AND consumer_version = ?7)
-                   AND NOT EXISTS (SELECT 1 FROM delivery_endpoint_scope_grant_pins
+                   AND NOT EXISTS (SELECT 1 FROM endpoint_scope_grant_pins
                      WHERE endpoint_id = ?1)",
                     vals![
                         endpoint_id,
                         expected_version,
-                        endpoint.network_boundary_id,
+                        endpoint.network_policy_id,
                         revision.boundary_revision,
                         generation,
                         revision.content_digest,
@@ -4858,18 +4889,18 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE network_boundary_revision_lifecycle
+                    "UPDATE network_policy_revision_lifecycle
                      SET consumer_version = consumer_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2
                        AND state IN ('active', 'retiring') AND consumer_version = ?3
-                       AND NOT EXISTS (SELECT 1 FROM network_boundary_serving_pins
+                       AND NOT EXISTS (SELECT 1 FROM network_policy_serving_pins
                          WHERE boundary_id = ?1 AND revision = ?2
                            AND usage_kind = 'endpoint_listener'
                            AND target_kind = 'endpoint' AND target_stable_id = ?4)
-                       AND EXISTS (SELECT 1 FROM delivery_endpoints
+                       AND EXISTS (SELECT 1 FROM endpoints
                          WHERE id = ?4 AND resource_version = ?5)",
                     vals![
-                        endpoint.network_boundary_id,
+                        endpoint.network_policy_id,
                         revision.boundary_revision,
                         consumer_version,
                         endpoint_id,
@@ -4878,23 +4909,23 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "DELETE FROM delivery_endpoints WHERE id = ?1 AND resource_version = ?2
-                   AND NOT EXISTS (SELECT 1 FROM delivery_endpoint_scope_grant_pins
+                    "DELETE FROM endpoints WHERE id = ?1 AND resource_version = ?2
+                   AND NOT EXISTS (SELECT 1 FROM endpoint_scope_grant_pins
                      WHERE endpoint_id = ?1)
-                   AND EXISTS (SELECT 1 FROM network_boundary_revision_lifecycle
+                   AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                      WHERE boundary_id = ?3 AND revision = ?4 AND consumer_version = ?5)
                    AND NOT EXISTS (SELECT 1 FROM topology_operations o
                      WHERE o.state IN ('pending', 'running')
                        AND o.operation_kind <> 'consumer_scope_grant_revocation' AND (
-                       (o.primary_target_kind = 'delivery_endpoint'
+                       (o.primary_target_kind = 'endpoint'
                          AND o.primary_target_stable_id = ?1)
                        OR EXISTS (SELECT 1 FROM operation_secondary_targets t
                          WHERE t.operation_id = o.operation_id
-                           AND t.target_kind = 'delivery_endpoint' AND t.stable_id = ?1)))",
+                           AND t.target_kind = 'endpoint' AND t.stable_id = ?1)))",
                     vals![
                         endpoint_id,
                         expected_version,
-                        endpoint.network_boundary_id,
+                        endpoint.network_policy_id,
                         revision.boundary_revision,
                         consumer_version + 1
                     ],
@@ -4902,9 +4933,9 @@ impl Database {
                 .expecting(1),
                 Database::topology_event_statement(&crate::db::NewTopologyEvent {
                     event_id: &topology_event_id,
-                    event_name: "topology.delivery_endpoint.deleted",
+                    event_name: "topology.endpoint.deleted",
                     owner_scope_key: &endpoint.owner_scope_key,
-                    resource_kind: "delivery_endpoint",
+                    resource_kind: "endpoint",
                     resource_stable_id: endpoint_id,
                     resource_generation_key: generation,
                     actor_kind,
@@ -4915,7 +4946,7 @@ impl Database {
                 }),
             ])
             .await?;
-        if self.delivery_endpoint(endpoint_id).await?.is_some() {
+        if self.endpoint(endpoint_id).await?.is_some() {
             bail!("endpoint is stale or still referenced");
         }
         Ok(())
@@ -4926,8 +4957,8 @@ impl Database {
 mod tests {
     use super::*;
 
-    fn revision_spec() -> NetworkBoundaryRevisionSpec {
-        NetworkBoundaryRevisionSpec {
+    fn revision_spec() -> NetworkPolicyRevisionSpec {
+        NetworkPolicyRevisionSpec {
             protected_transport_required: true,
             trusted_ingress_kind: "none".to_owned(),
             trusted_ingress_configuration: "{}".to_owned(),
@@ -4940,13 +4971,13 @@ mod tests {
     fn boundary_fingerprints_match_normative_vectors() {
         assert_eq!(
             hex::encode(
-                NetworkBoundaryIdentitySpec::Public
+                NetworkPolicyIdentitySpec::Public
                     .fingerprint("instance")
                     .unwrap()
             ),
             "a45d7088ef1cb3f42b0f7c1284e56a781daabc736ecce73134b8e4f53078c08d"
         );
-        let source = NetworkBoundaryIdentitySpec::SourceAllowlist {
+        let source = NetworkPolicyIdentitySpec::SourceAllowlist {
             logical_id: "prod".to_owned(),
         };
         assert_eq!(
@@ -4957,7 +4988,7 @@ mod tests {
             ),
             "a9b44e3f188c15c96b985c1746d7f6a990e6dce473c6879b66e5189cc324a4f3"
         );
-        let vpc = NetworkBoundaryIdentitySpec::Vpc {
+        let vpc = NetworkPolicyIdentitySpec::Vpc {
             provider: "aws".to_owned(),
             account_or_tenant: "123456789012".to_owned(),
             resource_id: "arn:aws:ec2:us-east-1:123456789012:vpc/vpc-0123456789abcdef0".to_owned(),
@@ -4966,7 +4997,7 @@ mod tests {
             hex::encode(vpc.fingerprint("instance").unwrap()),
             "beec20e1ae5f82f5a55a53d425d4e9a08521808d787a209b8c2a589ac39b412e"
         );
-        let uppercase_account = NetworkBoundaryIdentitySpec::Vpc {
+        let uppercase_account = NetworkPolicyIdentitySpec::Vpc {
             provider: "aws".to_owned(),
             account_or_tenant: "Tenant-A".to_owned(),
             resource_id: "provider:network:one".to_owned(),
@@ -4998,7 +5029,7 @@ mod tests {
             "{\"ca_secret_ref\":\"secret:ca\",\"client_sans\":[],\"extra\":true}".to_owned();
         assert!(validate_boundary_revision_spec(&boundary).is_err());
 
-        let endpoint = DeliveryEndpointRevisionSpec {
+        let endpoint = EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: "hub".to_owned(),
             listener_configuration: "listener:test".to_owned(),
@@ -5091,18 +5122,14 @@ mod tests {
     #[tokio::test]
     async fn public_boundary_seed_matches_the_normative_posture() {
         let db = Database::open_in_memory().await.unwrap();
-        let boundary = db
-            .network_boundary("instance:public")
-            .await
-            .unwrap()
-            .unwrap();
+        let boundary = db.network_policy("instance:public").await.unwrap().unwrap();
         assert_eq!(
             boundary.identity_fingerprint,
             "a45d7088ef1cb3f42b0f7c1284e56a781daabc736ecce73134b8e4f53078c08d"
         );
         assert_eq!(boundary.default_revision, Some(1));
         let revision = db
-            .network_boundary_revision("instance:public", 1)
+            .network_policy_revision("instance:public", 1)
             .await
             .unwrap()
             .unwrap();
@@ -5120,7 +5147,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT grant_kind, state, grant_generation
-                 FROM network_boundary_consumer_scopes
+                 FROM network_policy_consumer_scopes
                  WHERE boundary_id = 'instance:public'
                    AND consumer_scope_key = 'instance'",
                 &[],
@@ -5135,7 +5162,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM consumer_scope_grant_events
-                 WHERE resource_kind = 'network_boundary'
+                 WHERE resource_kind = 'network_policy'
                    AND resource_stable_id = 'instance:public'
                    AND consumer_scope_key = 'instance'
                    AND grant_generation = 1 AND transition = 'granted'
@@ -5154,7 +5181,7 @@ mod tests {
         let org_grant = db
             .backend
             .query_opt(
-                "SELECT grant_kind, state FROM network_boundary_consumer_scopes
+                "SELECT grant_kind, state FROM network_policy_consumer_scopes
                  WHERE boundary_id = 'instance:public'
                    AND consumer_scope_key = ?1",
                 &vals![org_scope],
@@ -5168,7 +5195,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM consumer_scope_grant_events
-                 WHERE resource_kind = 'network_boundary'
+                 WHERE resource_kind = 'network_policy'
                    AND resource_stable_id = 'instance:public'
                    AND consumer_scope_key = ?1
                    AND grant_generation = 1 AND transition = 'granted'
@@ -5186,12 +5213,12 @@ mod tests {
     #[tokio::test]
     async fn boundary_lifecycle_requires_verified_observation_and_cas() {
         let db = Database::open_in_memory().await.unwrap();
-        let identity = NetworkBoundaryIdentitySpec::Vpc {
+        let identity = NetworkPolicyIdentitySpec::Vpc {
             provider: "aws".to_owned(),
             account_or_tenant: "123456789012".to_owned(),
             resource_id: "arn:aws:ec2:us-west-2:123456789012:vpc/vpc-test".to_owned(),
         };
-        db.create_network_boundary(
+        db.create_network_policy(
             "boundary:test",
             "instance",
             None,
@@ -5203,13 +5230,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let default_cas = NetworkBoundaryDefaultCas {
+        let default_cas = NetworkPolicyDefaultCas {
             boundary_resource_version: 1,
             previous_revision: None,
             previous_resource_version: None,
         };
         assert!(db
-            .activate_network_boundary_revision(
+            .activate_network_policy_revision(
                 "boundary:test",
                 1,
                 "overlap",
@@ -5226,7 +5253,7 @@ mod tests {
             .await
             .is_err());
         assert!(db
-            .reconcile_network_boundary_revision(
+            .reconcile_network_policy_revision(
                 "boundary:test",
                 1,
                 "verified",
@@ -5238,7 +5265,7 @@ mod tests {
             .await
             .is_err());
         assert!(db
-            .reconcile_network_boundary_revision(
+            .reconcile_network_policy_revision(
                 "boundary:test",
                 1,
                 "verified",
@@ -5250,7 +5277,7 @@ mod tests {
             .await
             .is_err());
         let observed = db
-            .reconcile_network_boundary_revision(
+            .reconcile_network_policy_revision(
                 "boundary:test",
                 1,
                 "verified",
@@ -5262,13 +5289,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(observed.resource_version, 2);
-        let stale_default_cas = NetworkBoundaryDefaultCas {
+        let stale_default_cas = NetworkPolicyDefaultCas {
             boundary_resource_version: 99,
             previous_revision: None,
             previous_resource_version: None,
         };
         assert!(db
-            .activate_network_boundary_revision(
+            .activate_network_policy_revision(
                 "boundary:test",
                 1,
                 "overlap",
@@ -5285,7 +5312,7 @@ mod tests {
             .await
             .is_err());
         let active = db
-            .activate_network_boundary_revision(
+            .activate_network_policy_revision(
                 "boundary:test",
                 1,
                 "overlap",
@@ -5307,7 +5334,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM audit_log
-                 WHERE action = 'topology.network_boundary.activated'
+                 WHERE action = 'topology.network_policy.activated'
                    AND scope = 'instance' AND outbox_event_id IS NOT NULL",
                 &[],
             )
@@ -5317,27 +5344,19 @@ mod tests {
             .get::<i64>(0)
             .unwrap();
         assert_eq!(activation_audit, 1);
-        db.revise_network_boundary("boundary:test", &revision_spec(), "test", 2)
+        db.revise_network_policy("boundary:test", &revision_spec(), "test", 2)
             .await
             .unwrap();
-        db.reconcile_network_boundary_revision(
-            "boundary:test",
-            2,
-            "verified",
-            true,
-            "none",
-            None,
-            1,
-        )
-        .await
-        .unwrap();
-        let stale_existing_default = NetworkBoundaryDefaultCas {
+        db.reconcile_network_policy_revision("boundary:test", 2, "verified", true, "none", None, 1)
+            .await
+            .unwrap();
+        let stale_existing_default = NetworkPolicyDefaultCas {
             boundary_resource_version: 3,
             previous_revision: Some(1),
             previous_resource_version: Some(99),
         };
         assert!(db
-            .activate_network_boundary_revision(
+            .activate_network_policy_revision(
                 "boundary:test",
                 2,
                 "overlap",
@@ -5353,12 +5372,12 @@ mod tests {
             )
             .await
             .is_err());
-        let existing_default = NetworkBoundaryDefaultCas {
+        let existing_default = NetworkPolicyDefaultCas {
             boundary_resource_version: 3,
             previous_revision: Some(1),
             previous_resource_version: Some(1),
         };
-        db.activate_network_boundary_revision(
+        db.activate_network_policy_revision(
             "boundary:test",
             2,
             "coordinated",
@@ -5381,11 +5400,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             coordination.operation_kind,
-            "network_boundary_coordinated_activation"
+            "network_policy_coordinated_activation"
         );
         assert_eq!(coordination.primary_target_generation_key, 2);
         assert_eq!(
-            db.network_boundary_revision("boundary:test", 2)
+            db.network_policy_revision("boundary:test", 2)
                 .await
                 .unwrap()
                 .unwrap()
@@ -5393,7 +5412,7 @@ mod tests {
             "activating"
         );
         let claimed = db
-            .claim_network_boundary_coordination_operation(
+            .claim_network_policy_coordination_operation(
                 "operation:boundary-test",
                 coordination.resource_version,
                 30,
@@ -5401,12 +5420,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        db.finalize_network_boundary_coordination(
+        db.finalize_network_policy_coordination(
             "operation:boundary-test",
             claimed.resource_version,
             "boundary:test",
             2,
-            &db.network_boundary_revision("boundary:test", 2)
+            &db.network_policy_revision("boundary:test", 2)
                 .await
                 .unwrap()
                 .unwrap()
@@ -5420,7 +5439,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            db.network_boundary_revision("boundary:test", 2)
+            db.network_policy_revision("boundary:test", 2)
                 .await
                 .unwrap()
                 .unwrap()
@@ -5428,7 +5447,7 @@ mod tests {
             "active"
         );
         assert!(db
-            .reconcile_network_boundary_revision(
+            .reconcile_network_policy_revision(
                 "boundary:test",
                 1,
                 "verified",
@@ -5440,7 +5459,7 @@ mod tests {
             .await
             .is_err());
 
-        let endpoint_spec = DeliveryEndpointRevisionSpec {
+        let endpoint_spec = EndpointRevisionSpec {
             boundary_revision: 1,
             ingress_kind: "hub".to_owned(),
             listener_configuration: "listener:test".to_owned(),
@@ -5448,12 +5467,12 @@ mod tests {
             probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_owned(),
         };
         let endpoint = db
-            .create_delivery_endpoint(
+            .create_endpoint(
                 "endpoint:test",
                 "instance",
                 None,
                 "https",
-                &DeliveryEndpointHostInput::Ipv4([192, 0, 2, 1]),
+                &EndpointHostInput::Ipv4([192, 0, 2, 1]),
                 443,
                 "boundary:test",
                 &endpoint_spec,
@@ -5465,19 +5484,19 @@ mod tests {
             .unwrap();
         assert_eq!(endpoint.desired_generation, Some(1));
         assert_eq!(
-            db.network_boundary_serving_pins("boundary:test", 1)
+            db.network_policy_serving_pins("boundary:test", 1)
                 .await
                 .unwrap()
                 .len(),
             1
         );
         let observation = db
-            .reconcile_delivery_endpoint("endpoint:test", 1, 1, "healthy", true, true, None, 1)
+            .reconcile_endpoint("endpoint:test", 1, 1, "healthy", true, true, None, 1)
             .await
             .unwrap();
         assert_eq!(observation.state, "healthy");
         let initial_pin = db
-            .network_boundary_serving_pins("boundary:test", 1)
+            .network_policy_serving_pins("boundary:test", 1)
             .await
             .unwrap()
             .into_iter()
@@ -5486,7 +5505,7 @@ mod tests {
         db.create_org("consumer", "Consumer").await.unwrap();
         let consumer_scope = db.org_by_slug("consumer").await.unwrap().unwrap().stable_id;
         db.grant_consumer_scope(
-            crate::db::GrantResource::DeliveryEndpoint {
+            crate::db::GrantResource::Endpoint {
                 id: "endpoint:test",
                 generation: 1,
             },
@@ -5497,17 +5516,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let owner_grant = DeliveryEndpointGrantCarryForward {
+        let owner_grant = EndpointGrantCarryForward {
             consumer_scope_key: "instance".to_owned(),
             grant_generation: 1,
             resource_version: 1,
         };
         assert!(db
-            .stage_delivery_endpoint_generation(
+            .stage_endpoint_generation(
                 "endpoint:test",
                 &endpoint_spec,
                 &owner_grant,
-                &[DeliveryEndpointGrantCarryForward {
+                &[EndpointGrantCarryForward {
                     consumer_scope_key: consumer_scope.clone(),
                     grant_generation: 1,
                     resource_version: 2,
@@ -5518,15 +5537,11 @@ mod tests {
             )
             .await
             .is_err());
-        let unchanged = db
-            .delivery_endpoint("endpoint:test")
-            .await
-            .unwrap()
-            .unwrap();
+        let unchanged = db.endpoint("endpoint:test").await.unwrap().unwrap();
         assert_eq!(unchanged.desired_generation, Some(1));
         assert_eq!(unchanged.resource_version, 2);
         assert!(db
-            .delivery_endpoint_revision("endpoint:test", 2)
+            .endpoint_revision("endpoint:test", 2)
             .await
             .unwrap()
             .is_none());
@@ -5534,7 +5549,7 @@ mod tests {
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM consumer_scope_grant_events
-                 WHERE resource_kind = 'delivery_endpoint'
+                 WHERE resource_kind = 'endpoint'
                    AND resource_stable_id = 'endpoint:test'
                    AND resource_generation_key = 2",
                 &[],
@@ -5546,18 +5561,18 @@ mod tests {
             .unwrap();
         assert_eq!(leaked_events, 0);
         assert_eq!(
-            db.network_boundary_serving_pins("boundary:test", 1)
+            db.network_policy_serving_pins("boundary:test", 1)
                 .await
                 .unwrap(),
             vec![initial_pin]
         );
 
         let staged = db
-            .stage_delivery_endpoint_generation(
+            .stage_endpoint_generation(
                 "endpoint:test",
                 &endpoint_spec,
                 &owner_grant,
-                &[DeliveryEndpointGrantCarryForward {
+                &[EndpointGrantCarryForward {
                     consumer_scope_key: consumer_scope.clone(),
                     grant_generation: 1,
                     resource_version: 1,
@@ -5569,16 +5584,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(staged.generation, 2);
-        let staged_endpoint = db
-            .delivery_endpoint("endpoint:test")
-            .await
-            .unwrap()
-            .unwrap();
+        let staged_endpoint = db.endpoint("endpoint:test").await.unwrap().unwrap();
         assert_eq!(staged_endpoint.desired_generation, Some(1));
         assert_eq!(staged_endpoint.resource_version, 3);
         let carried_grant = db
             .load_consumer_scope_grant(
-                crate::db::GrantResource::DeliveryEndpoint {
+                crate::db::GrantResource::Endpoint {
                     id: "endpoint:test",
                     generation: 2,
                 },
@@ -5590,13 +5601,10 @@ mod tests {
         assert_eq!(carried_grant.state, "active");
         assert_eq!(carried_grant.grant_generation, 1);
 
-        let revisions = db
-            .delivery_endpoint_revisions("endpoint:test")
-            .await
-            .unwrap();
+        let revisions = db.endpoint_revisions("endpoint:test").await.unwrap();
         assert_eq!(revisions.len(), 2);
         let updated = db
-            .activate_staged_delivery_endpoint_generation(
+            .activate_staged_endpoint_generation(
                 "endpoint:test",
                 2,
                 3,
@@ -5610,29 +5618,29 @@ mod tests {
         assert_eq!(updated.desired_generation, Some(2));
         assert_eq!(updated.resource_version, 4);
         let retained_observation = db
-            .delivery_endpoint_generation_observation("endpoint:test", 1)
+            .endpoint_generation_observation("endpoint:test", 1)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(retained_observation.state, "healthy");
         assert!(db
-            .delivery_endpoint_revision("endpoint:test", 2)
+            .endpoint_revision("endpoint:test", 2)
             .await
             .unwrap()
             .is_some());
         assert!(db
-            .delivery_endpoint_revision("endpoint:test", 3)
+            .endpoint_revision("endpoint:test", 3)
             .await
             .unwrap()
             .is_none());
         let pins = db
-            .network_boundary_serving_pins("boundary:test", 1)
+            .network_policy_serving_pins("boundary:test", 1)
             .await
             .unwrap();
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0].target_generation_key, 2);
         assert_ne!(pins[0].target_configuration_digest, "");
-        db.delete_delivery_endpoint("endpoint:test", 4, "user", Some(1), "test")
+        db.delete_endpoint("endpoint:test", 4, "user", Some(1), "test")
             .await
             .unwrap();
     }

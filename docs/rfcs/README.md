@@ -27,7 +27,7 @@ topic files.
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
 | [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
 | [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted; phased implementation plan and locked decisions |
-| [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous delivery routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
+| [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
 | [0013](0013-recovery-uki/README.md) | 2026-08-17 | A/B-aware signed recovery UKIs and initrd fail-closed hardening | Proposed — phased plan in [`implementation.md`](0013-recovery-uki/implementation.md) |
 | [0014](0014-signal-driven-fault-model/README.md) | 2026-08-18 | Signal-driven, cross-domain fault modeling for Crucible | Proposed; implementation in progress |
 | [0015](0015-hermetic-cargo-artifacts.md) | 2026-08-21 | Hermetic Cargo artifact graphs and parallel Rust testing | Implemented |

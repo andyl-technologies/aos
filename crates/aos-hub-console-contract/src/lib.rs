@@ -4,6 +4,70 @@
 //! RFC-0012. It does not provide aliases or a prefix-wide fallback: an unknown
 //! page remains a server-side 404 instead of receiving the application shell.
 
+/// One destination in the signed-in masthead navigation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrimaryNavigationItem {
+    /// Canonical application path.
+    pub href: &'static str,
+    /// Human-facing link label.
+    pub label: &'static str,
+}
+
+/// Signed-in masthead navigation shared by the SSR and browser shells.
+pub const AUTHENTICATED_PRIMARY_NAVIGATION: &[PrimaryNavigationItem] = &[
+    PrimaryNavigationItem {
+        href: "/",
+        label: "registries",
+    },
+    PrimaryNavigationItem {
+        href: "/-/caches",
+        label: "caches",
+    },
+    PrimaryNavigationItem {
+        href: "/-/orgs",
+        label: "organizations",
+    },
+    PrimaryNavigationItem {
+        href: "/-/instance",
+        label: "settings",
+    },
+    PrimaryNavigationItem {
+        href: "/-/account",
+        label: "account",
+    },
+];
+
+/// Maximum number of leading characters shown for a compact hash.
+pub const COMPACT_HASH_CHARACTERS: usize = 12;
+
+/// Presentation data for a hash rendered in a compact, copyable control.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HashPresentation<'a> {
+    /// Complete hash retained for tooltips and clipboard actions.
+    pub full: &'a str,
+    /// Bounded visible form, with an ellipsis when characters were omitted.
+    pub compact: String,
+}
+
+impl<'a> HashPresentation<'a> {
+    /// Builds the shared compact representation for `full`.
+    #[must_use]
+    pub fn new(full: &'a str) -> Self {
+        let mut characters = full.chars();
+        let prefix = characters
+            .by_ref()
+            .take(COMPACT_HASH_CHARACTERS)
+            .collect::<String>();
+        let compact = if characters.next().is_some() {
+            format!("{prefix}…")
+        } else {
+            prefix
+        };
+
+        Self { full, compact }
+    }
+}
+
 /// One page in a scope's deterministic settings navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageSpec {
@@ -62,11 +126,11 @@ impl PageSpec {
             "new" => "read",
             "projects-new" | "registries-new" => "registry.configure",
             "caches-new" => "registry.configure",
-            "storage-new" => "storage_binding.manage",
+            "storage-new" => "binding.manage",
             "domains-new" => "domain.manage",
-            "boundaries-new" => "network_boundary.manage",
-            "endpoints-new" => "delivery_endpoint.manage",
-            "gateways-new" => "storage_gateway.manage",
+            "boundaries-new" => "network_policy.manage",
+            "endpoints-new" => "endpoint.manage",
+            "gateways-new" => "gateway.manage",
             _ => "read",
         }
     }
@@ -293,54 +357,54 @@ pub const INSTANCE_PAGES: &[PageSpec] = &[
     PageSpec::new("overview", "Overview", "", "", "instance-settings"),
     PageSpec::new(
         "storage",
-        "Storage bindings",
+        "Bindings",
         "Infrastructure",
-        "storage-bindings",
-        "storage-bindings",
+        "bindings",
+        "bindings",
     ),
     PageSpec::new("domains", "Domains", "Infrastructure", "domains", "domains"),
     PageSpec::new("domains-new", "Add domain", "", "domains/new", "domains"),
     PageSpec::new(
         "boundaries",
-        "Network boundaries",
+        "Network policies",
         "Infrastructure",
-        "network-boundaries",
-        "network-boundaries",
+        "network-policies",
+        "network-policies",
     ),
     PageSpec::new(
         "boundaries-new",
-        "Create network boundary",
+        "Create network policy",
         "",
-        "network-boundaries/new",
-        "network-boundaries",
+        "network-policies/new",
+        "network-policies",
     ),
     PageSpec::new(
         "endpoints",
-        "Delivery endpoints",
+        "Endpoints",
         "Infrastructure",
-        "delivery-endpoints",
-        "delivery-endpoints",
+        "endpoints",
+        "endpoints",
     ),
     PageSpec::new(
         "endpoints-new",
-        "Create delivery endpoint",
+        "Create endpoint",
         "",
-        "delivery-endpoints/new",
-        "delivery-endpoints",
+        "endpoints/new",
+        "endpoints",
     ),
     PageSpec::new(
         "gateways",
-        "Storage gateways",
+        "Gateways",
         "Infrastructure",
-        "storage-gateways",
-        "storage-gateways",
+        "gateways",
+        "gateways",
     ),
     PageSpec::new(
         "gateways-new",
-        "Create storage gateway",
+        "Create gateway",
         "",
-        "storage-gateways/new",
-        "storage-gateways",
+        "gateways/new",
+        "gateways",
     ),
     PageSpec::new(
         "defaults",
@@ -460,61 +524,61 @@ pub const ORGANIZATION_PAGES: &[PageSpec] = &[
     ),
     PageSpec::new(
         "storage",
-        "Storage bindings",
+        "Bindings",
         "Infrastructure",
-        "storage-bindings",
-        "storage-bindings",
+        "bindings",
+        "bindings",
     ),
     PageSpec::new(
         "storage-new",
-        "Create storage binding",
+        "Create binding",
         "",
-        "storage-bindings/new",
-        "storage-bindings",
+        "bindings/new",
+        "bindings",
     ),
     PageSpec::new("domains", "Domains", "Infrastructure", "domains", "domains"),
     PageSpec::new("domains-new", "Add domain", "", "domains/new", "domains"),
     PageSpec::new(
         "boundaries",
-        "Network boundaries",
+        "Network policies",
         "Infrastructure",
-        "network-boundaries",
-        "network-boundaries",
+        "network-policies",
+        "network-policies",
     ),
     PageSpec::new(
         "boundaries-new",
-        "Create network boundary",
+        "Create network policy",
         "",
-        "network-boundaries/new",
-        "network-boundaries",
+        "network-policies/new",
+        "network-policies",
     ),
     PageSpec::new(
         "endpoints",
-        "Delivery endpoints",
+        "Endpoints",
         "Infrastructure",
-        "delivery-endpoints",
-        "delivery-endpoints",
+        "endpoints",
+        "endpoints",
     ),
     PageSpec::new(
         "endpoints-new",
-        "Create delivery endpoint",
+        "Create endpoint",
         "",
-        "delivery-endpoints/new",
-        "delivery-endpoints",
+        "endpoints/new",
+        "endpoints",
     ),
     PageSpec::new(
         "gateways",
-        "Storage gateways",
+        "Gateways",
         "Infrastructure",
-        "storage-gateways",
-        "storage-gateways",
+        "gateways",
+        "gateways",
     ),
     PageSpec::new(
         "gateways-new",
-        "Create storage gateway",
+        "Create gateway",
         "",
-        "storage-gateways/new",
-        "storage-gateways",
+        "gateways/new",
+        "gateways",
     ),
     PageSpec::new(
         "defaults",
@@ -580,13 +644,7 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "placements",
         "placements",
     ),
-    PageSpec::new(
-        "delivery",
-        "Delivery",
-        "Topology",
-        "delivery",
-        "delivery-routes",
-    ),
+    PageSpec::new("delivery", "Delivery", "Topology", "delivery", "routes"),
     PageSpec::new(
         "caches",
         "Binary caches",
@@ -690,13 +748,7 @@ pub const CACHE_PAGES: &[PageSpec] = &[
         "placements",
         "placements",
     ),
-    PageSpec::new(
-        "delivery",
-        "Delivery",
-        "Topology",
-        "delivery",
-        "delivery-routes",
-    ),
+    PageSpec::new("delivery", "Delivery", "Topology", "delivery", "routes"),
     PageSpec::new(
         "objects",
         "Objects & closures",
@@ -765,6 +817,24 @@ pub const CACHE_PAGES: &[PageSpec] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_hash_presentation_preserves_the_full_value() {
+        let full = "sha256:0123456789abcdef";
+        let presentation = HashPresentation::new(full);
+        assert_eq!(presentation.full, full);
+        assert_eq!(presentation.compact, "sha256:01234…");
+        assert_eq!(HashPresentation::new("short").compact, "short");
+    }
+
+    #[test]
+    fn authenticated_navigation_includes_plain_settings_label() {
+        let settings = AUTHENTICATED_PRIMARY_NAVIGATION
+            .iter()
+            .find(|item| item.href == "/-/instance")
+            .expect("settings navigation item");
+        assert_eq!(settings.label, "settings");
+    }
 
     #[test]
     fn every_scope_root_selects_overview_first() {
@@ -1063,17 +1133,11 @@ mod tests {
             ("/-/org/acme/projects/new", "registry.configure"),
             ("/-/org/acme/registries/new", "registry.configure"),
             ("/-/org/acme/caches/new", "registry.configure"),
-            ("/-/org/acme/storage-bindings/new", "storage_binding.manage"),
+            ("/-/org/acme/bindings/new", "binding.manage"),
             ("/-/instance/domains/new", "domain.manage"),
-            (
-                "/-/instance/network-boundaries/new",
-                "network_boundary.manage",
-            ),
-            (
-                "/-/instance/delivery-endpoints/new",
-                "delivery_endpoint.manage",
-            ),
-            ("/-/instance/storage-gateways/new", "storage_gateway.manage"),
+            ("/-/instance/network-policies/new", "network_policy.manage"),
+            ("/-/instance/endpoints/new", "endpoint.manage"),
+            ("/-/instance/gateways/new", "gateway.manage"),
         ] {
             let route = ConsoleRoute::resolve(path).expect("creation route must resolve");
             assert_eq!(route.page.navigation_permission(), permission, "{path}");

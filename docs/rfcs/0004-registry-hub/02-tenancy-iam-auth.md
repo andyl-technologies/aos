@@ -4,7 +4,7 @@
 Organization   (tenant boundary; SSO/audit scope)
  └─ Project    (hierarchical, arbitrary depth — teams, environments)
      └─ Registry   (one git surface + one cache surface, backed by a
-                    StorageBinding + prefix — see "Storage")
+                    Binding + prefix — see "Storage")
 ```
 
 - **Principals**: users (humans), service accounts, and tokens.

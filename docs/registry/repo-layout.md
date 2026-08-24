@@ -57,8 +57,8 @@ The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
 name        = "aos-core"
 description = "AOS core packages"
 
-# Ordered cache delivery endpoints, authenticated by the signed tag. Managed
-# endpoints correspond to explicit Hub delivery routes; external endpoints do
+# Ordered cache endpoints, authenticated by the signed tag. Managed
+# endpoints correspond to explicit Hub routes; external endpoints do
 # not gain a managed identity merely because their URL happens to match.
 [caches]
 kind = "try"
