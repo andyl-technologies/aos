@@ -146,6 +146,10 @@ pub struct QemuLiveNetworkIoReport {
     pub retained_frame_durable_envelope_restored: bool,
     /// Exact first retry coordinate observed after fresh-process restore.
     pub retained_frame_first_retry_icount: u64,
+    /// Exact guest TX coordinate of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_emit_icount: u64,
+    /// Guest TX sequence of the unique restored-frame acknowledgement.
+    pub retained_frame_guest_ack_sequence: u64,
     /// Whether the scheduler-preempted run reproduced the reference observations.
     pub deterministic_under_scheduler_preemption: bool,
     /// Absolute probe stamp from the hostile-host run.
@@ -270,6 +274,8 @@ pub fn run_qemu_live_network_io_gate(
             && retained_report.retained_frame_consumed,
         retained_frame_durable_envelope_restored: retained_report.durable_envelope_round_trip,
         retained_frame_first_retry_icount: retained_report.first_retry_icount,
+        retained_frame_guest_ack_emit_icount: retained_report.guest_ack_emit_icount,
+        retained_frame_guest_ack_sequence: retained_report.guest_ack_sequence,
         deterministic_under_scheduler_preemption: true,
         hostile_probe_emit_icount,
         absolute_probe_origin_equal: reference_probe_emit_icount == hostile_probe_emit_icount,

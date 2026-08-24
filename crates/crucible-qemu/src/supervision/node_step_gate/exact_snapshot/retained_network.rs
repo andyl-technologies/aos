@@ -16,6 +16,10 @@ pub struct QemuLiveRetainedNetworkSnapshotReport {
     pub first_retry_icount: u64,
     /// Whether the restored guest userspace acknowledged that exact payload.
     pub guest_acknowledgement_seen: bool,
+    /// Retired-instruction coordinate of the unique post-restore acknowledgement.
+    pub guest_ack_emit_icount: u64,
+    /// Guest TX sequence of the unique post-restore acknowledgement.
+    pub guest_ack_sequence: u64,
     /// Whether the frame left canonical shared memory after guest acceptance.
     pub retained_frame_consumed: bool,
     /// Whether the source QEMU was force-crashed before the restore launch.
@@ -115,6 +119,11 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             ),
         });
     }
+    reject_pending_backpressure_ack(
+        "captured source continuation",
+        &snapshot.node_continuation().pending_network_outputs,
+        guest_ack_payload,
+    )?;
     let envelope_path = restore_directory.join("crucible-retained-network-snapshot.cbor");
     let envelope = snapshot.to_canonical_bytes().map_err(|error| {
         QemuLiveNodeStepGateError::ExactSnapshotInvariant {
@@ -148,6 +157,13 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             reason: String::from("persisted retained snapshot envelope was not byte-canonical"),
         });
     }
+    reject_pending_backpressure_ack(
+        "persisted continuation",
+        &restored_snapshot
+            .node_continuation()
+            .pending_network_outputs,
+        guest_ack_payload,
+    )?;
     drop(envelope);
     drop(persisted_envelope);
 
@@ -295,7 +311,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             reason: String::from("retained restore node identity collided"),
         });
     }
-    let mut guest_acknowledgement_seen = false;
+    let mut guest_ack_identity = None;
     loop {
         let current = crucible::SimulationBackend::node_now(&restored_nodes, &identity)
             .map_err(|error| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
@@ -320,13 +336,28 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             .map_err(|error| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
                 reason: format!("drain restored guest network outputs failed: {error}"),
             })?;
-        guest_acknowledgement_seen = outputs.iter().any(|frame| {
-            guest_ack_payload
-                == crate::supervision::network_io_servicer::LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
-                && crate::supervision::network_io_servicer::is_live_network_backpressure_ack(
-                    &frame.payload,
-                )
-        });
+        for frame in outputs
+            .iter()
+            .filter(|frame| is_backpressure_ack_payload(&frame.payload, guest_ack_payload))
+        {
+            if frame.emit_icount.retired < first_retry_icount {
+                return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                    reason: format!(
+                        "restored backpressure acknowledgement was emitted before the exact retry: emit_icount={}, retry_icount={}, sequence={}",
+                        frame.emit_icount.retired, first_retry_icount, frame.sequence
+                    ),
+                });
+            }
+            let identity = (frame.emit_icount.retired, frame.sequence);
+            if guest_ack_identity.replace(identity).is_some() {
+                return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                    reason: format!(
+                        "restored retry emitted more than one backpressure acknowledgement; latest={identity:?}"
+                    ),
+                });
+            }
+        }
+        let guest_acknowledgement_seen = guest_ack_identity.is_some();
         eprintln!(
             "crucible-live-network-io phase=retained-restore status=retry-progress icount={target} guest_ack={guest_acknowledgement_seen}"
         );
@@ -334,6 +365,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
             break;
         }
     }
+    let guest_acknowledgement_seen = guest_ack_identity.is_some();
     let mut restored = restored_nodes.take(&identity).ok_or_else(|| {
         QemuLiveNodeStepGateError::ExactSnapshotInvariant {
             reason: String::from("production retry chain lost the retained restore node"),
@@ -349,7 +381,7 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         .frames
         .iter()
         .any(|frame| frame.delivery_key() == retained_frame);
-    if !guest_acknowledgement_seen || !retained_frame_consumed {
+    if guest_ack_identity.is_none() || !retained_frame_consumed {
         let final_icount = restored
             .current_icount()
             .map_err(|error| {
@@ -364,6 +396,10 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         });
     }
     eprintln!("crucible-live-network-io phase=retained-restore status=guest-acknowledged");
+    let (guest_ack_emit_icount, guest_ack_sequence) =
+        guest_ack_identity.ok_or_else(|| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("restored retry lost its acknowledged frame identity"),
+        })?;
     restored
         .shutdown_child()
         .map_err(|error| QemuLiveNodeStepGateError::Shutdown { source: error })?;
@@ -373,11 +409,38 @@ pub fn run_qemu_live_retained_network_snapshot_gate(
         retained_frame,
         restored_delivery_attempts: restored_attempts,
         first_retry_icount,
-        guest_acknowledgement_seen,
+        guest_acknowledgement_seen: true,
+        guest_ack_emit_icount,
+        guest_ack_sequence,
         retained_frame_consumed,
         source_process_force_crashed: true,
         durable_envelope_round_trip: true,
     })
+}
+
+fn is_backpressure_ack_payload(payload: &[u8], guest_ack_payload: &[u8]) -> bool {
+    guest_ack_payload
+        == crate::supervision::network_io_servicer::LIVE_NETWORK_BACKPRESSURE_ACK_PAYLOAD
+        && crate::supervision::network_io_servicer::is_live_network_backpressure_ack(payload)
+}
+
+fn reject_pending_backpressure_ack(
+    role: &str,
+    outputs: &[crate::QemuNodeEmittedFrame],
+    guest_ack_payload: &[u8],
+) -> Result<(), QemuLiveNodeStepGateError> {
+    if let Some(frame) = outputs
+        .iter()
+        .find(|frame| is_backpressure_ack_payload(&frame.payload, guest_ack_payload))
+    {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!(
+                "{role} already contained a backpressure acknowledgement at icount {} sequence {}; restored retry causality would be ambiguous",
+                frame.emit_icount.retired, frame.sequence
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn persist_snapshot_closure(
