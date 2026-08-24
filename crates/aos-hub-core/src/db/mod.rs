@@ -6405,11 +6405,47 @@ impl Database {
         publication_id: &str,
         surface_object_id: i64,
     ) -> Result<Option<RegistryPublicationUploadObjectRecord>> {
-        Ok(self
-            .registry_publication_upload_objects(publication_id)
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .query_opt(
+                "SELECT po.publication_id, po.registry_id, po.surface_object_id,
+                        object.object_key, po.object_kind, po.expected_hash,
+                        po.expected_size,
+                        CASE WHEN EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1)
+                        AND NOT EXISTS (
+                          SELECT 1 FROM registry_publication_placements required
+                          WHERE required.publication_id = po.publication_id
+                            AND required.required = 1
+                            AND NOT EXISTS (
+                              SELECT 1 FROM object_placements presence
+                              WHERE presence.surface_object_id = po.surface_object_id
+                                AND presence.placement_id = required.placement_id
+                                AND presence.state = 'present'
+                                AND presence.observed_hash = po.expected_hash
+                                AND presence.observed_size = po.expected_size))
+                        THEN 1 ELSE 0 END
+                 FROM registry_publication_objects po
+                 JOIN surface_objects object ON object.id = po.surface_object_id
+                 WHERE po.publication_id = ?1 AND po.surface_object_id = ?2",
+                &vals![publication_id, surface_object_id],
+            )
             .await?
-            .into_iter()
-            .find(|object| object.surface_object_id == surface_object_id))
+            .map(|row| {
+                Ok(RegistryPublicationUploadObjectRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    surface_object_id: row.get(2)?,
+                    object_key: row.get(3)?,
+                    object_kind: row.get(4)?,
+                    expected_hash: row.get(5)?,
+                    expected_size: row.get(6)?,
+                    verified: row.get(7)?,
+                })
+            })
+            .transpose()
     }
 
     /// Returns one durable registry-publication multipart upload.
@@ -30421,6 +30457,7 @@ source_nar_hash = ""
             })
             .await
             .unwrap();
+        let pointer_id = pointer.id;
         for (object, kind, hash, size) in [
             (immutable, "immutable", "d".repeat(64), 7),
             (pointer, "mutable_pointer", "e".repeat(64), 9),
@@ -30443,6 +30480,19 @@ source_nar_hash = ""
         assert_eq!(objects[0].object_kind, "immutable");
         assert_eq!(objects[1].object_kind, "mutable_pointer");
         assert!(objects.iter().all(|object| !object.verified));
+        let selected = db
+            .registry_publication_upload_object(publication_id, pointer_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.surface_object_id, pointer_id);
+        assert_eq!(selected.object_kind, "mutable_pointer");
+        assert!(!selected.verified);
+        assert!(db
+            .registry_publication_upload_object(publication_id, i64::MAX)
+            .await
+            .unwrap()
+            .is_none());
         assert!(!db
             .registry_publication_class_is_complete(publication_id, "immutable")
             .await
