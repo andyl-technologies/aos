@@ -70,6 +70,18 @@ pub(in crate::vm_lifecycle::quantum_loop) fn lifecycle_transition_text(
     }
 }
 
+/// Reports whether an intent can commit a transition that advances generation.
+///
+/// Boot is included because a bounded ready policy may exhaust into Crash or
+/// PowerOff even though the originally requested transition does not itself
+/// advance the generation. Permanent failure is the only transition that can
+/// never retain a successor process generation.
+pub(in crate::vm_lifecycle::quantum_loop) fn lifecycle_intent_may_require_successor_generation(
+    transition: crucible::model::NodeLifecycleTransition,
+) -> bool {
+    transition != crucible::model::NodeLifecycleTransition::PermanentFailure
+}
+
 pub(in crate::vm_lifecycle::quantum_loop) fn try_lifecycle_string(
     value: &str,
     current: usize,
@@ -186,4 +198,28 @@ pub(in crate::vm_lifecycle::quantum_loop) fn try_lifecycle_crash_detector(
         detector.push(*digit as char);
     }
     Ok(detector)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lifecycle_intent_may_require_successor_generation;
+    use crucible::model::NodeLifecycleTransition;
+
+    #[test]
+    fn terminal_precommit_reserves_effective_successor_generation() {
+        for transition in [
+            NodeLifecycleTransition::Boot,
+            NodeLifecycleTransition::Crash,
+            NodeLifecycleTransition::Reset,
+            NodeLifecycleTransition::PowerOff,
+            NodeLifecycleTransition::PowerCycle,
+        ] {
+            assert!(lifecycle_intent_may_require_successor_generation(
+                transition
+            ));
+        }
+        assert!(!lifecycle_intent_may_require_successor_generation(
+            NodeLifecycleTransition::PermanentFailure
+        ));
+    }
 }
